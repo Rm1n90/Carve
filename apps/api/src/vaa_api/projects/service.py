@@ -1,11 +1,12 @@
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from vaa_api.auth.models import User, UserRole
 from vaa_api.errors import AppError
-from vaa_api.projects.models import Project, Task, TaskKind
+from vaa_api.projects.models import Class, Project, Task, TaskKind
 
 
 class ProjectNotFound(AppError):
@@ -106,4 +107,67 @@ class TaskService:
             raise NotProjectOwner("only owner or admin can delete a task")
         t = self.get(project=project, task_id=task_id)
         self.session.delete(t)
+        self.session.flush()
+
+
+class ClassConflict(AppError):
+    http_status = 409
+    code = "class_idx_or_name_conflict"
+
+
+class ClassNotFound(AppError):
+    http_status = 404
+    code = "class_not_found"
+
+
+class ClassService:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self, *, project: Project, idx: int, name: str, color: str, attributes: dict
+    ) -> Class:
+        c = Class(
+            project_id=project.id,
+            idx=idx,
+            name=name,
+            color=color,
+            attributes=attributes,
+        )
+        self.session.add(c)
+        try:
+            self.session.flush()
+        except IntegrityError as exc:
+            self.session.rollback()
+            raise ClassConflict("class idx or name already used in this project") from exc
+        return c
+
+    def list_for_project(self, *, project: Project) -> list[Class]:
+        return list(
+            self.session.execute(
+                select(Class).where(Class.project_id == project.id).order_by(Class.idx)
+            ).scalars()
+        )
+
+    def get(self, *, project: Project, class_id: uuid.UUID) -> Class:
+        c = self.session.get(Class, class_id)
+        if c is None or c.project_id != project.id:
+            raise ClassNotFound("class not found")
+        return c
+
+    def update(self, *, project: Project, class_id: uuid.UUID, **fields) -> Class:
+        c = self.get(project=project, class_id=class_id)
+        for k, v in fields.items():
+            if v is not None:
+                setattr(c, k, v)
+        try:
+            self.session.flush()
+        except IntegrityError as exc:
+            self.session.rollback()
+            raise ClassConflict("class idx or name already used in this project") from exc
+        return c
+
+    def delete(self, *, project: Project, class_id: uuid.UUID) -> None:
+        c = self.get(project=project, class_id=class_id)
+        self.session.delete(c)
         self.session.flush()

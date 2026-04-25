@@ -1,8 +1,11 @@
+import re
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from vaa_api.projects.models import TaskKind
+
+_HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
 class ProjectIn(BaseModel):
@@ -53,4 +56,56 @@ class TaskOut(BaseModel):
             name=t.name,
             kind=t.kind,
             created_at=t.created_at,
+        )
+
+
+class ClassIn(BaseModel):
+    idx: int = Field(ge=0, le=10000)
+    name: str = Field(min_length=1, max_length=120)
+    color: str
+    attributes: dict = Field(default_factory=dict)
+
+    @field_validator("color")
+    @classmethod
+    def _color_hex(cls, v: str) -> str:
+        if not _HEX_COLOR.match(v):
+            raise ValueError("color must be #RRGGBB")
+        return v
+
+
+class ClassPatch(BaseModel):
+    idx: int | None = Field(default=None, ge=0, le=10000)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    color: str | None = None
+    attributes: dict | None = None
+
+    @field_validator("color")
+    @classmethod
+    def _color_hex(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not _HEX_COLOR.match(v):
+            raise ValueError("color must be #RRGGBB")
+        return v
+
+
+class ClassOut(BaseModel):
+    id: str
+    project_id: str
+    idx: int
+    name: str
+    color: str
+    attributes: dict
+    created_at: datetime
+
+    @classmethod
+    def from_orm_class(cls, c) -> "ClassOut":
+        return cls(
+            id=str(c.id),
+            project_id=str(c.project_id),
+            idx=c.idx,
+            name=c.name,
+            color=c.color,
+            attributes=c.attributes,
+            created_at=c.created_at,
         )

@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from vaa_api.auth.models import User
 from vaa_api.deps import get_current_user, get_db
 from vaa_api.errors import AppError
-from vaa_api.projects.schemas import ProjectIn, ProjectOut, ProjectPatch, TaskIn, TaskOut
-from vaa_api.projects.service import ProjectService, TaskService
+from vaa_api.projects.schemas import ClassIn, ClassOut, ClassPatch, ProjectIn, ProjectOut, ProjectPatch, TaskIn, TaskOut
+from vaa_api.projects.service import ClassService, ProjectService, TaskService
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -135,6 +135,91 @@ def delete_task(
     try:
         project = ProjectService(db).get(actor=user, project_id=project_id)
         TaskService(db).delete(actor=user, project=project, task_id=task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+
+
+@router.post(
+    "/{project_id}/classes",
+    response_model=ClassOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_class(
+    project_id: uuid.UUID,
+    payload: ClassIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ClassOut:
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+        c = ClassService(db).create(
+            project=project,
+            idx=payload.idx,
+            name=payload.name,
+            color=payload.color,
+            attributes=payload.attributes,
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+    return ClassOut.from_orm_class(c)
+
+
+@router.get("/{project_id}/classes", response_model=list[ClassOut])
+def list_classes(
+    project_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ClassOut]:
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return [
+        ClassOut.from_orm_class(c)
+        for c in ClassService(db).list_for_project(project=project)
+    ]
+
+
+@router.patch(
+    "/{project_id}/classes/{class_id}", response_model=ClassOut
+)
+def patch_class(
+    project_id: uuid.UUID,
+    class_id: uuid.UUID,
+    payload: ClassPatch,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ClassOut:
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+        c = ClassService(db).update(
+            project=project,
+            class_id=class_id,
+            idx=payload.idx,
+            name=payload.name,
+            color=payload.color,
+            attributes=payload.attributes,
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+    return ClassOut.from_orm_class(c)
+
+
+@router.delete(
+    "/{project_id}/classes/{class_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def delete_class(
+    project_id: uuid.UUID,
+    class_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+        ClassService(db).delete(project=project, class_id=class_id)
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
