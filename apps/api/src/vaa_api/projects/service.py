@@ -29,7 +29,9 @@ class ProjectService:
         self.session.flush()
         return p
 
-    def list_visible(self, *, actor: User) -> list[Project]:
+    def list_visible(self, *, actor: User) -> list[Project]:  # noqa: ARG002
+        # v1 simplification: all authenticated users see all projects.
+        # `actor` reserved for the future per-project ACL (Plan 03+).
         return list(
             self.session.execute(
                 select(Project).order_by(Project.created_at.desc())
