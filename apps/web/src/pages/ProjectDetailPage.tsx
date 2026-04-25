@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { projectsApi } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
 import { ClassesEditor } from "./ClassesEditor";
@@ -42,8 +43,14 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                   justifyContent: "space-between",
                 }}
               >
-                <span>{t.name}</span>
-                <span style={{ opacity: 0.6, fontSize: 12 }}>{t.kind}</span>
+                <Link
+                  to="/projects/$projectId/tasks/$taskId"
+                  params={{ projectId, taskId: t.id }}
+                  style={{ textDecoration: "none", color: "inherit", flex: 1, display: "flex", justifyContent: "space-between" }}
+                >
+                  <span>{t.name}</span>
+                  <span style={{ opacity: 0.6, fontSize: 12 }}>{t.kind}</span>
+                </Link>
               </li>
             ))}
             {(tasksQ.data?.length ?? 0) === 0 && !tasksQ.isLoading && (
