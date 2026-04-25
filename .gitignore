@@ -35,9 +35,9 @@ Thumbs.db
 .vscode/
 *.swp
 
-# Local data
-storage/
-data/
-model_cache/
+# Local data (top-level only; project source dirs may be named "storage" or "data")
+/storage/
+/data/
+/model_cache/
 *.sqlite
 *.db
