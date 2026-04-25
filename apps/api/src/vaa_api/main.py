@@ -24,6 +24,19 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router)
 
+    from fastapi import APIRouter, Depends
+
+    from vaa_api.auth.models import UserRole
+    from vaa_api.deps import require_role
+
+    admin_router = APIRouter(prefix="/admin", tags=["admin"])
+
+    @admin_router.get("/ping")
+    def admin_ping(_=Depends(require_role(UserRole.admin))) -> dict[str, str]:
+        return {"pong": "admin"}
+
+    app.include_router(admin_router)
+
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(status_code=exc.http_status, content={"error": exc.code})
