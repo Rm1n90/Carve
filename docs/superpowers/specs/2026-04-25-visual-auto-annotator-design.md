@@ -39,12 +39,19 @@ The product target is a "modern CVAT alternative" focused on:
 
 - Multi-tenant SaaS, billing, payments.
 - 3D / point cloud / DICOM / multispectral.
-- Pose / keypoint annotation as a primary task type (consider for v2).
-- Oriented bounding boxes (OBB) (v2).
+- **Pose / keypoint annotation** — explicitly v2.
+- **Oriented bounding boxes (OBB)** — explicitly v2.
+- Export formats beyond YOLO and COCO — explicitly out of v1 (VOC, KITTI, MOT, NDJSON all v2).
 - Active-learning loops (v2).
-- Real-time multi-user co-editing on the same image (v2; v1 has per-job locking only).
-- LDAP/SAML/OIDC SSO (v1 ships local accounts + JWT; SSO is v2).
+- Real-time multi-user co-editing on the *same image at the same time* (v2; v1 supports multiple users on the same project but with per-job locking).
+- LDAP/SAML/OIDC SSO (v1 ships local email + password accounts + JWT; SSO is v2).
 - Mobile-optimized UI.
+
+## 3a. Confirmed assumptions (from user)
+
+- **Multi-user from day one.** MVP must support multiple annotators concurrently, with one Admin role and Member roles. Auth + role separation is in Phase 1.
+- **Browser baseline: Chrome / Chromium-based browsers** (Chrome, Edge, Brave, Arc). WebGPU is assumed available; in-browser SAM decoder is the default. No fallback work for non-Chromium browsers in MVP.
+- **Export formats v1: YOLO and COCO only.**
 
 ## 4. Personas
 
@@ -306,9 +313,8 @@ User can:
 Formats supported in v1:
 - **YOLO** (txt per image, `data.yaml` with class names) — detection, segmentation, classification.
 - **COCO JSON** — detection (bbox), segmentation (polygons + RLE for masks), classification.
-- **Ultralytics NDJSON** (Ultralytics-compatible) — detection, segmentation, classification, optional.
 
-v2: VOC, KITTI, MOT, Datumaro.
+v2: VOC, KITTI, MOT, Datumaro, Ultralytics NDJSON.
 
 Export job:
 1. User opens Export modal on a task.
@@ -414,13 +420,15 @@ Storage volumes: `pg_data`, `minio_data`, `model_cache` (downloaded weights) —
 
 ### MVP (Phase 1) — ~6–8 weeks of focused work
 
-- Auth, projects, tasks, classes.
+- **Multi-user auth from day one**: email + password, JWT, Admin + Member roles, per-project membership.
+- Projects, tasks, classes.
 - Image upload (single + ZIP).
+- **Annotation import (YOLO + COCO)** so existing labels can be opened for review.
 - Detection (bbox), segmentation (polygon + mask), classification (tag).
-- Manual annotation only; basic class hotkeys; command palette.
-- YOLO auto-annotate (single image + whole task) for detection + classification.
-- YOLO + COCO export with class remap.
-- Per-class analytics (counts, frequencies).
+- Manual annotation; basic class hotkeys; command palette; objects sidebar; analytics widgets.
+- YOLO auto-annotate (single image + whole task) for detection + segmentation + classification.
+- **YOLO + COCO export** with class remap.
+- Per-class analytics (counts, frequencies, task progress).
 - Single Docker Compose deployment.
 
 ### Phase 2 — SAM + video — ~4–6 weeks
@@ -458,12 +466,12 @@ Storage volumes: `pg_data`, `minio_data`, `model_cache` (downloaded weights) —
 | Browser compatibility (WebGPU) | Detect; fall back to server decoder when WebGPU absent. |
 | Long video tracking session pinned to one process — single point of failure | Persist memory bank to Redis snapshots so a worker restart can resume; document cap. |
 
-Open questions for user review:
-1. Should pose/keypoints be in MVP or v2? (Currently v2.)
-2. Is single-user JWT auth acceptable for v1, or do you need basic multi-user from day one?
-3. Any non-negotiable export formats besides YOLO and COCO for v1?
-4. Should we include OBB (rotated boxes) in v1?
-5. Do annotators all use modern Chromium-based browsers (Chrome / Edge / Brave) with WebGPU support? If not, we'll route the SAM decoder to the server (slower but compatible).
+Open questions — **resolved by user 2026-04-25**:
+1. Pose/keypoints — **v2** ✓
+2. OBB — **v2** ✓
+3. Multi-user from day 1 — **yes**, MVP includes multi-user auth + single Admin ✓
+4. Export formats v1 — **YOLO + COCO only** ✓
+5. WebGPU baseline — **yes**, all annotators use Chromium-based browsers; in-browser SAM decoder is the default ✓
 
 ## 22. Repository Layout (planned)
 
