@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     jwt_refresh_ttl_days: int = Field(default=14, alias="JWT_REFRESH_TTL_DAYS")
     password_pepper: str = Field(alias="PASSWORD_PEPPER")
 
+    minio_endpoint: str = Field(alias="MINIO_ENDPOINT", default="http://localhost:9000")
+    minio_root_user: str = Field(alias="MINIO_ROOT_USER")
+    minio_root_password: str = Field(alias="MINIO_ROOT_PASSWORD")
+    minio_bucket: str = Field(alias="MINIO_BUCKET", default="vaa-assets")
+    redis_host: str = Field(alias="REDIS_HOST", default="redis")
+    redis_port: int = Field(alias="REDIS_PORT", default=6379)
+
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
     api_env: str = Field(default="development", alias="API_ENV")
 

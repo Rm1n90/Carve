@@ -19,6 +19,10 @@ def _set_test_env() -> None:
     os.environ.setdefault("POSTGRES_HOST", "localhost")
     os.environ.setdefault("POSTGRES_PORT", "5432")
     os.environ.setdefault("POSTGRES_DB", "vaa_test")
+    os.environ.setdefault("MINIO_ROOT_USER", "vaa")
+    os.environ.setdefault("MINIO_ROOT_PASSWORD", "vaa")
+    os.environ.setdefault("MINIO_ENDPOINT", "http://localhost:9000")
+    os.environ.setdefault("MINIO_BUCKET", "vaa-assets-test")
 
 
 # Set env vars at import time so module-level `app = create_app()` in main.py
@@ -36,6 +40,7 @@ def engine():
     _set_test_env()
     from vaa_api.db import Base
     import vaa_api.auth.models  # noqa: F401
+    import vaa_api.assets.models  # noqa: F401
 
     url = (
         f"postgresql+psycopg://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}"
