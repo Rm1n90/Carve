@@ -50,10 +50,19 @@ def engine():
 
 @pytest.fixture
 def db_session(engine) -> Generator[Session, None, None]:
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+    connection = engine.connect()
+    transaction = connection.begin()
+    SessionLocal = sessionmaker(
+        bind=connection,
+        autoflush=False,
+        expire_on_commit=False,
+        future=True,
+        join_transaction_mode="create_savepoint",
+    )
     s = SessionLocal()
     try:
         yield s
     finally:
-        s.rollback()
         s.close()
+        transaction.rollback()
+        connection.close()

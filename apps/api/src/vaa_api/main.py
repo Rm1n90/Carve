@@ -24,6 +24,9 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router)
 
+    from vaa_api.projects.router import router as projects_router
+    app.include_router(projects_router)
+
     from fastapi import APIRouter, Depends
 
     from vaa_api.auth.models import UserRole
