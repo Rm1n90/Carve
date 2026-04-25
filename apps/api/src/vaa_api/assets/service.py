@@ -33,6 +33,10 @@ class AssetDuplicate(AppError):
     http_status = 409; code = "asset_duplicate"
 
 
+class AssetArchiveInvalid(AppError):
+    http_status = 400; code = "asset_archive_invalid"
+
+
 class AssetService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -87,6 +91,8 @@ class AssetService:
         self.session.flush()
 
     def upload_archive(self, *, task: Task, archive_bytes: bytes) -> list[Asset]:
+        if len(archive_bytes) > _MAX_BYTES:
+            raise AssetTooLarge("archive exceeds 1 GiB")
         out: list[Asset] = []
         mime_for_ext = {
             "png": "image/png",
@@ -94,9 +100,17 @@ class AssetService:
             "jpeg": "image/jpeg",
             "webp": "image/webp",
         }
-        with zipfile.ZipFile(BytesIO(archive_bytes)) as zf:
+        try:
+            zf = zipfile.ZipFile(BytesIO(archive_bytes))
+        except zipfile.BadZipFile as exc:
+            raise AssetArchiveInvalid("file is not a valid zip archive") from exc
+        with zf:
             for member in zf.infolist():
                 if member.is_dir():
+                    continue
+                # Reject obviously oversized members before decompressing into memory
+                # (zip-bomb mitigation). file_size is the central-directory uncompressed size.
+                if member.file_size > _MAX_BYTES:
                     continue
                 ext = member.filename.lower().rsplit(".", 1)[-1] if "." in member.filename else ""
                 mime = mime_for_ext.get(ext)

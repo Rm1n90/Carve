@@ -39,7 +39,10 @@ def probe_video_metadata(asset_id: str, asset_hash: str, ext: str) -> None:
     storage = MinioClient.from_settings()
     url = storage.presigned_get(f"assets/{asset_hash}/original.{ext}", expires_seconds=300)
     probe = ffmpeg.probe(url)
-    v = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    video_streams = [s for s in probe["streams"] if s["codec_type"] == "video"]
+    if not video_streams:
+        return  # nothing to update; leave asset dimensions at None
+    v = video_streams[0]
     width = int(v["width"])
     height = int(v["height"])
     nb_frames = int(v.get("nb_frames", 0))
