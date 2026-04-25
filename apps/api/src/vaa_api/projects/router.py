@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from vaa_api.auth.models import User
 from vaa_api.deps import get_current_user, get_db
 from vaa_api.errors import AppError
-from vaa_api.projects.schemas import ProjectIn, ProjectOut, ProjectPatch
-from vaa_api.projects.service import ProjectService
+from vaa_api.projects.schemas import ProjectIn, ProjectOut, ProjectPatch, TaskIn, TaskOut
+from vaa_api.projects.service import ProjectService, TaskService
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -80,6 +80,61 @@ def delete_project(
 ) -> None:
     try:
         ProjectService(db).delete(actor=user, project_id=project_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+
+
+@router.post(
+    "/{project_id}/tasks",
+    response_model=TaskOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_task(
+    project_id: uuid.UUID,
+    payload: TaskIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TaskOut:
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+        task = TaskService(db).create(
+            actor=user, project=project, name=payload.name, kind=payload.kind
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+    return TaskOut.from_orm_task(task)
+
+
+@router.get("/{project_id}/tasks", response_model=list[TaskOut])
+def list_tasks(
+    project_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TaskOut]:
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return [
+        TaskOut.from_orm_task(t)
+        for t in TaskService(db).list_for_project(project=project)
+    ]
+
+
+@router.delete(
+    "/{project_id}/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def delete_task(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+        TaskService(db).delete(actor=user, project=project, task_id=task_id)
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()

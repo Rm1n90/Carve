@@ -31,3 +31,26 @@ class ProjectOut(BaseModel):
             owner_id=str(p.owner_id),
             created_at=p.created_at,
         )
+
+
+class TaskIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: TaskKind
+
+
+class TaskOut(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    kind: TaskKind
+    created_at: datetime
+
+    @classmethod
+    def from_orm_task(cls, t) -> "TaskOut":
+        return cls(
+            id=str(t.id),
+            project_id=str(t.project_id),
+            name=t.name,
+            kind=t.kind,
+            created_at=t.created_at,
+        )
