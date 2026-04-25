@@ -9,7 +9,8 @@ from vaa_api.auth.models import User
 from vaa_api.deps import get_current_user, get_db
 from vaa_api.errors import AppError
 from vaa_api.projects.models import Task as TaskModel
-from vaa_api.projects.service import ProjectService, TaskService
+from vaa_api.projects.service import ProjectService, TaskService, _can_modify, NotProjectOwner
+from vaa_api.storage.client import MinioClient
 
 router = APIRouter(prefix="/tasks", tags=["assets"])
 asset_router = APIRouter(prefix="/assets", tags=["assets"])
@@ -73,3 +74,40 @@ async def upload_archive(
         raise _http(exc) from exc
     db.commit()
     return [AssetOut.from_orm_asset(a) for a in assets]
+
+
+@asset_router.get("/{asset_id}")
+def get_asset(
+    asset_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from vaa_api.assets.models import Asset
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, a.task_id)
+    svc = AssetService(db)
+    ext = a.original_name.rsplit(".", 1)[-1] if "." in a.original_name else "bin"
+    return {
+        "asset": AssetOut.from_orm_asset(a).model_dump(mode="json"),
+        "url": svc.storage.presigned_get(f"assets/{a.xxh3_128}/original.{ext}"),
+    }
+
+
+@asset_router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_asset(
+    asset_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    from vaa_api.assets.models import Asset
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    task = _require_visible_task(db, user, a.task_id)
+    project = ProjectService(db).get(actor=user, project_id=task.project_id)
+    if not _can_modify(user, project):
+        raise _http(NotProjectOwner("only owner or admin can delete an asset"))
+    AssetService(db).delete(asset=a)
+    db.commit()
