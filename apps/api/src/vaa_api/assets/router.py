@@ -56,3 +56,20 @@ def list_assets(
 ) -> list[AssetOut]:
     task = _require_visible_task(db, user, task_id)
     return [AssetOut.from_orm_asset(a) for a in AssetService(db).list_for_task(task=task)]
+
+
+@router.post("/{task_id}/assets:zip", response_model=list[AssetOut], status_code=status.HTTP_201_CREATED)
+async def upload_archive(
+    task_id: uuid.UUID,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[AssetOut]:
+    body = await file.read()
+    task = _require_visible_task(db, user, task_id)
+    try:
+        assets = AssetService(db).upload_archive(task=task, archive_bytes=body)
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+    return [AssetOut.from_orm_asset(a) for a in assets]

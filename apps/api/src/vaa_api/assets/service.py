@@ -1,3 +1,4 @@
+import zipfile
 from io import BytesIO
 
 from PIL import Image
@@ -84,6 +85,29 @@ class AssetService:
             pass
         self.session.delete(asset)
         self.session.flush()
+
+    def upload_archive(self, *, task: Task, archive_bytes: bytes) -> list[Asset]:
+        out: list[Asset] = []
+        mime_for_ext = {
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "webp": "image/webp",
+        }
+        with zipfile.ZipFile(BytesIO(archive_bytes)) as zf:
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                ext = member.filename.lower().rsplit(".", 1)[-1] if "." in member.filename else ""
+                mime = mime_for_ext.get(ext)
+                if mime is None:
+                    continue
+                data = zf.read(member)
+                try:
+                    out.append(self.upload(task=task, original_name=member.filename, mime=mime, body=data))
+                except AssetDuplicate:
+                    continue  # silently skip duplicates inside an archive
+        return out
 
     @staticmethod
     def _kind_for(mime: str, task_kind: TaskKind) -> AssetKind:
