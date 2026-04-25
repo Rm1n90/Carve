@@ -1,0 +1,29 @@
+{
+  email admin@localhost
+  auto_https off
+}
+
+:80, :443 {
+  encode zstd gzip
+
+  @api path /api/*
+  handle @api {
+    uri strip_prefix /api
+    reverse_proxy api:8000
+  }
+
+  @model path /model/*
+  handle @model {
+    uri strip_prefix /model
+    reverse_proxy model:8100
+  }
+
+  handle {
+    reverse_proxy web:80
+  }
+
+  log {
+    output stdout
+    format console
+  }
+}
