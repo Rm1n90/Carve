@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
+from vaa_api.assets.models import AssetKind
 from vaa_api.assets.schemas import AssetOut
 from vaa_api.assets.service import AssetService
 from vaa_api.auth.models import User
@@ -14,6 +15,22 @@ from vaa_api.storage.client import MinioClient
 
 router = APIRouter(prefix="/tasks", tags=["assets"])
 asset_router = APIRouter(prefix="/assets", tags=["assets"])
+
+
+def _enqueue_post_upload(asset) -> None:
+    """Best-effort enqueue of post-upload work; swallow Redis errors so HTTP returns succeed even if Redis is down."""
+    try:
+        from vaa_api.jobs.queue import get_queue
+        from vaa_api.jobs.thumbs import generate_image_thumbnail, probe_video_metadata
+        ext = asset.original_name.rsplit(".", 1)[-1] if "." in asset.original_name else "bin"
+        q = get_queue()
+        if asset.kind == AssetKind.image:
+            q.enqueue(generate_image_thumbnail, asset.xxh3_128, ext)
+        else:
+            q.enqueue(probe_video_metadata, str(asset.id), asset.xxh3_128, ext)
+    except Exception:
+        # Redis may be unreachable in test/dev; treat job-enqueue failure as non-fatal.
+        pass
 
 
 def _http(err: AppError) -> HTTPException:
@@ -46,6 +63,7 @@ async def upload_asset(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
+    _enqueue_post_upload(asset)
     return AssetOut.from_orm_asset(asset)
 
 
@@ -73,6 +91,8 @@ async def upload_archive(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
+    for a in assets:
+        _enqueue_post_upload(a)
     return [AssetOut.from_orm_asset(a) for a in assets]
 
 
