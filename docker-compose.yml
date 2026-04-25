@@ -42,6 +42,21 @@ services:
       timeout: 3s
       retries: 5
 
+  minio-init:
+    image: minio/mc:RELEASE.2025-02-08T19-25-46Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/init.sh"]
+    volumes:
+      - ./infra/minio/init.sh:/init.sh:ro
+    environment:
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    restart: "no"
+
   api:
     build: ./apps/api
     restart: unless-stopped
