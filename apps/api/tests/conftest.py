@@ -36,6 +36,7 @@ def engine():
     _set_test_env()
     from vaa_api.db import Base
     import vaa_api.auth.models  # noqa: F401
+    import vaa_api.assets.models  # noqa: F401
 
     url = (
         f"postgresql+psycopg://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}"

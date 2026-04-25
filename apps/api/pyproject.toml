@@ -19,6 +19,9 @@ dependencies = [
   "boto3==1.36.5",
   "httpx==0.28.1",
   "email-validator==2.2.0",
+  "ffmpeg-python==0.2.0",
+  "Pillow==11.1.0",
+  "xxhash==3.5.0",
 ]
 
 [project.optional-dependencies]
