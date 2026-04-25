@@ -20,8 +20,7 @@ export function ProjectCard({
       }}
     >
       <h3 style={{ margin: 0 }}>
-        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <Link to={"/projects/$projectId" as any} params={{ projectId: project.id } as any}>
+        <Link to="/projects/$projectId" params={{ projectId: project.id }}>
           {project.name}
         </Link>
       </h3>

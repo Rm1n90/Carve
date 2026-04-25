@@ -7,6 +7,7 @@ import { indexRoute } from "./routes/index";
 import { loginRoute } from "./routes/login";
 import { registerRoute } from "./routes/register";
 import { projectsRoute } from "./routes/projects";
+import { projectDetailRoute } from "./routes/projects.$projectId";
 import "./styles/global.css";
 
 const routeTree = rootRoute.addChildren([
@@ -14,6 +15,7 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   registerRoute,
   projectsRoute,
+  projectDetailRoute,
 ]);
 const router = createRouter({ routeTree });
 
