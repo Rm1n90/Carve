@@ -21,8 +21,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           VisualAutoAnnotator
         </Link>
         <nav style={{ display: "flex", gap: 16, alignItems: "center" }}>
-          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-          <Link to={"/projects" as any}>Projects</Link>
+          <Link to="/projects">Projects</Link>
           {user && (
             <>
               <span style={{ opacity: 0.7, fontSize: 13 }}>
