@@ -64,6 +64,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
 
   model:
     build: ./apps/model
@@ -71,10 +77,22 @@ services:
     environment:
       MODEL_HOST: 0.0.0.0
       MODEL_PORT: 8100
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
 
   web:
     build: ./apps/web
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   caddy:
     image: caddy:2-alpine
@@ -87,9 +105,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - api
-      - model
-      - web
+      api:
+        condition: service_healthy
+      model:
+        condition: service_healthy
+      web:
+        condition: service_healthy
 
 volumes:
   pg_data:

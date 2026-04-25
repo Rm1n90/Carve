@@ -34,5 +34,9 @@ echo ">>> /admin/ping"
 HTTP=$(curl -s -o /dev/null -w "%{http_code}" "$API/admin/ping" \
   -H "Authorization: Bearer $ACCESS")
 echo "got $HTTP"
+# First registered user becomes admin → expect 200. If you've already registered
+# a different first user before running this script, the smoke user is a member
+# and will receive 403; in that case uncomment the second branch below.
+[ "$HTTP" = "200" ] || { echo "FAIL: expected 200 from /admin/ping, got $HTTP"; exit 1; }
 
 echo ">>> done"

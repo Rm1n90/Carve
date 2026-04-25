@@ -10,16 +10,6 @@ from sqlalchemy.orm import Session, sessionmaker
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-# Set env vars at import time so module-level create_app() calls during
-# collection (e.g. `app = create_app()` in main.py) can load Settings.
-os.environ.setdefault("JWT_SECRET", "j" * 64)
-os.environ.setdefault("PASSWORD_PEPPER", "p" * 32)
-os.environ.setdefault("POSTGRES_USER", "vaa")
-os.environ.setdefault("POSTGRES_PASSWORD", "vaa")
-os.environ.setdefault("POSTGRES_HOST", "localhost")
-os.environ.setdefault("POSTGRES_PORT", "5432")
-os.environ.setdefault("POSTGRES_DB", "vaa_test")
-
 
 def _set_test_env() -> None:
     os.environ.setdefault("JWT_SECRET", "j" * 64)
@@ -29,6 +19,11 @@ def _set_test_env() -> None:
     os.environ.setdefault("POSTGRES_HOST", "localhost")
     os.environ.setdefault("POSTGRES_PORT", "5432")
     os.environ.setdefault("POSTGRES_DB", "vaa_test")
+
+
+# Set env vars at import time so module-level `app = create_app()` in main.py
+# can resolve Settings during pytest's collection phase (before fixtures run).
+_set_test_env()
 
 
 @pytest.fixture(scope="session", autouse=True)
