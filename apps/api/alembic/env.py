@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from vaa_api.config import get_settings  # noqa: E402
 from vaa_api.db import Base  # noqa: E402
 import vaa_api.auth.models  # noqa: F401, E402  (populate metadata)
+import vaa_api.projects.models  # noqa: F401, E402  (populate metadata)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
