@@ -65,6 +65,34 @@ The operator-side container start should register the SAM 3 predictor with
 cache. The first YOLO auto-annotate request after switching will reload
 weights from disk.
 
+## In-browser SAM decoder (WebGPU) — admin setup
+
+The browser can run the SAM 2 decoder locally via WebGPU + ONNX Runtime
+Web, eliminating the round-trip per click.
+
+1. Download the SAM 2 decoder ONNX model from upstream (Meta SAM 2 repo or
+   a maintained mirror) and place it at:
+
+   ```
+   apps/web/public/models/sam2_decoder.onnx
+   ```
+
+2. Rebuild the web container:
+
+   ```bash
+   docker compose build web && docker compose up -d web
+   ```
+
+3. Open the editor in a Chrome-based browser with WebGPU support. The SAM
+   tool will automatically detect the model file and use local decoding.
+
+If the model file is absent or the browser lacks WebGPU, the editor falls
+back to the existing server-side `/sam/decode` endpoint with no
+functionality loss.
+
+The api caches encoded image embeddings in Redis with a 30-minute TTL, so
+repeated SAM activations on the same image are near-instant.
+
 ## Rate limits
 
 The API enforces the following default rate limits:

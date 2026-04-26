@@ -97,3 +97,39 @@ def reset_text_predictor() -> None:
     """Clear the text predictor factory. Used by tests."""
     global _TEXT_PREDICTOR_FACTORY
     _TEXT_PREDICTOR_FACTORY = None
+
+
+def extract_embedding(predictor: Any) -> bytes | None:
+    """Return the predictor's image embedding as float16 bytes, or None.
+
+    Real SAM 2 predictors store the encoded image features on
+    ``_features["image_embed"]`` (a torch.Tensor) after ``set_image()`` runs.
+    This helper extracts that tensor, casts it to float16 on CPU, and
+    returns its raw bytes. The browser-side ONNX decoder consumes those
+    bytes directly via ``Float16Array``.
+
+    Returns ``None`` when the predictor doesn't expose ``_features`` (e.g.
+    the test fake) or when the tensor cannot be converted (e.g. torch
+    unavailable). Callers treat ``None`` as "fall back to server-side
+    decode".
+    """
+    feats = getattr(predictor, "_features", None)
+    if not isinstance(feats, dict):
+        return None
+    embed = feats.get("image_embed")
+    if embed is None:
+        return None
+    try:
+        # torch is only required when a real predictor is loaded; the
+        # conditional import keeps test predictors torch-free.
+        import torch  # type: ignore[import-not-found]
+
+        return embed.detach().to(dtype=torch.float16, device="cpu").numpy().tobytes()
+    except Exception:
+        # Best-effort fallback for predictors whose tensor mimics the API
+        # but doesn't need torch (used by tests).
+        try:
+            arr = embed.detach().to(dtype="float16", device="cpu").numpy()
+            return arr.tobytes()
+        except Exception:
+            return None

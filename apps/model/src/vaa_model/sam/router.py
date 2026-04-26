@@ -28,7 +28,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from vaa_model.sam.codec import encode_mask_rle
-from vaa_model.sam.predictor import get_predictor, get_text_predictor
+from vaa_model.sam.predictor import extract_embedding, get_predictor, get_text_predictor
 
 router = APIRouter(prefix="/sam", tags=["sam"])
 
@@ -52,6 +52,10 @@ class EncodeIn(BaseModel):
 class EncodeOut(BaseModel):
     image_hash: str
     shape: list[int]
+    # Base64-encoded float16 image embedding when the active predictor
+    # exposes one. ``None`` for the test fake or predictors without
+    # ``_features``; callers fall back to server-side decode in that case.
+    embedding_b64: str | None = None
 
 
 class DecodeIn(BaseModel):
@@ -80,7 +84,15 @@ def encode(payload: EncodeIn) -> EncodeOut:
     p.set_image(img)
     _LOADED_HASH = h
     _LOADED_SHAPE = [int(img.shape[0]), int(img.shape[1])]
-    return EncodeOut(image_hash=h, shape=_LOADED_SHAPE)
+    embedding_bytes = extract_embedding(p)
+    embedding_b64 = (
+        base64.b64encode(embedding_bytes).decode("ascii")
+        if embedding_bytes is not None
+        else None
+    )
+    return EncodeOut(
+        image_hash=h, shape=_LOADED_SHAPE, embedding_b64=embedding_b64
+    )
 
 
 @router.post("/decode", response_model=DecodeOut)
