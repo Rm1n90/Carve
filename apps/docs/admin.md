@@ -74,62 +74,71 @@ unaffected.
    docker compose build model && docker compose up -d model
    ```
 
-### SAM 3 prompt support — what works today
+### SAM 3 prompt support — corrected (v1.3.0)
 
-The SAM 3 integration uses HuggingFace `transformers` v5.6.x, which exposes
-the following prompt modes:
+SAM 3 ships **four** distinct transformers classes (per the
+[`facebook/sam3`](https://huggingface.co/facebook/sam3) model card,
+transformers v5.6.x). v1.3.0 wires each prompt route to the correct class:
 
-| Surface | Prompt | Endpoint | Status |
+- `Sam3Model` (image, **concept**) — text + boxes (no points)
+- `Sam3VideoModel` (video, **concept**) — text only
+- `Sam3TrackerModel` (image, **drop-in SAM 2 replacement**) — points + boxes + masks
+- `Sam3TrackerVideoModel` (video, **drop-in SAM 2 replacement**) — points + boxes at frames
+
+| Surface | Prompt | Endpoint | Backing class |
 |---|---|---|---|
-| Image | Click points (positive=1, negative=0) | `/sam/decode` | Works (same API as SAM 2) |
-| Image | Text concept | `/sam/text-prompt` | Works |
-| Image | Boxes (positive=1, negative=0) | `/sam/box-prompt` | Works (v1.2.2) |
-| Image | Combined text + negative box (refine concept) | `/sam/box-prompt` with `text` field | Works (v1.2.2) |
-| Video | Text concept tracking | `/sam-track/start` with `text` field | Works |
-| Video | Mask refinement | (not exposed in editor UI) | Underlying `Sam3VideoInferenceSession.add_mask_inputs` |
-| Video | Click points or boxes | — | **Not exposed** in `transformers` v5.6.2 public API |
+| Image | Click points (positive=1, negative=0) | `/sam/decode` | `Sam3TrackerModel` |
+| Image | Text concept | `/sam/text-prompt` | `Sam3Model` |
+| Image | Boxes (positive=1, negative=0, optionally + text) | `/sam/box-prompt` | `Sam3Model` |
+| Video | Click points (positive=1, negative=0) at frame 0 | `/sam-track/start` with `points`+`labels` | `Sam3TrackerVideoModel` |
+| Video | Text concept tracking | `/sam-track/start` with `text` | `Sam3VideoModel` |
 
-**About SAM 3 video point/box prompts:** The SAM 3 architecture includes a
-SAM 2-style tracker module that supports point/box prompts at the model
-level. However, `transformers v5.6.2` does not expose any public method on
-`Sam3VideoProcessor` or `Sam3VideoInferenceSession` to add point or box
-prompts at a frame — `point_inputs_per_obj` is initialized in the session
-but never populated or read in this version. We will wire point-based
-SAM 3 video tracking when HuggingFace exposes the API (likely in a
-future minor release). For point-based video tracking today, set
-`SAM_MODEL=sam2.1-large` (or any SAM 2.1 size) — SAM 2 supports full
-point/box/mask prompting on video.
+**Earlier docs (v1.2.2) incorrectly stated SAM 3 video point prompts were
+not exposed by HF transformers — that was wrong.**
+`Sam3TrackerVideoProcessor.add_inputs_to_inference_session(...)` provides
+full point/box prompt support. v1.3.0 wires this correctly via the
+`Sam3VideoDispatcherAdapter`, which holds both the Tracker pair and the
+Concept pair and dispatches based on prompt type at the first
+`add_new_points` call.
+
+License + weights: AGPL-3.0 / Enterprise. Same model weights
+(`facebook/sam3`) for all four classes — no extra downloads.
 
 #### Implementation notes per endpoint
 
-- **Image clicks** (`/sam/encode` + `/sam/decode`): same wire API as
-  SAM 2. Click points are routed into `Sam3Model` with positive=1 /
-  negative=0 labels. The container loads `transformers.Sam3Model` and
-  `Sam3Processor` lazily on first request via the SAM 3 image adapter
-  (`vaa_model.sam.sam3_adapter.build_sam3_image_predictor`).
-- **Text prompts** (`/sam/text-prompt`): functional. The text predictor
-  is registered automatically by the SAM 3 image factory the first time
-  `/sam/encode` runs, so no manual `set_text_predictor(...)` call is
-  required. Returns one segmentation per matching object instance.
+- **Image clicks** (`/sam/encode` + `/sam/decode`): wire-compatible with
+  SAM 2. Click points are routed into `Sam3TrackerModel` (the drop-in
+  SAM 2 replacement) with positive=1 / negative=0 labels. The model
+  returns K=3 multimask candidates per object; the router picks the
+  highest-scoring mask via `np.argmax(scores)`. The container loads
+  `transformers.Sam3TrackerModel` + `Sam3TrackerProcessor` lazily on
+  first request via `vaa_model.sam.sam3_adapter.build_sam3_image_predictor`.
+- **Text prompts** (`/sam/text-prompt`): functional. Uses `Sam3Model` +
+  `Sam3Processor` (concept). The text predictor is registered
+  automatically by the SAM 3 image factory the first time `/sam/encode`
+  runs. Returns one segmentation per matching object instance.
 - **Box prompts** (`/sam/box-prompt`, v1.2.2): one-shot endpoint.
-  Accepts `{image_b64, boxes, box_labels, text?}`. Boxes are xyxy
-  floats; `box_labels` are 1 (positive) or 0 (negative). Combining
-  `text` with a negative box refines a concept by excluding a region
-  (`Sam3Processor` supports text + `input_boxes_labels=[[0]]` natively).
-  The box predictor is registered alongside the text predictor on first
-  `/sam/encode`. Returns 409 `sam3_box_prompt_requires_sam3` when SAM 3
-  is not the active model.
-- **Video tracking** (`/sam-track/start`): SAM 3 requires a `text`
-  field. Existing `points` / `labels` fields are ignored (the endpoint
-  returns `422 sam3_track_requires_text` if `text` is missing or empty).
-  Example:
+  Uses `Sam3Model` + `Sam3Processor`. Accepts
+  `{image_b64, boxes, box_labels, text?}`. Boxes are xyxy floats;
+  `box_labels` are 1 (positive) or 0 (negative). Combining `text` with
+  a negative box refines a concept by excluding a region. Returns 409
+  `sam3_box_prompt_requires_sam3` when SAM 3 is not the active model.
+- **Video tracking** (`/sam-track/start`): accepts EITHER `points` +
+  `labels` (numeric clicks → `Sam3TrackerVideoModel.add_inputs_to_inference_session`)
+  OR `text` (concept → `Sam3VideoModel.add_text_prompt`). When neither
+  is supplied, the endpoint returns `422 sam3_track_requires_points_or_text`.
+  Example bodies:
   ```json
   POST /sam-track/start
   {"video_url": "https://.../v.mp4", "text": "person"}
   ```
-  → tracks every person in the video. The `/{session}/step` endpoint is
-  unchanged; it returns the highest-scoring object's mask per frame
-  (multi-object output is a future enhancement).
+  ```json
+  POST /sam-track/start
+  {"video_url": "https://.../v.mp4", "points": [[210, 350]], "labels": [1]}
+  ```
+  The `/{session}/step` endpoint is unchanged; it returns the
+  highest-scoring object's mask per frame (multi-object output is a
+  v1.4 enhancement).
 
 ### Notes
 

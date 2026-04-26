@@ -131,21 +131,22 @@ def test_start_rejects_file_scheme_video_url() -> None:
     assert "video_url_scheme_not_allowed" in r.text
 
 
-# --- SAM 3 video tracking (text-prompt-based) -------------------------------
+# --- SAM 3 video tracking (text OR point/box prompts) -----------------------
 
 
-class _CapturingTextTracker:
-    """SAM 3 video tracker stub — accepts a single string in the points slot
-    and records it so the test can assert the router routed text correctly."""
+class _CapturingDispatcherTracker:
+    """SAM 3 video tracker stub — captures whatever points/labels reach it
+    so the test can assert that the router routed the correct payload type
+    (text or numeric clicks) into the underlying dispatcher."""
 
     def __init__(self) -> None:
-        self.texts: list = []
+        self.calls: list = []
 
     def init_state(self, video_path):
         return {"video": video_path}
 
     def add_new_points(self, state, frame_idx, points, labels):
-        self.texts.append(points)
+        self.calls.append({"frame_idx": frame_idx, "points": points, "labels": labels})
         return None, None, None
 
     def propagate_in_video(self, state):
@@ -153,27 +154,15 @@ class _CapturingTextTracker:
             yield  # empty generator
 
 
-def test_start_with_sam3_requires_text_field(monkeypatch) -> None:
-    """When SAM_MODEL=sam3, /sam-track/start must reject calls that omit
-    the text prompt — SAM 3 video tracking is concept-based, not click-based."""
-    monkeypatch.setenv("SAM_MODEL", "sam3")
-    tracker_mod.set_test_tracker_factory(lambda: _CapturingTextTracker())
-    r = _client().post(
-        "/sam-track/start",
-        json={"video_url": "https://fake/v.mp4", "frame_idx": 0},
-    )
-    assert r.status_code == 422
-    assert "sam3_track_requires_text" in r.text
-
-
 def test_start_with_sam3_accepts_text_only(monkeypatch) -> None:
-    """When SAM_MODEL=sam3, /sam-track/start must accept text without
-    points/labels and forward the text into the tracker."""
+    """When SAM_MODEL=sam3, /sam-track/start accepts text without points and
+    forwards it into the tracker as ``points=[text]`` (the dispatcher routes
+    that to Sam3VideoModel.add_text_prompt)."""
     monkeypatch.setenv("SAM_MODEL", "sam3")
     captured = {"tracker": None}
 
     def _factory():
-        t = _CapturingTextTracker()
+        t = _CapturingDispatcherTracker()
         captured["tracker"] = t
         return t
 
@@ -184,4 +173,86 @@ def test_start_with_sam3_accepts_text_only(monkeypatch) -> None:
     )
     assert r.status_code == 200, r.text
     assert r.json()["session_id"]
-    assert captured["tracker"].texts == [["person"]]
+    assert captured["tracker"].calls == [
+        {"frame_idx": 0, "points": ["person"], "labels": []},
+    ]
+
+
+def test_start_with_sam3_accepts_points_only(monkeypatch) -> None:
+    """When SAM_MODEL=sam3, /sam-track/start accepts numeric points without
+    a text field — the dispatcher routes those to Sam3TrackerVideoModel
+    via add_inputs_to_inference_session."""
+    monkeypatch.setenv("SAM_MODEL", "sam3")
+    captured = {"tracker": None}
+
+    def _factory():
+        t = _CapturingDispatcherTracker()
+        captured["tracker"] = t
+        return t
+
+    tracker_mod.set_test_tracker_factory(_factory)
+    r = _client().post(
+        "/sam-track/start",
+        json={
+            "video_url": "https://fake/v.mp4",
+            "frame_idx": 0,
+            "points": [[210, 350]],
+            "labels": [1],
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["session_id"]
+    assert captured["tracker"].calls == [
+        {"frame_idx": 0, "points": [[210, 350]], "labels": [1]},
+    ]
+
+
+def test_start_with_sam3_rejects_no_prompt(monkeypatch) -> None:
+    """When SAM_MODEL=sam3, /sam-track/start must 422 if neither text nor
+    points are supplied — the dispatcher needs at least one prompt type."""
+    monkeypatch.setenv("SAM_MODEL", "sam3")
+    tracker_mod.set_test_tracker_factory(lambda: _CapturingDispatcherTracker())
+    r = _client().post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4", "frame_idx": 0},
+    )
+    assert r.status_code == 422
+    assert "sam3_track_requires_points_or_text" in r.text
+
+
+def test_start_with_sam3_prefers_text_when_both_present(monkeypatch) -> None:
+    """When BOTH text and points are sent, the router picks text (concept
+    tracking is more specific to SAM 3's design intent for text prompts).
+    Empty points fall through to text."""
+    monkeypatch.setenv("SAM_MODEL", "sam3")
+    captured = {"tracker": None}
+
+    def _factory():
+        t = _CapturingDispatcherTracker()
+        captured["tracker"] = t
+        return t
+
+    tracker_mod.set_test_tracker_factory(_factory)
+    r = _client().post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4", "frame_idx": 0, "text": "dog"},
+    )
+    assert r.status_code == 200, r.text
+    assert captured["tracker"].calls[0]["points"] == ["dog"]
+
+
+def test_start_with_sam3_points_label_mismatch_returns_422(monkeypatch) -> None:
+    """When SAM_MODEL=sam3 and points are passed without text, length
+    mismatch between points and labels still returns 422."""
+    monkeypatch.setenv("SAM_MODEL", "sam3")
+    tracker_mod.set_test_tracker_factory(lambda: _CapturingDispatcherTracker())
+    r = _client().post(
+        "/sam-track/start",
+        json={
+            "video_url": "https://fake/v.mp4",
+            "frame_idx": 0,
+            "points": [[1, 1], [2, 2]],
+            "labels": [1],
+        },
+    )
+    assert r.status_code == 422
