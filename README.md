@@ -395,7 +395,7 @@ pip install -e ".[dev,gpu]"   # gpu extras: torch, ultralytics, opencv, ffmpeg
 uvicorn vaa_model.main:app --reload --port 8100
 ```
 
-The `gpu` extras bring in `torch==2.7.1`, `torchvision==0.22.1`, `ultralytics==8.3.55`, `opencv-python-headless`, `pycocotools`, and `ffmpeg-python`. SAM weights download from Hugging Face on first inference call.
+The `gpu` extras bring in `torch==2.7.1`, `torchvision==0.22.1`, `ultralytics==8.4.41`, `opencv-python-headless`, `pycocotools`, and `ffmpeg-python`. SAM weights download from Hugging Face on first inference call. To use a YOLO release newer than the pinned Ultralytics version supports (e.g., a future YOLO26), override the pin in `apps/model/pyproject.toml` and rebuild the model service — the loader is version-agnostic.
 
 ### Web
 
