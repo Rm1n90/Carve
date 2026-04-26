@@ -8,9 +8,16 @@ POST /sam/encode  — accepts {image_b64} → returns {image_hash, shape}.
 POST /sam/decode  — accepts {image_hash, points, labels} → returns
                     {counts, size, score}. Returns 409 if the embedding for
                     image_hash isn't currently loaded (caller must re-encode).
+
+POST /sam/text-prompt — SAM 3 only. Accepts {image_b64, text} → returns
+                    [{counts, size, score, bbox}]. Returns 409
+                    ``sam3_not_enabled`` when ``SAM_VARIANT != "sam3"``;
+                    503 ``sam3_predictor_not_loaded`` when SAM 3 is on
+                    but no predictor factory has been registered.
 """
 
 import base64
+import os
 from io import BytesIO
 from typing import Any
 
@@ -21,12 +28,21 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from vaa_model.sam.codec import encode_mask_rle
-from vaa_model.sam.predictor import get_predictor
+from vaa_model.sam.predictor import get_predictor, get_text_predictor
 
 router = APIRouter(prefix="/sam", tags=["sam"])
 
 _LOADED_HASH: str | None = None  # the most recently encoded image's xxh3
 _LOADED_SHAPE: list[int] = []     # [h, w]
+
+
+def get_sam_variant() -> str:
+    """Read the SAM_VARIANT env var on every call.
+
+    Tests mutate the env via ``monkeypatch``; reading at request time keeps
+    the toggle hot-swappable without re-importing the module.
+    """
+    return os.getenv("SAM_VARIANT", "sam2")
 
 
 class EncodeIn(BaseModel):
@@ -102,3 +118,37 @@ def _reset_for_test() -> None:
     global _LOADED_HASH, _LOADED_SHAPE
     _LOADED_HASH = None
     _LOADED_SHAPE = []
+
+
+# --- SAM 3 text-prompt endpoint ---------------------------------------------
+#
+# The endpoint is a thin shell: it gates on ``SAM_VARIANT`` and delegates the
+# real inference to a predictor factory the operator registers at container
+# start. The actual SAM 3 model loading (gated HF repo, license, HF token)
+# happens outside this module — see ``apps/docs/admin.md``.
+
+
+class TextPromptIn(BaseModel):
+    image_b64: str
+    text: str = Field(..., min_length=1, max_length=200)
+
+
+class TextPromptOut(BaseModel):
+    counts: str
+    size: list[int]
+    score: float
+    bbox: list[float]  # xyxy
+
+
+@router.post("/text-prompt", response_model=list[TextPromptOut])
+def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
+    if get_sam_variant() != "sam3":
+        raise HTTPException(status_code=409, detail="sam3_not_enabled")
+    try:
+        factory = get_text_predictor()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="sam3_predictor_not_loaded",
+        ) from exc
+    return factory(image_b64=payload.image_b64, text=payload.text)

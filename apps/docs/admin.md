@@ -22,22 +22,48 @@ Recommended cron (daily at 03:00):
 
 Follow the "Backups & restore" section in the project `README.md` for the full restore procedure.
 
-## SAM 3 toggle {#sam-3-toggle}
+## SAM 3 (text prompts) — admin setup {#sam-3-toggle}
 
-SAM 3 adds text-prompt support to the annotation canvas. To enable it:
+SAM 3 adds text-prompt segmentation. The model is gated on Hugging Face
+(`facebook/sam3`) and is **not** installed by default — the operator must
+accept the license and provide an HF token before enabling it.
 
-1. Accept the [facebook/sam3](https://huggingface.co/facebook/sam3) license on Hugging Face.
-2. Generate a HuggingFace access token with read permission.
-3. Set in `.env`:
+When SAM 3 is **disabled** (`SAM_VARIANT=sam2`, the default), the
+`POST /sam/text-prompt` endpoint returns `409 sam3_not_enabled`. The rest of
+the SAM 2 surface (`/sam/encode`, `/sam/decode`, sam-track) is unaffected.
 
-```env
-SAM_VARIANT=sam3
-HF_TOKEN=hf_...
-```
+### Enable
 
-4. Restart the model service: `docker compose restart model`.
+1. Accept the [facebook/sam3](https://huggingface.co/facebook/sam3) license
+   on Hugging Face.
+2. Generate a HuggingFace access token with **read** scope.
+3. In your `.env`, set:
 
-**Note:** Loading SAM 3 evicts any cached YOLO weights from the model LRU cache. The first YOLO auto-annotate request after switching will reload weights from disk.
+   ```env
+   SAM_VARIANT=sam3
+   HF_TOKEN=hf_xxx
+   ```
+
+4. Rebuild the model service with the `[gpu]` extras (which carry the SAM 3
+   deps):
+
+   ```bash
+   docker compose build model
+   ```
+
+5. Restart it:
+
+   ```bash
+   docker compose up -d model
+   ```
+
+The operator-side container start should register the SAM 3 predictor with
+`vaa_model.sam.predictor.set_text_predictor(...)`. Until that call runs,
+`/sam/text-prompt` returns `503 sam3_predictor_not_loaded`.
+
+**Note:** Loading SAM 3 evicts any cached YOLO weights from the model LRU
+cache. The first YOLO auto-annotate request after switching will reload
+weights from disk.
 
 ## Rate limits
 
