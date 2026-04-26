@@ -28,9 +28,15 @@ SAM 3 adds text-prompt segmentation. The model is gated on Hugging Face
 (`facebook/sam3`) and is **not** installed by default — the operator must
 accept the license and provide an HF token before enabling it.
 
-When SAM 3 is **disabled** (`SAM_VARIANT=sam2`, the default), the
-`POST /sam/text-prompt` endpoint returns `409 sam3_not_enabled`. The rest of
-the SAM 2 surface (`/sam/encode`, `/sam/decode`, sam-track) is unaffected.
+- **SAM model selection (v1.1):** set `SAM_MODEL` to one of `sam2.1-tiny`,
+  `sam2.1-small`, `sam2.1-base-plus`, `sam2.1-large` (default), or `sam3`.
+  The legacy `SAM_VARIANT` env (`sam2` / `sam3`, from Plan 08) is still
+  honored for backward compatibility when `SAM_MODEL` is unset.
+
+When SAM 3 is **disabled** (any non-`sam3` value, default `sam2.1-large`),
+the `POST /sam/text-prompt` endpoint returns `409 sam3_not_enabled`. The
+rest of the SAM 2 surface (`/sam/encode`, `/sam/decode`, sam-track) is
+unaffected.
 
 ### Enable
 
@@ -40,7 +46,7 @@ the SAM 2 surface (`/sam/encode`, `/sam/decode`, sam-track) is unaffected.
 3. In your `.env`, set:
 
    ```env
-   SAM_VARIANT=sam3
+   SAM_MODEL=sam3
    HF_TOKEN=hf_xxx
    ```
 

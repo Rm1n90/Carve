@@ -6,12 +6,66 @@ deferred until then. Tests call ``set_test_predictor()`` to inject a stub
 without ever importing SAM 2 or Torch.
 
 The SAM 3 text-prompt predictor uses a separate, optional factory that the
-operator wires at container start when ``SAM_VARIANT=sam3``. The actual
-SAM 3 model is gated on Hugging Face and is not loaded here — see
-``apps/docs/admin.md`` for the operator setup.
+operator wires at container start when ``SAM_MODEL=sam3`` (or the legacy
+``SAM_VARIANT=sam3`` from Plan 08). The actual SAM 3 model is gated on
+Hugging Face and is not loaded here — see ``apps/docs/admin.md`` for the
+operator setup.
 """
 
+import logging
+import os
 from typing import Any, Callable, Protocol
+
+log = logging.getLogger(__name__)
+
+
+# Allowed values for SAM_MODEL. Keep this in lockstep with the README and
+# the .env.example. Order matches the size progression for readability.
+ALLOWED_SAM_MODELS = (
+    "sam2.1-tiny",
+    "sam2.1-small",
+    "sam2.1-base-plus",
+    "sam2.1-large",
+    "sam3",
+)
+DEFAULT_SAM_MODEL = "sam2.1-large"
+
+# Hugging Face repo ids for each variant. The four sam2.1 entries follow
+# the canonical naming on HF; sam3 is a separate (gated) repo whose
+# weights are loaded by the operator-registered SAM 3 text predictor.
+_HF_REPO_BY_MODEL = {
+    "sam2.1-tiny":      "facebook/sam2.1-hiera-tiny",
+    "sam2.1-small":     "facebook/sam2.1-hiera-small",
+    "sam2.1-base-plus": "facebook/sam2.1-hiera-base-plus",
+    "sam2.1-large":     "facebook/sam2.1-hiera-large",
+    "sam3":             "facebook/sam3",
+}
+
+
+def get_sam_model() -> str:
+    """Return the configured SAM model id.
+
+    Reads ``SAM_MODEL`` first; falls back to the legacy ``SAM_VARIANT`` env
+    (Plan 08) so existing operator setups don't break. Defaults to
+    ``DEFAULT_SAM_MODEL``. Unknown values fall back to the default with a
+    one-line warning.
+    """
+    raw = os.getenv("SAM_MODEL") or os.getenv("SAM_VARIANT") or DEFAULT_SAM_MODEL
+    # Backward compat: SAM_VARIANT=sam2 (no size) → use the default size.
+    if raw == "sam2":
+        raw = DEFAULT_SAM_MODEL
+    if raw not in ALLOWED_SAM_MODELS:
+        log.warning("unknown SAM_MODEL=%r; falling back to %s", raw, DEFAULT_SAM_MODEL)
+        return DEFAULT_SAM_MODEL
+    return raw
+
+
+def get_sam_variant() -> str:
+    """Return ``"sam3"`` if SAM 3 is selected, otherwise ``"sam2"``.
+
+    Preserves the Plan 08 contract used by the SAM 3 text-prompt 409 gate.
+    """
+    return "sam3" if get_sam_model() == "sam3" else "sam2"
 
 
 class SamPredictor(Protocol):
@@ -52,11 +106,28 @@ def _reset_singleton() -> None:
 
 
 def _default_factory() -> SamPredictor:
-    """Production factory: load SAM 2 from Hugging Face. Imports lazy."""
+    """Production factory: load the configured SAM 2.1 image predictor.
+
+    Imports torch + sam2 lazily so the test path stays import-free.
+    Pulls the HF repo id from ``get_sam_model()``. Raises a clear error
+    when ``SAM_MODEL=sam3`` (image predictor for SAM 3 is wired in v1.1
+    T6, not here).
+    """
+    model = get_sam_model()
+    if model == "sam3":
+        # T6 wires the SAM 3 click-prompt path through a separate factory.
+        # If we hit this default factory with sam3 selected, the operator
+        # forgot to register the SAM 3 predictor.
+        raise RuntimeError(
+            "SAM_MODEL=sam3 selected but SAM 3 click predictor not registered; "
+            "see apps/docs/admin.md SAM 3 setup."
+        )
+    repo = _HF_REPO_BY_MODEL[model]
+
     import torch  # type: ignore[import-not-found]
     from sam2.sam2_image_predictor import SAM2ImagePredictor  # type: ignore[import-not-found]
 
-    p = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
+    p = SAM2ImagePredictor.from_pretrained(repo)
     p.model.to("cuda" if torch.cuda.is_available() else "cpu")
     return p
 

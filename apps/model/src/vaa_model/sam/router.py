@@ -11,13 +11,13 @@ POST /sam/decode  — accepts {image_hash, points, labels} → returns
 
 POST /sam/text-prompt — SAM 3 only. Accepts {image_b64, text} → returns
                     [{counts, size, score, bbox}]. Returns 409
-                    ``sam3_not_enabled`` when ``SAM_VARIANT != "sam3"``;
-                    503 ``sam3_predictor_not_loaded`` when SAM 3 is on
-                    but no predictor factory has been registered.
+                    ``sam3_not_enabled`` when the configured SAM model is
+                    not ``sam3``; 503 ``sam3_predictor_not_loaded`` when
+                    SAM 3 is on but no predictor factory has been
+                    registered.
 """
 
 import base64
-import os
 from io import BytesIO
 from typing import Any
 
@@ -28,21 +28,18 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from vaa_model.sam.codec import encode_mask_rle
-from vaa_model.sam.predictor import extract_embedding, get_predictor, get_text_predictor
+from vaa_model.sam.predictor import (
+    extract_embedding,
+    get_predictor,
+    get_sam_model,  # noqa: F401 — re-export for callers historically importing from router
+    get_sam_variant,
+    get_text_predictor,
+)
 
 router = APIRouter(prefix="/sam", tags=["sam"])
 
 _LOADED_HASH: str | None = None  # the most recently encoded image's xxh3
 _LOADED_SHAPE: list[int] = []     # [h, w]
-
-
-def get_sam_variant() -> str:
-    """Read the SAM_VARIANT env var on every call.
-
-    Tests mutate the env via ``monkeypatch``; reading at request time keeps
-    the toggle hot-swappable without re-importing the module.
-    """
-    return os.getenv("SAM_VARIANT", "sam2")
 
 
 class EncodeIn(BaseModel):
@@ -134,8 +131,10 @@ def _reset_for_test() -> None:
 
 # --- SAM 3 text-prompt endpoint ---------------------------------------------
 #
-# The endpoint is a thin shell: it gates on ``SAM_VARIANT`` and delegates the
-# real inference to a predictor factory the operator registers at container
+# The endpoint is a thin shell: it gates on the configured SAM model
+# (``SAM_MODEL`` with legacy ``SAM_VARIANT`` fallback — see
+# ``vaa_model.sam.predictor.get_sam_model``) and delegates the real
+# inference to a predictor factory the operator registers at container
 # start. The actual SAM 3 model loading (gated HF repo, license, HF token)
 # happens outside this module — see ``apps/docs/admin.md``.
 
