@@ -94,7 +94,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         class_id: d.classId,
         kind: d.kind,
         geometry: d.geometry as unknown as Record<string, unknown>,
-        track_id: null,
+        track_id: d.trackId ?? null,
       }));
     const update = drafts
       .filter((d) => d.serverId !== null && d.dirty)
