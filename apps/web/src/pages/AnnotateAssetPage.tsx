@@ -195,7 +195,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <Toolbar />
         <div style={{ flex: 1, display: "grid", placeItems: "center", padding: 12, overflow: "auto" }}>
-          <AnnotationCanvas width={w} height={h} imageUrl={url} frameId={frameId} />
+          <AnnotationCanvas
+            width={w}
+            height={h}
+            imageUrl={url}
+            frameId={frameId}
+            assetId={assetId}
+          />
         </div>
         <aside
           style={{
