@@ -207,17 +207,28 @@ def test_start_with_sam3_accepts_points_only(monkeypatch) -> None:
     ]
 
 
-def test_start_with_sam3_rejects_no_prompt(monkeypatch) -> None:
-    """When SAM_MODEL=sam3, /sam-track/start must 422 if neither text nor
-    points are supplied — the dispatcher needs at least one prompt type."""
+def test_start_with_sam3_no_prompt_creates_empty_session(monkeypatch) -> None:
+    """v1.4: when SAM_MODEL=sam3 and neither text nor points are supplied,
+    /sam-track/start now creates an empty session (was 422 in v1.3). The
+    caller is expected to add objects via /sam-track/{sid}/objects before
+    stepping."""
     monkeypatch.setenv("SAM_MODEL", "sam3")
-    tracker_mod.set_test_tracker_factory(lambda: _CapturingDispatcherTracker())
+    captured = {"tracker": None}
+
+    def _factory():
+        t = _CapturingDispatcherTracker()
+        captured["tracker"] = t
+        return t
+
+    tracker_mod.set_test_tracker_factory(_factory)
     r = _client().post(
         "/sam-track/start",
         json={"video_url": "https://fake/v.mp4", "frame_idx": 0},
     )
-    assert r.status_code == 422
-    assert "sam3_track_requires_points_or_text" in r.text
+    assert r.status_code == 200, r.text
+    assert r.json()["session_id"]
+    # No prompts forwarded — session is empty until /objects is called.
+    assert captured["tracker"].calls == []
 
 
 def test_start_with_sam3_prefers_text_when_both_present(monkeypatch) -> None:
@@ -254,5 +265,282 @@ def test_start_with_sam3_points_label_mismatch_returns_422(monkeypatch) -> None:
             "points": [[1, 1], [2, 2]],
             "labels": [1],
         },
+    )
+    assert r.status_code == 422
+
+
+# --- v1.4 multi-object tracking ---------------------------------------------
+
+
+class _MultiObjectFakeTracker:
+    """v1.4 fake tracker — speaks the new per-object protocol AND records
+    every ``add_inputs_at_frame`` call so tests can assert the right args
+    reached the underlying tracker."""
+
+    def __init__(self) -> None:
+        self.add_inputs_calls: list = []
+
+    def init_state(self, video_path):
+        return {"video": video_path}
+
+    def add_new_points(self, state, frame_idx, points, labels):  # legacy
+        return None, None, None
+
+    def add_inputs_at_frame(
+        self,
+        inference_state,
+        frame_idx,
+        obj_id,
+        points=None,
+        labels=None,
+        boxes=None,
+    ):
+        self.add_inputs_calls.append({
+            "frame_idx": frame_idx,
+            "obj_id": obj_id,
+            "points": points,
+            "labels": labels,
+            "boxes": boxes,
+        })
+        return None
+
+    def propagate_in_video(self, state):
+        # Yield one frame with two objects.
+        yield 0, {
+            1: np.array([[1, 0], [0, 0]], dtype=np.uint8),
+            2: np.array([[0, 0], [1, 0]], dtype=np.uint8),
+        }
+
+
+def test_add_object_returns_404_for_unknown_session() -> None:
+    tracker_mod.set_test_tracker_factory(lambda: _MultiObjectFakeTracker())
+    r = _client().post(
+        "/sam-track/bad-id/objects",
+        json={"frame_idx": 0, "obj_id": 1, "points": [[1, 1]], "labels": [1]},
+    )
+    assert r.status_code == 404
+
+
+def test_add_object_validates_points_labels_length_mismatch() -> None:
+    tracker_mod.set_test_tracker_factory(lambda: _MultiObjectFakeTracker())
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    ).json()["session_id"]
+
+    r = client.post(
+        f"/sam-track/{sid}/objects",
+        json={
+            "frame_idx": 0,
+            "obj_id": 1,
+            "points": [[1, 1], [2, 2]],
+            "labels": [1],
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_add_object_requires_points_or_boxes() -> None:
+    tracker_mod.set_test_tracker_factory(lambda: _MultiObjectFakeTracker())
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    ).json()["session_id"]
+
+    r = client.post(
+        f"/sam-track/{sid}/objects",
+        json={"frame_idx": 0, "obj_id": 1},
+    )
+    assert r.status_code == 422
+    assert "object_requires_points_or_boxes" in r.text
+
+
+def test_add_object_validates_label_values() -> None:
+    tracker_mod.set_test_tracker_factory(lambda: _MultiObjectFakeTracker())
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    ).json()["session_id"]
+
+    r = client.post(
+        f"/sam-track/{sid}/objects",
+        json={
+            "frame_idx": 0,
+            "obj_id": 1,
+            "points": [[1, 1]],
+            "labels": [2],
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_add_object_succeeds_and_calls_tracker() -> None:
+    captured = {"tracker": None}
+
+    def _factory():
+        t = _MultiObjectFakeTracker()
+        captured["tracker"] = t
+        return t
+
+    tracker_mod.set_test_tracker_factory(_factory)
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    ).json()["session_id"]
+
+    r = client.post(
+        f"/sam-track/{sid}/objects",
+        json={
+            "frame_idx": 5,
+            "obj_id": 1,
+            "points": [[100, 200], [120, 220]],
+            "labels": [1, 0],
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["obj_id"] == 1
+    assert body["frame_idx"] == 5
+    fake = captured["tracker"]
+    assert len(fake.add_inputs_calls) == 1
+    call = fake.add_inputs_calls[0]
+    assert call["obj_id"] == 1
+    assert call["frame_idx"] == 5
+    assert call["points"] == [[100, 200], [120, 220]]
+    assert call["labels"] == [1, 0]
+
+
+def test_step_returns_per_object_masks() -> None:
+    tracker_mod.set_test_tracker_factory(lambda: _MultiObjectFakeTracker())
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    ).json()["session_id"]
+
+    r = client.post(f"/sam-track/{sid}/step?frames=1")
+
+    assert r.status_code == 200, r.text
+    steps = r.json()["steps"]
+    assert len(steps) == 1
+    assert steps[0]["frame_idx"] == 0
+    objects = steps[0]["objects"]
+    assert isinstance(objects, list)
+    obj_ids = sorted(int(o["obj_id"]) for o in objects)
+    assert obj_ids == [1, 2]
+    for entry in objects:
+        assert {"obj_id", "counts", "size", "score"} <= set(entry.keys())
+
+
+def test_step_legacy_fake_single_mask_wraps_as_obj_id_1() -> None:
+    """Legacy fakes yield ``(frame_idx, single_mask)``; the router must
+    wrap that as ``{1: mask}`` so single-object sessions still return a
+    valid per-object response shape."""
+    tracker_mod.set_test_tracker_factory(lambda: _FakeTracker())
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4", "points": [[1, 1]], "labels": [1]},
+    ).json()["session_id"]
+
+    r = client.post(f"/sam-track/{sid}/step?frames=1")
+
+    assert r.status_code == 200, r.text
+    steps = r.json()["steps"]
+    assert len(steps) == 1
+    objects = steps[0]["objects"]
+    assert len(objects) == 1
+    assert objects[0]["obj_id"] == 1
+
+
+def test_start_with_no_points_creates_empty_session() -> None:
+    """v1.4: /start with just a video_url is accepted — caller adds
+    objects via /sam-track/{sid}/objects before stepping."""
+    tracker_mod.set_test_tracker_factory(lambda: _MultiObjectFakeTracker())
+    r = _client().post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["session_id"]
+
+
+# --- HIGH #1: concept-mode guard for /objects -------------------------------
+
+
+class _ConceptModeFakeTracker:
+    """Fake whose ``add_inputs_at_frame`` always raises ``ConceptModeError``.
+
+    Tests the router-level mapping: a SAM 3 dispatcher in concept mode
+    rejects /objects calls with a typed error → the router maps that to
+    422 ``add_object_unsupported_in_concept_mode`` (instead of leaking
+    a 502 ``add_object_failed`` like other upstream failures)."""
+
+    def init_state(self, video_path):
+        return {"video": video_path, "mode": "concept"}
+
+    def add_new_points(self, state, frame_idx, points, labels):
+        return None, None, None
+
+    def add_inputs_at_frame(
+        self,
+        inference_state,
+        frame_idx,
+        obj_id,
+        points=None,
+        labels=None,
+        boxes=None,
+    ):
+        from vaa_model.sam.sam3_adapter import ConceptModeError
+
+        raise ConceptModeError(
+            "/objects is not supported in concept (text) mode",
+        )
+
+    def propagate_in_video(self, state):
+        if False:
+            yield  # empty generator
+
+
+def test_add_object_returns_422_in_sam3_concept_mode() -> None:
+    """When a session was started in SAM 3 concept (text) mode, /objects
+    must return 422 ``add_object_unsupported_in_concept_mode`` rather than
+    silently corrupting the session."""
+    tracker_mod.set_test_tracker_factory(lambda: _ConceptModeFakeTracker())
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    ).json()["session_id"]
+
+    r = client.post(
+        f"/sam-track/{sid}/objects",
+        json={"frame_idx": 0, "obj_id": 1, "points": [[1, 1]], "labels": [1]},
+    )
+    assert r.status_code == 422
+    assert "add_object_unsupported_in_concept_mode" in r.text
+
+
+# --- HIGH #3: obj_id upper bound (model side) -------------------------------
+
+
+def test_add_object_validates_obj_id_upper_bound() -> None:
+    """obj_id is capped at 256 — larger values must be rejected as 422 to
+    prevent unbounded session-state growth."""
+    tracker_mod.set_test_tracker_factory(lambda: _MultiObjectFakeTracker())
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    ).json()["session_id"]
+
+    r = client.post(
+        f"/sam-track/{sid}/objects",
+        json={"frame_idx": 0, "obj_id": 1000, "points": [[1, 1]], "labels": [1]},
     )
     assert r.status_code == 422

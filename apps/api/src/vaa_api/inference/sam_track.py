@@ -4,6 +4,7 @@ from vaa_api.assets.models import Asset
 from vaa_api.errors import AppError
 from vaa_api.inference.model_client import (
     ModelServiceError,
+    sam_track_add_object as _sam_track_add_object,
     sam_track_release as _sam_track_release,
     sam_track_start as _sam_track_start,
     sam_track_step as _sam_track_step,
@@ -27,12 +28,34 @@ def _video_url_for(asset: Asset) -> str:
     return storage.presigned_get(f"assets/{asset.xxh3_128}/original.{ext}", expires_seconds=600)
 
 
-def start(asset: Asset, frame_idx: int, points: list[list[int]], labels: list[int]) -> dict:
+def start(
+    asset: Asset,
+    frame_idx: int,
+    points: list[list[int]],
+    labels: list[int],
+    text: str | None = None,
+) -> dict:
     url = _video_url_for(asset)
     try:
-        return _sam_track_start(url, frame_idx, points, labels)
+        return _sam_track_start(url, frame_idx, points, labels, text=text)
     except ModelServiceError as exc:
         raise SamTrackFailed(f"start: {exc.body!r}") from exc
+
+
+def add_object(
+    session_id: str,
+    frame_idx: int,
+    obj_id: int,
+    points: list[list[int]],
+    labels: list[int],
+    boxes: list[list[float]],
+) -> dict:
+    try:
+        return _sam_track_add_object(session_id, frame_idx, obj_id, points, labels, boxes)
+    except ModelServiceError as exc:
+        if exc.status_code == 404:
+            raise SamTrackSessionMissing("session not found") from exc
+        raise SamTrackFailed(f"add_object: {exc.body!r}") from exc
 
 
 def step(session_id: str, frames: int) -> dict:

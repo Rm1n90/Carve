@@ -35,6 +35,17 @@ from __future__ import annotations
 from typing import Any
 
 
+class ConceptModeError(RuntimeError):
+    """Raised when /objects is called on a SAM 3 concept (text) session.
+
+    The dispatcher commits to ``state["mode"] == "concept"`` on the first
+    text prompt; subsequent ``add_inputs_at_frame`` (the multi-object
+    /objects entrypoint) cannot be served because the concept sub-tracker
+    has no per-object click API. Surfacing a typed exception lets the HTTP
+    boundary map to a clean 422 instead of a generic 502.
+    """
+
+
 # --- image adapter (clicks → Sam3TrackerModel) ------------------------------
 
 
@@ -497,8 +508,51 @@ class Sam3VideoDispatcherAdapter:
         if is_text_mode:
             self._add_text(inference_state, points)
         else:
-            self._add_points(inference_state, frame_idx, points, labels)
+            self._add_points(inference_state, frame_idx, points, labels, obj_id=1)
         return None, None, None
+
+    def add_inputs_at_frame(
+        self,
+        inference_state: Any,
+        frame_idx: int,
+        obj_id: int,
+        points: Any = None,
+        labels: Any = None,
+        boxes: Any = None,
+    ) -> Any:
+        """v1.4 multi-object entrypoint — delegates to the tracker pair
+        (Sam3TrackerVideoModel + Sam3TrackerVideoProcessor).
+
+        ``points`` and ``boxes`` are exclusive in this code path (the SAM 3
+        tracker processor accepts both at once but the router validates
+        that at the HTTP boundary). Concept (text) mode is NOT handled
+        here — text prompts belong on /sam-track/start, not /objects.
+
+        If the session was already started in concept mode (text prompt at
+        /start), a ``ConceptModeError`` is raised. Without this guard the
+        previous implementation would silently switch to tracker mode and
+        re-init the video session, orphaning the concept session.
+        """
+        if (
+            isinstance(inference_state, dict)
+            and inference_state.get("mode") == "concept"
+        ):
+            raise ConceptModeError(
+                "/objects is not supported in concept (text) mode",
+            )
+        if not points and not boxes:
+            raise RuntimeError(
+                "add_inputs_at_frame requires points or boxes",
+            )
+        self._add_points(
+            inference_state,
+            frame_idx,
+            points or [],
+            labels or [],
+            obj_id=obj_id,
+            boxes=boxes,
+        )
+        return None
 
     def propagate_in_video(self, inference_state: Any) -> Any:
         if inference_state.get("session") is None:
@@ -536,6 +590,9 @@ class Sam3VideoDispatcherAdapter:
         frame_idx: int,
         points: Any,
         labels: Any,
+        *,
+        obj_id: int = 1,
+        boxes: Any = None,
     ) -> None:
         import torch  # type: ignore[import-not-found]
 
@@ -551,19 +608,23 @@ class Sam3VideoDispatcherAdapter:
             state["processor"] = processor
             state["mode"] = "tracker"
 
-        # Flat list of [x, y] points + a flat list of labels for ONE object.
-        # Pack into [batch=1][num_obj=1][num_pts][xy] / [batch=1][num_obj=1][num_pts]
-        # ann_obj_id = 1 by default (single-object protocol; multi-object
-        # support is a v1.4 enhancement).
-        nested_points = [[[ list(p) for p in points ]]]
-        nested_labels = [[ list(labels) ]]
-        processor.add_inputs_to_inference_session(
-            inference_session=state["session"],
-            frame_idx=int(frame_idx),
-            obj_ids=1,
-            input_points=nested_points,
-            input_labels=nested_labels,
-        )
+        # Sam3TrackerVideoProcessor.add_inputs_to_inference_session expects:
+        #   obj_ids: int (single object per call) or list[int]
+        #   input_points: [batch=1][num_obj=1][num_pts][xy]   (or None)
+        #   input_labels: [batch=1][num_obj=1][num_pts]       (or None)
+        #   input_boxes:  [batch=1][num_obj=1][4]             (or None)
+        kwargs: dict[str, Any] = {
+            "inference_session": state["session"],
+            "frame_idx": int(frame_idx),
+            "obj_ids": obj_id,
+        }
+        if points:
+            kwargs["input_points"] = [[[list(p) for p in points]]]
+            kwargs["input_labels"] = [[list(labels)]]
+        if boxes:
+            # Single-object box prompt: [batch][num_obj][4].
+            kwargs["input_boxes"] = [[[float(x) for x in boxes[0]]]]
+        processor.add_inputs_to_inference_session(**kwargs)
 
     def _propagate_tracker(self, state: dict) -> Any:
         import numpy as np

@@ -1,19 +1,34 @@
 import { useAnnotations } from "@/state/annotations";
-import { samTrackApi, type TrackStep } from "@/api/sam_track";
+import { samTrackApi, type TrackFrameStep } from "@/api/sam_track";
 
 /**
- * Forward video tracker built on the model service's SAM 2 video predictor.
+ * Forward video tracker built on the model service's SAM 2 / SAM 3 video
+ * predictor. Supports MULTIPLE tracked objects per session.
  *
- * Workflow:
- * 1. ``start({frame, points, labels})`` opens a session.
- * 2. ``step(N)`` advances N frames; returns a list of {frame_idx, counts, size}.
- * 3. ``commit(framesToFrameId)`` writes one mask annotation per frame, all
- *    sharing a single client-generated track_id.
- * 4. ``release()`` frees the server session.
+ * Workflow (multi-object):
+ * 1. ``startEmpty()`` opens a session with no objects.
+ * 2. ``addObjectAtFrame(frameIdx, points, labels, classId)`` registers each
+ *    target. Returns a stable obj_id (1, 2, 3 ...).
+ * 3. ``step(N)`` advances N frames; collects per-frame, per-object masks.
+ * 4. ``commit(framesToFrameId)`` writes one mask annotation per (frame, obj_id).
+ *    All annotations for the same obj_id share a single client-generated
+ *    track_id; classId is taken from whatever was passed to addObjectAtFrame.
+ * 5. ``release()`` frees the server session.
+ *
+ * The legacy single-object ``start({frameIdx, points, labels})`` shape stays
+ * as a convenience wrapper that calls ``startEmpty()`` then ``addObjectAtFrame``.
+ *
+ * Each generated ``track_id`` is forwarded into the ``AnnotationDraft``
+ * (via the optional ``trackId`` field) so the per-object grouping survives
+ * the save round-trip — the api-side ``AnnotationIn`` schema and the
+ * ``annotations.track_id`` column already accept it.
  */
 export class TrackPropagateTool {
   private sessionId: string | null = null;
-  private collected: TrackStep[] = [];
+  private collected: TrackFrameStep[] = [];
+  private nextObjId = 1;
+  /** Map obj_id → classId chosen at the time the object was added. */
+  private classByObjId: Map<number, string> = new Map();
 
   constructor(
     private assetId: string,
@@ -28,27 +43,84 @@ export class TrackPropagateTool {
     return this.sessionId !== null;
   }
 
-  async start(opts: {
-    frameIdx: number;
-    points: [number, number][];
-    labels: number[];
-  }): Promise<void> {
+  getCollectedFrames(): TrackFrameStep[] {
+    return [...this.collected];
+  }
+
+  getObjectIds(): number[] {
+    return [...this.classByObjId.keys()];
+  }
+
+  /**
+   * Open a session with no objects. Use ``addObjectAtFrame`` to add each
+   * object's prompts before calling ``step()``.
+   */
+  async startEmpty(opts?: { frameIdx?: number }): Promise<void> {
     if (this.sessionId !== null) {
       // Already active — release first to avoid leaks
       await this.release();
     }
     const r = await samTrackApi.start(
       this.assetId,
-      opts.frameIdx,
-      opts.points,
-      opts.labels,
+      opts?.frameIdx ?? 0,
+      [],
+      [],
     );
     this.sessionId = r.session_id;
     this.collected = [];
+    this.classByObjId.clear();
+    this.nextObjId = 1;
   }
 
-  /** Advance N frames; returns the steps for this batch. */
-  async step(frames: number): Promise<TrackStep[]> {
+  /**
+   * Convenience: start a session and immediately register a first object using
+   * the active class. Mirrors the pre-multi-object API.
+   */
+  async start(opts: {
+    frameIdx: number;
+    points: [number, number][];
+    labels: number[];
+  }): Promise<void> {
+    await this.startEmpty({ frameIdx: opts.frameIdx });
+    const classId = this.getActiveClassId();
+    if (!classId) {
+      throw new Error("TrackPropagateTool: no active class");
+    }
+    await this.addObjectAtFrame(
+      opts.frameIdx,
+      opts.points,
+      opts.labels,
+      classId,
+    );
+  }
+
+  /**
+   * Add a new tracked object at a specific frame. Returns the assigned obj_id.
+   * The session must already be open. The classId snapshot is used at commit
+   * time so each obj_id's annotations land on the right class.
+   */
+  async addObjectAtFrame(
+    frameIdx: number,
+    points: [number, number][],
+    labels: number[],
+    classId: string,
+  ): Promise<number> {
+    if (this.sessionId === null) {
+      throw new Error("TrackPropagateTool: not started");
+    }
+    const objId = this.nextObjId++;
+    await samTrackApi.addObject(this.assetId, this.sessionId, {
+      frame_idx: frameIdx,
+      obj_id: objId,
+      points,
+      labels,
+    });
+    this.classByObjId.set(objId, classId);
+    return objId;
+  }
+
+  /** Advance N frames; returns the per-frame, per-object steps for this batch. */
+  async step(frames: number): Promise<TrackFrameStep[]> {
     if (this.sessionId === null) {
       throw new Error("TrackPropagateTool: not started");
     }
@@ -58,36 +130,40 @@ export class TrackPropagateTool {
   }
 
   /**
-   * Commit one mask annotation per collected step.
-   * @param frameIdxToFrameId mapping from frame idx → API frame UUID. Steps whose
-   *                     idx isn't in this map are dropped.
-   * @returns number of annotations committed.
+   * Commit one mask annotation per (frame, obj_id). All masks for the same
+   * obj_id share a single track_id; classId is taken from ``classByObjId``.
+   * Steps whose frame_idx is missing from ``frameIdxToFrameId`` are dropped.
+   * Objects with no class snapshot (i.e. that arrived from /step without a
+   * matching addObjectAtFrame call) are also dropped.
+   *
+   * @returns the number of annotations committed.
    */
   commit(frameIdxToFrameId: Record<number, string>): number {
-    const classId = this.getActiveClassId();
-    if (!classId) return 0;
-    const trackId = this.generateTrackId();
+    const trackByObjId = new Map<number, string>();
     let count = 0;
-    for (const s of this.collected) {
-      const frameId = frameIdxToFrameId[s.frame_idx];
-      if (!frameId) continue;
-      useAnnotations.getState().add({
-        tempId: this.generateTempId(),
-        classId,
-        kind: "mask",
-        geometry: { kind: "mask_rle", size: s.size, counts: s.counts },
-        frameId,
-        serverId: null,
-        dirty: true,
-      });
-      // Patch in the track_id; the store doesn't natively know about it yet,
-      // so we annotate via update() after add() to keep types simple.
-      // The annotation_in payload sent to the API does carry track_id.
-      // (For now, store it in an out-of-band map; the AnnotateAssetPage save
-      // path will read it from there.) — left as a v1 simplification.
-      count += 1;
+    for (const frame of this.collected) {
+      const fid = frameIdxToFrameId[frame.frame_idx];
+      if (!fid) continue;
+      for (const obj of frame.objects) {
+        const classId = this.classByObjId.get(obj.obj_id);
+        if (!classId) continue;
+        if (!trackByObjId.has(obj.obj_id)) {
+          trackByObjId.set(obj.obj_id, this.generateTrackId());
+        }
+        const trackId = trackByObjId.get(obj.obj_id)!;
+        useAnnotations.getState().add({
+          tempId: this.generateTempId(),
+          classId,
+          kind: "mask",
+          geometry: { kind: "mask_rle", size: obj.size, counts: obj.counts },
+          frameId: fid,
+          serverId: null,
+          dirty: true,
+          trackId,
+        });
+        count += 1;
+      }
     }
-    void trackId; // suppress unused warning until track_id wiring lands in AnnotateAssetPage
     this.collected = [];
     return count;
   }
@@ -97,6 +173,8 @@ export class TrackPropagateTool {
     const sid = this.sessionId;
     this.sessionId = null;
     this.collected = [];
+    this.classByObjId.clear();
+    this.nextObjId = 1;
     try {
       await samTrackApi.release(this.assetId, sid);
     } catch {

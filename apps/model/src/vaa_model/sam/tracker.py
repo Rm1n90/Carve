@@ -1,12 +1,25 @@
-"""SAM 2 video tracker — protocol + in-memory session store.
+"""SAM 2 / SAM 3 video tracker — protocol + in-memory session store.
 
-A ``Tracker`` advances a single object's mask one frame at a time. Production
-binds the protocol to ``sam2.sam2_video_predictor.SAM2VideoPredictor``; tests
-inject a stub via ``set_test_tracker_factory``.
+A ``Tracker`` advances objects' masks one frame at a time. Production
+binds the protocol to ``sam2.sam2_video_predictor.SAM2VideoPredictor``
+(via ``Sam2VideoPredictorAdapter``) for SAM 2 paths and to
+``Sam3VideoDispatcherAdapter`` for SAM 3. Tests inject a stub via
+``set_test_tracker_factory``.
 
 State for an active tracking session lives in process memory under
-``_SESSIONS[session_id]``. Sessions are abandoned on worker restart — that's
-the v1 contract.
+``_SESSIONS[session_id]``. Sessions are abandoned on worker restart —
+that's the v1 contract.
+
+v1.4 introduces multi-object support:
+
+- ``TrackerProtocol.add_inputs_at_frame(state, frame_idx, obj_id, ...)``
+  is the new entrypoint. The legacy ``add_new_points`` stays as a
+  convenience that auto-routes to ``add_inputs_at_frame`` with
+  ``obj_id=1`` for backward compatibility.
+- ``propagate_in_video`` now yields ``(frame_idx, dict[obj_id, mask])``
+  instead of ``(frame_idx, mask)``. The router auto-wraps legacy fakes
+  yielding a single mask as ``{1: mask}`` so older test fakes continue
+  to work without modification.
 """
 
 import threading
@@ -26,13 +39,28 @@ from vaa_model.sam.predictor import (
 
 
 class TrackerProtocol(Protocol):
-    """Subset of SAM2VideoPredictor we use."""
+    """Subset of SAM2VideoPredictor / SAM 3 dispatcher we use."""
 
     def init_state(self, video_path: str) -> Any: ...
 
     def add_new_points(
         self, inference_state: Any, frame_idx: int, points: Any, labels: Any,
     ) -> tuple[Any, Any, Any]: ...
+
+    # v1.4: per-object prompt insertion. Implementations route to the
+    # underlying predictor's multi-object API. ``points`` carries either
+    # numeric clicks or text strings (SAM 3 dispatcher); ``boxes`` carries
+    # xyxy coordinates. Implementations should accept ``None`` for any
+    # input that wasn't supplied.
+    def add_inputs_at_frame(
+        self,
+        inference_state: Any,
+        frame_idx: int,
+        obj_id: int,
+        points: Any = None,
+        labels: Any = None,
+        boxes: Any = None,
+    ) -> Any: ...
 
     def propagate_in_video(self, inference_state: Any) -> Any: ...
 
@@ -107,6 +135,70 @@ def set_test_tracker_factory(factory: Any) -> None:
     _TEST_FACTORY = factory
 
 
+class Sam2VideoPredictorAdapter:
+    """Wrap the standalone ``sam2.sam2_video_predictor.SAM2VideoPredictor``
+    so it conforms to the v1.4 ``TrackerProtocol``.
+
+    The raw SAM 2 predictor accepts ``add_new_points_or_box(state,
+    frame_idx, obj_id, points=, labels=, box=)`` per object and yields
+    ``(out_frame_idx, out_obj_ids, out_mask_logits)`` from
+    ``propagate_in_video``. We translate to / from the per-object dict
+    contract our router speaks.
+    """
+
+    def __init__(self, predictor: Any) -> None:
+        self._predictor = predictor
+
+    def init_state(self, video_path: str) -> Any:
+        return self._predictor.init_state(video_path)
+
+    def add_new_points(
+        self, inference_state: Any, frame_idx: int, points: Any, labels: Any,
+    ) -> tuple[Any, Any, Any]:
+        # Legacy single-object path: route to add_inputs_at_frame as obj 1.
+        self.add_inputs_at_frame(
+            inference_state,
+            frame_idx=frame_idx,
+            obj_id=1,
+            points=points,
+            labels=labels,
+        )
+        return None, None, None
+
+    def add_inputs_at_frame(
+        self,
+        inference_state: Any,
+        frame_idx: int,
+        obj_id: int,
+        points: Any = None,
+        labels: Any = None,
+        boxes: Any = None,
+    ) -> Any:
+        # SAM 2 predictor takes a single ``box`` (not a list of boxes); our
+        # contract carries a list of boxes per object so callers can pass
+        # multiple at once via /objects, but SAM 2 only consumes one at a
+        # time. Forward the first if present.
+        box = boxes[0] if boxes else None
+        return self._predictor.add_new_points_or_box(
+            inference_state,
+            frame_idx,
+            obj_id,
+            points=points,
+            labels=labels,
+            box=box,
+        )
+
+    def propagate_in_video(self, inference_state: Any) -> Any:
+        for out in self._predictor.propagate_in_video(inference_state):
+            # sam2 yields (frame_idx, obj_ids, mask_logits) where mask_logits
+            # is shape [num_obj, ...]. Bundle into {obj_id: mask}.
+            out_frame_idx, out_obj_ids, out_mask_logits = out
+            masks_by_obj: dict[int, Any] = {}
+            for i, oid in enumerate(out_obj_ids):
+                masks_by_obj[int(oid)] = out_mask_logits[i]
+            yield int(out_frame_idx), masks_by_obj
+
+
 def _default_factory() -> TrackerProtocol:
     """Production factory — imports lazily; pulls the HF repo from get_sam_model().
 
@@ -114,6 +206,10 @@ def _default_factory() -> TrackerProtocol:
     adapter via ``vaa_model.sam.sam3_adapter``. The adapter is text-prompt
     based (concept tracking); ``track_router`` enforces the ``text`` field
     requirement at the HTTP boundary.
+
+    For SAM 2.x variants the raw ``SAM2VideoPredictor`` is wrapped in
+    ``Sam2VideoPredictorAdapter`` so it speaks our v1.4 multi-object
+    protocol.
     """
     model = get_sam_model()
     if model == "sam3":
@@ -128,7 +224,7 @@ def _default_factory() -> TrackerProtocol:
     p = SAM2VideoPredictor.from_pretrained(repo)
     p.model.to("cuda" if torch.cuda.is_available() else "cpu")
     p.model = maybe_compile(p.model)
-    return p
+    return Sam2VideoPredictorAdapter(p)
 
 
 def _get_tracker() -> TrackerProtocol:
@@ -137,38 +233,94 @@ def _get_tracker() -> TrackerProtocol:
     return _default_factory()
 
 
-def start_session(
-    *,
-    video_url: str,
-    frame_idx: int,
-    points: list[Any],
-    labels: list[Any],
-) -> TrackerSession:
-    """Initialize a tracker session.
+def _start_empty_session(video_url: str) -> TrackerSession:
+    """Create a tracker session with no objects yet.
 
-    ``points`` and ``labels`` are intentionally typed as ``list[Any]`` so
-    the same entrypoint can carry either SAM 2 click data
-    (``list[list[int]]`` / ``list[int]``) or a SAM 3 text prompt list
-    (``list[str]``) — the underlying ``TrackerProtocol.add_new_points``
-    implementation interprets them according to which adapter is loaded.
+    Used directly by the multi-object code path (and indirectly by
+    ``start_session`` when called without prompts).
     """
     tracker = _get_tracker()
-    # init_state just downloads/decodes the video — no GPU forward — so it
-    # stays outside the autocast. The forward pass that computes the seed
-    # mask happens inside add_new_points and benefits from bf16.
     inference_state = tracker.init_state(video_url)
-    with autocast_ctx():
-        tracker.add_new_points(inference_state, frame_idx, points, labels)
     session = TrackerSession(
         session_id=str(uuid.uuid4()),
         tracker=tracker,
         inference_state=inference_state,
-        last_frame_idx=frame_idx,
     )
     with _SESSIONS_LOCK:
         _SESSIONS[session.session_id] = session
         _SESSION_LAST_USED[session.session_id] = time.monotonic()
     return session
+
+
+def start_session(
+    *,
+    video_url: str,
+    frame_idx: int = 0,
+    points: list[Any] | None = None,
+    labels: list[Any] | None = None,
+) -> TrackerSession:
+    """Initialize a tracker session.
+
+    v1.4 backward-compat: when ``points`` is non-empty, the prompt is
+    auto-added as ``obj_id=1`` so the v1.3 single-object call shape keeps
+    working. When ``points`` is empty/None the session is created with
+    no objects — the caller is expected to add them via
+    ``add_object_to_session`` before stepping.
+
+    ``points`` and ``labels`` are intentionally typed as ``list[Any]`` so
+    the same entrypoint can carry either SAM 2 click data
+    (``list[list[int]]`` / ``list[int]``) or a SAM 3 text prompt list
+    (``list[str]``) — the underlying ``TrackerProtocol`` implementation
+    interprets them according to which adapter is loaded.
+    """
+    session = _start_empty_session(video_url)
+    if points:
+        with autocast_ctx():
+            # Prefer the new per-object entrypoint (always available on
+            # v1.4-compliant trackers). Fall back to legacy
+            # ``add_new_points`` only if the tracker doesn't implement the
+            # new method — keeps the protocol forward-compatible without
+            # breaking older test stubs that pre-date the rename.
+            if hasattr(session.tracker, "add_inputs_at_frame"):
+                session.tracker.add_inputs_at_frame(
+                    session.inference_state,
+                    frame_idx=frame_idx,
+                    obj_id=1,
+                    points=points,
+                    labels=labels,
+                )
+            else:
+                session.tracker.add_new_points(
+                    session.inference_state, frame_idx, points, labels,
+                )
+        session.last_frame_idx = frame_idx
+    return session
+
+
+def add_object_to_session(
+    session: TrackerSession,
+    *,
+    frame_idx: int,
+    obj_id: int,
+    points: Any = None,
+    labels: Any = None,
+    boxes: Any = None,
+) -> None:
+    """Attach a new object's prompt to an active session.
+
+    Wraps ``TrackerProtocol.add_inputs_at_frame`` and runs the underlying
+    forward pass under autocast so the seed-mask computation benefits
+    from bf16 on GPU.
+    """
+    with autocast_ctx():
+        session.tracker.add_inputs_at_frame(
+            session.inference_state,
+            frame_idx=frame_idx,
+            obj_id=obj_id,
+            points=points,
+            labels=labels,
+            boxes=boxes,
+        )
 
 
 def get_session(session_id: str) -> TrackerSession | None:

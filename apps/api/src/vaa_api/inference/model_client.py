@@ -95,16 +95,47 @@ def sam_track_start(
     frame_idx: int,
     points: list[list[int]],
     labels: list[int],
+    text: str | None = None,
 ) -> dict:
-    """POST /sam-track/start — returns {session_id, mask_at_start}."""
+    """POST /sam-track/start — returns {session_id, mask_at_start}.
+
+    Multi-object workflow: ``points`` and ``labels`` may be empty (objects are
+    added afterward via :func:`sam_track_add_object`). ``text`` is forwarded
+    for SAM 3 text-prompt callers.
+    """
+    payload: dict = {
+        "video_url": video_url,
+        "frame_idx": frame_idx,
+        "points": points,
+        "labels": labels,
+    }
+    if text is not None:
+        payload["text"] = text
+    with _client() as c:
+        r = c.post("/sam-track/start", json=payload)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def sam_track_add_object(
+    session_id: str,
+    frame_idx: int,
+    obj_id: int,
+    points: list[list[int]],
+    labels: list[int],
+    boxes: list[list[float]],
+) -> dict:
+    """POST /sam-track/{session_id}/objects — returns {obj_id, frame_idx}."""
     with _client() as c:
         r = c.post(
-            "/sam-track/start",
+            f"/sam-track/{session_id}/objects",
             json={
-                "video_url": video_url,
                 "frame_idx": frame_idx,
+                "obj_id": obj_id,
                 "points": points,
                 "labels": labels,
+                "boxes": boxes,
             },
         )
         if r.status_code >= 400:
