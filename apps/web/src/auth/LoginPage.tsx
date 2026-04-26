@@ -1,4 +1,9 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
+import { Link } from "@tanstack/react-router";
+import { ArrowRight, AlertCircle } from "lucide-react";
+import { AuthShell } from "@/components/layout/AuthShell";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { login } from "./api";
 
 interface Props {
@@ -11,15 +16,17 @@ export function LoginPage({ onSuccess }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setBusy(true);
     try {
       await login(email, password);
       onSuccess();
-    } catch (err: any) {
-      const code = err?.response?.data?.error ?? "unknown_error";
+    } catch (err: unknown) {
+      const code =
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        "unknown_error";
       setError(code === "invalid_credentials" ? "Invalid email or password." : code);
     } finally {
       setBusy(false);
@@ -27,30 +34,63 @@ export function LoginPage({ onSuccess }: Props) {
   }
 
   return (
-    <form onSubmit={onSubmit} style={{ maxWidth: 360, margin: "8vh auto", display: "grid", gap: 12 }}>
-      <h1>Sign in</h1>
-      <label>
-        Email
-        <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
-      </label>
-      <label>
-        Password
-        <input
+    <AuthShell
+      headline={<>Carve.</>}
+      subtitle="Visual annotation, on your own infrastructure."
+      cardTitle="Sign in"
+      cardDescription="Welcome back. Enter your credentials to continue."
+      cardFooter={
+        <span>
+          Need an account?{" "}
+          <Link
+            to="/register"
+            className="text-[var(--accent)] hover:text-[var(--accent-hover)] tracking-tight font-medium"
+          >
+            Register
+          </Link>
+        </span>
+      }
+    >
+      <form onSubmit={onSubmit} className="grid gap-4" noValidate>
+        <Input
+          label="Email"
+          type="email"
+          required
+          autoComplete="username"
+          placeholder="you@studio.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <Input
+          label="Password"
           type="password"
           required
           minLength={8}
+          autoComplete="current-password"
+          placeholder="••••••••"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
-      </label>
-      {error && (
-        <div role="alert" style={{ color: "tomato" }}>
-          {error}
-        </div>
-      )}
-      <button type="submit" disabled={busy}>
-        {busy ? "Signing in…" : "Sign in"}
-      </button>
-    </form>
+        {error && (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-[var(--radius-md)] border border-[oklch(0.70_0.20_25_/_0.40)] bg-[oklch(0.70_0.20_25_/_0.08)] px-3 py-2 text-[13px] text-[var(--danger)]"
+          >
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <span>{error}</span>
+          </div>
+        )}
+        <Button
+          type="submit"
+          variant="primary"
+          size="lg"
+          block
+          loading={busy}
+          rightIcon={!busy && <ArrowRight className="h-4 w-4" />}
+        >
+          {busy ? "Signing in" : "Sign in"}
+        </Button>
+      </form>
+    </AuthShell>
   );
 }

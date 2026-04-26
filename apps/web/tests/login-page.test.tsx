@@ -1,6 +1,6 @@
+import React from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { LoginPage } from "@/auth/LoginPage";
 
 vi.mock("@/auth/api", () => ({
   login: vi.fn(),
@@ -8,6 +8,11 @@ vi.mock("@/auth/api", () => ({
   logout: vi.fn(),
 }));
 
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
+}));
+
+import { LoginPage } from "@/auth/LoginPage";
 import * as authApi from "@/auth/api";
 
 describe("LoginPage", () => {

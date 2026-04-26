@@ -18,7 +18,7 @@ function RootComponent() {
   });
 
   if (bs.isLoading) {
-    return <p style={{ padding: 24, opacity: 0.7 }}>Loading…</p>;
+    return <p className="p-6 text-tertiary text-[13px]">Loading…</p>;
   }
   if (bs.data && !bs.data.users_exist) {
     return <FirstRunWizard onSuccess={() => bs.refetch()} />;
