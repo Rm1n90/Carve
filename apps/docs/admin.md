@@ -102,11 +102,21 @@ unaffected.
 - SAM 3 is roughly 860M parameters; it needs more VRAM than
   SAM 2.1 Large. The 4070 (16 GB) handles it in bf16 with `SAM_BF16=1`
   (the default).
-- Loading SAM 3 evicts the YOLO LRU cache. Operators with frequent YOLO
-  use should consider a separate inference container.
+- SAM 3 (~12 GB at bf16) and YOLO weights are loaded independently. They
+  do **not** evict each other automatically. If your GPU has limited VRAM,
+  either lower `SAM_IDLE_TIMEOUT_S` so SAM frees memory between uses, or
+  run YOLO and SAM in separate inference containers behind a load balancer.
 - Switch back to SAM 2 with `SAM_MODEL=sam2.1-large` (or any other size)
   and restart the container — the configured model is read at first
   predictor load, so a restart is required.
+
+### Independence from YOLO
+
+SAM and YOLO are independent registries. Specifically:
+- The web editor's manual tools (bbox / polygon / mask brush / tag) make no calls to the model service. The editor works with the `model` container stopped.
+- SAM is loaded lazily on the first `/sam/encode` call and unloaded after `SAM_IDLE_TIMEOUT_S` of inactivity.
+- YOLO weights are loaded lazily on the first `/yolo/load` call. The LRU registry holds at most `capacity` weights (default 2); a new `load` call evicts the least-recently-used weight when full.
+- Loading or unloading one does not affect the other. Plan your VRAM accordingly.
 
 ## In-browser SAM decoder (WebGPU) — admin setup
 

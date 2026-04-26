@@ -43,11 +43,17 @@ Tag history: <https://github.com/your-org/VisualAutoAnnotator/tags> (replace wit
 | `sam2.1-base-plus` | ~6 GB | Balanced |
 | `sam2.1-large` | ~9 GB | Default; best SAM 2 quality |
 | `sam3` | ~12 GB | Concept tracking + text prompts |
-| YOLOv8n / YOLOv8s | ~2 GB | Loads alongside SAM |
+| YOLO (custom weights) | ~1–6 GB depending on the .pt file | Loaded **only when used**; LRU capacity 2 |
+
+> The SAM and YOLO registries are independent and lazy — neither loads at startup, neither evicts the other. If you only use SAM, YOLO never claims VRAM, and vice versa. With both loaded, peak VRAM is roughly the sum (e.g., SAM 2.1 Large at bf16 ~9 GB + a 6 GB YOLO weight ≈ 15 GB; comfortable on 16 GB GPUs).
 
 On a single RTX 4070 (16 GB): all SAM 2.1 sizes fit comfortably; SAM 3 fits with bf16 enabled (the default).
 
 - **Disk**: ~12 GB image cache for the Docker build, plus your asset volume and Postgres data.
+
+### Editor without inference models
+
+Manual annotation (bounding box, polygon, mask brush, tag) requires no GPU and no model service. The model service is optional — the operator can deploy `api`, `web`, `postgres`, `redis`, `minio`, `caddy` without `model` and still get the full multi-user editor with import/export and analytics. SAM-assisted clicks and YOLO auto-annotate become unavailable; manual tools are unaffected.
 
 ## First-time setup
 
@@ -208,7 +214,7 @@ The production `docker-compose.yml` runs the following services. Only Caddy publ
 | `web` | `apps/web` | React + Vite frontend served by nginx. | 80 | — |
 | `api` | `apps/api` | FastAPI app (auth, projects, tasks, assets, exports, analytics). Runs Alembic on startup. | 8000 | — |
 | `worker` | `apps/api` | RQ worker for thumbnails + video metadata. | — | — |
-| `model` | `apps/model` | FastAPI inference service. Loads SAM 2.1 / SAM 3 / YOLO on demand. **No host port** — security gate from Plan 05. | 8100 | — |
+| `model` (optional) | `apps/model` | FastAPI inference service. Loads SAM 2.1 / SAM 3 / YOLO **lazily and independently** on demand (optional — required only for SAM and YOLO). No host port — security gate from Plan 05. | 8100 | — |
 | `docs` | `apps/docs` | VitePress site mounted at `/docs`. | 80 | — |
 | `postgres` | `postgres:16-alpine` | Primary database. | 5432 | — |
 | `redis` | `redis:7-alpine` | Job queue, embedding cache, rate-limit storage. | 6379 | — |
@@ -236,7 +242,9 @@ This is the headline v1.1 feature. Switch SAM size or jump to SAM 3 by editing `
 docker compose restart model
 ```
 
-Models lazy-load on first use. The active model evicts after `SAM_IDLE_TIMEOUT_S` seconds of inactivity (default 900 = 15 min), freeing VRAM for YOLO or another tenant.
+SAM models lazy-load on first use and unload after `SAM_IDLE_TIMEOUT_S` seconds of inactivity (default 900 = 15 min). YOLO weights are managed independently by an LRU registry (capacity 2 by default). The two are not coordinated: if VRAM is tight on your hardware, run only one model class at a time.
+
+SAM and YOLO are loaded independently. Switching SAM models does not evict loaded YOLO weights, and uploading a new YOLO weight does not evict SAM. If your GPU is VRAM-constrained, set `SAM_IDLE_TIMEOUT_S` to a low value (e.g., 60) so SAM frees memory between uses, and rely on the YOLO LRU's eviction (capacity 2) to bound YOLO footprint.
 
 ### Optimization knobs
 
