@@ -1,10 +1,23 @@
 {
-  email admin@localhost
-  auto_https off
+  email {$LETSENCRYPT_EMAIL:admin@localhost}
 }
 
-:80, :443 {
+{$VAA_DOMAIN:localhost} {
   encode zstd gzip
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    # NOTE: img-src includes https: to allow presigned MinIO/S3 URLs served over
+    # HTTPS in production. In dev, MinIO runs on http://localhost:9000 — extend
+    # img-src (and connect-src for direct PUT uploads) with that origin if needed.
+    # If presigned MinIO URLs resolve to a non-Caddy host, add the host to
+    # connect-src (and img-src for GET) — e.g. http://localhost:9000 in dev.
+    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'"
+    -Server
+  }
 
   @api path /api/*
   handle @api {
@@ -12,10 +25,17 @@
     reverse_proxy api:8000
   }
 
-  # SECURITY: the model service has no authentication of its own. It must NOT
-  # be reachable from the public reverse proxy. Browsers go through the api
-  # service (which gates SAM/YOLO endpoints with JWT + project authorization),
-  # and the api → model link runs over the internal Docker network only.
+  @model path /model/*
+  handle @model {
+    uri strip_prefix /model
+    reverse_proxy model:8100
+  }
+
+  @docs path /docs/*
+  handle @docs {
+    uri strip_prefix /docs
+    reverse_proxy docs:80
+  }
 
   handle {
     reverse_proxy web:80
