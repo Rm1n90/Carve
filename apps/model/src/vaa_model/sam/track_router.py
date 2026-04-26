@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from vaa_model.sam.codec import encode_mask_rle
+from vaa_model.sam.predictor import autocast_ctx
 from vaa_model.sam.tracker import (
     TrackerSession,
     get_session,
@@ -80,18 +81,19 @@ def step(session_id: str, frames: int = 1) -> StepOut:
     if session is None:
         raise HTTPException(status_code=404, detail="session_not_found")
     try:
-        if session.propagation_iter is None:
-            session.propagation_iter = iter(session.tracker.propagate_in_video(session.inference_state))
-        out: list[StepEntry] = []
-        for _ in range(frames):
-            try:
-                frame_idx, mask = next(session.propagation_iter)
-            except StopIteration:
-                break
-            mask_np = _to_numpy(mask)
-            counts, size = encode_mask_rle(mask_np)
-            out.append(StepEntry(frame_idx=int(frame_idx), counts=counts, size=size, score=1.0))
-            session.last_frame_idx = int(frame_idx)
+        with autocast_ctx():
+            if session.propagation_iter is None:
+                session.propagation_iter = iter(session.tracker.propagate_in_video(session.inference_state))
+            out: list[StepEntry] = []
+            for _ in range(frames):
+                try:
+                    frame_idx, mask = next(session.propagation_iter)
+                except StopIteration:
+                    break
+                mask_np = _to_numpy(mask)
+                counts, size = encode_mask_rle(mask_np)
+                out.append(StepEntry(frame_idx=int(frame_idx), counts=counts, size=size, score=1.0))
+                session.last_frame_idx = int(frame_idx)
         return StepOut(steps=out)
     except HTTPException:
         raise

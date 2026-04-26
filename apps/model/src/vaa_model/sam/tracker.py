@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 from vaa_model.sam.predictor import (
     _HF_REPO_BY_MODEL,
+    autocast_ctx,
     get_sam_model,
 )
 
@@ -92,8 +93,12 @@ def start_session(
     labels: list[int],
 ) -> TrackerSession:
     tracker = _get_tracker()
+    # init_state just downloads/decodes the video — no GPU forward — so it
+    # stays outside the autocast. The forward pass that computes the seed
+    # mask happens inside add_new_points and benefits from bf16.
     inference_state = tracker.init_state(video_url)
-    tracker.add_new_points(inference_state, frame_idx, points, labels)
+    with autocast_ctx():
+        tracker.add_new_points(inference_state, frame_idx, points, labels)
     session = TrackerSession(
         session_id=str(uuid.uuid4()),
         tracker=tracker,

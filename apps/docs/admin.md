@@ -32,6 +32,9 @@ accept the license and provide an HF token before enabling it.
   `sam2.1-small`, `sam2.1-base-plus`, `sam2.1-large` (default), or `sam3`.
   The legacy `SAM_VARIANT` env (`sam2` / `sam3`, from Plan 08) is still
   honored for backward compatibility when `SAM_MODEL` is unset.
+- **Performance:** SAM inference runs in bf16 by default on Ampere+ GPUs
+  (RTX 30/40 series, A100, H100) for roughly half the VRAM and ~2x the
+  throughput vs FP32. Set `SAM_BF16=0` to force FP32 for debugging.
 
 When SAM 3 is **disabled** (any non-`sam3` value, default `sam2.1-large`),
 the `POST /sam/text-prompt` endpoint returns `409 sam3_not_enabled`. The

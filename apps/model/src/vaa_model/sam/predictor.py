@@ -12,9 +12,10 @@ Hugging Face and is not loaded here — see ``apps/docs/admin.md`` for the
 operator setup.
 """
 
+import contextlib
 import logging
 import os
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,59 @@ def get_sam_variant() -> str:
     Preserves the Plan 08 contract used by the SAM 3 text-prompt 409 gate.
     """
     return "sam3" if get_sam_model() == "sam3" else "sam2"
+
+
+# --- bf16 autocast gate -----------------------------------------------------
+#
+# Wrapping SAM forward passes in ``torch.autocast(cuda, bfloat16)`` roughly
+# halves VRAM and ~doubles throughput on Ampere+ GPUs (RTX 30/40, A100,
+# H100), with no measurable accuracy loss for SAM 2 (well-tested upstream).
+# We gate on the env toggle + hardware capability so the wrap becomes a
+# no-op when torch is missing (the model dev venv has no torch), CUDA
+# isn't available, or the GPU pre-dates Ampere. The wrap also fails open
+# on any torch error so autocast itself can never crash inference.
+
+_TRUTHY_BF16 = ("1", "true", "yes", "on")
+
+
+def use_bf16() -> bool:
+    """Return True when bf16 autocast should be applied to SAM inference.
+
+    Combines the ``SAM_BF16`` env toggle (default ``1`` = enabled) with
+    runtime hardware capability. Operators set ``SAM_BF16=0`` to force
+    fp32 for debugging.
+    """
+    if os.getenv("SAM_BF16", "1") not in _TRUTHY_BF16:
+        return False
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if not torch.cuda.is_available():
+            return False
+        return bool(torch.cuda.is_bf16_supported())
+    except Exception:
+        return False
+
+
+@contextlib.contextmanager
+def autocast_ctx() -> Iterator[None]:
+    """Wrap inference in ``torch.autocast(cuda, bfloat16)`` when supported.
+
+    No-op when CUDA or bf16 are unavailable. The context manager is safe
+    to call from any thread; PyTorch's autocast is thread-local. Fails
+    open on any torch error so autocast itself can never crash inference.
+    """
+    if not use_bf16():
+        yield
+        return
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            yield
+    except Exception:
+        # Fail open — never break inference because autocast errored.
+        yield
 
 
 class SamPredictor(Protocol):

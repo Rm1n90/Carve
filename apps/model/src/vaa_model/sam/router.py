@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from vaa_model.sam.codec import encode_mask_rle
 from vaa_model.sam.predictor import (
+    autocast_ctx,
     extract_embedding,
     get_predictor,
     get_sam_model,  # noqa: F401 — re-export for callers historically importing from router
@@ -105,7 +106,8 @@ def decode(payload: DecodeIn) -> DecodeOut:
     pts = np.asarray(payload.points)
     lbl = np.asarray(payload.labels)
     p = get_predictor()
-    masks, scores, _ = p.predict(point_coords=pts, point_labels=lbl, multimask_output=True)
+    with autocast_ctx():
+        masks, scores, _ = p.predict(point_coords=pts, point_labels=lbl, multimask_output=True)
 
     masks_np = _to_numpy(masks)
     scores_np = _to_numpy(scores)
