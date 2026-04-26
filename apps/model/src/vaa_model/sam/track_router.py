@@ -49,6 +49,12 @@ class StepOut(BaseModel):
 def start(payload: StartIn) -> StartOut:
     if len(payload.points) != len(payload.labels):
         raise HTTPException(status_code=422, detail="points and labels must have equal length")
+    # Reject non-http(s) schemes (block file:// / ftp:// SSRF-style abuse).
+    import urllib.parse
+
+    parsed = urllib.parse.urlparse(payload.video_url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=422, detail="video_url_scheme_not_allowed")
     try:
         session = start_session(
             video_url=payload.video_url,

@@ -22,4 +22,4 @@ def test_create_weight(db_session) -> None:
 
 
 def test_task_kind_enum() -> None:
-    assert {k.value for k in WeightTaskKind} == {"detect", "segment", "classify"}
+    assert {k.value for k in WeightTaskKind} == {"detect", "segment", "classify", "pose"}

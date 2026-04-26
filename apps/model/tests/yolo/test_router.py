@@ -156,3 +156,21 @@ def test_load_without_loader_returns_503() -> None:
     # Restore default loader so subsequent tests in the same session work
     from vaa_model.yolo.registry import install_default_loader
     install_default_loader()
+
+
+def test_load_rejects_file_scheme_url() -> None:
+    """SSRF guard: file:// schemes must be refused by _download.
+
+    The endpoint wraps the ValueError as 502 'weight_download_failed' — that's
+    fine for the threat model (no signal leaked about why the URL was rejected).
+    What matters is the request never opens a local file or hits the loader.
+    """
+    REGISTRY.set_loader(lambda _p: _FakeModel())
+    REGISTRY.evict("file-scheme")
+    r = TestClient(create_app()).post(
+        "/yolo/load",
+        json={"weight_id": "file-scheme", "weights_url": "file:///etc/passwd"},
+    )
+    assert r.status_code == 502
+    # And the registry stayed empty
+    assert REGISTRY.get("file-scheme") is None

@@ -17,7 +17,9 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-weight_task_kind = postgresql.ENUM("detect", "segment", "classify", name="weight_task_kind")
+weight_task_kind = postgresql.ENUM(
+    "detect", "segment", "classify", "pose", name="weight_task_kind"
+)
 
 
 def upgrade() -> None:

@@ -54,7 +54,7 @@ def test_step_advances_one_frame_per_step() -> None:
     client = _client()
     sid = client.post(
         "/sam-track/start",
-        json={"video_url": "v", "frame_idx": 0, "points": [[1, 1]], "labels": [1]},
+        json={"video_url": "https://fake/v.mp4", "frame_idx": 0, "points": [[1, 1]], "labels": [1]},
     ).json()["session_id"]
 
     r = client.post(f"/sam-track/{sid}/step?frames=1")
@@ -69,7 +69,7 @@ def test_step_advances_n_frames() -> None:
     client = _client()
     sid = client.post(
         "/sam-track/start",
-        json={"video_url": "v", "frame_idx": 0, "points": [[1, 1]], "labels": [1]},
+        json={"video_url": "https://fake/v.mp4", "frame_idx": 0, "points": [[1, 1]], "labels": [1]},
     ).json()["session_id"]
 
     r = client.post(f"/sam-track/{sid}/step?frames=10")
@@ -89,7 +89,7 @@ def test_release_removes_session() -> None:
     client = _client()
     sid = client.post(
         "/sam-track/start",
-        json={"video_url": "v", "frame_idx": 0, "points": [[0, 0]], "labels": [1]},
+        json={"video_url": "https://fake/v.mp4", "frame_idx": 0, "points": [[0, 0]], "labels": [1]},
     ).json()["session_id"]
     r = client.delete(f"/sam-track/{sid}")
     assert r.status_code == 204
@@ -102,7 +102,7 @@ def test_start_mismatched_points_labels_returns_422() -> None:
     tracker_mod.set_test_tracker_factory(lambda: _FakeTracker())
     r = _client().post(
         "/sam-track/start",
-        json={"video_url": "v", "frame_idx": 0, "points": [[1, 1], [2, 2]], "labels": [1]},
+        json={"video_url": "https://fake/v.mp4", "frame_idx": 0, "points": [[1, 1], [2, 2]], "labels": [1]},
     )
     assert r.status_code == 422
 
@@ -112,9 +112,20 @@ def test_step_invalid_frames_returns_422() -> None:
     client = _client()
     sid = client.post(
         "/sam-track/start",
-        json={"video_url": "v", "frame_idx": 0, "points": [[0, 0]], "labels": [1]},
+        json={"video_url": "https://fake/v.mp4", "frame_idx": 0, "points": [[0, 0]], "labels": [1]},
     ).json()["session_id"]
     r = client.post(f"/sam-track/{sid}/step?frames=0")
     assert r.status_code == 422
     r = client.post(f"/sam-track/{sid}/step?frames=99999")
     assert r.status_code == 422
+
+
+def test_start_rejects_file_scheme_video_url() -> None:
+    """SSRF guard: file:// video URLs must be refused before any tracker init."""
+    tracker_mod.set_test_tracker_factory(lambda: _FakeTracker())
+    r = _client().post(
+        "/sam-track/start",
+        json={"video_url": "file:///etc/passwd", "frame_idx": 0, "points": [[0, 0]], "labels": [1]},
+    )
+    assert r.status_code == 422
+    assert "video_url_scheme_not_allowed" in r.text

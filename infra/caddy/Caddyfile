@@ -12,11 +12,10 @@
     reverse_proxy api:8000
   }
 
-  @model path /model/*
-  handle @model {
-    uri strip_prefix /model
-    reverse_proxy model:8100
-  }
+  # SECURITY: the model service has no authentication of its own. It must NOT
+  # be reachable from the public reverse proxy. Browsers go through the api
+  # service (which gates SAM/YOLO endpoints with JWT + project authorization),
+  # and the api → model link runs over the internal Docker network only.
 
   handle {
     reverse_proxy web:80

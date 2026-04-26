@@ -13,6 +13,7 @@ class WeightTaskKind(str, enum.Enum):
     detect = "detect"
     segment = "segment"
     classify = "classify"
+    pose = "pose"
 
 
 class Weight(Base):
