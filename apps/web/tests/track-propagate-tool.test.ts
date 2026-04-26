@@ -339,4 +339,49 @@ describe("TrackPropagateTool", () => {
     const tool = new TrackPropagateTool("a-1", () => "c-1");
     await expect(tool.step(1)).rejects.toThrow();
   });
+
+  it("addObjectAtFrame throws on obj_id mismatch and does not mutate classByObjId", async () => {
+    (samTrackApi.start as any).mockResolvedValue({
+      session_id: "S-mm",
+      mask_at_start: { counts: "", size: [0, 0] },
+    });
+    // First call: succeeds normally → obj_id 1 registered.
+    (samTrackApi.addObject as any).mockResolvedValueOnce({
+      obj_id: 1,
+      frame_idx: 0,
+    });
+    // Second call: server returns a DIFFERENT obj_id than what was sent.
+    (samTrackApi.addObject as any).mockResolvedValueOnce({
+      obj_id: 99,
+      frame_idx: 0,
+    });
+    const tool = new TrackPropagateTool("a-1", () => "c-1");
+    await tool.startEmpty();
+    await tool.addObjectAtFrame(0, [[1, 1]], [1], "c-A");
+    expect(tool.getObjectIds()).toEqual([1]);
+
+    await expect(
+      tool.addObjectAtFrame(0, [[2, 2]], [1], "c-B"),
+    ).rejects.toThrow(/obj_id mismatch/);
+    // classByObjId must NOT have been mutated by the failed call: only obj_id=1
+    // remains. The "ghost" obj_id=2 (the one we tried to send) and obj_id=99
+    // (the one the server returned) must both be absent.
+    expect(tool.getObjectIds()).toEqual([1]);
+  });
+
+  it("addObjectAtFrame succeeds when server returns the matching obj_id", async () => {
+    (samTrackApi.start as any).mockResolvedValue({
+      session_id: "S-ok",
+      mask_at_start: { counts: "", size: [0, 0] },
+    });
+    (samTrackApi.addObject as any).mockResolvedValue({
+      obj_id: 1,
+      frame_idx: 0,
+    });
+    const tool = new TrackPropagateTool("a-1", () => "c-1");
+    await tool.startEmpty();
+    const id = await tool.addObjectAtFrame(0, [[1, 1]], [1], "c-A");
+    expect(id).toBe(1);
+    expect(tool.getObjectIds()).toEqual([1]);
+  });
 });

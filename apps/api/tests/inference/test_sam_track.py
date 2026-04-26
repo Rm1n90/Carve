@@ -286,3 +286,44 @@ def test_add_object_validates_obj_id_upper_bound(db_session, monkeypatch) -> Non
         headers=_hdr(token),
     )
     assert r.status_code == 422
+
+
+def test_add_object_endpoint_forwards_boxes_to_model_service(db_session, monkeypatch) -> None:
+    """End-to-end: POST /sam-track/{sid}/objects with `boxes` (no points)
+    must forward the boxes payload verbatim to the model service."""
+    client = _client(db_session)
+    token, aid = _setup_video_asset(client, monkeypatch)
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sam-track/S-7/objects":
+            import json
+            captured["body"] = json.loads(request.content.decode())
+            captured["path"] = request.url.path
+            return httpx.Response(200, json={"obj_id": 2, "frame_idx": 5})
+        return httpx.Response(404)
+    model_client_mod.set_test_transport(httpx.MockTransport(handler))
+    try:
+        r = client.post(
+            f"/assets/{aid}/sam-track/S-7/objects",
+            json={
+                "frame_idx": 5,
+                "obj_id": 2,
+                "points": [],
+                "labels": [],
+                "boxes": [[10, 20, 100, 200]],
+            },
+            headers=_hdr(token),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == {"obj_id": 2, "frame_idx": 5}
+        # Verify the proxy forwarded boxes verbatim, with no points/labels.
+        assert captured["path"] == "/sam-track/S-7/objects"
+        assert captured["body"]["obj_id"] == 2
+        assert captured["body"]["frame_idx"] == 5
+        assert captured["body"]["boxes"] == [[10, 20, 100, 200]]
+        assert captured["body"]["points"] == []
+        assert captured["body"]["labels"] == []
+    finally:
+        model_client_mod.set_test_transport(None)
