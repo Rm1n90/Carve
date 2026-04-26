@@ -22,7 +22,7 @@ Tag history: <https://github.com/your-org/VisualAutoAnnotator/tags> (replace wit
 
 ## Features
 
-- **Tasks**: detection (boxes), segmentation (polygons + binary masks), classification — manual or YOLO-assisted.
+- **Tasks**: detection (boxes), segmentation (polygons + binary masks), classification — manual or YOLO-assisted. Compatible with YOLO11 and **YOLO26** (Jan 2026) detection / segmentation / classification weights out of the box; pose and OBB weights load but are v2-deferred in the editor UI.
 - **Smart annotation**: SAM 2.1 click-to-mask (positive / negative points), SAM 3 text prompts ("person", "yellow truck"), browser-side WebGPU decoder fallback for sub-30 ms clicks.
 - **Video tracking**: SAM 2 point-based propagation across frames, or SAM 3 concept-based tracking driven by a text query.
 - **Export**: YOLO (det + seg) and COCO (det + seg) with per-class remap, train/val/test split, and skipped-asset reports.

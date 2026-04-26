@@ -57,3 +57,37 @@ def test_default_loader_is_ultralytics_yolo():
     src = inspect.getsource(r_mod._default_loader)
     assert "from ultralytics import YOLO" in src
     assert "YOLO(str(weights_path))" in src
+
+
+# All 25 YOLO26 variant filenames. The loader is version-agnostic — these
+# names just hit the disk, the actual ultralytics.YOLO() detects the
+# architecture from the .pt magic bytes / metadata. Our test seeds a fake
+# .pt file to confirm the registry layer doesn't filter or rewrite the
+# filename.
+YOLO26_VARIANTS = [
+    "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt", "yolo26x.pt",
+    "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt", "yolo26l-seg.pt", "yolo26x-seg.pt",
+    "yolo26n-cls.pt", "yolo26s-cls.pt", "yolo26m-cls.pt", "yolo26l-cls.pt", "yolo26x-cls.pt",
+    "yolo26n-pose.pt", "yolo26s-pose.pt", "yolo26m-pose.pt", "yolo26l-pose.pt", "yolo26x-pose.pt",
+    "yolo26n-obb.pt", "yolo26s-obb.pt", "yolo26m-obb.pt", "yolo26l-obb.pt", "yolo26x-obb.pt",
+]
+
+
+@pytest.mark.parametrize("filename", YOLO26_VARIANTS)
+def test_registry_accepts_yolo26_variant_filenames(tmp_path, filename):
+    """All 25 YOLO26 variants flow through the existing loader factory.
+    The registry doesn't filter on filename pattern — it accepts any path
+    and forwards it to the loader callable."""
+    weights = tmp_path / filename
+    weights.write_bytes(b"\x00" * 16)  # fake .pt; the fake loader doesn't parse it
+
+    captured: dict[str, object] = {}
+
+    def _capture_loader(p):
+        captured["path"] = p
+        return _FakeYoloModel(p)
+
+    reg = WeightRegistry(capacity=2, loader=_capture_loader)
+    model = reg.load(filename, weights)
+    assert hasattr(model, "predict")
+    assert captured["path"] == weights
