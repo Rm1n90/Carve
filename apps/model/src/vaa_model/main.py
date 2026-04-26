@@ -1,5 +1,8 @@
 from fastapi import FastAPI
 
+from vaa_model.gpu import get_device
+from vaa_model.yolo.router import router as yolo_router
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="VisualAutoAnnotator Model Service", version="0.1.0")
@@ -9,10 +12,13 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/capabilities")
-    def capabilities() -> dict[str, list[str]]:
-        # Plan 05 will populate this with actual models loaded in VRAM.
-        return {"models": []}
+    def capabilities() -> dict:
+        return {
+            "models": ["yolo"],
+            "device": get_device(),
+        }
 
+    app.include_router(yolo_router)
     return app
 
 
