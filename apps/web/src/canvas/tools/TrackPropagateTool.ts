@@ -108,15 +108,22 @@ export class TrackPropagateTool {
     if (this.sessionId === null) {
       throw new Error("TrackPropagateTool: not started");
     }
-    const objId = this.nextObjId++;
-    await samTrackApi.addObject(this.assetId, this.sessionId, {
+    const sentObjId = this.nextObjId++;
+    const response = await samTrackApi.addObject(this.assetId, this.sessionId, {
       frame_idx: frameIdx,
-      obj_id: objId,
+      obj_id: sentObjId,
       points,
       labels,
     });
-    this.classByObjId.set(objId, classId);
-    return objId;
+    if (response.obj_id !== sentObjId) {
+      // Defensive: don't mutate classByObjId — server returned an unexpected
+      // id, so the mapping would key off the wrong obj_id at commit() time.
+      throw new Error(
+        `TrackPropagateTool: obj_id mismatch — sent ${sentObjId}, got ${response.obj_id}`,
+      );
+    }
+    this.classByObjId.set(sentObjId, classId);
+    return sentObjId;
   }
 
   /** Advance N frames; returns the per-frame, per-object steps for this batch. */
