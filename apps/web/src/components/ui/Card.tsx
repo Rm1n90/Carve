@@ -2,18 +2,20 @@ import { forwardRef, type HTMLAttributes } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/cn";
 
-const cardStyles = cva(["transition-all duration-200"], {
+/**
+ * Flat surface card. No glassmorphism. Subtle border + optional 1px shadow.
+ * Variants kept for legacy callsites; all map to the same flat appearance.
+ */
+const cardStyles = cva(["transition-colors duration-150"], {
   variants: {
     variant: {
-      surface:
-        "bg-[var(--bg-surface)] border border-[var(--border-subtle)] shadow-[var(--shadow-elev-1)]",
+      surface: "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
       raised:
-        "bg-[var(--bg-raised)] border border-[var(--border-subtle)] shadow-[var(--shadow-elev-2)]",
-      glass:
-        "bg-[var(--bg-glass)] backdrop-blur-md border border-[var(--border-subtle)] shadow-[var(--shadow-elev-2)]",
+        "bg-[var(--bg-elev)] border border-[var(--border-subtle)] shadow-[var(--shadow-elev-1)]",
+      glass: "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
       "glass-strong":
-        "bg-[var(--bg-glass-strong)] backdrop-blur-xl border border-[var(--border-subtle)] shadow-[var(--shadow-elev-3)]",
-      sunken: "bg-[var(--bg-sunken)] border border-[var(--border-subtle)]",
+        "bg-[var(--bg-elev)] border border-[var(--border-subtle)] shadow-[var(--shadow-elev-1)]",
+      sunken: "bg-[var(--bg-subtle)] border border-[var(--border-subtle)]",
     },
     radius: {
       sm: "rounded-[var(--radius-sm)]",
@@ -22,13 +24,13 @@ const cardStyles = cva(["transition-all duration-200"], {
       xl: "rounded-[var(--radius-xl)]",
     },
     interactive: {
-      true: "hover:border-[var(--border-strong)] hover:shadow-[var(--shadow-elev-2)] hover:-translate-y-px",
+      true: "hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] cursor-pointer",
       false: "",
     },
   },
   defaultVariants: {
     variant: "surface",
-    radius: "lg",
+    radius: "md",
     interactive: false,
   },
 });

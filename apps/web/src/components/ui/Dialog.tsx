@@ -12,13 +12,13 @@ const ANIM_OVERLAY = {
   initial: { opacity: 0 },
   animate: { opacity: 1 },
   exit: { opacity: 0 },
-  transition: { duration: 0.18 },
+  transition: { duration: 0.15 },
 };
 const ANIM_PANEL = {
-  initial: { opacity: 0, scale: 0.96, y: 8 },
+  initial: { opacity: 0, scale: 0.98, y: 4 },
   animate: { opacity: 1, scale: 1, y: 0 },
-  exit: { opacity: 0, scale: 0.97, y: 4 },
-  transition: { duration: 0.22, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] },
+  exit: { opacity: 0, scale: 0.99, y: 2 },
+  transition: { duration: 0.18, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] },
 };
 
 interface DialogContentProps {
@@ -36,7 +36,7 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
           <DialogPrimitive.Overlay asChild forceMount>
             <motion.div
               {...ANIM_OVERLAY}
-              className="fixed inset-0 z-[900] bg-[oklch(0.06_0.012_240_/_0.6)] backdrop-blur-sm"
+              className="fixed inset-0 z-[900] bg-[rgba(15,23,42,0.32)]"
             />
           </DialogPrimitive.Overlay>
           <DialogPrimitive.Content asChild forceMount>
@@ -45,9 +45,9 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
               {...ANIM_PANEL}
               className={cn(
                 "fixed left-1/2 top-1/2 z-[901] -translate-x-1/2 -translate-y-1/2",
-                "w-[min(92vw,560px)] max-h-[88vh] overflow-auto",
+                "w-[min(92vw,520px)] max-h-[88vh] overflow-auto",
                 "rounded-[var(--radius-lg)] border border-[var(--border-subtle)]",
-                "bg-[var(--bg-glass-strong)] backdrop-blur-2xl",
+                "bg-[var(--bg-elev)]",
                 "shadow-[var(--shadow-elev-3)]",
                 "p-6",
                 className,
@@ -57,9 +57,9 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
               {showClose && (
                 <DialogPrimitive.Close
                   className={cn(
-                    "absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center",
-                    "rounded-[var(--radius-sm)] text-tertiary",
-                    "hover:bg-[var(--bg-surface)] hover:text-primary",
+                    "absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center",
+                    "rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)]",
+                    "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
                     "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
                   )}
                   aria-label="Close dialog"
@@ -82,7 +82,7 @@ export function DialogHeader({ children, className }: { children: ReactNode; cla
 export function DialogTitle({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <DialogPrimitive.Title
-      className={cn("text-[20px] font-medium tracking-tight text-primary", className)}
+      className={cn("text-[16px] font-medium tracking-tight text-[color:var(--text-primary)]", className)}
     >
       {children}
     </DialogPrimitive.Title>
@@ -97,7 +97,7 @@ export function DialogDescription({
   className?: string;
 }) {
   return (
-    <DialogPrimitive.Description className={cn("text-[13px] text-secondary", className)}>
+    <DialogPrimitive.Description className={cn("text-[13px] text-[color:var(--text-secondary)]", className)}>
       {children}
     </DialogPrimitive.Description>
   );

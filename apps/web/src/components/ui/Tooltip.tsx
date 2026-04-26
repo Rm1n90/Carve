@@ -30,11 +30,11 @@ export function Tooltip({
           align={align}
           sideOffset={6}
           className={cn(
-            "z-[1000] px-2.5 py-1.5",
+            "z-[1000] px-2 py-1",
             "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-            "bg-[var(--bg-glass-strong)] backdrop-blur-xl text-primary",
-            "shadow-[var(--shadow-elev-3)]",
-            "text-[12px] font-medium tracking-tight",
+            "bg-[#111827] text-white",
+            "shadow-[var(--shadow-elev-2)]",
+            "text-[11px] font-medium tracking-tight",
             className,
           )}
         >

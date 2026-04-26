@@ -71,7 +71,7 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
         <FileImage
           className={cn(
             "h-7 w-7 transition-colors",
-            isDragActive ? "text-[var(--accent)]" : "text-tertiary",
+            isDragActive ? "text-[color:var(--accent)]" : "text-tertiary",
           )}
         />
         <p className="text-[13px] text-secondary tracking-tight text-center">
@@ -82,12 +82,12 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
       </div>
       {upload.isPending && (
         <p className="flex items-center gap-2 text-tertiary text-[12px]">
-          <Upload className="h-3.5 w-3.5 animate-pulse text-[var(--accent)]" />
+          <Upload className="h-3.5 w-3.5 animate-pulse text-[color:var(--accent)]" />
           Uploaded {done} files…
         </p>
       )}
       {errors.length > 0 && (
-        <ul role="alert" className="grid gap-1 text-[var(--danger)] text-[12px]">
+        <ul role="alert" className="grid gap-1 text-[color:var(--danger)] text-[12px]">
           {errors.map((e, i) => (
             <li key={i}>
               <span className="font-mono-data text-tertiary mr-2">{e.name}:</span>

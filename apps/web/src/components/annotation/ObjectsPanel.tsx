@@ -56,7 +56,7 @@ export function ObjectsPanel({ frameId }: { frameId: string | null }) {
                   e.stopPropagation();
                   if (confirm(`Delete this ${a.kind}?`)) remove(a.tempId);
                 }}
-                className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] text-tertiary opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[oklch(0.70_0.20_25_/_0.10)] hover:text-[var(--danger)]"
+                className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] text-tertiary opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[oklch(0.70_0.20_25_/_0.10)] hover:text-[color:var(--danger)]"
               >
                 <X className="h-3 w-3" />
               </button>

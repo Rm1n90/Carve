@@ -154,7 +154,7 @@ export function ExportDialog({ projectId, taskId }: Props) {
           className={
             sumValid
               ? "font-mono-data text-[11px] text-tertiary"
-              : "font-mono-data text-[11px] text-[var(--warning)]"
+              : "font-mono-data text-[11px] text-[color:var(--warning)]"
           }
         >
           Sum: {splitSum.toFixed(2)}
@@ -244,7 +244,7 @@ export function ExportDialog({ projectId, taskId }: Props) {
           <a
             href={progressQ.data.download_url}
             download
-            className="inline-flex items-center gap-1.5 text-[var(--success)] hover:underline tracking-tight"
+            className="inline-flex items-center gap-1.5 text-[color:var(--success)] hover:underline tracking-tight"
           >
             <Download className="h-4 w-4" />
             Download
@@ -253,7 +253,7 @@ export function ExportDialog({ projectId, taskId }: Props) {
       )}
 
       {status === "failed" && (
-        <p role="alert" className="text-[var(--danger)] text-[13px]">
+        <p role="alert" className="text-[color:var(--danger)] text-[13px]">
           {progressQ.data?.error ?? "Export failed."}
         </p>
       )}

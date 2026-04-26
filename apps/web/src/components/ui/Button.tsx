@@ -7,36 +7,40 @@ const buttonStyles = cva(
   [
     "inline-flex items-center justify-center gap-2",
     "font-medium tracking-tight whitespace-nowrap select-none",
-    "transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)]",
+    "transition-colors duration-150",
     "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
-    "disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none",
+    "disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none",
     "border",
   ],
   {
     variants: {
       variant: {
         primary: [
-          "bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)]",
-          "hover:bg-[var(--accent-hover)] active:bg-[var(--accent-active)]",
-          "shadow-[var(--shadow-elev-1)]",
+          "bg-[var(--accent)] text-white border-[var(--accent)]",
+          "hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]",
+          "active:bg-[var(--accent-active)]",
         ],
         secondary: [
-          "bg-[var(--bg-raised)] text-[var(--text-primary)] border-[var(--border-subtle)]",
-          "hover:bg-[var(--bg-surface)] hover:border-[var(--border-strong)]",
+          "bg-[var(--bg-elev)] text-[color:var(--text-primary)] border-[var(--border-subtle)]",
+          "hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)]",
         ],
         ghost: [
-          "bg-transparent text-[var(--text-secondary)] border-transparent",
-          "hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]",
+          "bg-transparent text-[color:var(--text-secondary)] border-transparent",
+          "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+        ],
+        success: [
+          "bg-[var(--success)] text-white border-[var(--success)]",
+          "hover:bg-[var(--success-hover)] hover:border-[var(--success-hover)]",
         ],
         danger: [
-          "bg-[oklch(0.70_0.20_25_/_0.12)] text-[var(--danger)] border-[oklch(0.70_0.20_25_/_0.4)]",
-          "hover:bg-[oklch(0.70_0.20_25_/_0.20)] hover:border-[var(--danger)]",
+          "bg-[var(--bg-elev)] text-[color:var(--danger)] border-[var(--border-subtle)]",
+          "hover:bg-[var(--danger-bg)] hover:border-[var(--danger)]",
         ],
       },
       size: {
-        sm: "h-8 px-3 text-[13px] rounded-[var(--radius-sm)]",
-        md: "h-10 px-4 text-[14px] rounded-[var(--radius-md)]",
-        lg: "h-12 px-6 text-[15px] rounded-[var(--radius-md)]",
+        sm: "h-7 px-2.5 text-[12px] rounded-[var(--radius-sm)]",
+        md: "h-9 px-3.5 text-[13px] rounded-[var(--radius-md)]",
+        lg: "h-10 px-4 text-[14px] rounded-[var(--radius-md)]",
       },
       block: {
         true: "w-full",

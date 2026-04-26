@@ -32,7 +32,7 @@ const cardClass =
 const headingClass =
   "text-[12px] uppercase tracking-[0.10em] text-tertiary font-medium";
 const placeholderClass = "text-[13px] text-tertiary";
-const errorClass = "text-[13px] text-[var(--danger)]";
+const errorClass = "text-[13px] text-[color:var(--danger)]";
 
 const SIZE_COLORS: Record<keyof SizeDistribution, string> = {
   small: "oklch(0.78 0.16 215)",

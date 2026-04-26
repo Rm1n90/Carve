@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, AlertCircle } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { AuthShell } from "@/components/layout/AuthShell";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -35,23 +35,21 @@ export function LoginPage({ onSuccess }: Props) {
 
   return (
     <AuthShell
-      headline={<>Carve.</>}
-      subtitle="Visual annotation, on your own infrastructure."
-      cardTitle="Sign in"
-      cardDescription="Welcome back. Enter your credentials to continue."
+      cardTitle="Sign in to Carve"
+      cardDescription="Welcome back."
       cardFooter={
         <span>
           Need an account?{" "}
           <Link
             to="/register"
-            className="text-[var(--accent)] hover:text-[var(--accent-hover)] tracking-tight font-medium"
+            className="text-[color:var(--accent)] hover:text-[color:var(--accent-hover)] font-medium"
           >
             Register
           </Link>
         </span>
       }
     >
-      <form onSubmit={onSubmit} className="grid gap-4" noValidate>
+      <form onSubmit={onSubmit} className="grid gap-3" noValidate>
         <Input
           label="Email"
           type="email"
@@ -74,20 +72,13 @@ export function LoginPage({ onSuccess }: Props) {
         {error && (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-[var(--radius-md)] border border-[oklch(0.70_0.20_25_/_0.40)] bg-[oklch(0.70_0.20_25_/_0.08)] px-3 py-2 text-[13px] text-[var(--danger)]"
+            className="flex items-start gap-2 rounded-[var(--radius-md)] border border-[#fecaca] bg-[var(--danger-bg)] px-3 py-2 text-[13px] text-[color:var(--danger)]"
           >
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             <span>{error}</span>
           </div>
         )}
-        <Button
-          type="submit"
-          variant="primary"
-          size="lg"
-          block
-          loading={busy}
-          rightIcon={!busy && <ArrowRight className="h-4 w-4" />}
-        >
+        <Button type="submit" variant="primary" size="lg" block loading={busy}>
           {busy ? "Signing in" : "Sign in"}
         </Button>
       </form>

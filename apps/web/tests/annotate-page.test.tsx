@@ -37,6 +37,27 @@ vi.mock("@/components/annotation/AnnotationCanvas", () => ({
   AnnotationCanvas: () => <div data-testid="annotation-canvas" />,
 }));
 
+// Avoid router-coupled chrome in unit tests; the editor page wraps these
+// internally but the test only cares about the save-now wiring.
+vi.mock("@/components/nav/TopBar", () => ({
+  TopBar: () => <div data-testid="top-bar" />,
+}));
+vi.mock("@/components/nav/LeftNav", () => ({
+  LeftNav: () => <div data-testid="left-nav" />,
+}));
+vi.mock("@/components/nav/BottomBar", () => ({
+  BottomBar: ({ filename }: { filename: string }) => (
+    <div data-testid="bottom-bar">{filename}</div>
+  ),
+}));
+
+vi.mock("@/api/projects", () => ({
+  projectsApi: {
+    list: vi.fn().mockResolvedValue([]),
+    get: vi.fn().mockResolvedValue({ id: "p-1", name: "P1", description: null }),
+  },
+}));
+
 import { AnnotateAssetPage } from "@/pages/AnnotateAssetPage";
 import { useAnnotations } from "@/state/annotations";
 import { annotationsApi } from "@/api/annotations";
@@ -56,6 +77,23 @@ describe("AnnotateAssetPage", () => {
     render(wrap(<AnnotateAssetPage projectId="p-1" taskId="t-1" assetId="a-1" />));
     expect(await screen.findByText("a.png")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /save now/i })).toBeInTheDocument();
+  });
+
+  it("renders the three-column editor layout (toolbar + canvas + classes panel)", async () => {
+    render(wrap(<AnnotateAssetPage projectId="p-1" taskId="t-1" assetId="a-1" />));
+    await screen.findByText("a.png");
+    // Toolbar (the EditorToolbar) — role="toolbar", aria-label "Annotation tools".
+    expect(
+      screen.getByRole("toolbar", { name: /annotation tools/i }),
+    ).toBeInTheDocument();
+    // Right panel — role="complementary" labelled "Classes". The page wraps the
+    // ClassesPanel in an <aside aria-label="Classes"> and the ClassesPanel itself
+    // exposes a complementary section so getByRole returns the outer aside.
+    expect(
+      screen.getAllByRole("complementary", { name: /classes/i }).length,
+    ).toBeGreaterThan(0);
+    // Canvas mount point (mocked above as a div with this testid).
+    expect(screen.getByTestId("annotation-canvas")).toBeInTheDocument();
   });
 
   it("Save now triggers annotationsApi.batch with current dirty drafts", async () => {

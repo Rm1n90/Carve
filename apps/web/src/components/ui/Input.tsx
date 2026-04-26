@@ -28,14 +28,14 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       {label && (
         <label
           htmlFor={inputId}
-          className="text-[12px] uppercase tracking-[0.08em] text-tertiary font-medium"
+          className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium"
         >
           {label}
         </label>
       )}
       <div className="relative">
         {leftIcon && (
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-tertiary pointer-events-none">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[color:var(--text-tertiary)] pointer-events-none">
             {leftIcon}
           </span>
         )}
@@ -45,35 +45,35 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? errorId : hint ? hintId : undefined}
           className={cn(
-            "w-full h-10 rounded-[var(--radius-md)]",
-            "bg-[var(--bg-sunken)] text-primary placeholder:text-tertiary",
+            "w-full h-9 rounded-[var(--radius-md)]",
+            "bg-[var(--bg-elev)] text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
             "border border-[var(--border-subtle)]",
-            "px-3.5 py-2 text-[14px]",
+            "px-3 py-2 text-[13px]",
             "transition-colors duration-150",
             "hover:border-[var(--border-strong)]",
-            "focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[oklch(0.78_0.16_215_/_0.25)]",
-            "disabled:opacity-40 disabled:cursor-not-allowed",
-            leftIcon && "pl-10",
-            rightIcon && "pr-10",
+            "focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[rgba(99,102,241,0.18)]",
+            "disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-[var(--bg-hover)]",
+            leftIcon && "pl-9",
+            rightIcon && "pr-9",
             error &&
-              "border-[var(--danger)] focus:border-[var(--danger)] focus:ring-[oklch(0.70_0.20_25_/_0.25)]",
+              "border-[var(--danger)] focus:border-[var(--danger)] focus:ring-[rgba(220,38,38,0.18)]",
             className,
           )}
           {...rest}
         />
         {rightIcon && (
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-tertiary">
+          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[color:var(--text-tertiary)]">
             {rightIcon}
           </span>
         )}
       </div>
       {hint && !error && (
-        <p id={hintId} className="text-[12px] text-tertiary">
+        <p id={hintId} className="text-[12px] text-[color:var(--text-tertiary)]">
           {hint}
         </p>
       )}
       {error && (
-        <p id={errorId} role="alert" className="text-[12px] text-[var(--danger)]">
+        <p id={errorId} role="alert" className="text-[12px] text-[color:var(--danger)]">
           {error}
         </p>
       )}

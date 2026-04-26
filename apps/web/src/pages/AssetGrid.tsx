@@ -41,7 +41,7 @@ function AssetTile({
           />
         )}
         {asset.kind === "video" && (
-          <div className="grid h-full place-items-center text-[var(--accent)]">
+          <div className="grid h-full place-items-center text-[color:var(--accent)]">
             <Video className="h-8 w-8" />
           </div>
         )}
@@ -59,7 +59,7 @@ export function AssetGrid({ projectId, taskId }: { projectId: string; taskId: st
     queryFn: () => assetsApi.listForTask(taskId),
   });
   if (q.isLoading) return <p className="text-tertiary text-[13px]">Loading…</p>;
-  if (q.error) return <p className="text-[var(--danger)] text-[13px]">Failed to load assets.</p>;
+  if (q.error) return <p className="text-[color:var(--danger)] text-[13px]">Failed to load assets.</p>;
   if (!q.data || q.data.length === 0) {
     return (
       <p className="text-tertiary text-[13px] italic">No assets yet — drop some files above.</p>

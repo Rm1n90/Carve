@@ -19,6 +19,10 @@ const TOOLS: ToolDef[] = [
   { name: "sam", label: "Magic wand (SAM)", hotkey: "S", icon: <Wand2 className="h-[18px] w-[18px]" /> },
 ];
 
+/**
+ * Standalone tool dock used in tests / SAM-tool tests. The editor page
+ * itself uses `EditorToolbar` (a horizontal strip with save status).
+ */
 export function Toolbar() {
   const active = useTool((s) => s.active);
   const setActive = useTool((s) => s.setActive);
@@ -41,9 +45,8 @@ export function Toolbar() {
       role="toolbar"
       aria-label="Annotation tools"
       className={cn(
-        "flex w-14 shrink-0 flex-col items-center gap-1 px-2 py-3",
-        "border-r border-[var(--border-subtle)]",
-        "bg-[var(--bg-glass-strong)] backdrop-blur-xl",
+        "flex w-12 shrink-0 flex-col items-center gap-1 px-1 py-2",
+        "border-r border-[var(--border-subtle)] bg-[var(--bg-app)]",
       )}
     >
       {TOOLS.map((t) => {
@@ -57,12 +60,11 @@ export function Toolbar() {
             onClick={() => setActive(t.name)}
             title={`${t.label} — ${t.hotkey}`}
             className={cn(
-              "relative grid h-10 w-10 place-items-center rounded-[var(--radius-md)]",
-              "transition-all duration-150",
+              "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors",
               "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
               isActive
-                ? "bg-[var(--accent-bg)] text-[var(--accent)] border border-[var(--border-accent)] shadow-[0_0_0_1px_var(--border-accent),_0_0_18px_oklch(0.78_0.16_215_/_0.18)]"
-                : "bg-transparent text-secondary border border-transparent hover:bg-[var(--bg-surface)] hover:text-primary",
+                ? "bg-[var(--accent-bg)] text-[color:var(--accent)]"
+                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
             )}
           >
             {t.icon}

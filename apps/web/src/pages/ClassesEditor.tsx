@@ -4,6 +4,7 @@ import { Trash2, Plus } from "lucide-react";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { cn } from "@/lib/cn";
 
 export function ClassesEditor({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
@@ -22,7 +23,7 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
   });
 
   const [name, setName] = useState("");
-  const [color, setColor] = useState("#ff0000");
+  const [color, setColor] = useState("#6366f1");
   const nextIdx = (q.data ?? []).reduce((m, c) => Math.max(m, c.idx + 1), 0);
 
   async function onSubmit(e: FormEvent) {
@@ -32,17 +33,21 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
   }
 
   return (
-    <section className="grid gap-4">
-      <header className="flex items-end justify-between">
-        <h2 className="text-[18px] font-medium tracking-tight text-primary">Classes</h2>
-        <span className="font-mono-data text-[11px] text-tertiary">
+    <section className="grid gap-3">
+      <header className="flex items-center justify-between">
+        <h2 className="text-[14px] font-medium tracking-tight text-[color:var(--text-primary)]">
+          Classes
+        </h2>
+        <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
           {q.data?.length ?? 0} defined
         </span>
       </header>
 
       <form
         onSubmit={onSubmit}
-        className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4"
+        className={cn(
+          "grid gap-2.5 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-3",
+        )}
       >
         <Input
           label="Class name"
@@ -53,9 +58,9 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <div className="flex items-end gap-3">
+        <div className="flex items-end gap-2">
           <label className="grid gap-1.5">
-            <span className="text-[12px] uppercase tracking-[0.08em] text-tertiary font-medium">
+            <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
               Color
             </span>
             <input
@@ -63,7 +68,7 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
               aria-label="Color"
               value={color}
               onChange={(e) => setColor(e.target.value)}
-              className="h-10 w-12 cursor-pointer rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)]"
+              className="h-9 w-12 cursor-pointer rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]"
             />
           </label>
           <Button
@@ -79,30 +84,35 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
         </div>
       </form>
 
-      {q.isLoading && <p className="text-tertiary text-[13px]">Loading…</p>}
+      {q.isLoading && <p className="text-[color:var(--text-tertiary)] text-[13px]">Loading…</p>}
       {q.data && q.data.length === 0 && (
-        <p className="text-tertiary text-[13px] italic px-1">No classes defined yet.</p>
+        <p className="text-[color:var(--text-tertiary)] text-[13px] italic px-1">No classes defined yet.</p>
       )}
-      <ul className="grid gap-1.5">
+      <ul className="grid gap-1">
         {q.data?.map((c: ClassRow) => (
           <li
             key={c.id}
-            className="flex items-center gap-3 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 transition-colors hover:border-[var(--border-strong)]"
+            className={cn(
+              "flex items-center gap-2.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-3 py-1.5",
+              "transition-colors hover:border-[var(--border-strong)]",
+            )}
           >
             <span
               aria-label={`Class ${c.idx} color`}
-              className="h-4 w-4 shrink-0 rounded-[3px] border border-[var(--border-strong)]"
+              className="h-3 w-3 shrink-0 rounded-full border border-[var(--border-strong)]"
               style={{ background: c.color }}
             />
-            <span className="font-mono-data text-tertiary text-[10px] w-6">#{c.idx}</span>
-            <span className="flex-1 text-[13px] tracking-tight text-primary">{c.name}</span>
+            <span className="font-mono text-[10px] text-[color:var(--text-tertiary)] w-6">#{c.idx}</span>
+            <span className="flex-1 text-[13px] tracking-tight text-[color:var(--text-primary)] truncate">
+              {c.name}
+            </span>
             <button
               type="button"
               onClick={() => {
                 if (confirm(`Delete class "${c.name}"?`)) remove.mutate(c.id);
               }}
               aria-label={`Delete class ${c.name}`}
-              className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] text-tertiary transition-colors hover:bg-[oklch(0.70_0.20_25_/_0.10)] hover:text-[var(--danger)]"
+              className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] transition-colors hover:bg-[var(--danger-bg)] hover:text-[color:var(--danger)]"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>

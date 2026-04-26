@@ -1,102 +1,69 @@
 import { type ReactNode } from "react";
-import { motion } from "framer-motion";
 import { cn } from "@/lib/cn";
 
 interface AuthShellProps {
-  /** Headline shown on the editorial left pane (will be wrapped in italic serif). */
-  headline: ReactNode;
-  /** Lead paragraph under the headline. */
-  subtitle: ReactNode;
-  /** Optional decorative content below subtitle (e.g. step indicator, bullet list). */
-  leftMeta?: ReactNode;
-  /** Right-side card title (Geist Medium). */
   cardTitle: ReactNode;
-  /** Right-side card description shown under the title. */
   cardDescription?: ReactNode;
-  /** Right-side card body — the form. */
   children: ReactNode;
-  /** Footer slot — link to the alternate auth screen. */
   cardFooter?: ReactNode;
+  /** Optional row of inline icons + labels above the form (used by FirstRunWizard). */
+  topInline?: ReactNode;
+  /** Card max width, defaults to 420px. */
+  maxWidth?: number;
 }
 
+/**
+ * Auth wrapper — simple centered card on a white background. No
+ * editorial bleed, no mesh gradient, no Instrument Serif. Friendly but
+ * minimal.
+ */
 export function AuthShell({
-  headline,
-  subtitle,
-  leftMeta,
   cardTitle,
   cardDescription,
   children,
   cardFooter,
+  topInline,
+  maxWidth = 420,
 }: AuthShellProps) {
   return (
-    <div className="grid min-h-screen grid-cols-1 lg:grid-cols-2 bg-base">
-      {/* ---- Left: editorial bleed ---- */}
-      <aside
+    <div className="grid min-h-screen place-items-center bg-[var(--bg-app)] px-4 py-10">
+      <div
         className={cn(
-          "gradient-mesh relative flex flex-col justify-between",
-          "p-10 lg:p-14",
-          "min-h-[280px] lg:min-h-screen",
-          "border-b lg:border-b-0 lg:border-r border-[var(--border-subtle)]",
+          "w-full",
+          "rounded-[var(--radius-lg)] border border-[var(--border-subtle)]",
+          "bg-[var(--bg-elev)]",
+          "shadow-[var(--shadow-elev-1)]",
+          "p-6 sm:p-8",
         )}
+        style={{ maxWidth: `${maxWidth}px` }}
       >
-        <div className="flex items-center gap-2.5 text-primary">
-          <span className="font-mono-data text-[11px] tracking-[0.18em] text-tertiary uppercase">
-            Carve · v2.0
+        <div className="mb-5 flex items-center gap-2">
+          <span
+            aria-hidden
+            className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-white text-[14px] font-semibold tracking-tight"
+          >
+            C
+          </span>
+          <span className="text-[14px] font-semibold tracking-tight text-[color:var(--text-primary)]">
+            Carve
           </span>
         </div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-          className="grid gap-5 max-w-[520px]"
-        >
-          <h1 className="editorial text-[64px] sm:text-[80px] lg:text-[96px] text-primary leading-[0.92]">
-            {headline}
-          </h1>
-          <p className="text-[16px] sm:text-[18px] text-secondary tracking-tight max-w-[460px]">
-            {subtitle}
-          </p>
-          {leftMeta}
-        </motion.div>
-
-        <footer className="text-[11px] text-tertiary font-mono-data tracking-wide flex items-center gap-3">
-          <span>Self-hosted</span>
-          <span aria-hidden>·</span>
-          <span>S3 + Postgres + Redis</span>
-          <span aria-hidden>·</span>
-          <span>SAM-Hiera ready</span>
-        </footer>
-      </aside>
-
-      {/* ---- Right: glass card ---- */}
-      <section className="flex items-center justify-center p-6 sm:p-10">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.97, y: 12 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
-          className={cn(
-            "w-full max-w-[420px]",
-            "rounded-[var(--radius-xl)] border border-[var(--border-subtle)]",
-            "bg-[var(--bg-glass-strong)] backdrop-blur-2xl",
-            "shadow-[var(--shadow-elev-3),_0_0_60px_oklch(0.78_0.16_215_/_0.10)]",
-            "p-8 sm:p-10",
+        <header className="mb-5 grid gap-1">
+          <h2 className="text-[22px] font-medium tracking-tight text-[color:var(--text-primary)]">
+            {cardTitle}
+          </h2>
+          {cardDescription && (
+            <p className="text-[13px] text-[color:var(--text-tertiary)]">{cardDescription}</p>
           )}
-        >
-          <header className="mb-6 grid gap-1">
-            <h2 className="text-[24px] sm:text-[28px] font-medium tracking-tight text-primary">
-              {cardTitle}
-            </h2>
-            {cardDescription && (
-              <p className="text-[13px] text-secondary">{cardDescription}</p>
-            )}
-          </header>
-          {children}
-          {cardFooter && (
-            <footer className="mt-6 text-[13px] text-tertiary text-center">{cardFooter}</footer>
-          )}
-        </motion.div>
-      </section>
+        </header>
+        {topInline}
+        {children}
+        {cardFooter && (
+          <footer className="mt-5 text-[13px] text-[color:var(--text-tertiary)] text-left">
+            {cardFooter}
+          </footer>
+        )}
+      </div>
     </div>
   );
 }

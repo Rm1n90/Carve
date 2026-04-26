@@ -5,32 +5,36 @@ import { cn } from "@/lib/cn";
 const iconButtonStyles = cva(
   [
     "inline-flex items-center justify-center",
-    "transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)]",
+    "transition-colors duration-150",
     "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
-    "disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none",
+    "disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none",
     "border",
   ],
   {
     variants: {
       variant: {
         default: [
-          "bg-transparent text-[var(--text-secondary)] border-transparent",
-          "hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] hover:border-[var(--border-subtle)]",
+          "bg-transparent text-[color:var(--text-secondary)] border-transparent",
+          "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
         ],
         active: [
-          "bg-[var(--accent-bg)] text-[var(--accent)] border-[var(--border-accent)]",
-          "shadow-[0_0_0_1px_var(--border-accent),_0_0_18px_oklch(0.78_0.16_215_/_0.18)]",
+          "bg-[var(--accent-bg)] text-[color:var(--accent)] border-[var(--accent-bg-hover)]",
           "hover:bg-[var(--accent-bg-hover)]",
         ],
         ghost: [
-          "bg-transparent text-[var(--text-tertiary)] border-transparent",
-          "hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)]",
+          "bg-transparent text-[color:var(--text-tertiary)] border-transparent",
+          "hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+        ],
+        outline: [
+          "bg-[var(--bg-elev)] text-[color:var(--text-secondary)] border-[var(--border-subtle)]",
+          "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] hover:border-[var(--border-strong)]",
         ],
       },
       size: {
-        sm: "h-8 w-8 rounded-[var(--radius-sm)]",
-        md: "h-10 w-10 rounded-[var(--radius-md)]",
-        lg: "h-12 w-12 rounded-[var(--radius-md)]",
+        xs: "h-6 w-6 rounded-[var(--radius-sm)]",
+        sm: "h-7 w-7 rounded-[var(--radius-sm)]",
+        md: "h-8 w-8 rounded-[var(--radius-md)]",
+        lg: "h-10 w-10 rounded-[var(--radius-md)]",
       },
     },
     defaultVariants: {

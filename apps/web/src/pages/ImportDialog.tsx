@@ -100,7 +100,7 @@ export function ImportDialog({ taskId }: Props) {
         <FileArchive
           className={cn(
             "h-7 w-7 transition-colors",
-            isDragActive ? "text-[var(--accent)]" : "text-tertiary",
+            isDragActive ? "text-[color:var(--accent)]" : "text-tertiary",
           )}
         />
         <p className="text-[13px] text-secondary tracking-tight text-center">
@@ -117,22 +117,22 @@ export function ImportDialog({ taskId }: Props) {
         </p>
       )}
       {status && status.startsWith("completed") && (
-        <p className="text-[var(--success)] text-[13px]">Done.</p>
+        <p className="text-[color:var(--success)] text-[13px]">Done.</p>
       )}
       {status === "failed" && (
-        <p role="alert" className="text-[var(--danger)] text-[13px]">
+        <p role="alert" className="text-[color:var(--danger)] text-[13px]">
           Import failed.
         </p>
       )}
       {warnings.length > 0 && (
-        <ul className="grid gap-1 text-[var(--warning)] text-[12px] pl-5 list-disc">
+        <ul className="grid gap-1 text-[color:var(--warning)] text-[12px] pl-5 list-disc">
           {warnings.map((w, i) => (
             <li key={i}>{w}</li>
           ))}
         </ul>
       )}
       {error && (
-        <p role="alert" className="text-[var(--danger)] text-[13px]">
+        <p role="alert" className="text-[color:var(--danger)] text-[13px]">
           {error}
         </p>
       )}

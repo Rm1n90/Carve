@@ -4,27 +4,27 @@ import { cn } from "@/lib/cn";
 
 const badgeStyles = cva(
   [
-    "inline-flex items-center gap-1.5 whitespace-nowrap",
+    "inline-flex items-center gap-1 whitespace-nowrap",
     "font-medium tracking-tight border",
   ],
   {
     variants: {
       variant: {
         accent:
-          "bg-[var(--accent-bg)] text-[var(--accent)] border-[var(--border-accent)]",
+          "bg-[var(--accent-bg)] text-[color:var(--accent)] border-[var(--accent-bg-hover)]",
         success:
-          "bg-[oklch(0.78_0.16_145_/_0.10)] text-[var(--success)] border-[oklch(0.78_0.16_145_/_0.35)]",
+          "bg-[var(--success-bg)] text-[color:var(--success)] border-[#bbf7d0]",
         warning:
-          "bg-[oklch(0.84_0.17_75_/_0.12)] text-[var(--warning)] border-[oklch(0.84_0.17_75_/_0.40)]",
+          "bg-[var(--warning-bg)] text-[color:var(--warning)] border-[#fde68a]",
         danger:
-          "bg-[oklch(0.70_0.20_25_/_0.12)] text-[var(--danger)] border-[oklch(0.70_0.20_25_/_0.40)]",
+          "bg-[var(--danger-bg)] text-[color:var(--danger)] border-[#fecaca]",
         neutral:
-          "bg-[var(--bg-raised)] text-secondary border-[var(--border-subtle)]",
-        ghost: "bg-transparent text-tertiary border-[var(--border-subtle)]",
+          "bg-[var(--bg-subtle)] text-[color:var(--text-secondary)] border-[var(--border-subtle)]",
+        ghost: "bg-transparent text-[color:var(--text-tertiary)] border-[var(--border-subtle)]",
       },
       size: {
-        sm: "h-5 px-2 text-[10px] rounded-full uppercase tracking-[0.08em]",
-        md: "h-6 px-2.5 text-[11px] rounded-full",
+        sm: "h-5 px-1.5 text-[10px] rounded-[var(--radius-sm)]",
+        md: "h-6 px-2 text-[11px] rounded-[var(--radius-sm)]",
       },
     },
     defaultVariants: {
