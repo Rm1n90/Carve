@@ -51,6 +51,9 @@ def create_app() -> FastAPI:
     from vaa_api.exports.router import router as export_router
     app.include_router(export_router)
 
+    from vaa_api.stats.router import router as stats_router
+    app.include_router(stats_router)
+
     from fastapi import APIRouter, Depends
 
     from vaa_api.auth.models import UserRole
