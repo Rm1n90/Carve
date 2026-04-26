@@ -1,17 +1,24 @@
-"""Per-task analytics endpoints."""
+"""Per-task and per-project analytics endpoints."""
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from vaa_api.annotations.router import _require_visible_task
 from vaa_api.auth.models import User
 from vaa_api.deps import get_current_user, get_db
+from vaa_api.errors import AppError
+from vaa_api.projects.service import ProjectService
 from vaa_api.stats.heatmap import heatmap
 from vaa_api.stats.service import StatsService
 
 
 router = APIRouter(prefix="/tasks", tags=["stats"])
+project_router = APIRouter(prefix="/projects", tags=["stats"])
+
+
+def _http(err: AppError) -> HTTPException:
+    return HTTPException(status_code=err.http_status, detail=err.code)
 
 
 @router.get("/{task_id}/stats/class-frequency")
@@ -84,3 +91,21 @@ def time_on_task(
 ) -> list[dict]:
     task = _require_visible_task(db, user, task_id)
     return StatsService(db).time_on_task(task_id=task.id)
+
+
+@project_router.get("/{project_id}/stats")
+def project_summary(
+    project_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Project-level analytics rollup.
+
+    Mirrors the auth pattern used by `GET /projects/{project_id}` — unknown or
+    invisible projects collapse into a 404 (Plan 02 IDOR-mitigation policy).
+    """
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return StatsService(db).project_summary(project_id=project.id)

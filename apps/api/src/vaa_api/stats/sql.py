@@ -62,6 +62,51 @@ WHERE a.task_id = :task_id AND a.kind = 'bbox'
 """)
 
 
+# Project-level totals: tasks/assets/annotations counts for a single project.
+PROJECT_TOTALS_SQL = text("""
+SELECT
+  (SELECT COUNT(*) FROM tasks t WHERE t.project_id = :project_id) AS tasks,
+  (SELECT COUNT(*) FROM assets s
+     JOIN tasks t ON t.id = s.task_id
+     WHERE t.project_id = :project_id) AS assets,
+  (SELECT COUNT(*) FROM annotations a
+     JOIN tasks t ON t.id = a.task_id
+     WHERE t.project_id = :project_id) AS annotations
+""")
+
+
+# Top-5 classes by annotation count for a project.
+# LEFT JOIN keeps zero-count classes eligible when the project has < 5 annotated classes.
+PROJECT_BY_CLASS_SQL = text("""
+SELECT c.id::text AS class_id, c.name AS name, COUNT(a.id) AS count
+FROM classes c
+LEFT JOIN annotations a ON a.class_id = c.id
+WHERE c.project_id = :project_id
+GROUP BY c.id, c.name, c.idx
+ORDER BY count DESC, c.idx ASC
+LIMIT 5
+""")
+
+
+# Per-task progress: labeled_frames / total_frames, NULL-safe via NULLIF + COALESCE.
+PROJECT_TASK_PROGRESS_SQL = text("""
+SELECT
+  t.id::text AS task_id,
+  t.name     AS name,
+  COALESCE(
+    (SELECT COUNT(DISTINCT a.frame_id) FROM annotations a
+       WHERE a.task_id = t.id AND a.frame_id IS NOT NULL)::float
+    / NULLIF(
+      (SELECT COUNT(*) FROM frames f
+         JOIN assets s ON s.id = f.asset_id
+         WHERE s.task_id = t.id), 0)::float
+  , 0.0) AS progress_pct
+FROM tasks t
+WHERE t.project_id = :project_id
+ORDER BY t.created_at ASC
+""")
+
+
 # Time-on-task: SUM(per-user gaps <= 300s) using LAG() window function.
 # Annotations with NULL created_by are excluded (anonymous edits don't count).
 # A user's first annotation has no LAG predecessor -> CASE branch is NULL,

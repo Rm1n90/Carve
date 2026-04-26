@@ -7,6 +7,9 @@ from vaa_api.stats.sql import (
     BBOX_GEOMETRIES_SQL,
     CLASS_FREQUENCY_SQL,
     GEOMETRY_BY_KIND_SQL,
+    PROJECT_BY_CLASS_SQL,
+    PROJECT_TASK_PROGRESS_SQL,
+    PROJECT_TOTALS_SQL,
     SIZE_DISTRIBUTION_BBOX_SQL,
     TASK_PROGRESS_SQL,
     TIME_ON_TASK_SQL,
@@ -162,6 +165,50 @@ class StatsService:
             ratio = w / h
             buckets[_aspect_bucket(ratio)] += 1
         return buckets
+
+    def project_summary(self, *, project_id: uuid.UUID) -> dict:
+        """Project-level analytics rollup: totals, top-5 classes, per-task progress.
+
+        - `totals` counts tasks, assets, annotations scoped to this project.
+        - `by_class` returns up to 5 classes ordered by annotation count DESC,
+          falling back to class.idx ASC for stable ties.
+        - `tasks` returns one row per task with a `progress_pct` in [0.0, 1.0].
+        """
+        totals_row = self.session.execute(
+            PROJECT_TOTALS_SQL, {"project_id": project_id}
+        ).one()
+        tm = totals_row._mapping
+        totals = {
+            "tasks": int(tm["tasks"] or 0),
+            "assets": int(tm["assets"] or 0),
+            "annotations": int(tm["annotations"] or 0),
+        }
+
+        class_rows = self.session.execute(
+            PROJECT_BY_CLASS_SQL, {"project_id": project_id}
+        ).all()
+        by_class = [
+            {
+                "class_id": str(r._mapping["class_id"]),
+                "name": r._mapping["name"],
+                "count": int(r._mapping["count"] or 0),
+            }
+            for r in class_rows
+        ]
+
+        task_rows = self.session.execute(
+            PROJECT_TASK_PROGRESS_SQL, {"project_id": project_id}
+        ).all()
+        tasks = [
+            {
+                "task_id": str(r._mapping["task_id"]),
+                "name": r._mapping["name"],
+                "progress_pct": round(float(r._mapping["progress_pct"] or 0.0), 6),
+            }
+            for r in task_rows
+        ]
+
+        return {"totals": totals, "by_class": by_class, "tasks": tasks}
 
     def time_on_task(self, *, task_id: uuid.UUID) -> list[dict]:
         """Per-annotator active seconds with a 5-minute idle threshold.

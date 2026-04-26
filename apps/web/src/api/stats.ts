@@ -39,6 +39,24 @@ export interface TimeOnTaskRow {
   seconds: number;
 }
 
+export interface ByClassRow {
+  class_id: string;
+  name: string;
+  count: number;
+}
+
+export interface TaskProgressRow {
+  task_id: string;
+  name: string;
+  progress_pct: number;
+}
+
+export interface ProjectStats {
+  totals: { annotations: number; assets: number; tasks: number };
+  by_class: ByClassRow[];
+  tasks: TaskProgressRow[];
+}
+
 export const statsApi = {
   classFrequency: async (taskId: string): Promise<ClassFrequencyRow[]> =>
     (await api.get<ClassFrequencyRow[]>(`/tasks/${taskId}/stats/class-frequency`)).data,
@@ -54,4 +72,6 @@ export const statsApi = {
     (await api.get<Heatmap>(`/tasks/${taskId}/stats/heatmap?bins=${bins}`)).data,
   timeOnTask: async (taskId: string): Promise<TimeOnTaskRow[]> =>
     (await api.get<TimeOnTaskRow[]>(`/tasks/${taskId}/stats/time-on-task`)).data,
+  projectStats: async (projectId: string): Promise<ProjectStats> =>
+    (await api.get<ProjectStats>(`/projects/${projectId}/stats`)).data,
 };
