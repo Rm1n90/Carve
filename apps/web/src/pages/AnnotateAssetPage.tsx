@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AnnotationCanvas } from "@/components/annotation/AnnotationCanvas";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
 import { CommandPalette } from "@/components/annotation/CommandPalette";
+import { FrameTimeline } from "@/components/annotation/FrameTimeline";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
 import { Toolbar } from "@/components/annotation/Toolbar";
 import { annotationsApi, type BatchPayload } from "@/api/annotations";
@@ -21,6 +22,7 @@ const AUTOSAVE_DEBOUNCE_MS = 2000;
 
 export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const qc = useQueryClient();
+  const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
   const assetQ = useQuery({
     queryKey: ["asset", assetId],
     queryFn: () => assetsApi.get(assetId),
@@ -206,6 +208,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
           <ObjectsPanel frameId={frameId} />
         </aside>
       </div>
+      {asset.kind === "video" && (asset.frames ?? 0) > 1 && (
+        <FrameTimeline
+          totalFrames={asset.frames}
+          currentIdx={currentFrameIdx}
+          onChange={setCurrentFrameIdx}
+        />
+      )}
       <CommandPalette classes={classesQ.data ?? []} onSaveNow={saveNow} />
     </div>
   );
