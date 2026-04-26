@@ -15,6 +15,8 @@ operator setup.
 import contextlib
 import logging
 import os
+import threading
+import time
 from typing import Any, Callable, Iterator, Protocol
 
 log = logging.getLogger(__name__)
@@ -145,6 +147,90 @@ _PREDICTOR: SamPredictor | None = None
 _TEST_PREDICTOR: SamPredictor | None = None
 _TEXT_PREDICTOR_FACTORY: TextPredictor | None = None
 
+# --- idle eviction state ----------------------------------------------------
+#
+# The SAM image predictor pins ~1-3 GB of GPU memory. When the operator
+# steps away for a while, that memory should be released so other
+# workloads (YOLO training, video encode jobs) can use the GPU. The
+# sweep runs every 60s in main.py's lifespan thread.
+
+_PREDICTOR_LAST_USED: float = 0.0  # epoch seconds (monotonic clock)
+_PREDICTOR_LOCK = threading.Lock()
+
+DEFAULT_SAM_IDLE_TIMEOUT_S = 15 * 60  # 15 minutes
+
+
+def _idle_timeout_s() -> int:
+    """Return the configured idle timeout in seconds (0 disables eviction).
+
+    Reads ``SAM_IDLE_TIMEOUT_S``; falls back to ``DEFAULT_SAM_IDLE_TIMEOUT_S``
+    on parse error. Negative values clamp to 0 (disabled).
+    """
+    raw = os.getenv("SAM_IDLE_TIMEOUT_S", str(DEFAULT_SAM_IDLE_TIMEOUT_S))
+    try:
+        v = int(raw)
+        return max(0, v)
+    except ValueError:
+        return DEFAULT_SAM_IDLE_TIMEOUT_S
+
+
+def touch_predictor() -> None:
+    """Update the predictor's last-used timestamp. Called on every inference."""
+    global _PREDICTOR_LAST_USED
+    _PREDICTOR_LAST_USED = time.monotonic()
+
+
+def _empty_cuda_cache() -> None:
+    """Best-effort ``torch.cuda.empty_cache()`` — silent on failure.
+
+    Torch is an optional dep in the model dev venv (used only when CUDA is
+    actually available at runtime). All access is guarded so the eviction
+    path never crashes when torch is absent.
+    """
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def evict_predictor_if_idle() -> bool:
+    """Free the singleton + GPU memory if idle longer than ``SAM_IDLE_TIMEOUT_S``.
+
+    Returns ``True`` when eviction happened. No-op when the predictor isn't
+    loaded, the timeout is 0 (disabled), or the last-used timestamp is
+    within the timeout window.
+    """
+    timeout = _idle_timeout_s()
+    if timeout == 0:
+        return False
+    with _PREDICTOR_LOCK:
+        global _PREDICTOR
+        if _PREDICTOR is None:
+            return False
+        if (time.monotonic() - _PREDICTOR_LAST_USED) < timeout:
+            return False
+        _PREDICTOR = None
+    _empty_cuda_cache()
+    return True
+
+
+def force_evict_predictor() -> bool:
+    """Unconditionally free the singleton + GPU memory.
+
+    Returns ``True`` when something was actually evicted, ``False`` when
+    the predictor wasn't loaded (idempotent — safe to call repeatedly).
+    """
+    with _PREDICTOR_LOCK:
+        global _PREDICTOR
+        if _PREDICTOR is None:
+            return False
+        _PREDICTOR = None
+    _empty_cuda_cache()
+    return True
+
 
 def set_test_predictor(p: SamPredictor | None) -> None:
     """Inject a stub for tests; pass None to clear."""
@@ -188,13 +274,20 @@ def _default_factory() -> SamPredictor:
 
 def get_predictor() -> SamPredictor:
     """Return the active predictor: test-injected if set, otherwise the lazily
-    loaded production singleton."""
-    global _PREDICTOR
+    loaded production singleton.
+
+    Updates the last-used timestamp for the production path so the idle
+    sweeper can decide when to evict. The test-injected predictor skips
+    the touch — tests don't care about idle bookkeeping.
+    """
     if _TEST_PREDICTOR is not None:
         return _TEST_PREDICTOR
-    if _PREDICTOR is None:
-        _PREDICTOR = _default_factory()
-    return _PREDICTOR
+    with _PREDICTOR_LOCK:
+        global _PREDICTOR
+        if _PREDICTOR is None:
+            _PREDICTOR = _default_factory()
+        touch_predictor()
+        return _PREDICTOR
 
 
 def set_text_predictor(fn: TextPredictor | None) -> None:

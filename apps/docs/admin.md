@@ -35,6 +35,13 @@ accept the license and provide an HF token before enabling it.
 - **Performance:** SAM inference runs in bf16 by default on Ampere+ GPUs
   (RTX 30/40 series, A100, H100) for roughly half the VRAM and ~2x the
   throughput vs FP32. Set `SAM_BF16=0` to force FP32 for debugging.
+- **GPU memory management:** SAM models are unloaded from GPU memory
+  after `SAM_IDLE_TIMEOUT_S` seconds of inactivity (default `900` =
+  15 min). Set to `0` to disable idle eviction. Force-unload immediately
+  via `POST /sam/unload` (admin endpoint inside the model service network;
+  not proxied through Caddy). The body accepts
+  `{"which": "image" | "tracker" | "all"}` (default `"all"`); the
+  response lists what was actually freed.
 
 When SAM 3 is **disabled** (any non-`sam3` value, default `sam2.1-large`),
 the `POST /sam/text-prompt` endpoint returns `409 sam3_not_enabled`. The

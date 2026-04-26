@@ -18,6 +18,7 @@ from vaa_model.sam.tracker import (
     get_session,
     release_session,
     start_session,
+    touch_session,
 )
 
 router = APIRouter(prefix="/sam-track", tags=["sam-track"])
@@ -80,6 +81,7 @@ def step(session_id: str, frames: int = 1) -> StepOut:
     session = get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session_not_found")
+    touch_session(session_id)
     try:
         with autocast_ctx():
             if session.propagation_iter is None:

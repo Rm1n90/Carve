@@ -19,11 +19,11 @@ POST /sam/text-prompt — SAM 3 only. Accepts {image_b64, text} → returns
 
 import base64
 from io import BytesIO
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import xxhash
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -31,11 +31,13 @@ from vaa_model.sam.codec import encode_mask_rle
 from vaa_model.sam.predictor import (
     autocast_ctx,
     extract_embedding,
+    force_evict_predictor,
     get_predictor,
     get_sam_model,  # noqa: F401 — re-export for callers historically importing from router
     get_sam_variant,
     get_text_predictor,
 )
+from vaa_model.sam.tracker import force_evict_all_sessions
 
 router = APIRouter(prefix="/sam", tags=["sam"])
 
@@ -165,3 +167,34 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
             detail="sam3_predictor_not_loaded",
         ) from exc
     return factory(image_b64=payload.image_b64, text=payload.text)
+
+
+# --- /sam/unload (admin force-evict) ----------------------------------------
+#
+# Only reachable on the internal Docker network — Caddy does not proxy
+# ``/model/*``. The idle sweeper runs in main.py's lifespan; this endpoint
+# lets the operator unload immediately (e.g. before a YOLO training run).
+
+
+class UnloadIn(BaseModel):
+    which: Literal["image", "tracker", "all"] = "all"
+
+
+class UnloadOut(BaseModel):
+    evicted: list[str]
+    sessions_released: int
+
+
+@router.post("/unload", response_model=UnloadOut)
+def unload(payload: UnloadIn = Body(default_factory=UnloadIn)) -> UnloadOut:
+    """Force-unload SAM models from GPU memory. Idempotent."""
+    evicted: list[str] = []
+    sessions_released = 0
+    if payload.which in ("image", "all"):
+        if force_evict_predictor():
+            evicted.append("image")
+    if payload.which in ("tracker", "all"):
+        sessions_released = force_evict_all_sessions()
+        if sessions_released > 0:
+            evicted.append("tracker")
+    return UnloadOut(evicted=evicted, sessions_released=sessions_released)
