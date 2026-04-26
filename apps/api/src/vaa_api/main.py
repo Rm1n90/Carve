@@ -42,6 +42,9 @@ def create_app() -> FastAPI:
     from vaa_api.inference.router import router as inference_router
     app.include_router(inference_router)
 
+    from vaa_api.inference.router import task_inference_router
+    app.include_router(task_inference_router)
+
     from fastapi import APIRouter, Depends
 
     from vaa_api.auth.models import UserRole
