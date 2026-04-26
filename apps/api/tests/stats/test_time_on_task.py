@@ -165,8 +165,12 @@ def test_time_on_task_per_user(db_session) -> None:
     email_a = "tot-a@x.com"
     email_b = "tot-b@x.com"
     token, pid, tid = _setup_project_and_task(client, email=email_a)
-    # Register the second user via auth so they're in the users table.
-    _register_login(client, email_b)
+    # Register the second user (member) via the bootstrap admin's token.
+    client.post(
+        "/auth/register",
+        json={"email": email_b, "password": "hunter22"},
+        headers=_hdr(token),
+    )
     cid = _make_class(client, token, pid)
     frame = _seed_frame(db_session, tid)
     uid_a = _user_id_for(db_session, email_a)

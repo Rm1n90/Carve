@@ -7,6 +7,15 @@ interface TokenPair {
   token_type: string;
 }
 
+export interface BootstrapStatus {
+  users_exist: boolean;
+}
+
+export async function bootstrapStatus(): Promise<BootstrapStatus> {
+  const r = await api.get<BootstrapStatus>("/auth/bootstrap-status");
+  return r.data;
+}
+
 export async function register(email: string, password: string): Promise<User> {
   const r = await api.post<User>("/auth/register", { email, password });
   return r.data;

@@ -58,8 +58,12 @@ def test_get_404(db_session) -> None:
 def test_patch_only_by_owner(db_session) -> None:
     client = _client(db_session)
     client.post("/auth/register", json={"email": "owner@x.com", "password": "hunter22"})
-    client.post("/auth/register", json={"email": "intruder@x.com", "password": "hunter22"})
     owner = _login(client, "owner@x.com", "hunter22")
+    client.post(
+        "/auth/register",
+        json={"email": "intruder@x.com", "password": "hunter22"},
+        headers=_hdr(owner),
+    )
     intruder = _login(client, "intruder@x.com", "hunter22")
     pid = client.post("/projects", json={"name": "Mine"}, headers=_hdr(owner)).json()["id"]
     r = client.patch(f"/projects/{pid}", json={"name": "stolen"}, headers=_hdr(intruder))
@@ -72,8 +76,12 @@ def test_patch_only_by_owner(db_session) -> None:
 def test_delete_only_by_owner(db_session) -> None:
     client = _client(db_session)
     client.post("/auth/register", json={"email": "od@x.com", "password": "hunter22"})
-    client.post("/auth/register", json={"email": "ot@x.com", "password": "hunter22"})
     owner = _login(client, "od@x.com", "hunter22")
+    client.post(
+        "/auth/register",
+        json={"email": "ot@x.com", "password": "hunter22"},
+        headers=_hdr(owner),
+    )
     other = _login(client, "ot@x.com", "hunter22")
     pid = client.post("/projects", json={"name": "D"}, headers=_hdr(owner)).json()["id"]
     r = client.delete(f"/projects/{pid}", headers=_hdr(other))
