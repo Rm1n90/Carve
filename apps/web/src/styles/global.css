@@ -1,15 +1,364 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Carve v2.0 — Editorial Dark Precision
+   Design tokens (OKLCH), atmosphere, motion primitives
+   ============================================================ */
+
 :root {
   color-scheme: dark;
-  --color-bg: oklch(15% 0.01 250);
-  --color-fg: oklch(96% 0.005 250);
-  --color-accent: oklch(72% 0.15 220);
+
+  /* ---- Surfaces (dark base, subtle blue cast) ---- */
+  --bg-base: oklch(0.13 0.013 240);
+  --bg-surface: oklch(0.17 0.012 240);
+  --bg-raised: oklch(0.21 0.012 240);
+  --bg-sunken: oklch(0.10 0.014 240);
+
+  /* ---- Glass (semi-transparent for floating overlays) ---- */
+  --bg-glass: oklch(0.22 0.012 240 / 0.62);
+  --bg-glass-strong: oklch(0.22 0.012 240 / 0.86);
+
+  /* ---- Borders ---- */
+  --border-subtle: oklch(0.27 0.012 240 / 0.6);
+  --border-strong: oklch(0.40 0.018 240 / 0.8);
+  --border-accent: oklch(0.78 0.16 215 / 0.45);
+
+  /* ---- Text ---- */
+  --text-primary: oklch(0.96 0.005 240);
+  --text-secondary: oklch(0.74 0.012 240);
+  --text-tertiary: oklch(0.56 0.012 240);
+  --text-disabled: oklch(0.42 0.010 240);
+
+  /* ---- Accent (electric cyan) ---- */
+  --accent: oklch(0.78 0.16 215);
+  --accent-hover: oklch(0.84 0.17 215);
+  --accent-active: oklch(0.70 0.18 215);
+  --accent-fg: oklch(0.10 0.014 240);
+  --accent-bg: oklch(0.78 0.16 215 / 0.10);
+  --accent-bg-hover: oklch(0.78 0.16 215 / 0.18);
+
+  /* ---- Semantic ---- */
+  --success: oklch(0.78 0.16 145);
+  --warning: oklch(0.84 0.17 75);
+  --danger: oklch(0.70 0.20 25);
+  --info: var(--accent);
+
+  /* ---- Class swatch palette (12 distinct hues) ---- */
+  --swatch-0: oklch(0.72 0.18 25);
+  --swatch-1: oklch(0.74 0.17 60);
+  --swatch-2: oklch(0.78 0.17 105);
+  --swatch-3: oklch(0.74 0.17 145);
+  --swatch-4: oklch(0.74 0.17 180);
+  --swatch-5: oklch(0.76 0.16 215);
+  --swatch-6: oklch(0.70 0.18 250);
+  --swatch-7: oklch(0.66 0.20 285);
+  --swatch-8: oklch(0.66 0.22 310);
+  --swatch-9: oklch(0.70 0.21 340);
+  --swatch-10: oklch(0.72 0.19 5);
+  --swatch-11: oklch(0.66 0.10 240);
+
+  /* ---- Radii ---- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* ---- Elevations ---- */
+  --shadow-elev-1: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-elev-2: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 4px 16px rgba(0, 0, 0, 0.32);
+  --shadow-elev-3: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 12px 40px rgba(0, 0, 0, 0.45);
+  --shadow-glow: 0 0 0 1px var(--border-accent), 0 0 24px oklch(0.78 0.16 215 / 0.18);
+
+  /* ---- Motion ---- */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 360ms;
+
+  /* ---- Type ---- */
+  --font-display: "Geist Variable", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
+
+  /* Tailwind v4 expects these */
+  --color-bg: var(--bg-base);
+  --color-fg: var(--text-primary);
+  --color-accent: var(--accent);
 }
-html, body, #root { height: 100%; }
+
+/* ---- Light mode (toggleable; dark is default) ---- */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-base: oklch(0.97 0.005 240);
+  --bg-surface: oklch(0.94 0.006 240);
+  --bg-raised: oklch(0.99 0.004 240);
+  --bg-sunken: oklch(0.91 0.008 240);
+  --bg-glass: oklch(1 0 0 / 0.7);
+  --bg-glass-strong: oklch(1 0 0 / 0.92);
+  --border-subtle: oklch(0.78 0.010 240 / 0.7);
+  --border-strong: oklch(0.62 0.012 240 / 0.9);
+  --text-primary: oklch(0.18 0.012 240);
+  --text-secondary: oklch(0.36 0.012 240);
+  --text-tertiary: oklch(0.52 0.012 240);
+  --text-disabled: oklch(0.68 0.010 240);
+  --accent-fg: oklch(0.99 0 0);
+  --accent-bg: oklch(0.78 0.16 215 / 0.16);
+  --shadow-elev-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-elev-2: 0 6px 18px rgba(0, 0, 0, 0.08);
+  --shadow-elev-3: 0 16px 48px rgba(0, 0, 0, 0.12);
+}
+
+/* ============================================================
+   Tailwind v4 @theme — wires tokens into utility classes
+   ============================================================ */
+@theme inline {
+  --color-base: var(--bg-base);
+  --color-surface: var(--bg-surface);
+  --color-raised: var(--bg-raised);
+  --color-sunken: var(--bg-sunken);
+  --color-glass: var(--bg-glass);
+  --color-glass-strong: var(--bg-glass-strong);
+
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary: var(--text-tertiary);
+  --color-disabled: var(--text-disabled);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-bg: var(--accent-bg);
+  --color-accent-bg-hover: var(--accent-bg-hover);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-border-accent: var(--border-accent);
+
+  --font-sans: var(--font-display);
+  --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
+
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --shadow-elev-1: var(--shadow-elev-1);
+  --shadow-elev-2: var(--shadow-elev-2);
+  --shadow-elev-3: var(--shadow-elev-3);
+  --shadow-glow: var(--shadow-glow);
+
+  --ease-out-expo: var(--ease-out-expo);
+  --ease-in-out: var(--ease-in-out);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
 body {
   margin: 0;
-  background: var(--color-bg);
-  color: var(--color-fg);
-  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-feature-settings: "ss01", "cv01", "cv02";
+  letter-spacing: -0.005em;
+}
+
+/* Atmosphere — subtle film grain overlay using inline SVG turbulence */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.04;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.92' numOctaves='2' seed='7'/><feColorMatrix values='0 0 0 0 0.6 0 0 0 0 0.6 0 0 0 0 0.6 0 0 0 0.7 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  body::after {
+    display: none;
+  }
+}
+
+/* Selection */
+::selection {
+  background: oklch(0.78 0.16 215 / 0.35);
+  color: var(--text-primary);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* Scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+  background-clip: padding-box;
+}
+
+/* Form element baseline reset */
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input:where([type="number"])::-webkit-outer-spin-button,
+input:where([type="number"])::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ============================================================
+   Animated gradient mesh (auth left pane)
+   ============================================================ */
+@keyframes gradient-drift {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(2%, -3%, 0) rotate(2deg);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+}
+
+.gradient-mesh {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.gradient-mesh::before,
+.gradient-mesh::after {
+  content: "";
+  position: absolute;
+  inset: -10%;
+  z-index: -1;
+  background-repeat: no-repeat;
+}
+
+.gradient-mesh::before {
+  background-image:
+    radial-gradient(40% 60% at 25% 30%, oklch(0.78 0.16 215 / 0.32) 0%, transparent 60%),
+    radial-gradient(45% 55% at 75% 20%, oklch(0.66 0.20 285 / 0.28) 0%, transparent 65%);
+  animation: gradient-drift 28s var(--ease-in-out) infinite;
+}
+
+.gradient-mesh::after {
+  background-image:
+    radial-gradient(40% 50% at 80% 70%, oklch(0.66 0.22 310 / 0.22) 0%, transparent 65%),
+    radial-gradient(45% 50% at 20% 80%, oklch(0.78 0.17 145 / 0.20) 0%, transparent 60%);
+  animation: gradient-drift 36s var(--ease-in-out) infinite reverse;
+}
+
+/* ============================================================
+   Canvas vignette
+   ============================================================ */
+.canvas-vignette {
+  position: relative;
+}
+
+.canvas-vignette::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 50%,
+    oklch(0.06 0.012 240 / 0.4) 100%
+  );
+}
+
+/* ============================================================
+   Editorial italic headline helper
+   ============================================================ */
+.editorial {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 0.95;
+}
+
+.font-mono-data {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum", "ss01";
+}
+
+/* ============================================================
+   Saving indicator pulse
+   ============================================================ */
+@keyframes saving-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 oklch(0.78 0.16 215 / 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 6px oklch(0.78 0.16 215 / 0);
+  }
+}
+
+.is-saving {
+  animation: saving-pulse 1.4s var(--ease-in-out) infinite;
 }
