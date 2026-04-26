@@ -9,6 +9,7 @@ import { registerRoute } from "./routes/register";
 import { projectsRoute } from "./routes/projects";
 import { projectDetailRoute } from "./routes/projects.$projectId";
 import { taskDetailRoute } from "./routes/projects.$projectId.tasks.$taskId";
+import { annotateAssetRoute } from "./routes/projects.$projectId.tasks.$taskId.assets.$assetId";
 import "./styles/global.css";
 
 const routeTree = rootRoute.addChildren([
@@ -18,6 +19,7 @@ const routeTree = rootRoute.addChildren([
   projectsRoute,
   projectDetailRoute,
   taskDetailRoute,
+  annotateAssetRoute,
 ]);
 const router = createRouter({ routeTree });
 
