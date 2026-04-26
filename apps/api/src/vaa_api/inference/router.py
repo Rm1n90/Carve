@@ -26,6 +26,11 @@ from vaa_api.inference.sam import (
     sam_decode_with_hash,
     sam_encode_for_asset,
 )
+from vaa_api.inference.sam_track import (
+    release as _track_release,
+    start as _track_start,
+    step as _track_step,
+)
 from vaa_api.weights.models import Weight
 
 
@@ -159,5 +164,65 @@ def sam_decode_endpoint(
     _require_visible_task(db, user, asset.task_id)
     try:
         return sam_decode_with_hash(payload.image_hash, payload.points, payload.labels)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+class TrackStartIn(BaseModel):
+    frame_idx: int = Field(default=0, ge=0)
+    points: list[list[int]] = Field(min_length=1)
+    labels: list[int] = Field(min_length=1)
+
+
+@router.post("/{asset_id}/sam-track/start")
+def sam_track_start_endpoint(
+    asset_id: uuid.UUID,
+    payload: TrackStartIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    if len(payload.points) != len(payload.labels):
+        raise HTTPException(status_code=422, detail="points and labels must have equal length")
+    try:
+        return _track_start(asset, payload.frame_idx, payload.points, payload.labels)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/{asset_id}/sam-track/{session_id}/step")
+def sam_track_step_endpoint(
+    asset_id: uuid.UUID,
+    session_id: str,
+    frames: int = 1,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    try:
+        return _track_step(session_id, frames)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.delete("/{asset_id}/sam-track/{session_id}", status_code=204)
+def sam_track_release_endpoint(
+    asset_id: uuid.UUID,
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    try:
+        _track_release(session_id)
     except AppError as exc:
         raise _http(exc) from exc

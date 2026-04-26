@@ -90,6 +90,45 @@ def sam_decode(image_hash: str, points: list[list[int]], labels: list[int]) -> d
         return r.json()
 
 
+def sam_track_start(
+    video_url: str,
+    frame_idx: int,
+    points: list[list[int]],
+    labels: list[int],
+) -> dict:
+    """POST /sam-track/start — returns {session_id, mask_at_start}."""
+    with _client() as c:
+        r = c.post(
+            "/sam-track/start",
+            json={
+                "video_url": video_url,
+                "frame_idx": frame_idx,
+                "points": points,
+                "labels": labels,
+            },
+        )
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def sam_track_step(session_id: str, frames: int) -> dict:
+    """POST /sam-track/{session_id}/step?frames=N — returns {steps: [...]}"""
+    with _client() as c:
+        r = c.post(f"/sam-track/{session_id}/step", params={"frames": frames})
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def sam_track_release(session_id: str) -> None:
+    """DELETE /sam-track/{session_id}."""
+    with _client() as c:
+        r = c.delete(f"/sam-track/{session_id}")
+        if r.status_code not in (204, 404):
+            raise ModelServiceError(r.status_code, _safe_json(r))
+
+
 def _safe_json(r: httpx.Response) -> Any:
     try:
         return r.json()
