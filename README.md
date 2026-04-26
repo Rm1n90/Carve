@@ -16,7 +16,8 @@ On-prem, web-based annotation editor for computer-vision datasets — detection,
 | v0.6.0 | YOLO/COCO import + export with class remap | `v0.6.0-import-export` |
 | v0.7.0 | Per-task and per-project analytics | `v0.7.0-analytics` |
 | v1.0.0 | TLS, first-run wizard, rate limits, polish | `v1.0.0` |
-| v1.1.0 | SAM model selector, bf16, compile, eviction, SAM 3 | (current branch) |
+| v1.1.0 | SAM model selector, bf16, compile, eviction, SAM 3 | `v1.1.0` |
+| v1.3.0 | SAM 3 click-prompt routing fix (Sam3TrackerModel + Sam3TrackerVideoModel) | (current branch) |
 
 Tag history: <https://github.com/your-org/VisualAutoAnnotator/tags> (replace with your fork).
 
@@ -264,27 +265,32 @@ SAM and YOLO are loaded independently. Switching SAM models does not evict loade
    docker compose build model && docker compose up -d model
    ```
 
-### SAM 3 prompts — image vs video asymmetry
+### SAM 3 prompts — full prompt matrix (v1.3.0 correction)
 
-SAM 3 image fully supports clicks (positive/negative), text concepts, boxes
-(positive/negative), and combined prompts (e.g., text + negative box to
-refine a concept).
+> **v1.3.0:** SAM 3 video tracking now correctly supports **point prompts**
+> (positive/negative) via `Sam3TrackerVideoModel`. Previous releases routed
+> only text-concept tracking to SAM 3 video and incorrectly claimed point
+> prompts were not exposed by HF transformers. They are: the
+> `Sam3TrackerVideoProcessor.add_inputs_to_inference_session(...)` API
+> provides full point/box prompting at frames. See
+> `apps/docs/admin.md` for the full prompt support matrix.
 
-SAM 3 video, in the current HuggingFace transformers integration, exposes
-text concept prompts only. Point-based video tracking with SAM 3 is not
-available through the public HF API today (the underlying architecture
-supports it; the API does not surface those methods yet). For point-based
-video tracking, use `SAM_MODEL=sam2.1-large` (or any SAM 2.1 variant) —
-SAM 2 fully supports point/box/mask prompting on video.
+SAM 3 ships four transformers classes; v1.3.0 wires each to the right
+prompt route:
 
-See `apps/docs/admin.md` "SAM 3 prompt support" for the full table.
+- `Sam3Model` (image concept) — text + boxes (no points)
+- `Sam3VideoModel` (video concept) — text only
+- `Sam3TrackerModel` (image, drop-in SAM 2 replacement) — points + boxes + masks
+- `Sam3TrackerVideoModel` (video, drop-in SAM 2 replacement) — points + boxes at frames
 
-API differences when SAM 3 is active:
+API behavior when SAM 3 is active:
 
-- `/sam/encode` + `/sam/decode` (image clicks): wire-compatible with SAM 2. Click points become positive (1) / negative (0) labels.
-- `/sam/text-prompt` (text-prompted image segmentation): functional with SAM 3, returns one segmentation per matched instance. With any non-`sam3` model, this endpoint returns `409 sam3_not_enabled`.
-- `/sam/box-prompt` (v1.2.2; box-prompted image segmentation): SAM 3 only. Accepts `{image_b64, boxes, box_labels, text?}` where `box_labels` are 1 (positive) or 0 (negative). Optional `text` combines with the boxes to refine a concept. Returns `409 sam3_box_prompt_requires_sam3` for non-`sam3` models.
-- `/sam-track/start` (video tracking): with SAM 3 it requires a `text` field and ignores `points`/`labels`. Without `text`, returns `422 sam3_track_requires_text`. Example body: `{"video_url": "...", "text": "person"}`.
+- `/sam/encode` + `/sam/decode` (image clicks): wire-compatible with SAM 2. Click points (positive=1 / negative=0) flow through `Sam3TrackerModel`.
+- `/sam/text-prompt` (text-prompted image segmentation): functional with SAM 3 via `Sam3Model`. With any non-`sam3` model, this endpoint returns `409 sam3_not_enabled`.
+- `/sam/box-prompt` (v1.2.2; box-prompted image segmentation): SAM 3 only, via `Sam3Model`. Accepts `{image_b64, boxes, box_labels, text?}` where `box_labels` are 1 (positive) or 0 (negative). Returns `409 sam3_box_prompt_requires_sam3` for non-`sam3` models.
+- `/sam-track/start` (video tracking): with SAM 3, accepts EITHER click points (forwarded to `Sam3TrackerVideoModel.add_inputs_to_inference_session`) OR a text concept (forwarded to `Sam3VideoModel.add_text_prompt`). Returns `422 sam3_track_requires_points_or_text` when neither is supplied. Example bodies:
+  - Click: `{"video_url": "...", "points": [[210, 350]], "labels": [1]}`
+  - Text:  `{"video_url": "...", "text": "person"}`
 
 Full SAM 3 docs: [`apps/docs/admin.md`](apps/docs/admin.md#sam-3-toggle).
 

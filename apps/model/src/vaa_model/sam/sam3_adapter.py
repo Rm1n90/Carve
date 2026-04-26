@@ -1,23 +1,33 @@
 """SAM 3 adapters that conform to the SamPredictor + TrackerProtocol contracts.
 
-Loaded ONLY when ``SAM_MODEL=sam3``. ``transformers`` and ``torch`` imports
-are deferred to method bodies and registration helpers so the dev path
-(no torch/transformers in the venv) keeps working — the broader 123 model
-test suite must stay torch/transformers-free.
+SAM 3 ships **four** transformers classes (model card, v5.6.x):
 
-The image-side adapter handles:
+- ``Sam3Model`` + ``Sam3Processor`` — image **concept** segmentation
+  (text + boxes; **does NOT accept points**). Used by /sam/text-prompt
+  and /sam/box-prompt.
+- ``Sam3VideoModel`` + ``Sam3VideoProcessor`` — video **concept** tracking
+  (text only). Used by /sam-track/start when the caller passes ``text``.
+- ``Sam3TrackerModel`` + ``Sam3TrackerProcessor`` — drop-in SAM 2 image
+  replacement (points + boxes + masks). Used by /sam/decode for clicks.
+- ``Sam3TrackerVideoModel`` + ``Sam3TrackerVideoProcessor`` — drop-in
+  SAM 2 video replacement (points + boxes + masks at frames). Used by
+  /sam-track/start when the caller passes ``points`` + ``labels``.
 
-- Click/point prompts (positive=1, negative=0) via the processor's
-  ``input_points`` + ``input_labels`` slots.
-- A separate text-prompt callable for the ``/sam/text-prompt`` endpoint
-  shell registered via ``set_text_predictor``.
+The image-side adapter (``Sam3ImagePredictorAdapter``) wraps the
+**Tracker** classes — clicks are SAM 2-style, not concept-based.
 
-The video-side adapter implements ``TrackerProtocol`` but uses *text*
-prompts internally — SAM 3's video tracker is concept-based, not
-point-based. ``add_new_points`` accepts the text prompt(s) via the
-``points`` slot (the tracker router forwards ``[payload.text]`` when
-``SAM_MODEL=sam3``); numeric points raise a ``RuntimeError`` with a clear
-message so callers don't silently get unexpected behavior.
+The video-side adapter (``Sam3VideoDispatcherAdapter``) holds BOTH the
+Sam3VideoModel pair (text concept) AND the Sam3TrackerVideoModel pair
+(points/boxes). The adapter inspects the first ``add_new_points`` call
+and decides which sub-tracker to use:
+
+- ``points=["person"]`` (string list) → text concept → Sam3VideoModel
+- ``points=[[x, y], ...], labels=[1/0, ...]`` → click → Sam3TrackerVideoModel
+
+Loaded ONLY when ``SAM_MODEL=sam3``. ``transformers`` and ``torch``
+imports are deferred to method bodies so the dev path (no torch /
+transformers in the venv) keeps working — the broader 182 model test
+suite must stay torch/transformers-free.
 """
 
 from __future__ import annotations
@@ -25,18 +35,22 @@ from __future__ import annotations
 from typing import Any
 
 
-# --- image adapter ----------------------------------------------------------
+# --- image adapter (clicks → Sam3TrackerModel) ------------------------------
 
 
 class Sam3ImagePredictorAdapter:
-    """Wrap ``Sam3Model`` + ``Sam3Processor`` to look like SAM 2's image predictor.
+    """Wrap ``Sam3TrackerModel`` + ``Sam3TrackerProcessor`` to look like
+    SAM 2's image predictor.
 
-    Lifecycle: ``set_image(img)`` caches the processed pixel_values + the
-    original ``(h, w)`` size. ``predict(points, labels, multimask_output)``
-    then reuses that cache, runs the model, and returns
-    ``(masks, scores, _)`` where ``masks`` is shape ``(K, H, W)`` matching
-    the existing ``/sam/decode`` contract — the router picks the highest
+    The Sam3TrackerModel is the **drop-in SAM 2 replacement** half of SAM 3
+    — it accepts point/box/mask prompts (NOT text concepts) and returns
+    K=3 multimask candidates per object. The router picks the highest
     scoring mask via ``np.argmax(scores)``.
+
+    Lifecycle: ``set_image(img)`` caches the raw image and best-effort
+    vision features. ``predict(points, labels, multimask_output)`` runs
+    the model and returns ``(masks, scores, _)`` where ``masks`` is shape
+    ``(K, H, W)`` matching the existing ``/sam/decode`` contract.
     """
 
     def __init__(self, model: Any, processor: Any, device: str) -> None:
@@ -44,31 +58,35 @@ class Sam3ImagePredictorAdapter:
         self._processor = processor
         self._device = device
         # Cache populated by set_image().
-        self._pixel_values: Any = None
+        self._raw_image: Any = None
         self._original_size: tuple[int, int] | None = None  # (h, w)
         # Mirror SAM 2's _features dict so extract_embedding() works without
         # a special case in router.py:encode.
         self._features: dict[str, Any] | None = None
 
     def set_image(self, image: Any) -> None:
-        """Cache processor outputs + best-effort vision embedding for one image.
+        """Cache PIL-converted image + best-effort vision embedding for one image.
 
         ``image`` is a numpy ``HxWx3`` RGB array (set by router.py:encode).
         """
-        from PIL import Image  # transformers expects PIL  # type: ignore[import-not-found]
+        from PIL import Image  # type: ignore[import-not-found]
         import torch  # type: ignore[import-not-found]
 
         h, w = int(image.shape[0]), int(image.shape[1])
-        pil = Image.fromarray(image)
-        inputs = self._processor(images=pil, return_tensors="pt").to(self._device)
-        self._pixel_values = inputs["pixel_values"]
+        self._raw_image = Image.fromarray(image)
         self._original_size = (h, w)
         # Best-effort: pre-compute vision embeddings so extract_embedding()
         # has something to serialize. Fail closed — None means "no embedding"
         # which the router handles by falling back to server-side decode.
         try:
+            inputs = self._processor(images=self._raw_image, return_tensors="pt").to(
+                self._device,
+            )
+            pix = inputs["pixel_values"] if isinstance(inputs, dict) else getattr(
+                inputs, "pixel_values", None,
+            )
             with torch.no_grad():
-                feats = self._model.get_vision_features(pixel_values=self._pixel_values)
+                feats = self._model.get_vision_features(pixel_values=pix)
             self._features = {"image_embed": feats}
         except Exception:
             self._features = None
@@ -79,64 +97,128 @@ class Sam3ImagePredictorAdapter:
         point_labels: Any,
         multimask_output: bool = True,
     ) -> tuple[Any, Any, Any]:
-        """Run a click-prompt forward pass and return (masks, scores, None)."""
-        if self._pixel_values is None or self._original_size is None:
+        """Run a click-prompt forward pass and return ``(masks, scores, None)``.
+
+        Sam3TrackerModel returns ``outputs.pred_masks`` of shape
+        ``[batch=1, num_obj=1, K=3, H, W]`` plus an ``iou_scores`` tensor.
+        We post-process via ``processor.post_process_masks`` (which collapses
+        the batch dim) and return shape ``(K, H, W)`` so the router's
+        existing argmax logic continues to work.
+        """
+        if self._raw_image is None or self._original_size is None:
             raise RuntimeError("set_image must be called before predict")
         import numpy as np
         import torch  # type: ignore[import-not-found]
 
         pts = np.asarray(point_coords, dtype=np.float32).reshape(-1, 2).tolist()
         lbls = np.asarray(point_labels, dtype=np.int64).reshape(-1).tolist()
-        # The processor expects [batch, num_objects, num_points, 2] for
-        # input_points and [batch, num_objects, num_points] for input_labels.
+        # Sam3TrackerProcessor expects [batch][num_obj][num_pts][xy] for
+        # input_points and [batch][num_obj][num_pts] for input_labels.
         # We treat the click set as a single object (matches /sam/decode).
-        proc_inputs = self._processor(
-            images=None,
-            input_points=[[pts]],
-            input_labels=[[lbls]],
+        input_points = [[[[float(p[0]), float(p[1])] for p in pts]]]
+        input_labels = [[[int(label) for label in lbls]]]
+        inputs = self._processor(
+            images=self._raw_image,
+            input_points=input_points,
+            input_labels=input_labels,
             return_tensors="pt",
         ).to(self._device)
-        # Pixel values were cached from set_image; merge them in so the
-        # model sees the original image alongside the new prompts.
-        merged = {**dict(proc_inputs), "pixel_values": self._pixel_values}
 
         with torch.no_grad():
-            outputs = self._model(**merged)
+            outputs = self._model(**inputs)
 
-        h, w = self._original_size
-        results = self._processor.post_process_instance_segmentation(
-            outputs,
-            threshold=0.0,
-            mask_threshold=0.5,
-            target_sizes=[[h, w]],
-        )[0]
+        # outputs.pred_masks shape: [batch=1, num_obj=1, K=3, H, W]
+        pred_masks = outputs.pred_masks
+        # Move to cpu before post_process_masks if applicable.
+        if hasattr(pred_masks, "cpu"):
+            pred_masks = pred_masks.cpu()
+        original_sizes = inputs["original_sizes"] if "original_sizes" in inputs else [
+            [self._original_size[0], self._original_size[1]],
+        ]
+        masks = self._processor.post_process_masks(pred_masks, original_sizes)[0]
+        # masks shape after post_process_masks for a single image:
+        # [num_obj=1, K=3, H, W] (we collapse batch in the call above).
+        scores_tensor = getattr(outputs, "iou_scores", None)
+        if scores_tensor is not None and hasattr(scores_tensor, "cpu"):
+            scores_tensor = scores_tensor.cpu()
 
-        masks = results.get("masks") if hasattr(results, "get") else None
-        scores = results.get("scores") if hasattr(results, "get") else None
-        if masks is None or scores is None or len(masks) == 0:
-            # No detections → emit a single zero mask so the existing router
-            # produces a benign empty RLE rather than 500.
-            empty = torch.zeros((1, h, w), dtype=torch.bool)
-            empty_score = torch.zeros((1,), dtype=torch.float32)
-            return empty, empty_score, None
-        return masks, scores, None
+        # Reshape masks to (K, H, W) — take first object — and scores to (K,).
+        masks_ndim = getattr(masks, "ndim", None)
+        if masks_ndim is None:
+            import numpy as _np
+            masks_ndim = _np.asarray(masks).ndim
+        if masks_ndim == 4:
+            # [num_obj, K, H, W] → take first object → (K, H, W)
+            masks_for_router = masks[0]
+        elif masks_ndim == 3:
+            # Already (K, H, W) or (num_obj, H, W) — single obj/no-multimask.
+            masks_for_router = masks
+        else:
+            raise RuntimeError(
+                f"unexpected SAM 3 tracker mask shape: ndim={masks_ndim}",
+            )
+
+        # Number of returned mask candidates determines score length.
+        try:
+            n_masks = len(masks_for_router)
+        except TypeError:
+            n_masks = int(masks_for_router.shape[0])
+
+        if scores_tensor is not None:
+            # iou_scores shape: [batch=1, num_obj=1, K]; flatten to (K,) and
+            # keep only the first n_masks values defensively.
+            flat = scores_tensor.flatten() if hasattr(scores_tensor, "flatten") else scores_tensor
+            scores_for_router = flat[:n_masks] if hasattr(flat, "__getitem__") else flat
+        else:
+            scores_for_router = torch.ones((n_masks,), dtype=torch.float32)
+
+        return masks_for_router, scores_for_router, None
 
 
 def build_sam3_image_predictor(device: str | None = None) -> Sam3ImagePredictorAdapter:
     """Eager construction. Imports transformers + torch — only call when
     ``SAM_MODEL=sam3`` and the GPU extras are installed.
+
+    Loads the **Tracker** image classes (the drop-in SAM 2 replacement)
+    so /sam/decode click prompts work. Text and box concept prompts use
+    Sam3Model + Sam3Processor via ``_build_concept_image_pair`` below.
     """
     import torch  # type: ignore[import-not-found]
-    from transformers import Sam3Model, Sam3Processor  # type: ignore[import-not-found]
+    from transformers import (  # type: ignore[import-not-found]
+        Sam3TrackerModel,
+        Sam3TrackerProcessor,
+    )
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16 if dev == "cuda" else torch.float32
-    model = Sam3Model.from_pretrained("facebook/sam3").to(dev, dtype=dtype)
-    processor = Sam3Processor.from_pretrained("facebook/sam3")
+    model = Sam3TrackerModel.from_pretrained("facebook/sam3").to(dev, dtype=dtype)
+    processor = Sam3TrackerProcessor.from_pretrained("facebook/sam3")
     return Sam3ImagePredictorAdapter(model=model, processor=processor, device=dev)
 
 
-# --- text predictor for /sam/text-prompt ------------------------------------
+# --- helper: load Sam3Model + Sam3Processor for concept (text/box) ----------
+
+
+def _build_concept_image_pair() -> tuple[Any, Any, str]:
+    """Return ``(Sam3Model, Sam3Processor, device)`` lazily.
+
+    Used by ``make_sam3_text_predictor`` and ``make_sam3_box_predictor``.
+    Patched in tests to return fakes.
+    """
+    import torch  # type: ignore[import-not-found]
+    from transformers import (  # type: ignore[import-not-found]
+        Sam3Model,
+        Sam3Processor,
+    )
+
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 if dev == "cuda" else torch.float32
+    model = Sam3Model.from_pretrained("facebook/sam3").to(dev, dtype=dtype)
+    processor = Sam3Processor.from_pretrained("facebook/sam3")
+    return model, processor, dev
+
+
+# --- text predictor for /sam/text-prompt (Sam3Model) ------------------------
 
 
 def make_sam3_text_predictor():
@@ -145,18 +227,22 @@ def make_sam3_text_predictor():
     Signature: ``fn(*, image_b64: str, text: str) -> list[dict]`` where each
     dict has keys ``counts, size, score, bbox``.
 
-    Maintains a closure-private singleton of the underlying Sam3Model +
-    Sam3Processor so the model is loaded at most once across calls.
+    Uses Sam3Model + Sam3Processor (the **concept** classes — these are the
+    correct backbone for text-driven concept segmentation; the Tracker
+    classes do NOT accept text prompts).
+
+    Maintains a closure-private singleton so the model is loaded at most
+    once across calls.
     """
     _state: dict[str, Any] = {}
 
     def _ensure_loaded() -> None:
         if "model" in _state:
             return
-        adapter = build_sam3_image_predictor()
-        _state["model"] = adapter._model  # noqa: SLF001 — adapter exposes internals deliberately
-        _state["processor"] = adapter._processor  # noqa: SLF001
-        _state["device"] = adapter._device  # noqa: SLF001
+        model, processor, device = _build_concept_image_pair()
+        _state["model"] = model
+        _state["processor"] = processor
+        _state["device"] = device
 
     def _predict_from_text(*, image_b64: str, text: str) -> list[dict]:
         import base64
@@ -207,7 +293,7 @@ def make_sam3_text_predictor():
     return _predict_from_text
 
 
-# --- box predictor for /sam/box-prompt --------------------------------------
+# --- box predictor for /sam/box-prompt (Sam3Model) --------------------------
 
 
 def make_sam3_box_predictor():
@@ -216,25 +302,21 @@ def make_sam3_box_predictor():
     Signature: ``fn(*, image_b64, boxes, box_labels, text=None) -> list[dict]``
     where each output dict has keys ``counts, size, score, bbox``.
 
-    SAM 3's image processor accepts ``input_boxes`` (xyxy) plus
-    ``input_boxes_labels`` (1=positive include, 0=negative exclude).
-    Combining ``text`` with negative boxes refines a text concept by
-    excluding regions that the model would otherwise pick up — a common
-    interactive pattern (e.g., "handle" with a box around the lid that
-    should not be selected).
-
-    Maintains a closure-private singleton of Sam3Model + Sam3Processor so
-    the model is loaded at most once across calls.
+    Uses Sam3Model + Sam3Processor (the **concept** classes). The processor
+    accepts ``input_boxes`` (xyxy) plus ``input_boxes_labels`` (1=positive
+    include, 0=negative exclude). Combining ``text`` with negative boxes
+    refines a text concept by excluding regions that the model would
+    otherwise pick up.
     """
     _state: dict[str, Any] = {}
 
     def _ensure_loaded() -> None:
         if "model" in _state:
             return
-        adapter = build_sam3_image_predictor()
-        _state["model"] = adapter._model  # noqa: SLF001 — adapter exposes internals deliberately
-        _state["processor"] = adapter._processor  # noqa: SLF001
-        _state["device"] = adapter._device  # noqa: SLF001
+        model, processor, device = _build_concept_image_pair()
+        _state["model"] = model
+        _state["processor"] = processor
+        _state["device"] = device
 
     def _predict_from_boxes(
         *,
@@ -261,7 +343,7 @@ def make_sam3_box_predictor():
         model = _state["model"]
         device = _state["device"]
 
-        # SAM 3 image processor expects nested lists:
+        # Sam3Processor box wiring:
         #   input_boxes:        [batch, num_objects, 4]   (xyxy float)
         #   input_boxes_labels: [batch, num_objects]      (1 or 0)
         boxes_arg = [[[float(x) for x in b] for b in boxes]]
@@ -308,43 +390,85 @@ def make_sam3_box_predictor():
     return _predict_from_boxes
 
 
-# --- video tracker adapter --------------------------------------------------
+# --- video dispatcher (points → Tracker; text → Concept) --------------------
 
 
-class Sam3VideoTrackerAdapter:
-    """``TrackerProtocol``-compatible wrapper around ``Sam3VideoModel``.
+class Sam3VideoDispatcherAdapter:
+    """Routes points → Sam3TrackerVideoModel; text → Sam3VideoModel.
 
-    Important: SAM 3's video tracker uses TEXT prompts, not points. The
-    adapter expects ``add_new_points`` to receive text via the ``points``
-    slot. The ``/sam-track/start`` router forwards ``[payload.text]`` when
-    ``SAM_MODEL=sam3`` is selected. If a numeric point list is passed,
-    ``add_new_points`` raises ``RuntimeError`` with a helpful message so
-    the caller doesn't silently get unexpected concept tracking behavior.
+    This adapter implements ``TrackerProtocol`` but internally holds two
+    sub-tracker pairs:
 
-    Internal state lives on the inference_session returned by ``init_state``.
+    - **Tracker pair** (Sam3TrackerVideoModel + Sam3TrackerVideoProcessor)
+      for SAM 2-style point/box prompting at frames via
+      ``add_inputs_to_inference_session(...)``.
+    - **Concept pair** (Sam3VideoModel + Sam3VideoProcessor) for
+      text-driven concept tracking via ``add_text_prompt(...)``.
+
+    The chosen sub-tracker is decided at the first ``add_new_points`` call
+    based on the prompt type passed by the router. Both sub-tracker pairs
+    are loaded lazily.
     """
 
-    def __init__(self, model: Any, processor: Any, device: str) -> None:
-        self._model = model
-        self._processor = processor
+    def __init__(self, device: str) -> None:
         self._device = device
+        # Lazy-loaded sub-trackers.
+        self._tracker_model: Any = None
+        self._tracker_processor: Any = None
+        self._concept_model: Any = None
+        self._concept_processor: Any = None
 
-    def init_state(self, video_path: str) -> Any:
-        """Load the video and create a Sam3VideoProcessor inference session."""
+    # -- lazy loaders --------------------------------------------------------
+
+    def _load_tracker(self) -> tuple[Any, Any]:
+        if self._tracker_model is None:
+            import torch  # type: ignore[import-not-found]
+            from transformers import (  # type: ignore[import-not-found]
+                Sam3TrackerVideoModel,
+                Sam3TrackerVideoProcessor,
+            )
+
+            dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
+            self._tracker_model = Sam3TrackerVideoModel.from_pretrained(
+                "facebook/sam3",
+            ).to(self._device, dtype=dtype)
+            self._tracker_processor = Sam3TrackerVideoProcessor.from_pretrained(
+                "facebook/sam3",
+            )
+        return self._tracker_model, self._tracker_processor
+
+    def _load_concept(self) -> tuple[Any, Any]:
+        if self._concept_model is None:
+            import torch  # type: ignore[import-not-found]
+            from transformers import (  # type: ignore[import-not-found]
+                Sam3VideoModel,
+                Sam3VideoProcessor,
+            )
+
+            dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
+            self._concept_model = Sam3VideoModel.from_pretrained(
+                "facebook/sam3",
+            ).to(self._device, dtype=dtype)
+            self._concept_processor = Sam3VideoProcessor.from_pretrained(
+                "facebook/sam3",
+            )
+        return self._concept_model, self._concept_processor
+
+    # -- TrackerProtocol -----------------------------------------------------
+
+    def init_state(self, video_path: str) -> dict:
+        """Load the video frames; defer choosing tracker vs. concept until
+        ``add_new_points`` reveals the prompt type."""
         from transformers.video_utils import load_video  # type: ignore[import-not-found]
-        import torch  # type: ignore[import-not-found]
 
         frames, _ = load_video(video_path)
-        dtype = (
-            torch.bfloat16 if self._device == "cuda" else torch.float32
-        )
-        return self._processor.init_video_session(
-            video=frames,
-            inference_device=self._device,
-            processing_device="cpu",
-            video_storage_device="cpu",
-            dtype=dtype,
-        )
+        return {
+            "video_frames": frames,
+            "session": None,
+            "model": None,
+            "processor": None,
+            "mode": None,
+        }
 
     def add_new_points(
         self,
@@ -353,43 +477,125 @@ class Sam3VideoTrackerAdapter:
         points: Any,
         labels: Any,
     ) -> tuple[Any, Any, Any]:
-        """Forward the prompt text(s) to ``processor.add_text_prompt``.
+        """Inspect ``points`` to decide which sub-tracker to use.
 
-        ``points`` may be a single string or a list of strings. Numeric
-        click-style points raise ``RuntimeError`` — the existing
-        ``/sam-track/start`` route forwards ``[payload.text]`` when SAM 3
-        is selected, so this only fires on programmer error.
+        - ``points`` is a string or list of strings → text concept →
+          Sam3VideoModel.add_text_prompt
+        - ``points`` is a list of [x, y] pairs (numeric) with matching
+          ``labels`` → click → Sam3TrackerVideoModel.add_inputs_to_inference_session
         """
         if not points:
-            raise RuntimeError("SAM 3 video tracker requires text prompt(s)")
-        texts: list[str]
-        if isinstance(points, str):
-            texts = [points]
-        elif isinstance(points, list) and all(isinstance(t, str) for t in points):
-            texts = list(points)
-        else:
             raise RuntimeError(
-                "SAM 3 video tracker expected text prompts; got numeric points. "
-                "Use the `text` field on /sam-track/start when SAM_MODEL=sam3.",
+                "SAM 3 video tracker requires points or text — got empty prompt",
             )
-        for t in texts:
-            self._processor.add_text_prompt(inference_session=inference_state, text=t)
+
+        is_text_mode = isinstance(points, str) or (
+            isinstance(points, list)
+            and len(points) > 0
+            and all(isinstance(t, str) for t in points)
+        )
+        if is_text_mode:
+            self._add_text(inference_state, points)
+        else:
+            self._add_points(inference_state, frame_idx, points, labels)
         return None, None, None
 
     def propagate_in_video(self, inference_state: Any) -> Any:
-        """Yield ``(frame_idx, mask)`` tuples shaped like SAM 2's tracker.
+        if inference_state.get("session") is None:
+            return
+        if inference_state["mode"] == "tracker":
+            yield from self._propagate_tracker(inference_state)
+        elif inference_state["mode"] == "concept":
+            yield from self._propagate_concept(inference_state)
 
-        SAM 3 returns multi-instance per-frame outputs; we collapse to the
-        highest-scoring object so the existing ``/sam-track/{sid}/step``
-        single-mask-per-frame contract still holds. Multi-object support
-        is a future enhancement.
-        """
+    # -- internal helpers ----------------------------------------------------
+
+    def _add_text(self, state: dict, points: Any) -> None:
+        import torch  # type: ignore[import-not-found]
+
+        model, processor = self._load_concept()
+        if state["session"] is None:
+            dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
+            state["session"] = processor.init_video_session(
+                video=state["video_frames"],
+                inference_device=self._device,
+                processing_device="cpu",
+                video_storage_device="cpu",
+                dtype=dtype,
+            )
+            state["model"] = model
+            state["processor"] = processor
+            state["mode"] = "concept"
+        texts = [points] if isinstance(points, str) else list(points)
+        for t in texts:
+            processor.add_text_prompt(inference_session=state["session"], text=t)
+
+    def _add_points(
+        self,
+        state: dict,
+        frame_idx: int,
+        points: Any,
+        labels: Any,
+    ) -> None:
+        import torch  # type: ignore[import-not-found]
+
+        model, processor = self._load_tracker()
+        if state["session"] is None:
+            dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
+            state["session"] = processor.init_video_session(
+                video=state["video_frames"],
+                inference_device=self._device,
+                dtype=dtype,
+            )
+            state["model"] = model
+            state["processor"] = processor
+            state["mode"] = "tracker"
+
+        # Flat list of [x, y] points + a flat list of labels for ONE object.
+        # Pack into [batch=1][num_obj=1][num_pts][xy] / [batch=1][num_obj=1][num_pts]
+        # ann_obj_id = 1 by default (single-object protocol; multi-object
+        # support is a v1.4 enhancement).
+        nested_points = [[[ list(p) for p in points ]]]
+        nested_labels = [[ list(labels) ]]
+        processor.add_inputs_to_inference_session(
+            inference_session=state["session"],
+            frame_idx=int(frame_idx),
+            obj_ids=1,
+            input_points=nested_points,
+            input_labels=nested_labels,
+        )
+
+    def _propagate_tracker(self, state: dict) -> Any:
         import numpy as np
 
-        for model_outputs in self._model.propagate_in_video_iterator(
-            inference_session=inference_state,
+        session = state["session"]
+        height = getattr(session, "video_height", 0) or 0
+        width = getattr(session, "video_width", 0) or 0
+        original_sizes = [[int(height), int(width)]] if height and width else None
+        for output in state["model"].propagate_in_video_iterator(session):
+            pred_masks = output.pred_masks
+            if hasattr(pred_masks, "cpu"):
+                pred_masks = pred_masks.cpu()
+            if original_sizes is not None:
+                masks = state["processor"].post_process_masks(
+                    [pred_masks],
+                    original_sizes=original_sizes,
+                    binarize=True,
+                )[0]
+            else:
+                masks = pred_masks
+            mask_np = self._first_mask_to_numpy(masks)
+            yield int(getattr(output, "frame_idx", 0)), mask_np
+
+    def _propagate_concept(self, state: dict) -> Any:
+        import numpy as np
+
+        for model_outputs in state["model"].propagate_in_video_iterator(
+            inference_session=state["session"],
         ):
-            processed = self._processor.postprocess_outputs(inference_state, model_outputs)
+            processed = state["processor"].postprocess_outputs(
+                state["session"], model_outputs,
+            )
             masks = processed.get("masks") if hasattr(processed, "get") else None
             scores = processed.get("scores") if hasattr(processed, "get") else None
             frame_idx = getattr(model_outputs, "frame_idx", 0)
@@ -403,16 +609,39 @@ class Sam3VideoTrackerAdapter:
             best_mask = masks[best_idx].cpu().numpy().astype(np.uint8)
             yield int(frame_idx), best_mask
 
+    @staticmethod
+    def _first_mask_to_numpy(masks: Any) -> Any:
+        """Squeeze ``masks`` down to a 2-D ``(H, W)`` numpy array.
 
-def build_sam3_video_tracker(device: str | None = None) -> Sam3VideoTrackerAdapter:
-    """Eager construction. Imports transformers + torch — only call when
-    ``SAM_MODEL=sam3`` and the GPU extras are installed.
+        Tracker masks come out as ``[num_obj, K, H, W]`` or ``[num_obj, H, W]``.
+        We take object 0, candidate 0 as the single-object output for v1.3.
+        """
+        import numpy as np
+
+        if hasattr(masks, "cpu"):
+            t = masks.cpu()
+            arr = t.numpy() if hasattr(t, "numpy") else np.asarray(t)
+        elif hasattr(masks, "numpy"):
+            arr = masks.numpy()
+        else:
+            arr = np.asarray(masks)
+        if arr.ndim == 4:
+            arr = arr[0, 0]
+        elif arr.ndim == 3:
+            arr = arr[0]
+        return arr.astype(np.uint8)
+
+
+def build_sam3_video_tracker(device: str | None = None) -> Sam3VideoDispatcherAdapter:
+    """Construct the SAM 3 video dispatcher.
+
+    Returns a ``Sam3VideoDispatcherAdapter`` whose underlying transformers
+    classes are loaded lazily on the first ``add_new_points`` call. This
+    means the dispatcher can be created without touching transformers if
+    the caller never starts a session — useful when SAM_MODEL=sam3 is set
+    but only the image surface is exercised.
     """
     import torch  # type: ignore[import-not-found]
-    from transformers import Sam3VideoModel, Sam3VideoProcessor  # type: ignore[import-not-found]
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.bfloat16 if dev == "cuda" else torch.float32
-    model = Sam3VideoModel.from_pretrained("facebook/sam3").to(dev, dtype=dtype)
-    processor = Sam3VideoProcessor.from_pretrained("facebook/sam3")
-    return Sam3VideoTrackerAdapter(model=model, processor=processor, device=dev)
+    return Sam3VideoDispatcherAdapter(device=dev)

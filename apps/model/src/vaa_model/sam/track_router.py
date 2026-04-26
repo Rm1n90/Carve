@@ -61,17 +61,26 @@ def start(payload: StartIn) -> StartOut:
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(status_code=422, detail="video_url_scheme_not_allowed")
 
-    # SAM 3 video tracking is text-based (concept tracking). The legacy SAM 2
-    # tracker uses click points. Branch the validation + payload forwarding
-    # based on the configured model. The adapter contract for SAM 3 is to
-    # forward the text via the ``points`` slot — see Sam3VideoTrackerAdapter.
+    # SAM 3 supports BOTH point-based and text-based video tracking via a
+    # dispatcher adapter (Sam3VideoDispatcherAdapter). The dispatcher routes:
+    #   - string prompts → Sam3VideoModel.add_text_prompt (concept tracking)
+    #   - numeric points → Sam3TrackerVideoModel.add_inputs_to_inference_session
+    # When SAM_MODEL=sam3, the router accepts EITHER text OR points (or both;
+    # text wins when present and points are otherwise absent). When
+    # SAM_MODEL=sam2.x (default), only numeric points are accepted.
     forwarded_points: list
     forwarded_labels: list
     if get_sam_model() == "sam3":
-        if not payload.text:
-            raise HTTPException(status_code=422, detail="sam3_track_requires_text")
-        forwarded_points = [payload.text]
-        forwarded_labels = []
+        if payload.text and not payload.points:
+            forwarded_points = [payload.text]
+            forwarded_labels = []
+        elif payload.points:
+            if len(payload.points) != len(payload.labels):
+                raise HTTPException(status_code=422, detail="points and labels must have equal length")
+            forwarded_points = payload.points
+            forwarded_labels = payload.labels
+        else:
+            raise HTTPException(status_code=422, detail="sam3_track_requires_points_or_text")
     else:
         if len(payload.points) < 1:
             raise HTTPException(status_code=422, detail="track_requires_points")
