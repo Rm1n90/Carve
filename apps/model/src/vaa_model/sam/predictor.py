@@ -293,22 +293,25 @@ def _reset_singleton() -> None:
 
 
 def _default_factory() -> SamPredictor:
-    """Production factory: load the configured SAM 2.1 image predictor.
+    """Production factory: load the configured SAM image predictor.
 
-    Imports torch + sam2 lazily so the test path stays import-free.
-    Pulls the HF repo id from ``get_sam_model()``. Raises a clear error
-    when ``SAM_MODEL=sam3`` (image predictor for SAM 3 is wired in v1.1
-    T6, not here).
+    Imports torch + sam2/transformers lazily so the test path stays
+    import-free. Pulls the HF repo id from ``get_sam_model()``. When
+    ``SAM_MODEL=sam3`` is selected, builds the SAM 3 adapter via
+    ``vaa_model.sam.sam3_adapter`` and (as a side effect) registers the
+    SAM 3 text predictor for ``/sam/text-prompt`` if the operator has not
+    already supplied a custom one.
     """
     model = get_sam_model()
     if model == "sam3":
-        # T6 wires the SAM 3 click-prompt path through a separate factory.
-        # If we hit this default factory with sam3 selected, the operator
-        # forgot to register the SAM 3 predictor.
-        raise RuntimeError(
-            "SAM_MODEL=sam3 selected but SAM 3 click predictor not registered; "
-            "see apps/docs/admin.md SAM 3 setup."
-        )
+        from vaa_model.sam import sam3_adapter
+
+        adapter = sam3_adapter.build_sam3_image_predictor()
+        # Side effect: ensure /sam/text-prompt has a working predictor.
+        # If the operator pre-registered a custom one, leave it alone.
+        if _TEXT_PREDICTOR_FACTORY is None:
+            set_text_predictor(sam3_adapter.make_sam3_text_predictor())
+        return adapter
     repo = _HF_REPO_BY_MODEL[model]
 
     import torch  # type: ignore[import-not-found]

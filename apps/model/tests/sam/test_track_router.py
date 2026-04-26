@@ -129,3 +129,59 @@ def test_start_rejects_file_scheme_video_url() -> None:
     )
     assert r.status_code == 422
     assert "video_url_scheme_not_allowed" in r.text
+
+
+# --- SAM 3 video tracking (text-prompt-based) -------------------------------
+
+
+class _CapturingTextTracker:
+    """SAM 3 video tracker stub — accepts a single string in the points slot
+    and records it so the test can assert the router routed text correctly."""
+
+    def __init__(self) -> None:
+        self.texts: list = []
+
+    def init_state(self, video_path):
+        return {"video": video_path}
+
+    def add_new_points(self, state, frame_idx, points, labels):
+        self.texts.append(points)
+        return None, None, None
+
+    def propagate_in_video(self, state):
+        if False:
+            yield  # empty generator
+
+
+def test_start_with_sam3_requires_text_field(monkeypatch) -> None:
+    """When SAM_MODEL=sam3, /sam-track/start must reject calls that omit
+    the text prompt — SAM 3 video tracking is concept-based, not click-based."""
+    monkeypatch.setenv("SAM_MODEL", "sam3")
+    tracker_mod.set_test_tracker_factory(lambda: _CapturingTextTracker())
+    r = _client().post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4", "frame_idx": 0},
+    )
+    assert r.status_code == 422
+    assert "sam3_track_requires_text" in r.text
+
+
+def test_start_with_sam3_accepts_text_only(monkeypatch) -> None:
+    """When SAM_MODEL=sam3, /sam-track/start must accept text without
+    points/labels and forward the text into the tracker."""
+    monkeypatch.setenv("SAM_MODEL", "sam3")
+    captured = {"tracker": None}
+
+    def _factory():
+        t = _CapturingTextTracker()
+        captured["tracker"] = t
+        return t
+
+    tracker_mod.set_test_tracker_factory(_factory)
+    r = _client().post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4", "frame_idx": 0, "text": "person"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["session_id"]
+    assert captured["tracker"].texts == [["person"]]

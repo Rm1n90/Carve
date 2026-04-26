@@ -110,15 +110,16 @@ def set_test_tracker_factory(factory: Any) -> None:
 def _default_factory() -> TrackerProtocol:
     """Production factory — imports lazily; pulls the HF repo from get_sam_model().
 
-    Raises a clear error when SAM_MODEL=sam3 because the SAM 3 unified
-    tracker is wired in v1.1 T6, not here.
+    When ``SAM_MODEL=sam3`` is selected, builds the SAM 3 video tracker
+    adapter via ``vaa_model.sam.sam3_adapter``. The adapter is text-prompt
+    based (concept tracking); ``track_router`` enforces the ``text`` field
+    requirement at the HTTP boundary.
     """
     model = get_sam_model()
     if model == "sam3":
-        raise RuntimeError(
-            "SAM_MODEL=sam3 selected but SAM 3 video tracker not registered; "
-            "see apps/docs/admin.md SAM 3 setup."
-        )
+        from vaa_model.sam import sam3_adapter
+
+        return sam3_adapter.build_sam3_video_tracker()
     repo = _HF_REPO_BY_MODEL[model]
 
     import torch  # type: ignore[import-not-found]
@@ -140,9 +141,17 @@ def start_session(
     *,
     video_url: str,
     frame_idx: int,
-    points: list[list[int]],
-    labels: list[int],
+    points: list[Any],
+    labels: list[Any],
 ) -> TrackerSession:
+    """Initialize a tracker session.
+
+    ``points`` and ``labels`` are intentionally typed as ``list[Any]`` so
+    the same entrypoint can carry either SAM 2 click data
+    (``list[list[int]]`` / ``list[int]``) or a SAM 3 text prompt list
+    (``list[str]``) — the underlying ``TrackerProtocol.add_new_points``
+    implementation interprets them according to which adapter is loaded.
+    """
     tracker = _get_tracker()
     # init_state just downloads/decodes the video — no GPU forward — so it
     # stays outside the autocast. The forward pass that computes the seed

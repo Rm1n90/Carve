@@ -76,13 +76,42 @@ def test_default_factory_default_is_sam2_1_large(fake_sam2_modules):
     assert fake_sam2_modules["repo"] == "facebook/sam2.1-hiera-large"
 
 
-def test_default_factory_raises_when_sam3_selected(monkeypatch, fake_sam2_modules):
+def test_default_factory_routes_to_sam3_adapter_when_sam3_selected(
+    monkeypatch, fake_sam2_modules,
+):
+    """v1.1 T6: SAM 3 selection now routes through the SAM 3 video tracker
+    adapter instead of raising — the actual model is loaded lazily by the
+    adapter so the RuntimeError from earlier plans no longer fires."""
     monkeypatch.setenv("SAM_MODEL", "sam3")
-    with pytest.raises(RuntimeError, match=r"SAM 3 video tracker not registered"):
-        t_mod._default_factory()
+    called = {"build": False}
+
+    def _fake_build():
+        called["build"] = True
+        return object()
+
+    monkeypatch.setattr(
+        "vaa_model.sam.sam3_adapter.build_sam3_video_tracker",
+        _fake_build,
+    )
+
+    t_mod._default_factory()
+    assert called["build"] is True
 
 
-def test_default_factory_raises_when_legacy_sam_variant_sam3(monkeypatch, fake_sam2_modules):
+def test_default_factory_routes_to_sam3_adapter_when_legacy_sam_variant_sam3(
+    monkeypatch, fake_sam2_modules,
+):
     monkeypatch.setenv("SAM_VARIANT", "sam3")
-    with pytest.raises(RuntimeError, match=r"SAM 3 video tracker not registered"):
-        t_mod._default_factory()
+    called = {"build": False}
+
+    def _fake_build():
+        called["build"] = True
+        return object()
+
+    monkeypatch.setattr(
+        "vaa_model.sam.sam3_adapter.build_sam3_video_tracker",
+        _fake_build,
+    )
+
+    t_mod._default_factory()
+    assert called["build"] is True
