@@ -119,9 +119,20 @@ services:
       postgres:
         condition: service_healthy
 
+  # The `model` service is optional. It runs SAM and YOLO inference and
+  # requires NVIDIA Container Toolkit + a GPU. Manual annotation tools in
+  # the web editor work fully without it.
+  #
+  # Start without inference (default — manual annotation only):
+  #   docker compose up -d
+  #
+  # Start with inference enabled:
+  #   docker compose --profile inference up -d
   model:
     build: ./apps/model
     restart: unless-stopped
+    profiles:
+      - inference
     environment:
       MODEL_HOST: 0.0.0.0
       MODEL_PORT: 8100
@@ -158,8 +169,6 @@ services:
       - caddy_config:/config
     depends_on:
       api:
-        condition: service_healthy
-      model:
         condition: service_healthy
       web:
         condition: service_healthy
