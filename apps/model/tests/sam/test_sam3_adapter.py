@@ -757,3 +757,91 @@ def test_build_sam3_video_tracker_returns_dispatcher(monkeypatch):
     tracker = a_mod.build_sam3_video_tracker(device="cpu")
 
     assert isinstance(tracker, a_mod.Sam3VideoDispatcherAdapter)
+
+
+# --- v1.4 multi-object: add_inputs_at_frame on the dispatcher ---------------
+
+
+def test_dispatcher_add_inputs_at_frame_calls_tracker_processor(
+    fake_sam3_video_dispatcher_modules,
+):
+    """The new ``add_inputs_at_frame`` method must route through the SAM 3
+    tracker processor (Sam3TrackerVideoProcessor.add_inputs_to_inference_session)
+    with the supplied ``obj_id`` (singular int per the SAM 3 model card)."""
+    captured, TrackerModel, TrackerProcessor, _, _ = fake_sam3_video_dispatcher_modules
+    adapter = a_mod.Sam3VideoDispatcherAdapter(device="cpu")
+    adapter._tracker_model = TrackerModel()  # noqa: SLF001
+    adapter._tracker_processor = TrackerProcessor()  # noqa: SLF001
+
+    state = adapter.init_state("https://fake/v.mp4")
+    adapter.add_inputs_at_frame(
+        state,
+        frame_idx=12,
+        obj_id=2,
+        points=[[100, 200]],
+        labels=[1],
+    )
+
+    assert state["mode"] == "tracker"
+    assert len(captured["tracker_added_inputs"]) == 1
+    call = captured["tracker_added_inputs"][0]
+    assert call["frame_idx"] == 12
+    assert call["obj_ids"] == 2
+    assert call["input_points"] == [[[[100, 200]]]]
+    assert call["input_labels"] == [[[1]]]
+
+
+def test_dispatcher_add_inputs_at_frame_with_box(fake_sam3_video_dispatcher_modules):
+    """Box-only prompts must be forwarded as ``input_boxes`` to the tracker
+    processor — points and labels stay None."""
+    captured, TrackerModel, TrackerProcessor, _, _ = fake_sam3_video_dispatcher_modules
+    adapter = a_mod.Sam3VideoDispatcherAdapter(device="cpu")
+    adapter._tracker_model = TrackerModel()  # noqa: SLF001
+    adapter._tracker_processor = TrackerProcessor()  # noqa: SLF001
+
+    state = adapter.init_state("https://fake/v.mp4")
+    adapter.add_inputs_at_frame(
+        state,
+        frame_idx=0,
+        obj_id=3,
+        boxes=[[10.0, 20.0, 50.0, 60.0]],
+    )
+
+    call = captured["tracker_added_inputs"][0]
+    assert call["obj_ids"] == 3
+    # Boxes get packed into [batch=1][num_obj=1][4]
+    assert call["input_boxes"] == [[[10.0, 20.0, 50.0, 60.0]]]
+    # No points → no point/label keys forwarded
+    assert call["input_points"] is None
+    assert call["input_labels"] is None
+
+
+def test_dispatcher_add_inputs_at_frame_initializes_session_lazy(
+    fake_sam3_video_dispatcher_modules,
+):
+    """On the first ``add_inputs_at_frame`` call against a fresh state,
+    the dispatcher must lazily initialize the tracker session (the
+    state's ``session`` field starts as None until at least one prompt
+    arrives)."""
+    captured, TrackerModel, TrackerProcessor, _, _ = fake_sam3_video_dispatcher_modules
+    adapter = a_mod.Sam3VideoDispatcherAdapter(device="cpu")
+    adapter._tracker_model = TrackerModel()  # noqa: SLF001
+    adapter._tracker_processor = TrackerProcessor()  # noqa: SLF001
+
+    state = adapter.init_state("https://fake/v.mp4")
+    assert state["session"] is None
+    assert state["mode"] is None
+
+    adapter.add_inputs_at_frame(
+        state,
+        frame_idx=0,
+        obj_id=1,
+        points=[[1, 2]],
+        labels=[1],
+    )
+
+    # Session is now alive and tracker mode was selected.
+    assert state["session"] is not None
+    assert state["mode"] == "tracker"
+    # init_video_session was called exactly once on the tracker side.
+    assert any(target == "tracker" for target, _ in captured["init_video_calls"])
