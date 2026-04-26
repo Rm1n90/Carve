@@ -14,6 +14,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from vaa_model.sam.predictor import (
+    _HF_REPO_BY_MODEL,
+    get_sam_model,
+)
+
 
 class TrackerProtocol(Protocol):
     """Subset of SAM2VideoPredictor we use."""
@@ -52,11 +57,23 @@ def set_test_tracker_factory(factory: Any) -> None:
 
 
 def _default_factory() -> TrackerProtocol:
-    """Production factory — imported lazily."""
+    """Production factory — imports lazily; pulls the HF repo from get_sam_model().
+
+    Raises a clear error when SAM_MODEL=sam3 because the SAM 3 unified
+    tracker is wired in v1.1 T6, not here.
+    """
+    model = get_sam_model()
+    if model == "sam3":
+        raise RuntimeError(
+            "SAM_MODEL=sam3 selected but SAM 3 video tracker not registered; "
+            "see apps/docs/admin.md SAM 3 setup."
+        )
+    repo = _HF_REPO_BY_MODEL[model]
+
     import torch  # type: ignore[import-not-found]
     from sam2.sam2_video_predictor import SAM2VideoPredictor  # type: ignore[import-not-found]
 
-    p = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-large")
+    p = SAM2VideoPredictor.from_pretrained(repo)
     p.model.to("cuda" if torch.cuda.is_available() else "cpu")
     return p
 
