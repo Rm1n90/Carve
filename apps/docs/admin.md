@@ -110,6 +110,26 @@ unaffected.
   and restart the container — the configured model is read at first
   predictor load, so a restart is required.
 
+### Supported YOLO weight versions
+
+The model service uses Ultralytics' unified YOLO loader, which auto-detects
+the architecture from the `.pt` file. The currently pinned version of
+`ultralytics` is `8.4.41`, which supports:
+
+- YOLOv5 / YOLOv8 (legacy)
+- YOLO11 (recommended)
+- Any newer YOLO release supported by Ultralytics >= 8.4.41
+
+To support a newer YOLO release (e.g., YOLO26, YOLOv12), override the pin in
+`apps/model/pyproject.toml` and rebuild:
+
+```bash
+docker compose build model && docker compose --profile inference up -d model
+```
+
+The loader contract (`registry.WeightRegistry`) is version-agnostic — bumping
+the dependency is the only required change.
+
 ### Independence from YOLO
 
 SAM and YOLO are independent registries. Specifically:
