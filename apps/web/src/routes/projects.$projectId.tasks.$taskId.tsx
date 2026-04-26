@@ -31,7 +31,7 @@ function TaskDetail() {
           )}
         </header>
         <AssetUploadDialog projectId={projectId} taskId={taskId} />
-        <AssetGrid taskId={taskId} />
+        <AssetGrid projectId={projectId} taskId={taskId} />
       </div>
     </RequireAuth>
   );
