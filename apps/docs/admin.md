@@ -22,15 +22,37 @@ Recommended cron (daily at 03:00):
 
 Follow the "Backups & restore" section in the project `README.md` for the full restore procedure.
 
-## SAM 3 (text prompts) — admin setup {#sam-3-toggle}
+## SAM 3 (concept-based segmentation + tracking) — admin setup {#sam-3-toggle}
 
-SAM 3 adds text-prompt segmentation. The model is gated on Hugging Face
-(`facebook/sam3`) and is **not** installed by default — the operator must
-accept the license and provide an HF token before enabling it.
+SAM 3 is a unified model that performs Promptable Concept Segmentation
+(PCS): text-driven detection + segmentation on images, plus video object
+tracking where the model auto-detects ALL matching instances and tracks
+them across frames. The model is gated on Hugging Face (`facebook/sam3`)
+and is **not** installed by default — the operator must accept the
+license and provide an HF token before enabling it.
 
-When SAM 3 is **disabled** (`SAM_VARIANT=sam2`, the default), the
-`POST /sam/text-prompt` endpoint returns `409 sam3_not_enabled`. The rest of
-the SAM 2 surface (`/sam/encode`, `/sam/decode`, sam-track) is unaffected.
+- **SAM model selection (v1.1):** set `SAM_MODEL` to one of `sam2.1-tiny`,
+  `sam2.1-small`, `sam2.1-base-plus`, `sam2.1-large` (default), or `sam3`.
+  The legacy `SAM_VARIANT` env (`sam2` / `sam3`, from Plan 08) is still
+  honored for backward compatibility when `SAM_MODEL` is unset.
+- **Performance:** SAM inference runs in bf16 by default on Ampere+ GPUs
+  (RTX 30/40 series, A100, H100) for roughly half the VRAM and ~2x the
+  throughput vs FP32. Set `SAM_BF16=0` to force FP32 for debugging.
+- **torch.compile (optional):** Set `SAM_COMPILE=1` for ~1.3-2x faster
+  inference after a one-time 30-60s warmup. Falls back gracefully on
+  incompatible hardware.
+- **GPU memory management:** SAM models are unloaded from GPU memory
+  after `SAM_IDLE_TIMEOUT_S` seconds of inactivity (default `900` =
+  15 min). Set to `0` to disable idle eviction. Force-unload immediately
+  via `POST /sam/unload` (admin endpoint inside the model service network;
+  not proxied through Caddy). The body accepts
+  `{"which": "image" | "tracker" | "all"}` (default `"all"`); the
+  response lists what was actually freed.
+
+When SAM 3 is **disabled** (any non-`sam3` value, default `sam2.1-large`),
+the `POST /sam/text-prompt` endpoint returns `409 sam3_not_enabled`. The
+rest of the SAM 2 surface (`/sam/encode`, `/sam/decode`, sam-track) is
+unaffected.
 
 ### Enable
 
@@ -40,30 +62,51 @@ the SAM 2 surface (`/sam/encode`, `/sam/decode`, sam-track) is unaffected.
 3. In your `.env`, set:
 
    ```env
-   SAM_VARIANT=sam3
+   SAM_MODEL=sam3
    HF_TOKEN=hf_xxx
    ```
 
-4. Rebuild the model service with the `[gpu]` extras (which carry the SAM 3
-   deps):
+4. Make sure `transformers>=5.6` is included in the model service `[gpu]`
+   extras (it carries the `Sam3Model` / `Sam3VideoModel` classes).
+5. Rebuild and restart the model service:
 
    ```bash
-   docker compose build model
+   docker compose build model && docker compose up -d model
    ```
 
-5. Restart it:
+### What SAM 3 changes
 
-   ```bash
-   docker compose up -d model
-   ```
+- **Image clicks** (`/sam/encode` + `/sam/decode`): same wire API as
+  SAM 2. Click points are routed into `Sam3Model` with positive=1 /
+  negative=0 labels. The container loads `transformers.Sam3Model` and
+  `Sam3Processor` lazily on first request via the SAM 3 image adapter
+  (`vaa_model.sam.sam3_adapter.build_sam3_image_predictor`).
+- **Text prompts** (`/sam/text-prompt`): now functional. The text
+  predictor is registered automatically by the SAM 3 image factory the
+  first time `/sam/encode` runs, so no manual
+  `set_text_predictor(...)` call is required. Returns one segmentation
+  per matching object instance.
+- **Video tracking** (`/sam-track/start`): now requires a `text` field.
+  Existing `points` / `labels` fields are ignored (the endpoint returns
+  `422 sam3_track_requires_text` if `text` is missing or empty). Example:
+  ```json
+  POST /sam-track/start
+  {"video_url": "https://.../v.mp4", "text": "person"}
+  ```
+  → tracks every person in the video. The `/{session}/step` endpoint is
+  unchanged; it returns the highest-scoring object's mask per frame
+  (multi-object output is a future enhancement).
 
-The operator-side container start should register the SAM 3 predictor with
-`vaa_model.sam.predictor.set_text_predictor(...)`. Until that call runs,
-`/sam/text-prompt` returns `503 sam3_predictor_not_loaded`.
+### Notes
 
-**Note:** Loading SAM 3 evicts any cached YOLO weights from the model LRU
-cache. The first YOLO auto-annotate request after switching will reload
-weights from disk.
+- SAM 3 is roughly 860M parameters; it needs more VRAM than
+  SAM 2.1 Large. The 4070 (16 GB) handles it in bf16 with `SAM_BF16=1`
+  (the default).
+- Loading SAM 3 evicts the YOLO LRU cache. Operators with frequent YOLO
+  use should consider a separate inference container.
+- Switch back to SAM 2 with `SAM_MODEL=sam2.1-large` (or any other size)
+  and restart the container — the configured model is read at first
+  predictor load, so a restart is required.
 
 ## In-browser SAM decoder (WebGPU) — admin setup
 
