@@ -207,6 +207,107 @@ def make_sam3_text_predictor():
     return _predict_from_text
 
 
+# --- box predictor for /sam/box-prompt --------------------------------------
+
+
+def make_sam3_box_predictor():
+    """Return a callable matching the ``BoxPredictor`` contract.
+
+    Signature: ``fn(*, image_b64, boxes, box_labels, text=None) -> list[dict]``
+    where each output dict has keys ``counts, size, score, bbox``.
+
+    SAM 3's image processor accepts ``input_boxes`` (xyxy) plus
+    ``input_boxes_labels`` (1=positive include, 0=negative exclude).
+    Combining ``text`` with negative boxes refines a text concept by
+    excluding regions that the model would otherwise pick up — a common
+    interactive pattern (e.g., "handle" with a box around the lid that
+    should not be selected).
+
+    Maintains a closure-private singleton of Sam3Model + Sam3Processor so
+    the model is loaded at most once across calls.
+    """
+    _state: dict[str, Any] = {}
+
+    def _ensure_loaded() -> None:
+        if "model" in _state:
+            return
+        adapter = build_sam3_image_predictor()
+        _state["model"] = adapter._model  # noqa: SLF001 — adapter exposes internals deliberately
+        _state["processor"] = adapter._processor  # noqa: SLF001
+        _state["device"] = adapter._device  # noqa: SLF001
+
+    def _predict_from_boxes(
+        *,
+        image_b64: str,
+        boxes,
+        box_labels,
+        text: str | None = None,
+    ) -> list[dict]:
+        import base64
+        from io import BytesIO
+
+        import numpy as np
+        import torch  # type: ignore[import-not-found]
+        from PIL import Image  # type: ignore[import-not-found]
+
+        from vaa_model.sam.codec import encode_mask_rle
+
+        _ensure_loaded()
+        img_bytes = base64.b64decode(image_b64)
+        pil = Image.open(BytesIO(img_bytes)).convert("RGB")
+        h, w = pil.size[1], pil.size[0]
+
+        proc = _state["processor"]
+        model = _state["model"]
+        device = _state["device"]
+
+        # SAM 3 image processor expects nested lists:
+        #   input_boxes:        [batch, num_objects, 4]   (xyxy float)
+        #   input_boxes_labels: [batch, num_objects]      (1 or 0)
+        boxes_arg = [[[float(x) for x in b] for b in boxes]]
+        labels_arg = [[int(label) for label in box_labels]]
+
+        inputs = proc(
+            images=pil,
+            text=text,
+            input_boxes=boxes_arg,
+            input_boxes_labels=labels_arg,
+            return_tensors="pt",
+        ).to(device)
+        with torch.no_grad():
+            outputs = model(**inputs)
+        results = proc.post_process_instance_segmentation(
+            outputs,
+            threshold=0.5,
+            mask_threshold=0.5,
+            target_sizes=[[h, w]],
+        )[0]
+        masks = results.get("masks") if hasattr(results, "get") else None
+        scores = results.get("scores") if hasattr(results, "get") else None
+        boxes_out = results.get("boxes") if hasattr(results, "get") else None
+        out: list[dict] = []
+        if masks is None:
+            return out
+        for i in range(len(masks)):
+            mask_np = masks[i].cpu().numpy().astype(np.uint8)
+            counts, size = encode_mask_rle(mask_np)
+            box = (
+                boxes_out[i].cpu().numpy().tolist()
+                if boxes_out is not None
+                else [0.0, 0.0, 0.0, 0.0]
+            )
+            score_val = float(scores[i].item()) if scores is not None else 1.0
+            out.append({
+                "counts": counts,
+                "size": size,
+                "score": score_val,
+                "bbox": [float(x) for x in box],
+            })
+        return out
+
+    return _predict_from_boxes
+
+
 # --- video tracker adapter --------------------------------------------------
 
 

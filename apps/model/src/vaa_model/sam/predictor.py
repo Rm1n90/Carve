@@ -189,10 +189,17 @@ class SamPredictor(Protocol):
 # zero or more candidate masks in ``{counts, size, score, bbox}`` form.
 TextPredictor = Callable[..., list[dict]]
 
+# A SAM 3 box-prompt predictor is any callable that accepts a base64
+# image plus boxes (xyxy floats), per-box labels (1=positive, 0=negative),
+# and an optional text concept to combine with the boxes. Returns the
+# same ``{counts, size, score, bbox}`` shape as the text predictor.
+BoxPredictor = Callable[..., list[dict]]
+
 
 _PREDICTOR: SamPredictor | None = None
 _TEST_PREDICTOR: SamPredictor | None = None
 _TEXT_PREDICTOR_FACTORY: TextPredictor | None = None
+_BOX_PREDICTOR_FACTORY: BoxPredictor | None = None
 
 # --- idle eviction state ----------------------------------------------------
 #
@@ -311,6 +318,10 @@ def _default_factory() -> SamPredictor:
         # If the operator pre-registered a custom one, leave it alone.
         if _TEXT_PREDICTOR_FACTORY is None:
             set_text_predictor(sam3_adapter.make_sam3_text_predictor())
+        # Side effect: ensure /sam/box-prompt has a working predictor.
+        # If the operator pre-registered a custom one, leave it alone.
+        if _BOX_PREDICTOR_FACTORY is None:
+            set_box_predictor(sam3_adapter.make_sam3_box_predictor())
         return adapter
     repo = _HF_REPO_BY_MODEL[model]
 
@@ -366,6 +377,34 @@ def reset_text_predictor() -> None:
     """Clear the text predictor factory. Used by tests."""
     global _TEXT_PREDICTOR_FACTORY
     _TEXT_PREDICTOR_FACTORY = None
+
+
+def set_box_predictor(fn: BoxPredictor | None) -> None:
+    """Register the SAM 3 box-prompt predictor factory.
+
+    Pass ``None`` to clear (used by tests). The operator wires this
+    automatically via ``_default_factory()`` when ``SAM_MODEL=sam3``;
+    tests inject a fake.
+    """
+    global _BOX_PREDICTOR_FACTORY
+    _BOX_PREDICTOR_FACTORY = fn
+
+
+def get_box_predictor() -> BoxPredictor:
+    """Return the registered SAM 3 box predictor.
+
+    Raises ``RuntimeError`` if no factory was registered. Callers should
+    convert this into a 503 ``sam3_box_predictor_not_loaded`` HTTP error.
+    """
+    if _BOX_PREDICTOR_FACTORY is None:
+        raise RuntimeError("box predictor not configured")
+    return _BOX_PREDICTOR_FACTORY
+
+
+def reset_box_predictor() -> None:
+    """Clear the box predictor factory. Used by tests."""
+    global _BOX_PREDICTOR_FACTORY
+    _BOX_PREDICTOR_FACTORY = None
 
 
 def extract_embedding(predictor: Any) -> bytes | None:
