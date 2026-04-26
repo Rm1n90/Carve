@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as Tabs from "@radix-ui/react-tabs";
+import { TooltipProvider } from "@radix-ui/react-tooltip";
+import {
+  Save,
+  Keyboard,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+} from "lucide-react";
 
 import { AnnotationCanvas } from "@/components/annotation/AnnotationCanvas";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
@@ -11,6 +20,9 @@ import { annotationsApi, type BatchPayload } from "@/api/annotations";
 import { assetsApi } from "@/api/assets";
 import { classesApi } from "@/api/classes";
 import { useAnnotations } from "@/state/annotations";
+import { Tooltip } from "@/components/ui/Tooltip";
+import { Kbd } from "@/components/ui/Kbd";
+import { cn } from "@/lib/cn";
 
 interface Props {
   projectId: string;
@@ -19,6 +31,47 @@ interface Props {
 }
 
 const AUTOSAVE_DEBOUNCE_MS = 2000;
+
+function SaveIndicator({
+  isSaving,
+  hasError,
+  dirtyCount,
+}: {
+  isSaving: boolean;
+  hasError: boolean;
+  dirtyCount: number;
+}) {
+  if (isSaving) {
+    return (
+      <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full border border-[var(--border-accent)] bg-[var(--accent-bg)] text-[11px] text-[var(--accent)]">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Saving
+      </span>
+    );
+  }
+  if (hasError) {
+    return (
+      <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full border border-[oklch(0.70_0.20_25_/_0.40)] bg-[oklch(0.70_0.20_25_/_0.10)] text-[11px] text-[var(--danger)]">
+        <AlertCircle className="h-3 w-3" />
+        Save failed
+      </span>
+    );
+  }
+  if (dirtyCount > 0) {
+    return (
+      <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full border border-[oklch(0.84_0.17_75_/_0.40)] bg-[oklch(0.84_0.17_75_/_0.10)] text-[11px] text-[var(--warning)]">
+        <span className="h-1.5 w-1.5 rounded-full bg-[var(--warning)]" aria-hidden />
+        {dirtyCount} unsaved
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full border border-[oklch(0.78_0.16_145_/_0.35)] bg-[oklch(0.78_0.16_145_/_0.08)] text-[11px] text-[var(--success)]">
+      <CheckCircle2 className="h-3 w-3" />
+      Saved
+    </span>
+  );
+}
 
 export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const qc = useQueryClient();
@@ -158,73 +211,194 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   }, []);
 
   if (assetQ.isLoading || classesQ.isLoading) {
-    return <p>Loading…</p>;
+    return (
+      <div className="grid h-screen place-items-center">
+        <div className="flex items-center gap-3 text-tertiary text-[13px]">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading…
+        </div>
+      </div>
+    );
   }
   if (assetQ.error || !assetQ.data) {
-    return <p style={{ color: "tomato" }}>Failed to load asset.</p>;
+    return (
+      <div className="grid h-screen place-items-center">
+        <p className="text-[var(--danger)] text-[14px]">Failed to load asset.</p>
+      </div>
+    );
   }
 
   const asset = assetQ.data.asset;
   const url = assetQ.data.url;
   const w = asset.width ?? 1024;
   const h = asset.height ?? 768;
+  const isVideo = asset.kind === "video" && (asset.frames ?? 0) > 1;
+  const hasError = saveMutation.isError;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <header
-        style={{
-          display: "flex",
-          gap: 12,
-          alignItems: "center",
-          padding: "8px 16px",
-          borderBottom: "1px solid rgba(255,255,255,0.1)",
-          fontSize: 13,
-        }}
-      >
-        <span style={{ opacity: 0.8 }}>{asset.original_name}</span>
-        <span style={{ flex: 1 }} />
-        <span style={{ opacity: 0.6 }}>
-          {saveMutation.isPending
-            ? "Saving…"
-            : dirtyCount > 0
-              ? `${dirtyCount} unsaved`
-              : "Saved"}
-        </span>
-        <button onClick={saveNow}>Save now</button>
-      </header>
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <Toolbar />
-        <div style={{ flex: 1, display: "grid", placeItems: "center", padding: 12, overflow: "auto" }}>
-          <AnnotationCanvas
-            width={w}
-            height={h}
-            imageUrl={url}
-            frameId={frameId}
-            assetId={assetId}
-          />
-        </div>
-        <aside
-          style={{
-            width: 280,
-            borderLeft: "1px solid rgba(255,255,255,0.1)",
-            padding: 12,
-            display: "grid",
-            gap: 16,
-            overflow: "auto",
-          }}
+    <TooltipProvider delayDuration={250}>
+      <div className="flex h-screen flex-col bg-[var(--bg-base)] overflow-hidden">
+        {/* ---- TOP CHROME ---- */}
+        <header
+          className={cn(
+            "flex h-11 shrink-0 items-center gap-3 px-4",
+            "border-b border-[var(--border-subtle)]",
+            "bg-[var(--bg-glass-strong)] backdrop-blur-xl",
+          )}
         >
-          <ClassesPanel classes={classesQ.data ?? []} />
-          <ObjectsPanel frameId={frameId} />
-        </aside>
+          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[12px] min-w-0">
+            <span className="text-tertiary tracking-tight font-mono-data text-[10px] uppercase">
+              Annotate
+            </span>
+            <span className="text-tertiary mx-1">/</span>
+            <span className="text-secondary tracking-tight truncate" title={asset.original_name}>
+              {asset.original_name}
+            </span>
+          </nav>
+
+          <div className="flex-1" />
+
+          <SaveIndicator
+            isSaving={saveMutation.isPending}
+            hasError={hasError}
+            dirtyCount={dirtyCount}
+          />
+
+          {isVideo && (
+            <span className="font-mono-data text-[11px] text-tertiary tracking-wide">
+              {currentFrameIdx + 1}/{asset.frames}
+            </span>
+          )}
+
+          <Tooltip
+            content={
+              <span className="flex items-center gap-1.5">
+                Save now <Kbd>⌘ S</Kbd>
+              </span>
+            }
+          >
+            <button
+              type="button"
+              onClick={saveNow}
+              className={cn(
+                "inline-flex items-center gap-1.5 h-8 px-3",
+                "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+                "bg-[var(--bg-surface)] text-secondary text-[12px]",
+                "hover:border-[var(--border-strong)] hover:text-primary",
+                "transition-colors",
+              )}
+              aria-label="Save now"
+            >
+              <Save className="h-3.5 w-3.5" />
+              Save now
+            </button>
+          </Tooltip>
+
+          <Tooltip
+            content={
+              <span className="flex items-center gap-1.5">
+                Command palette <Kbd>⌘ K</Kbd>
+              </span>
+            }
+          >
+            <button
+              type="button"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-tertiary hover:bg-[var(--bg-surface)] hover:text-primary transition-colors"
+              aria-label="Open command palette"
+            >
+              <Keyboard className="h-4 w-4" />
+            </button>
+          </Tooltip>
+        </header>
+
+        {/* ---- THREE-PANEL BODY ---- */}
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+          {/* LEFT TOOL DOCK */}
+          <Toolbar />
+
+          {/* CENTER CANVAS */}
+          <main
+            className={cn(
+              "relative flex-1 grid place-items-center min-w-0 overflow-auto",
+              "bg-[var(--bg-sunken)] canvas-vignette",
+            )}
+          >
+            <div className="relative">
+              <AnnotationCanvas
+                width={w}
+                height={h}
+                imageUrl={url}
+                frameId={frameId}
+                assetId={assetId}
+              />
+            </div>
+          </main>
+
+          {/* RIGHT PANEL */}
+          <aside
+            className={cn(
+              "flex w-[320px] shrink-0 flex-col",
+              "border-l border-[var(--border-subtle)]",
+              "bg-[var(--bg-glass-strong)] backdrop-blur-xl",
+            )}
+          >
+            <Tabs.Root defaultValue="classes" className="flex flex-col h-full">
+              <Tabs.List
+                aria-label="Side panel"
+                className="flex shrink-0 border-b border-[var(--border-subtle)] px-3 pt-3 gap-1"
+              >
+                <Tabs.Trigger
+                  value="classes"
+                  className={cn(
+                    "px-3 py-2 text-[12px] tracking-tight rounded-t-[var(--radius-sm)]",
+                    "text-tertiary border-b-2 border-transparent",
+                    "hover:text-primary",
+                    "data-[state=active]:text-primary data-[state=active]:border-[var(--accent)]",
+                    "transition-colors",
+                  )}
+                >
+                  Classes
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                  value="objects"
+                  className={cn(
+                    "px-3 py-2 text-[12px] tracking-tight rounded-t-[var(--radius-sm)]",
+                    "text-tertiary border-b-2 border-transparent",
+                    "hover:text-primary",
+                    "data-[state=active]:text-primary data-[state=active]:border-[var(--accent)]",
+                    "transition-colors",
+                  )}
+                >
+                  Objects
+                </Tabs.Trigger>
+              </Tabs.List>
+              <Tabs.Content
+                value="classes"
+                className="flex-1 overflow-y-auto p-3 focus-visible:outline-none"
+              >
+                <ClassesPanel classes={classesQ.data ?? []} />
+              </Tabs.Content>
+              <Tabs.Content
+                value="objects"
+                className="flex-1 overflow-y-auto p-3 focus-visible:outline-none"
+              >
+                <ObjectsPanel frameId={frameId} />
+              </Tabs.Content>
+            </Tabs.Root>
+          </aside>
+        </div>
+
+        {/* ---- VIDEO TIMELINE ---- */}
+        {isVideo && (
+          <FrameTimeline
+            totalFrames={asset.frames}
+            currentIdx={currentFrameIdx}
+            onChange={setCurrentFrameIdx}
+          />
+        )}
+
+        <CommandPalette classes={classesQ.data ?? []} onSaveNow={saveNow} />
       </div>
-      {asset.kind === "video" && (asset.frames ?? 0) > 1 && (
-        <FrameTimeline
-          totalFrames={asset.frames}
-          currentIdx={currentFrameIdx}
-          onChange={setCurrentFrameIdx}
-        />
-      )}
-      <CommandPalette classes={classesQ.data ?? []} onSaveNow={saveNow} />
-    </div>
+    </TooltipProvider>
   );
 }

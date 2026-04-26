@@ -1,9 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { Video } from "lucide-react";
 import { assetsApi, type Asset } from "@/api/assets";
+import { cn } from "@/lib/cn";
 
-function AssetTile({ asset, projectId, taskId }: { asset: Asset; projectId: string; taskId: string }) {
-  // Lazy-fetch presigned URL only when this tile mounts
+function AssetTile({
+  asset,
+  projectId,
+  taskId,
+}: {
+  asset: Asset;
+  projectId: string;
+  taskId: string;
+}) {
   const q = useQuery({
     queryKey: ["asset", asset.id],
     queryFn: () => assetsApi.get(asset.id),
@@ -13,41 +22,30 @@ function AssetTile({ asset, projectId, taskId }: { asset: Asset; projectId: stri
     <Link
       to="/projects/$projectId/tasks/$taskId/assets/$assetId"
       params={{ projectId, taskId, assetId: asset.id }}
-      style={{ textDecoration: "none", color: "inherit" }}
+      className="group block"
     >
       <div
-        style={{
-          position: "relative",
-          aspectRatio: "1",
-          borderRadius: 8,
-          overflow: "hidden",
-          background: "rgba(255,255,255,0.04)",
-          border: "1px solid rgba(255,255,255,0.1)",
-        }}
+        className={cn(
+          "relative aspect-square overflow-hidden",
+          "rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
+          "bg-[var(--bg-sunken)]",
+          "transition-all duration-200",
+          "group-hover:border-[var(--border-accent)] group-hover:shadow-[0_0_24px_oklch(0.78_0.16_215_/_0.18)]",
+        )}
       >
         {asset.kind === "image" && q.data && (
           <img
             src={q.data.url}
             alt={asset.original_name}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
           />
         )}
         {asset.kind === "video" && (
-          <div style={{ display: "grid", placeItems: "center", height: "100%", fontSize: 24 }}>
-            🎬
+          <div className="grid h-full place-items-center text-[var(--accent)]">
+            <Video className="h-8 w-8" />
           </div>
         )}
-        <div
-          style={{
-            position: "absolute",
-            left: 6,
-            bottom: 6,
-            fontSize: 11,
-            background: "rgba(0,0,0,0.6)",
-            padding: "2px 6px",
-            borderRadius: 4,
-          }}
-        >
+        <div className="absolute inset-x-2 bottom-2 px-2 py-1 rounded-[var(--radius-xs)] bg-[oklch(0.06_0.012_240_/_0.7)] backdrop-blur-md text-[11px] text-secondary truncate">
           {asset.original_name}
         </div>
       </div>
@@ -60,19 +58,15 @@ export function AssetGrid({ projectId, taskId }: { projectId: string; taskId: st
     queryKey: ["assets", taskId],
     queryFn: () => assetsApi.listForTask(taskId),
   });
-  if (q.isLoading) return <p>Loading…</p>;
-  if (q.error) return <p style={{ color: "tomato" }}>Failed to load assets.</p>;
+  if (q.isLoading) return <p className="text-tertiary text-[13px]">Loading…</p>;
+  if (q.error) return <p className="text-[var(--danger)] text-[13px]">Failed to load assets.</p>;
   if (!q.data || q.data.length === 0) {
-    return <p style={{ opacity: 0.6, fontSize: 13 }}>No assets yet — drop some files above.</p>;
+    return (
+      <p className="text-tertiary text-[13px] italic">No assets yet — drop some files above.</p>
+    );
   }
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-        gap: 12,
-      }}
-    >
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3">
       {q.data.map((a) => (
         <AssetTile key={a.id} asset={a} projectId={projectId} taskId={taskId} />
       ))}

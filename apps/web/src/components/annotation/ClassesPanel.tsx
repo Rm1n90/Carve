@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import type { ClassRow } from "@/api/classes";
 import { useTool } from "@/state/tool";
+import { Kbd } from "@/components/ui/Kbd";
+import { cn } from "@/lib/cn";
 
 interface Props {
   classes: ClassRow[];
@@ -10,7 +12,6 @@ export function ClassesPanel({ classes }: Props) {
   const activeClassId = useTool((s) => s.activeClassId);
   const setActiveClassId = useTool((s) => s.setActiveClassId);
 
-  // 1-9 hotkeys
   useEffect(() => {
     function handler(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
@@ -26,55 +27,42 @@ export function ClassesPanel({ classes }: Props) {
   }, [classes, setActiveClassId]);
 
   return (
-    <section aria-label="Classes" style={{ display: "grid", gap: 6 }}>
-      <h3 style={{ margin: 0, fontSize: 13, opacity: 0.7 }}>Classes</h3>
+    <section aria-label="Classes" className="grid gap-2">
+      <header className="flex items-center justify-between">
+        <h3 className="text-[11px] uppercase tracking-[0.10em] text-tertiary font-medium">
+          Classes
+        </h3>
+        <span className="font-mono-data text-[10px] text-tertiary">{classes.length}</span>
+      </header>
       {classes.length === 0 && (
-        <p style={{ opacity: 0.5, fontSize: 12 }}>No classes defined.</p>
+        <p className="text-tertiary text-[12px] italic">No classes defined.</p>
       )}
-      <ul style={{ listStyle: "none", padding: 0, display: "grid", gap: 4 }}>
-        {classes.map((c, i) => (
-          <li
-            key={c.id}
-            onClick={() => setActiveClassId(c.id)}
-            style={{
-              padding: "6px 8px",
-              borderRadius: 6,
-              background: c.id === activeClassId
-                ? "rgba(120,200,255,0.18)"
-                : "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              cursor: "pointer",
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-            }}
-          >
-            <span
-              aria-hidden
-              style={{
-                width: 16,
-                height: 16,
-                background: c.color,
-                borderRadius: 4,
-                border: "1px solid rgba(255,255,255,0.2)",
-              }}
-            />
-            <span style={{ flex: 1, fontSize: 12 }}>{c.name}</span>
-            {i < 9 && (
-              <span
-                style={{
-                  fontSize: 10,
-                  padding: "1px 5px",
-                  borderRadius: 4,
-                  background: "rgba(255,255,255,0.08)",
-                  opacity: 0.6,
-                }}
+      <ul className="grid gap-1">
+        {classes.map((c, i) => {
+          const isActive = c.id === activeClassId;
+          return (
+            <li key={c.id}>
+              <button
+                type="button"
+                onClick={() => setActiveClassId(c.id)}
+                className={cn(
+                  "group flex w-full items-center gap-2.5 rounded-[var(--radius-sm)] border px-2.5 py-1.5 text-left transition-colors",
+                  isActive
+                    ? "bg-[var(--accent-bg)] border-[var(--border-accent)] text-primary"
+                    : "bg-transparent border-transparent text-secondary hover:bg-[var(--bg-surface)] hover:text-primary",
+                )}
               >
-                {i + 1}
-              </span>
-            )}
-          </li>
-        ))}
+                <span
+                  aria-hidden
+                  className="h-3.5 w-3.5 shrink-0 rounded-[3px] border border-[var(--border-strong)]"
+                  style={{ background: c.color }}
+                />
+                <span className="flex-1 text-[12px] tracking-tight truncate">{c.name}</span>
+                {i < 9 && <Kbd>{i + 1}</Kbd>}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

@@ -1,22 +1,23 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
+import { MousePointer2, Square, Pentagon, Brush, Tag, Wand2 } from "lucide-react";
 import { useTool, type ToolName } from "@/state/tool";
+import { cn } from "@/lib/cn";
 
 interface ToolDef {
   name: ToolName;
   label: string;
   hotkey: string;
-  icon: string;
+  icon: ReactNode;
 }
 
 const TOOLS: ToolDef[] = [
-  { name: "cursor", label: "Cursor", hotkey: "V", icon: "↖" },
-  { name: "bbox", label: "Bounding box", hotkey: "B", icon: "▭" },
-  { name: "polygon", label: "Polygon", hotkey: "P", icon: "⬟" },
-  { name: "mask", label: "Mask brush", hotkey: "M", icon: "✎" },
-  { name: "tag", label: "Tag", hotkey: "T", icon: "#" },
-  { name: "sam", label: "Magic wand (SAM)", hotkey: "S", icon: "✨" },
+  { name: "cursor", label: "Select", hotkey: "V", icon: <MousePointer2 className="h-[18px] w-[18px]" /> },
+  { name: "bbox", label: "Bounding box", hotkey: "B", icon: <Square className="h-[18px] w-[18px]" /> },
+  { name: "polygon", label: "Polygon", hotkey: "P", icon: <Pentagon className="h-[18px] w-[18px]" /> },
+  { name: "mask", label: "Mask brush", hotkey: "M", icon: <Brush className="h-[18px] w-[18px]" /> },
+  { name: "tag", label: "Tag", hotkey: "T", icon: <Tag className="h-[18px] w-[18px]" /> },
+  { name: "sam", label: "Magic wand (SAM)", hotkey: "S", icon: <Wand2 className="h-[18px] w-[18px]" /> },
 ];
-
 
 export function Toolbar() {
   const active = useTool((s) => s.active);
@@ -24,7 +25,6 @@ export function Toolbar() {
 
   useEffect(() => {
     function handler(e: KeyboardEvent) {
-      // Skip when typing in an input
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       const match = TOOLS.find((tool) => tool.hotkey.toLowerCase() === e.key.toLowerCase());
@@ -40,41 +40,35 @@ export function Toolbar() {
     <aside
       role="toolbar"
       aria-label="Annotation tools"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        padding: 8,
-        borderRight: "1px solid rgba(255,255,255,0.1)",
-        width: 56,
-      }}
+      className={cn(
+        "flex w-14 shrink-0 flex-col items-center gap-1 px-2 py-3",
+        "border-r border-[var(--border-subtle)]",
+        "bg-[var(--bg-glass-strong)] backdrop-blur-xl",
+      )}
     >
-      {TOOLS.map((t) => (
-        <button
-          key={t.name}
-          aria-label={`${t.label} (${t.hotkey})`}
-          aria-pressed={active === t.name}
-          onClick={() => setActive(t.name)}
-          title={`${t.label} — ${t.hotkey}`}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 40,
-            height: 40,
-            borderRadius: 8,
-            border: "1px solid rgba(255,255,255,0.1)",
-            background: active === t.name
-              ? "rgba(120,200,255,0.18)"
-              : "rgba(255,255,255,0.04)",
-            color: "inherit",
-            cursor: "pointer",
-            fontSize: 18,
-          }}
-        >
-          {t.icon}
-        </button>
-      ))}
+      {TOOLS.map((t) => {
+        const isActive = active === t.name;
+        return (
+          <button
+            key={t.name}
+            type="button"
+            aria-label={`${t.label} (${t.hotkey})`}
+            aria-pressed={isActive}
+            onClick={() => setActive(t.name)}
+            title={`${t.label} — ${t.hotkey}`}
+            className={cn(
+              "relative grid h-10 w-10 place-items-center rounded-[var(--radius-md)]",
+              "transition-all duration-150",
+              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
+              isActive
+                ? "bg-[var(--accent-bg)] text-[var(--accent)] border border-[var(--border-accent)] shadow-[0_0_0_1px_var(--border-accent),_0_0_18px_oklch(0.78_0.16_215_/_0.18)]"
+                : "bg-transparent text-secondary border border-transparent hover:bg-[var(--bg-surface)] hover:text-primary",
+            )}
+          >
+            {t.icon}
+          </button>
+        );
+      })}
     </aside>
   );
 }

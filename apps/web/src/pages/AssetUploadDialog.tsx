@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Upload, FileImage } from "lucide-react";
 import { assetsApi } from "@/api/assets";
+import { cn } from "@/lib/cn";
 
 interface Props {
   projectId: string;
   taskId: string;
 }
 
-export function AssetUploadDialog({ projectId, taskId }: Props) {
+export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
   const qc = useQueryClient();
   const [errors, setErrors] = useState<{ name: string; error: string }[]>([]);
   const [done, setDone] = useState<number>(0);
@@ -53,31 +55,44 @@ export function AssetUploadDialog({ projectId, taskId }: Props) {
   });
 
   return (
-    <section style={{ display: "grid", gap: 8 }}>
-      <h2 style={{ margin: 0 }}>Upload assets</h2>
+    <section className="grid gap-3">
+      <h2 className="text-[18px] font-medium tracking-tight text-primary">Upload assets</h2>
       <div
         {...getRootProps()}
-        style={{
-          padding: 24,
-          border: `2px dashed ${isDragActive ? "rgba(120, 200, 255, 0.6)" : "rgba(255,255,255,0.2)"}`,
-          borderRadius: 10,
-          textAlign: "center",
-          cursor: "pointer",
-          background: isDragActive ? "rgba(120,200,255,0.05)" : undefined,
-        }}
+        className={cn(
+          "grid place-items-center gap-2 px-6 py-10 cursor-pointer transition-all",
+          "rounded-[var(--radius-lg)] border-2 border-dashed",
+          isDragActive
+            ? "border-[var(--border-accent)] bg-[var(--accent-bg)]"
+            : "border-[var(--border-subtle)] bg-[oklch(0.18_0.012_240_/_0.30)] hover:border-[var(--border-strong)]",
+        )}
       >
         <input {...getInputProps()} aria-label="upload-input" />
-        <p style={{ margin: 0 }}>
-          {isDragActive ? "Drop to upload" : "Drag & drop images, videos, or .zip — or click to choose"}
+        <FileImage
+          className={cn(
+            "h-7 w-7 transition-colors",
+            isDragActive ? "text-[var(--accent)]" : "text-tertiary",
+          )}
+        />
+        <p className="text-[13px] text-secondary tracking-tight text-center">
+          {isDragActive
+            ? "Drop to upload"
+            : "Drag & drop images, videos, or .zip — or click to choose"}
         </p>
       </div>
       {upload.isPending && (
-        <p style={{ opacity: 0.7, fontSize: 13 }}>Uploaded {done} files…</p>
+        <p className="flex items-center gap-2 text-tertiary text-[12px]">
+          <Upload className="h-3.5 w-3.5 animate-pulse text-[var(--accent)]" />
+          Uploaded {done} files…
+        </p>
       )}
       {errors.length > 0 && (
-        <ul role="alert" style={{ color: "tomato", fontSize: 13 }}>
+        <ul role="alert" className="grid gap-1 text-[var(--danger)] text-[12px]">
           {errors.map((e, i) => (
-            <li key={i}>{e.name}: {e.error}</li>
+            <li key={i}>
+              <span className="font-mono-data text-tertiary mr-2">{e.name}:</span>
+              {e.error}
+            </li>
           ))}
         </ul>
       )}

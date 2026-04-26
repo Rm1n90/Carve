@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Search, ArrowRight } from "lucide-react";
 import type { ClassRow } from "@/api/classes";
 import { useTool } from "@/state/tool";
+import { Kbd } from "@/components/ui/Kbd";
+import { cn } from "@/lib/cn";
 
 interface Props {
   classes: ClassRow[];
@@ -33,87 +37,95 @@ export function CommandPalette({ classes, onSaveNow }: Props) {
       .map((c) => ({
         id: `class-${c.id}`,
         label: `Switch class → ${c.name}`,
+        color: c.color,
         run: () => setActiveClassId(c.id),
       }));
     const builtins = [
-      {
-        id: "save-now",
-        label: "Save now (Cmd+S)",
-        run: onSaveNow,
-      },
+      { id: "save-now", label: "Save now (Cmd+S)", color: undefined, run: onSaveNow },
     ].filter((b) => b.label.toLowerCase().includes(q));
     return [...builtins, ...fromClasses];
   }, [classes, query, setActiveClassId, onSaveNow]);
 
-  if (!open) return null;
   return (
-    <div
-      role="dialog"
-      aria-label="Command palette"
-      style={{
-        position: "fixed",
-        top: "10vh",
-        left: "50%",
-        transform: "translateX(-50%)",
-        width: 480,
-        maxWidth: "90vw",
-        zIndex: 1000,
-        background: "rgba(20,20,30,0.96)",
-        border: "1px solid rgba(255,255,255,0.15)",
-        borderRadius: 10,
-        padding: 12,
-        boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
-      }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <input
-        autoFocus
-        aria-label="command-palette-input"
-        placeholder="Type a class name or 'save'…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && items[0]) {
-            items[0].run();
-            setOpen(false);
-            setQuery("");
-          }
-        }}
-        style={{
-          width: "100%",
-          padding: "8px 10px",
-          borderRadius: 6,
-          border: "1px solid rgba(255,255,255,0.15)",
-          background: "transparent",
-          color: "inherit",
-          fontSize: 14,
-        }}
-      />
-      <ul
-        style={{ listStyle: "none", padding: 0, margin: "8px 0 0 0", maxHeight: 320, overflow: "auto" }}
-      >
-        {items.slice(0, 50).map((it) => (
-          <li
-            key={it.id}
-            onClick={() => {
-              it.run();
-              setOpen(false);
-              setQuery("");
-            }}
-            style={{
-              padding: "6px 8px",
-              borderRadius: 6,
-              cursor: "pointer",
-              fontSize: 13,
-            }}
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            key="overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            onClick={() => setOpen(false)}
+            className="fixed inset-0 z-[900] bg-[oklch(0.06_0.012_240_/_0.55)] backdrop-blur-sm"
+          />
+          <motion.div
+            key="palette"
+            role="dialog"
+            aria-label="Command palette"
+            initial={{ opacity: 0, scale: 0.97, y: -8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: -4 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className={cn(
+              "fixed left-1/2 top-[12vh] z-[901] -translate-x-1/2",
+              "w-[min(92vw,560px)]",
+              "rounded-[var(--radius-lg)] border border-[var(--border-subtle)]",
+              "bg-[var(--bg-glass-strong)] backdrop-blur-2xl",
+              "shadow-[var(--shadow-elev-3)]",
+              "overflow-hidden",
+            )}
+            onClick={(e) => e.stopPropagation()}
           >
-            {it.label}
-          </li>
-        ))}
-        {items.length === 0 && (
-          <li style={{ padding: "6px 8px", opacity: 0.5, fontSize: 13 }}>No matches.</li>
-        )}
-      </ul>
-    </div>
+            <div className="flex items-center gap-3 px-4 border-b border-[var(--border-subtle)]">
+              <Search className="h-4 w-4 text-tertiary shrink-0" />
+              <input
+                autoFocus
+                aria-label="command-palette-input"
+                placeholder="Type a class name or 'save'…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && items[0]) {
+                    items[0].run();
+                    setOpen(false);
+                    setQuery("");
+                  }
+                }}
+                className="flex-1 h-12 bg-transparent text-primary placeholder:text-tertiary focus:outline-none text-[14px] tracking-tight"
+              />
+              <Kbd>ESC</Kbd>
+            </div>
+            <ul className="max-h-[60vh] overflow-y-auto p-1.5">
+              {items.slice(0, 50).map((it) => (
+                <li
+                  key={it.id}
+                  onClick={() => {
+                    it.run();
+                    setOpen(false);
+                    setQuery("");
+                  }}
+                  className="flex items-center gap-3 rounded-[var(--radius-sm)] px-3 py-2 cursor-pointer text-[13px] text-secondary transition-colors hover:bg-[var(--bg-surface)] hover:text-primary"
+                >
+                  {it.color ? (
+                    <span
+                      aria-hidden
+                      className="h-3 w-3 shrink-0 rounded-[3px] border border-[var(--border-strong)]"
+                      style={{ background: it.color }}
+                    />
+                  ) : (
+                    <ArrowRight className="h-3.5 w-3.5 shrink-0 text-tertiary" />
+                  )}
+                  <span className="flex-1">{it.label}</span>
+                </li>
+              ))}
+              {items.length === 0 && (
+                <li className="px-3 py-3 text-tertiary text-[13px] italic">No matches.</li>
+              )}
+            </ul>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
   );
 }
