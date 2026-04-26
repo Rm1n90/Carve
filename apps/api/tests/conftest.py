@@ -57,6 +57,18 @@ def engine():
     Base.metadata.drop_all(eng)
 
 
+@pytest.fixture(autouse=True)
+def _reset_limiter() -> Generator[None, None, None]:
+    # The slowapi Limiter is a module-level singleton with in-memory storage that
+    # persists across tests; reset it so existing tests aren't accidentally throttled
+    # and rate-limit tests start from a clean state.
+    from vaa_api.ratelimit import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
 @pytest.fixture
 def db_session(engine) -> Generator[Session, None, None]:
     connection = engine.connect()

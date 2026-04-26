@@ -3,6 +3,10 @@ import { api } from "./client";
 export interface SamEncodeResult {
   image_hash: string;
   shape: [number, number]; // [h, w]
+  // Base64 of the float16 image embedding when the model service exposes
+  // it. `null` when the predictor lacks `_features` or torch isn't
+  // available; callers must fall back to server-side decode in that case.
+  embedding_b64: string | null;
 }
 
 export interface SamDecodeResult {

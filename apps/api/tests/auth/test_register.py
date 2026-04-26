@@ -39,9 +39,16 @@ def test_register_short_password() -> None:
 
 def test_register_duplicate(db_session) -> None:
     client = _client(db_session)
+    # First register makes the bootstrap admin (no auth required).
     client.post("/auth/register", json={"email": "u3@example.com", "password": "hunter22"})
+    # Subsequent registers need an admin token; login as the bootstrap admin.
+    tok = client.post(
+        "/auth/login", json={"email": "u3@example.com", "password": "hunter22"}
+    ).json()["access_token"]
     r = client.post(
-        "/auth/register", json={"email": "u3@example.com", "password": "hunter22"}
+        "/auth/register",
+        json={"email": "u3@example.com", "password": "hunter22"},
+        headers={"Authorization": f"Bearer {tok}"},
     )
     assert r.status_code == 409
     assert r.json()["error"] == "email_taken"

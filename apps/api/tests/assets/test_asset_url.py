@@ -62,8 +62,12 @@ def test_delete_asset_owner_or_admin_only(db_session, monkeypatch) -> None:
     client = _client(db_session)
     token, pid, tid, aid = _setup_with_asset(client, monkeypatch)
 
-    # Register a second user and attempt to delete the asset
-    client.post("/auth/register", json={"email": "intruder@x.com", "password": "hunter22"})
+    # Register a second user (member) via the bootstrap admin's token, then login.
+    client.post(
+        "/auth/register",
+        json={"email": "intruder@x.com", "password": "hunter22"},
+        headers=_hdr(token),
+    )
     other = client.post(
         "/auth/login", json={"email": "intruder@x.com", "password": "hunter22"}
     ).json()["access_token"]

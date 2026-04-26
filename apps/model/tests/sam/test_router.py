@@ -77,6 +77,56 @@ def test_encode_returns_image_hash_and_shape() -> None:
     assert len(stub.set_image_calls) == 1
 
 
+def test_encode_returns_null_embedding_when_predictor_has_no_features() -> None:
+    """The test fake doesn't expose ``_features``; the response should still
+    succeed but with ``embedding_b64: None`` so callers fall back to
+    server-side decode."""
+    client, _ = _client_with_stub(np.zeros((4, 4), dtype=np.uint8))
+    r = client.post("/sam/encode", json={"image_b64": _png_b64()})
+    assert r.status_code == 200
+    body = r.json()
+    assert "embedding_b64" in body
+    assert body["embedding_b64"] is None
+
+
+def test_encode_returns_embedding_when_predictor_exposes_features() -> None:
+    """When the predictor exposes ``_features['image_embed']``, encode should
+    return a base64-encoded copy of the float16 bytes for the browser-side
+    ONNX decoder."""
+    import base64 as _b64
+
+    canned_bytes = b"\x01\x02\x03\x04\x05\x06\x07\x08"
+
+    class _FakeTensor:
+        def detach(self) -> "_FakeTensor":
+            return self
+
+        def to(self, *_args, **_kwargs) -> "_FakeTensor":
+            return self
+
+        def numpy(self):
+            class _Arr:
+                def tobytes(self_inner) -> bytes:
+                    return canned_bytes
+
+            return _Arr()
+
+    class _PredictorWithFeatures(_FakePredictor):
+        def __init__(self) -> None:
+            super().__init__(np.zeros((2, 2), dtype=np.uint8))
+            self._features = {"image_embed": _FakeTensor()}
+
+    stub = _PredictorWithFeatures()
+    predictor_mod.set_test_predictor(stub)
+    router_mod._reset_for_test()
+    client = TestClient(create_app())
+    r = client.post("/sam/encode", json={"image_b64": _png_b64()})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["embedding_b64"] is not None
+    assert _b64.b64decode(body["embedding_b64"]) == canned_bytes
+
+
 def test_decode_returns_rle_for_best_mask() -> None:
     mask = np.array([[1, 1], [1, 0]], dtype=np.uint8)
     client, stub = _client_with_stub(mask, score=0.77)

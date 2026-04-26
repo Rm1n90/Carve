@@ -60,8 +60,12 @@ def test_list_tasks_for_project(db_session) -> None:
 def test_delete_task_only_owner(db_session) -> None:
     client = _client(db_session)
     client.post("/auth/register", json={"email": "to@x.com", "password": "hunter22"})
-    client.post("/auth/register", json={"email": "to2@x.com", "password": "hunter22"})
     owner = _login(client, "to@x.com", "hunter22")
+    client.post(
+        "/auth/register",
+        json={"email": "to2@x.com", "password": "hunter22"},
+        headers=_hdr(owner),
+    )
     other = _login(client, "to2@x.com", "hunter22")
     pid = _new_project(client, owner)
     r = client.post(

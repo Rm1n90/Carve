@@ -1,5 +1,6 @@
 import { useAnnotations } from "@/state/annotations";
 import { samApi, type SamDecodeResult } from "@/api/sam";
+import { canDecodeLocally } from "@/canvas/sam/onnx";
 import type { Point } from "./BboxTool";
 
 interface ToolButton {
@@ -20,6 +21,12 @@ export class SamTool {
   private negatives: [number, number][] = [];
   private lastResult: SamDecodeResult | null = null;
   private encoding = false;
+  // Readiness signal for the in-browser ONNX decoder. Becomes `true` only
+  // when (a) the model service exposed `embedding_b64` AND (b) the
+  // browser supports WebGPU AND (c) the operator-provisioned ONNX model
+  // file is reachable. v1 always falls through to server-side decode;
+  // v1.1 will branch on this flag inside `addClick`.
+  private localDecodeReady = false;
 
   constructor(
     private assetId: string,
@@ -39,9 +46,22 @@ export class SamTool {
     try {
       const enc = await samApi.encode(this.assetId);
       this.imageHash = enc.image_hash;
+      // Best-effort probe — never let the readiness check block activation.
+      if (enc.embedding_b64) {
+        try {
+          this.localDecodeReady = await canDecodeLocally();
+        } catch {
+          this.localDecodeReady = false;
+        }
+      }
     } finally {
       this.encoding = false;
     }
+  }
+
+  /** v1.1 hook: returns whether a local in-browser decode is provisioned. */
+  isLocalDecodeReady(): boolean {
+    return this.localDecodeReady;
   }
 
   reset(): void {

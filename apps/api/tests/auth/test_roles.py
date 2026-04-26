@@ -37,7 +37,13 @@ def test_admin_only_rejects_member(db_session) -> None:
     db_session.flush()
     client = _client(db_session)
     client.post("/auth/register", json={"email": "boss2@x.com", "password": "hunter22"})
-    client.post("/auth/register", json={"email": "staff@x.com", "password": "hunter22"})
+    boss_tokens = _login(client, "boss2@x.com", "hunter22")
+    # Member registration requires an admin token after bootstrap.
+    client.post(
+        "/auth/register",
+        json={"email": "staff@x.com", "password": "hunter22"},
+        headers={"Authorization": f"Bearer {boss_tokens['access_token']}"},
+    )
     tokens = _login(client, "staff@x.com", "hunter22")
     r = client.get("/admin/ping", headers={"Authorization": f"Bearer {tokens['access_token']}"})
     assert r.status_code == 403

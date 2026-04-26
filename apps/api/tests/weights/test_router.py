@@ -125,8 +125,12 @@ def test_delete_only_owner_or_admin(db_session, monkeypatch) -> None:
     )
     wid = r.json()["id"]
 
-    # second user (member) tries to delete
-    client.post("/auth/register", json={"email": "intruder@x.com", "password": "hunter22"})
+    # second user (member) — created via the bootstrap admin's token after lockdown.
+    client.post(
+        "/auth/register",
+        json={"email": "intruder@x.com", "password": "hunter22"},
+        headers=_hdr(token),
+    )
     other = client.post("/auth/login", json={"email": "intruder@x.com", "password": "hunter22"}).json()["access_token"]
     r = client.delete(f"/weights/{wid}", headers=_hdr(other))
     assert r.status_code == 403
