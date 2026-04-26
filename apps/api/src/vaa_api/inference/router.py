@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from redis import Redis
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,10 @@ from vaa_api.inference.batch import (
     build_job_payload,
     read_progress,
     run_batch_auto_annotate,
+)
+from vaa_api.inference.sam import (
+    sam_decode_with_hash,
+    sam_encode_for_asset,
 )
 from vaa_api.weights.models import Weight
 
@@ -117,3 +122,42 @@ def get_batch_progress(
 ) -> dict:
     _require_visible_task(db, user, task_id)
     return read_progress(_redis_client_or_none(), job_id)
+
+
+class SamDecodeIn(BaseModel):
+    image_hash: str
+    points: list[list[int]] = Field(min_length=1)
+    labels: list[int] = Field(min_length=1)
+
+
+@router.post("/{asset_id}/sam/encode")
+def sam_encode_endpoint(
+    asset_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    try:
+        return sam_encode_for_asset(asset)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/{asset_id}/sam/decode")
+def sam_decode_endpoint(
+    asset_id: uuid.UUID,
+    payload: SamDecodeIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    try:
+        return sam_decode_with_hash(payload.image_hash, payload.points, payload.labels)
+    except AppError as exc:
+        raise _http(exc) from exc

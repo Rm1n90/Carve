@@ -69,6 +69,27 @@ def yolo_predict(weight_id: str, image_b64: str, *, conf: float = 0.25, iou: flo
         return r.json()
 
 
+def sam_encode(image_b64: str) -> dict:
+    """POST /sam/encode — returns {image_hash, shape}."""
+    with _client() as c:
+        r = c.post("/sam/encode", json={"image_b64": image_b64})
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def sam_decode(image_hash: str, points: list[list[int]], labels: list[int]) -> dict:
+    """POST /sam/decode — returns {counts, size, score}."""
+    with _client() as c:
+        r = c.post(
+            "/sam/decode",
+            json={"image_hash": image_hash, "points": points, "labels": labels},
+        )
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
 def _safe_json(r: httpx.Response) -> Any:
     try:
         return r.json()
