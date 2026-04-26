@@ -74,3 +74,13 @@ def heatmap_endpoint(
     task = _require_visible_task(db, user, task_id)
     grid = heatmap(db, task.id, bins=bins)
     return {"bins": bins, "grid": grid}
+
+
+@router.get("/{task_id}/stats/time-on-task")
+def time_on_task(
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    task = _require_visible_task(db, user, task_id)
+    return StatsService(db).time_on_task(task_id=task.id)

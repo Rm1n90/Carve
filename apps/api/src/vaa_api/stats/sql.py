@@ -60,3 +60,28 @@ SELECT a.geometry AS geometry
 FROM annotations a
 WHERE a.task_id = :task_id AND a.kind = 'bbox'
 """)
+
+
+# Time-on-task: SUM(per-user gaps <= 300s) using LAG() window function.
+# Annotations with NULL created_by are excluded (anonymous edits don't count).
+# A user's first annotation has no LAG predecessor -> CASE branch is NULL,
+# which SUM ignores; if a user has only one annotation, SUM is NULL and the
+# service layer coerces it to 0.0.
+TIME_ON_TASK_SQL = text("""
+SELECT user_id, email, SUM(gap_seconds) AS seconds
+FROM (
+    SELECT
+        a.created_by AS user_id,
+        u.email      AS email,
+        CASE
+            WHEN EXTRACT(EPOCH FROM (a.created_at - LAG(a.created_at) OVER w)) <= 300
+                THEN EXTRACT(EPOCH FROM (a.created_at - LAG(a.created_at) OVER w))
+            ELSE 0
+        END AS gap_seconds
+    FROM annotations a
+    JOIN users u ON u.id = a.created_by
+    WHERE a.task_id = :task_id AND a.created_by IS NOT NULL
+    WINDOW w AS (PARTITION BY a.created_by ORDER BY a.created_at)
+) gaps
+GROUP BY user_id, email
+""")

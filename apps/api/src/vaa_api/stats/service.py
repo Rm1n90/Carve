@@ -9,6 +9,7 @@ from vaa_api.stats.sql import (
     GEOMETRY_BY_KIND_SQL,
     SIZE_DISTRIBUTION_BBOX_SQL,
     TASK_PROGRESS_SQL,
+    TIME_ON_TASK_SQL,
 )
 
 
@@ -161,3 +162,21 @@ class StatsService:
             ratio = w / h
             buckets[_aspect_bucket(ratio)] += 1
         return buckets
+
+    def time_on_task(self, *, task_id: uuid.UUID) -> list[dict]:
+        """Per-annotator active seconds with a 5-minute idle threshold.
+
+        SUM may return NULL for users with a single annotation (no LAG
+        predecessor); coerce to 0.0. `seconds` is `Decimal` from
+        Postgres `EXTRACT(EPOCH ...)`, so cast to `float` for JSON
+        serialization.
+        """
+        rows = self.session.execute(TIME_ON_TASK_SQL, {"task_id": task_id}).all()
+        return [
+            {
+                "user_id": str(r._mapping["user_id"]),
+                "email": r._mapping["email"],
+                "seconds": float(r._mapping["seconds"] or 0.0),
+            }
+            for r in rows
+        ]
