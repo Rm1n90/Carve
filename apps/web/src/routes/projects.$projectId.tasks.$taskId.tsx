@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { rootRoute } from "./_root";
 import { RequireAuth } from "@/auth/RequireAuth";
 import { AssetUploadDialog } from "@/pages/AssetUploadDialog";
+import { ImportDialog } from "@/pages/ImportDialog";
+import { ExportDialog } from "@/pages/ExportDialog";
 import { AssetGrid } from "@/pages/AssetGrid";
 import { projectsApi } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
@@ -31,6 +33,8 @@ function TaskDetail() {
           )}
         </header>
         <AssetUploadDialog projectId={projectId} taskId={taskId} />
+        <ImportDialog taskId={taskId} />
+        <ExportDialog projectId={projectId} taskId={taskId} />
         <AssetGrid projectId={projectId} taskId={taskId} />
       </div>
     </RequireAuth>
