@@ -349,6 +349,98 @@ def test_build_sam3_image_predictor_calls_from_pretrained_with_facebook_sam3(mon
     assert captured["proc_repo"] == "facebook/sam3"
 
 
+# --- box predictor tests ----------------------------------------------------
+#
+# ``make_sam3_box_predictor()`` returns a callable that, given image_b64 +
+# boxes (xyxy) + box_labels (1=positive / 0=negative) and an optional text
+# concept, runs Sam3Model with the processor's ``input_boxes`` /
+# ``input_boxes_labels`` slots. The tests stub the closure-private
+# ``build_sam3_image_predictor`` import so the model is not actually loaded
+# — only the wiring is verified.
+
+
+def _stub_box_predictor_build(monkeypatch, fake_sam3_image_modules):
+    """Patch ``a_mod.build_sam3_image_predictor`` to return an adapter
+    instance built from the shared fake model + processor."""
+    _, FakeModel, FakeProcessor = fake_sam3_image_modules
+
+    def _fake_build():
+        return a_mod.Sam3ImagePredictorAdapter(
+            model=FakeModel(), processor=FakeProcessor(), device="cpu",
+        )
+
+    monkeypatch.setattr(a_mod, "build_sam3_image_predictor", _fake_build)
+
+
+def test_box_predictor_passes_positive_box_to_processor(
+    monkeypatch, fake_sam3_image_modules,
+):
+    captured, _, _ = fake_sam3_image_modules
+    _stub_box_predictor_build(monkeypatch, fake_sam3_image_modules)
+
+    fn = a_mod.make_sam3_box_predictor()
+    img_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACRXR/mAAAAFElEQVQ"
+        "okWNgYGD4z0AswK4SAFXuAf8EPy+xAAAAAElFTkSuQmCC"
+    )
+    out = fn(image_b64=img_b64, boxes=[[1.0, 2.0, 3.0, 4.0]], box_labels=[1])
+
+    # The model-call processor invocation should carry the boxes + labels
+    predict_call = next(c for c in captured["calls"] if c["input_boxes"] is not None)
+    assert predict_call["input_boxes"] == [[[1.0, 2.0, 3.0, 4.0]]]
+    assert predict_call["input_boxes_labels"] == [[1]]
+    # No text passed when caller omitted it
+    assert predict_call["text"] is None
+    # Returns shaped result list
+    assert isinstance(out, list)
+    assert len(out) >= 1
+    for item in out:
+        assert {"counts", "size", "score", "bbox"} <= set(item.keys())
+
+
+def test_box_predictor_routes_negative_box_with_label_zero(
+    monkeypatch, fake_sam3_image_modules,
+):
+    captured, _, _ = fake_sam3_image_modules
+    _stub_box_predictor_build(monkeypatch, fake_sam3_image_modules)
+
+    fn = a_mod.make_sam3_box_predictor()
+    img_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACRXR/mAAAAFElEQVQ"
+        "okWNgYGD4z0AswK4SAFXuAf8EPy+xAAAAAElFTkSuQmCC"
+    )
+    fn(image_b64=img_b64, boxes=[[5.0, 5.0, 9.0, 9.0]], box_labels=[0])
+
+    predict_call = next(c for c in captured["calls"] if c["input_boxes"] is not None)
+    assert predict_call["input_boxes_labels"] == [[0]]
+
+
+def test_box_predictor_combines_text_with_negative_box(
+    monkeypatch, fake_sam3_image_modules,
+):
+    """SAM 3 text-concept refinement: text + a negative box that excludes a
+    region. Both must reach the processor in the same call."""
+    captured, _, _ = fake_sam3_image_modules
+    _stub_box_predictor_build(monkeypatch, fake_sam3_image_modules)
+
+    fn = a_mod.make_sam3_box_predictor()
+    img_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACRXR/mAAAAFElEQVQ"
+        "okWNgYGD4z0AswK4SAFXuAf8EPy+xAAAAAElFTkSuQmCC"
+    )
+    fn(
+        image_b64=img_b64,
+        boxes=[[2.0, 2.0, 6.0, 6.0]],
+        box_labels=[0],
+        text="handle",
+    )
+
+    predict_call = next(c for c in captured["calls"] if c["input_boxes"] is not None)
+    assert predict_call["text"] == "handle"
+    assert predict_call["input_boxes"] == [[[2.0, 2.0, 6.0, 6.0]]]
+    assert predict_call["input_boxes_labels"] == [[0]]
+
+
 # --- video adapter tests ----------------------------------------------------
 
 

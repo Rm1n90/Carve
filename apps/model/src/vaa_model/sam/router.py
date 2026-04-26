@@ -15,6 +15,17 @@ POST /sam/text-prompt — SAM 3 only. Accepts {image_b64, text} → returns
                     not ``sam3``; 503 ``sam3_predictor_not_loaded`` when
                     SAM 3 is on but no predictor factory has been
                     registered.
+
+POST /sam/box-prompt — SAM 3 only (one-shot). Accepts
+                    {image_b64, boxes, box_labels, text?} → returns
+                    [{counts, size, score, bbox}]. Boxes are xyxy floats;
+                    box_labels are 1 (positive include) or 0 (negative
+                    exclude). The optional ``text`` field combines with
+                    boxes to refine a concept (e.g., text + negative
+                    box). Returns 409 ``sam3_box_prompt_requires_sam3``
+                    when SAM 3 is not the active model; 503
+                    ``sam3_box_predictor_not_loaded`` when SAM 3 is on
+                    but no box predictor factory has been registered.
 """
 
 import base64
@@ -32,6 +43,7 @@ from vaa_model.sam.predictor import (
     autocast_ctx,
     extract_embedding,
     force_evict_predictor,
+    get_box_predictor,
     get_predictor,
     get_sam_model,  # noqa: F401 — re-export for callers historically importing from router
     get_sam_variant,
@@ -167,6 +179,59 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
             detail="sam3_predictor_not_loaded",
         ) from exc
     return factory(image_b64=payload.image_b64, text=payload.text)
+
+
+# --- SAM 3 box-prompt endpoint ----------------------------------------------
+#
+# One-shot endpoint: takes image_b64 + boxes (+ optional text) and returns
+# the masks. Mirrors the /sam/text-prompt pattern (no per-image cache; the
+# image is encoded each call). The /sam/encode → /sam/decode flow remains
+# the click-driven path; box prompts are typically used in single
+# interactive selections in the editor UI, so a sticky cache is not worth
+# the lifecycle complexity.
+
+
+class BoxPromptIn(BaseModel):
+    image_b64: str
+    boxes: list[list[float]] = Field(min_length=1)  # each [x1, y1, x2, y2]
+    box_labels: list[int] = Field(min_length=1)     # 1=positive, 0=negative
+    text: str | None = Field(default=None, max_length=200)
+
+
+class BoxPromptOut(BaseModel):
+    counts: str
+    size: list[int]
+    score: float
+    bbox: list[float]  # xyxy
+
+
+@router.post("/box-prompt", response_model=list[BoxPromptOut])
+def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
+    if get_sam_variant() != "sam3":
+        raise HTTPException(status_code=409, detail="sam3_box_prompt_requires_sam3")
+    if len(payload.boxes) != len(payload.box_labels):
+        raise HTTPException(
+            status_code=422,
+            detail="boxes and box_labels must have equal length",
+        )
+    if any(label not in (0, 1) for label in payload.box_labels):
+        raise HTTPException(
+            status_code=422,
+            detail="box_labels must be 0 or 1",
+        )
+    try:
+        factory = get_box_predictor()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="sam3_box_predictor_not_loaded",
+        ) from exc
+    return factory(
+        image_b64=payload.image_b64,
+        boxes=payload.boxes,
+        box_labels=payload.box_labels,
+        text=payload.text,
+    )
 
 
 # --- /sam/unload (admin force-evict) ----------------------------------------

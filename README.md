@@ -264,10 +264,26 @@ SAM and YOLO are loaded independently. Switching SAM models does not evict loade
    docker compose build model && docker compose up -d model
    ```
 
+### SAM 3 prompts — image vs video asymmetry
+
+SAM 3 image fully supports clicks (positive/negative), text concepts, boxes
+(positive/negative), and combined prompts (e.g., text + negative box to
+refine a concept).
+
+SAM 3 video, in the current HuggingFace transformers integration, exposes
+text concept prompts only. Point-based video tracking with SAM 3 is not
+available through the public HF API today (the underlying architecture
+supports it; the API does not surface those methods yet). For point-based
+video tracking, use `SAM_MODEL=sam2.1-large` (or any SAM 2.1 variant) —
+SAM 2 fully supports point/box/mask prompting on video.
+
+See `apps/docs/admin.md` "SAM 3 prompt support" for the full table.
+
 API differences when SAM 3 is active:
 
 - `/sam/encode` + `/sam/decode` (image clicks): wire-compatible with SAM 2. Click points become positive (1) / negative (0) labels.
 - `/sam/text-prompt` (text-prompted image segmentation): functional with SAM 3, returns one segmentation per matched instance. With any non-`sam3` model, this endpoint returns `409 sam3_not_enabled`.
+- `/sam/box-prompt` (v1.2.2; box-prompted image segmentation): SAM 3 only. Accepts `{image_b64, boxes, box_labels, text?}` where `box_labels` are 1 (positive) or 0 (negative). Optional `text` combines with the boxes to refine a concept. Returns `409 sam3_box_prompt_requires_sam3` for non-`sam3` models.
 - `/sam-track/start` (video tracking): with SAM 3 it requires a `text` field and ignores `points`/`labels`. Without `text`, returns `422 sam3_track_requires_text`. Example body: `{"video_url": "...", "text": "person"}`.
 
 Full SAM 3 docs: [`apps/docs/admin.md`](apps/docs/admin.md#sam-3-toggle).
