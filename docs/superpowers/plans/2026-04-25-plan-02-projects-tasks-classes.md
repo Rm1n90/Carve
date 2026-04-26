@@ -29,7 +29,7 @@
 apps/api/
 ├── alembic/versions/
 │   └── 0002_projects_tasks_classes.py            (new)
-├── src/vaa_api/
+├── src/carve_api/
 │   ├── main.py                                   (modify — register router)
 │   └── projects/                                 (new package)
 │       ├── __init__.py
@@ -82,8 +82,8 @@ apps/web/src/
 ## Task 1: Domain models — Project, Task, Class + migration
 
 **Files:**
-- Create: `apps/api/src/vaa_api/projects/__init__.py` (docstring only)
-- Create: `apps/api/src/vaa_api/projects/models.py`
+- Create: `apps/api/src/carve_api/projects/__init__.py` (docstring only)
+- Create: `apps/api/src/carve_api/projects/models.py`
 - Create: `apps/api/alembic/versions/0002_projects_tasks_classes.py`
 - Create: `apps/api/tests/projects/__init__.py` (empty)
 - Create: `apps/api/tests/projects/test_models.py`
@@ -97,8 +97,8 @@ import uuid
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from vaa_api.auth.models import User, UserRole
-from vaa_api.projects.models import Class, Project, Task, TaskKind
+from carve_api.auth.models import User, UserRole
+from carve_api.projects.models import Class, Project, Task, TaskKind
 
 
 def test_project_task_class_create(db_session) -> None:
@@ -150,7 +150,7 @@ pytest tests/projects/test_models.py -v
 
 Expected: FAIL — `ModuleNotFoundError`.
 
-- [ ] **Step 1.3: Implement** `apps/api/src/vaa_api/projects/models.py`
+- [ ] **Step 1.3: Implement** `apps/api/src/carve_api/projects/models.py`
 
 ```python
 import enum
@@ -170,7 +170,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from vaa_api.db import Base
+from carve_api.db import Base
 
 
 class TaskKind(str, enum.Enum):
@@ -235,7 +235,7 @@ class Class(Base):
     )
 ```
 
-`apps/api/src/vaa_api/projects/__init__.py`:
+`apps/api/src/carve_api/projects/__init__.py`:
 
 ```python
 """Projects, Tasks (image/video datasets), and Classes."""
@@ -245,10 +245,10 @@ class Class(Base):
 
 - [ ] **Step 1.4: Update `apps/api/alembic/env.py`**
 
-Find the line `import vaa_api.auth.models  # noqa: F401, E402  (populate metadata)` and add a sibling import below it:
+Find the line `import carve_api.auth.models  # noqa: F401, E402  (populate metadata)` and add a sibling import below it:
 
 ```python
-import vaa_api.projects.models  # noqa: F401, E402  (populate metadata)
+import carve_api.projects.models  # noqa: F401, E402  (populate metadata)
 ```
 
 - [ ] **Step 1.5: Migration `apps/api/alembic/versions/0002_projects_tasks_classes.py`**
@@ -382,7 +382,7 @@ Expected: 33 PASS (30 from Plan 01 + 3 new).
 - [ ] **Step 1.8: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/projects apps/api/alembic apps/api/tests/projects
+git add apps/api/src/carve_api/projects apps/api/alembic apps/api/tests/projects
 git commit -m "feat(api): Project/Task/Class models + migration with idx/name uniqueness"
 ```
 
@@ -391,12 +391,12 @@ git commit -m "feat(api): Project/Task/Class models + migration with idx/name un
 ## Task 2: Project service + router
 
 **Files:**
-- Create: `apps/api/src/vaa_api/projects/schemas.py`
-- Create: `apps/api/src/vaa_api/projects/service.py`
-- Create: `apps/api/src/vaa_api/projects/router.py`
+- Create: `apps/api/src/carve_api/projects/schemas.py`
+- Create: `apps/api/src/carve_api/projects/service.py`
+- Create: `apps/api/src/carve_api/projects/router.py`
 - Create: `apps/api/tests/projects/test_project_service.py`
 - Create: `apps/api/tests/projects/test_project_router.py`
-- Modify: `apps/api/src/vaa_api/main.py`
+- Modify: `apps/api/src/carve_api/main.py`
 
 - [ ] **Step 2.1: Failing service tests** `apps/api/tests/projects/test_project_service.py`
 
@@ -405,9 +405,9 @@ import uuid
 
 import pytest
 
-from vaa_api.auth.models import User, UserRole
-from vaa_api.projects.models import Project
-from vaa_api.projects.service import (
+from carve_api.auth.models import User, UserRole
+from carve_api.projects.models import Project
+from carve_api.projects.service import (
     NotProjectOwner,
     ProjectNotFound,
     ProjectService,
@@ -487,14 +487,14 @@ def test_delete_only_owner_or_admin(db_session) -> None:
 
 - [ ] **Step 2.2: Run, verify failure**
 
-- [ ] **Step 2.3: `apps/api/src/vaa_api/projects/schemas.py`**
+- [ ] **Step 2.3: `apps/api/src/carve_api/projects/schemas.py`**
 
 ```python
 from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from vaa_api.projects.models import TaskKind
+from carve_api.projects.models import TaskKind
 
 
 class ProjectIn(BaseModel):
@@ -527,7 +527,7 @@ class ProjectOut(BaseModel):
 
 (Task 3 will append `TaskIn` / `TaskOut` to this file; Task 4 will append `ClassIn`, `ClassPatch`, `ClassOut`.)
 
-- [ ] **Step 2.4: `apps/api/src/vaa_api/projects/service.py`**
+- [ ] **Step 2.4: `apps/api/src/carve_api/projects/service.py`**
 
 ```python
 import uuid
@@ -535,9 +535,9 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from vaa_api.auth.models import User, UserRole
-from vaa_api.errors import AppError
-from vaa_api.projects.models import Project
+from carve_api.auth.models import User, UserRole
+from carve_api.errors import AppError
+from carve_api.projects.models import Project
 
 
 class ProjectNotFound(AppError):
@@ -620,8 +620,8 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -700,7 +700,7 @@ def test_delete_only_by_owner(db_session) -> None:
     assert r.status_code == 204
 ```
 
-- [ ] **Step 2.7: `apps/api/src/vaa_api/projects/router.py`**
+- [ ] **Step 2.7: `apps/api/src/carve_api/projects/router.py`**
 
 ```python
 import uuid
@@ -708,11 +708,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from vaa_api.auth.models import User
-from vaa_api.deps import get_current_user, get_db
-from vaa_api.errors import AppError
-from vaa_api.projects.schemas import ProjectIn, ProjectOut, ProjectPatch
-from vaa_api.projects.service import ProjectService
+from carve_api.auth.models import User
+from carve_api.deps import get_current_user, get_db
+from carve_api.errors import AppError
+from carve_api.projects.schemas import ProjectIn, ProjectOut, ProjectPatch
+from carve_api.projects.service import ProjectService
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -792,12 +792,12 @@ def delete_project(
 
 (Task 3 will append the task endpoints; Task 4 will append the class endpoints.)
 
-- [ ] **Step 2.8: Mount router in `apps/api/src/vaa_api/main.py`**
+- [ ] **Step 2.8: Mount router in `apps/api/src/carve_api/main.py`**
 
 After the line `app.include_router(auth_router)` add:
 
 ```python
-    from vaa_api.projects.router import router as projects_router
+    from carve_api.projects.router import router as projects_router
     app.include_router(projects_router)
 ```
 
@@ -820,7 +820,7 @@ Expected: 45 PASS.
 - [ ] **Step 2.11: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/projects apps/api/src/vaa_api/main.py apps/api/tests/projects
+git add apps/api/src/carve_api/projects apps/api/src/carve_api/main.py apps/api/tests/projects
 git commit -m "feat(api): Project CRUD with owner-or-admin guarded mutations"
 ```
 
@@ -830,17 +830,17 @@ git commit -m "feat(api): Project CRUD with owner-or-admin guarded mutations"
 
 **Files:**
 - Create: `apps/api/tests/projects/test_task_router.py`
-- Modify: `apps/api/src/vaa_api/projects/schemas.py` (append `TaskIn`, `TaskOut`)
-- Modify: `apps/api/src/vaa_api/projects/service.py` (append `TaskService`, `TaskNotFound`)
-- Modify: `apps/api/src/vaa_api/projects/router.py` (append task endpoints)
+- Modify: `apps/api/src/carve_api/projects/schemas.py` (append `TaskIn`, `TaskOut`)
+- Modify: `apps/api/src/carve_api/projects/service.py` (append `TaskService`, `TaskNotFound`)
+- Modify: `apps/api/src/carve_api/projects/router.py` (append task endpoints)
 
 - [ ] **Step 3.1: Failing tests** `apps/api/tests/projects/test_task_router.py`
 
 ```python
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -928,7 +928,7 @@ def test_task_kind_validated(db_session) -> None:
 
 - [ ] **Step 3.2: Run, verify failure**
 
-- [ ] **Step 3.3: Append to `apps/api/src/vaa_api/projects/schemas.py`**
+- [ ] **Step 3.3: Append to `apps/api/src/carve_api/projects/schemas.py`**
 
 ```python
 class TaskIn(BaseModel):
@@ -954,10 +954,10 @@ class TaskOut(BaseModel):
         )
 ```
 
-- [ ] **Step 3.4: Append to `apps/api/src/vaa_api/projects/service.py`**
+- [ ] **Step 3.4: Append to `apps/api/src/carve_api/projects/service.py`**
 
 ```python
-from vaa_api.projects.models import Task, TaskKind
+from carve_api.projects.models import Task, TaskKind
 
 
 class TaskNotFound(AppError):
@@ -998,11 +998,11 @@ class TaskService:
         self.session.flush()
 ```
 
-- [ ] **Step 3.5: Append to `apps/api/src/vaa_api/projects/router.py`**
+- [ ] **Step 3.5: Append to `apps/api/src/carve_api/projects/router.py`**
 
 ```python
-from vaa_api.projects.schemas import TaskIn, TaskOut
-from vaa_api.projects.service import TaskService
+from carve_api.projects.schemas import TaskIn, TaskOut
+from carve_api.projects.service import TaskService
 
 
 @router.post(
@@ -1079,7 +1079,7 @@ Expected: 49 PASS.
 - [ ] **Step 3.8: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/projects apps/api/tests/projects/test_task_router.py
+git add apps/api/src/carve_api/projects apps/api/tests/projects/test_task_router.py
 git commit -m "feat(api): Task CRUD nested under /projects/{id}/tasks"
 ```
 
@@ -1089,17 +1089,17 @@ git commit -m "feat(api): Task CRUD nested under /projects/{id}/tasks"
 
 **Files:**
 - Create: `apps/api/tests/projects/test_class_router.py`
-- Modify: `apps/api/src/vaa_api/projects/schemas.py` (append `ClassIn`, `ClassPatch`, `ClassOut`, `_HEX_COLOR`)
-- Modify: `apps/api/src/vaa_api/projects/service.py` (append `ClassService`, `ClassConflict`, `ClassNotFound`)
-- Modify: `apps/api/src/vaa_api/projects/router.py` (append class endpoints)
+- Modify: `apps/api/src/carve_api/projects/schemas.py` (append `ClassIn`, `ClassPatch`, `ClassOut`, `_HEX_COLOR`)
+- Modify: `apps/api/src/carve_api/projects/service.py` (append `ClassService`, `ClassConflict`, `ClassNotFound`)
+- Modify: `apps/api/src/carve_api/projects/router.py` (append class endpoints)
 
 - [ ] **Step 4.1: Failing tests** `apps/api/tests/projects/test_class_router.py`
 
 ```python
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -1209,7 +1209,7 @@ def test_patch_and_delete_class(db_session) -> None:
 
 - [ ] **Step 4.2: Run, verify failure**
 
-- [ ] **Step 4.3: Append to `apps/api/src/vaa_api/projects/schemas.py`**
+- [ ] **Step 4.3: Append to `apps/api/src/carve_api/projects/schemas.py`**
 
 Add this at the top of the file (after the existing imports):
 
@@ -1276,12 +1276,12 @@ class ClassOut(BaseModel):
         )
 ```
 
-- [ ] **Step 4.4: Append to `apps/api/src/vaa_api/projects/service.py`**
+- [ ] **Step 4.4: Append to `apps/api/src/carve_api/projects/service.py`**
 
 ```python
 from sqlalchemy.exc import IntegrityError
 
-from vaa_api.projects.models import Class
+from carve_api.projects.models import Class
 
 
 class ClassConflict(AppError):
@@ -1347,11 +1347,11 @@ class ClassService:
         self.session.flush()
 ```
 
-- [ ] **Step 4.5: Append to `apps/api/src/vaa_api/projects/router.py`**
+- [ ] **Step 4.5: Append to `apps/api/src/carve_api/projects/router.py`**
 
 ```python
-from vaa_api.projects.schemas import ClassIn, ClassOut, ClassPatch
-from vaa_api.projects.service import ClassService
+from carve_api.projects.schemas import ClassIn, ClassOut, ClassPatch
+from carve_api.projects.service import ClassService
 
 
 @router.post(
@@ -1458,7 +1458,7 @@ Expected: 54 PASS.
 - [ ] **Step 4.8: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/projects apps/api/tests/projects/test_class_router.py
+git add apps/api/src/carve_api/projects apps/api/tests/projects/test_class_router.py
 git commit -m "feat(api): Class CRUD with idx/name uniqueness and #RRGGBB color validation"
 ```
 
@@ -1620,7 +1620,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         }}
       >
         <Link to="/" style={{ fontWeight: 700, textDecoration: "none", color: "inherit" }}>
-          VisualAutoAnnotator
+          Carve
         </Link>
         <nav style={{ display: "flex", gap: 16, alignItems: "center" }}>
           <Link to="/projects">Projects</Link>

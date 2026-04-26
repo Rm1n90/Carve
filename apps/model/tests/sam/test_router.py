@@ -6,9 +6,9 @@ import numpy as np
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from vaa_model.main import create_app
-from vaa_model.sam import predictor as predictor_mod
-from vaa_model.sam import router as router_mod
+from carve_model.main import create_app
+from carve_model.sam import predictor as predictor_mod
+from carve_model.sam import router as router_mod
 
 
 def _png_b64(w: int = 32, h: int = 24) -> str:

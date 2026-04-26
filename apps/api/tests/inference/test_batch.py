@@ -10,12 +10,12 @@ import uuid
 
 import httpx
 
-from vaa_api.assets.models import Asset, AssetKind, Frame
-from vaa_api.auth.models import User, UserRole
-from vaa_api.inference import batch as batch_mod
-from vaa_api.inference import model_client as model_client_mod
-from vaa_api.projects.models import Class, Project, Task, TaskKind
-from vaa_api.weights.models import Weight, WeightTaskKind
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.auth.models import User, UserRole
+from carve_api.inference import batch as batch_mod
+from carve_api.inference import model_client as model_client_mod
+from carve_api.projects.models import Class, Project, Task, TaskKind
+from carve_api.weights.models import Weight, WeightTaskKind
 
 
 class _FakeStorage:
@@ -160,7 +160,7 @@ def _bind_session_factory_to_test_db(db_session, monkeypatch):
         future=True,
         join_transaction_mode="create_savepoint",
     )
-    from vaa_api import db as db_mod
+    from carve_api import db as db_mod
 
     monkeypatch.setattr(db_mod, "get_session_factory", lambda: SessionLocal)
 
@@ -220,7 +220,7 @@ def test_run_batch_auto_annotate_processes_all_assets(db_session, monkeypatch) -
     db_session.commit()
 
     # Mock storage on autoannotate
-    from vaa_api.inference import autoannotate as aa_mod
+    from carve_api.inference import autoannotate as aa_mod
 
     monkeypatch.setattr(aa_mod, "MinioClient", _FakeStorage)
 

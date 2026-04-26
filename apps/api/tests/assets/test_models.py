@@ -1,6 +1,6 @@
-from vaa_api.assets.models import Asset, AssetKind, Frame
-from vaa_api.auth.models import User, UserRole
-from vaa_api.projects.models import Project, Task, TaskKind
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.auth.models import User, UserRole
+from carve_api.projects.models import Project, Task, TaskKind
 
 
 def _setup(db):

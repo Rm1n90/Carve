@@ -3,9 +3,9 @@ import io
 import httpx
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.inference import model_client as model_client_mod
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.inference import model_client as model_client_mod
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -37,8 +37,8 @@ class _FakeStorage:
 
 
 def _setup_video_asset(client, monkeypatch):
-    from vaa_api.assets import service as assets_svc
-    from vaa_api.inference import sam_track as sam_track_mod
+    from carve_api.assets import service as assets_svc
+    from carve_api.inference import sam_track as sam_track_mod
     monkeypatch.setattr(assets_svc, "MinioClient", _FakeStorage)
     monkeypatch.setattr(sam_track_mod, "MinioClient", _FakeStorage)
 
@@ -138,8 +138,8 @@ def test_track_release(db_session, monkeypatch) -> None:
 
 def test_track_unknown_asset_returns_404(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    from vaa_api.assets import service as assets_svc
-    from vaa_api.inference import sam_track as sam_track_mod
+    from carve_api.assets import service as assets_svc
+    from carve_api.inference import sam_track as sam_track_mod
     monkeypatch.setattr(assets_svc, "MinioClient", _FakeStorage)
     monkeypatch.setattr(sam_track_mod, "MinioClient", _FakeStorage)
     client.post("/auth/register", json={"email": "u@x.com", "password": "hunter22"})
@@ -207,8 +207,8 @@ def test_track_start_passes_text_through(db_session, monkeypatch) -> None:
 
 def test_add_object_endpoint_returns_404_when_asset_missing(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    from vaa_api.assets import service as assets_svc
-    from vaa_api.inference import sam_track as sam_track_mod
+    from carve_api.assets import service as assets_svc
+    from carve_api.inference import sam_track as sam_track_mod
     monkeypatch.setattr(assets_svc, "MinioClient", _FakeStorage)
     monkeypatch.setattr(sam_track_mod, "MinioClient", _FakeStorage)
     client.post("/auth/register", json={"email": "ao@x.com", "password": "hunter22"})

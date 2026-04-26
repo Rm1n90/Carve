@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from vaa_model.sam import tracker as tracker_mod
+from carve_model.sam import tracker as tracker_mod
 
 
 class _MultiObjectFakeTracker:

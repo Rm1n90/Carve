@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import select
 
-from vaa_api.auth.models import User, UserRole
+from carve_api.auth.models import User, UserRole
 
 
 def test_user_role_enum_values() -> None:

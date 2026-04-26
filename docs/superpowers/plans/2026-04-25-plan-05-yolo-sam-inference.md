@@ -22,7 +22,7 @@
 
 ## Task 1: Model service deps + Dockerfile (CUDA, Torch, Ultralytics, SAM 2)
 
-**Files:** modify `apps/model/pyproject.toml`; modify `apps/model/Dockerfile`; new `apps/model/src/vaa_model/gpu.py`.
+**Files:** modify `apps/model/pyproject.toml`; modify `apps/model/Dockerfile`; new `apps/model/src/carve_model/gpu.py`.
 
 **Step 1.1 — `apps/model/pyproject.toml [project].dependencies`:**
 
@@ -60,7 +60,7 @@ RUN pip3 install --no-cache-dir git+https://github.com/facebookresearch/sam2.git
 COPY src ./src
 ENV PYTHONPATH=/app/src
 EXPOSE 8100
-CMD ["uvicorn", "vaa_model.main:app", "--host", "0.0.0.0", "--port", "8100"]
+CMD ["uvicorn", "carve_model.main:app", "--host", "0.0.0.0", "--port", "8100"]
 ```
 
 In `docker-compose.yml` set:
@@ -102,7 +102,7 @@ def vram_free_mb() -> int:
 
 ## Task 2: YOLO weight LRU registry
 
-**Files:** `apps/model/src/vaa_model/yolo/{__init__,registry,predict}.py`; tests.
+**Files:** `apps/model/src/carve_model/yolo/{__init__,registry,predict}.py`; tests.
 
 **Step 2.1 — `registry.py`:**
 
@@ -183,7 +183,7 @@ def predict_image(model: YOLO, image_bytes: bytes, conf: float = 0.25, iou: floa
 
 ## Task 3: Model service /yolo/load + /yolo/predict
 
-**Files:** `apps/model/src/vaa_model/yolo/router.py`; modify `apps/model/src/vaa_model/main.py`; tests.
+**Files:** `apps/model/src/carve_model/yolo/router.py`; modify `apps/model/src/carve_model/main.py`; tests.
 
 **Step 3.1 — `yolo/router.py`:**
 
@@ -196,8 +196,8 @@ import urllib.request
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from vaa_model.yolo.predict import predict_image
-from vaa_model.yolo.registry import REGISTRY
+from carve_model.yolo.predict import predict_image
+from carve_model.yolo.registry import REGISTRY
 
 router = APIRouter(prefix="/yolo", tags=["yolo"])
 
@@ -234,8 +234,8 @@ async def predict(payload: PredictIn) -> dict:
 **Step 3.2 — `main.py`** mounts `yolo_router` and updates `/capabilities`:
 
 ```python
-from vaa_model.yolo.router import router as yolo_router
-from vaa_model.gpu import get_device
+from carve_model.yolo.router import router as yolo_router
+from carve_model.gpu import get_device
 
 @app.get("/capabilities")
 def capabilities() -> dict:
@@ -255,7 +255,7 @@ app.include_router(yolo_router)
 
 ## Task 4: App-side `Weight` model + endpoints
 
-**Files:** `apps/api/src/vaa_api/weights/{__init__,models,schemas,service,router}.py`; `apps/api/alembic/versions/0005_weights.py`; modify `main.py` and `alembic/env.py`.
+**Files:** `apps/api/src/carve_api/weights/{__init__,models,schemas,service,router}.py`; `apps/api/alembic/versions/0005_weights.py`; modify `main.py` and `alembic/env.py`.
 
 **Step 4.1 — `models.py`:**
 
@@ -267,7 +267,7 @@ from sqlalchemy import BigInteger, DateTime, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from vaa_api.db import Base
+from carve_api.db import Base
 
 
 class Weight(Base):
@@ -299,7 +299,7 @@ class Weight(Base):
 
 ## Task 5: Auto-annotate single image
 
-**Files:** `apps/api/src/vaa_api/annotations/router.py` (extend); `apps/api/src/vaa_api/jobs/autoannotate.py` (helpers).
+**Files:** `apps/api/src/carve_api/annotations/router.py` (extend); `apps/api/src/carve_api/jobs/autoannotate.py` (helpers).
 
 **Step 5.1 — Endpoint:**
 
@@ -328,7 +328,7 @@ async def auto_annotate_asset(
 
 ## Task 6: Batch auto-annotate (RQ job + progress)
 
-**Files:** `apps/api/src/vaa_api/jobs/autoannotate.py`; modify `annotations/router.py`.
+**Files:** `apps/api/src/carve_api/jobs/autoannotate.py`; modify `annotations/router.py`.
 
 **Step 6.1 — RQ job iterates assets, calls predict per asset, persists annotations, updates progress.**
 - Progress key: `aa:job:<rq_id>` Redis hash with `done`, `total`, `failed` fields.
@@ -345,7 +345,7 @@ async def auto_annotate_asset(
 
 ## Task 7: SAM 2 — model loader + encode/decode endpoints
 
-**Files:** `apps/model/src/vaa_model/sam/{__init__,model,router}.py`; modify `main.py`.
+**Files:** `apps/model/src/carve_model/sam/{__init__,model,router}.py`; modify `main.py`.
 
 **Step 7.1 — `model.py`:**
 
@@ -404,7 +404,7 @@ import base64
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from vaa_model.sam.model import decode, encode_image
+from carve_model.sam.model import decode, encode_image
 
 router = APIRouter(prefix="/sam", tags=["sam"])
 
@@ -441,7 +441,7 @@ async def decode_endpoint(payload: DecodeIn) -> dict:
 
 ## Task 8: App-side SAM proxy + web SAM tool
 
-**Files:** `apps/api/src/vaa_api/sam/{__init__,router}.py`; modify `main.py`. Web: `apps/web/src/canvas/tools/SamTool.ts`; modify Toolbar (add Magic-wand button, hotkey `S`).
+**Files:** `apps/api/src/carve_api/sam/{__init__,router}.py`; modify `main.py`. Web: `apps/web/src/canvas/tools/SamTool.ts`; modify Toolbar (add Magic-wand button, hotkey `S`).
 
 **Step 8.1 — API proxy:** for `POST /assets/{asset_id}/sam/encode`, fetch asset bytes from MinIO, b64-encode, POST to `model:/sam/encode`, return `{image_hash, shape}`. For `/decode`, accept `{image_hash, points, labels}` and forward.
 
@@ -459,7 +459,7 @@ async def decode_endpoint(payload: DecodeIn) -> dict:
 
 ## Task 9: SAM 2 video tracker (forward propagation)
 
-**Files:** `apps/model/src/vaa_model/sam/{tracker,track_router}.py`; `apps/api/src/vaa_api/sam/track_router.py`; web `tools/TrackPropagateTool.ts`.
+**Files:** `apps/model/src/carve_model/sam/{tracker,track_router}.py`; `apps/api/src/carve_api/sam/track_router.py`; web `tools/TrackPropagateTool.ts`.
 
 **Step 9.1 — Tracker:** wraps `SAM2VideoPredictor`. Sessions keyed by `(asset_id, user_id)`. State held in process memory; the session is sticky to one model worker.
 - `POST /sam-track/start` receives `(asset_id, frame_idx, points, labels, video_path_hint)`; initializes the predictor; returns `{session: <uuid>}`.

@@ -11,7 +11,7 @@ docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
   | gzip > "$OUT/pg-$TS.sql.gz"
 
 echo "==> minio mirror"
-docker run --rm --network vaa_default \
+docker run --rm --network carve_default \
   -e MC_HOST_local="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
   -v "$OUT:/out" \
   minio/mc:latest \

@@ -1,4 +1,4 @@
-# VisualAutoAnnotator
+# Carve
 
 On-prem, web-based annotation editor for computer-vision datasets — detection, segmentation, classification — with multi-user auth, custom YOLO auto-annotation, SAM 2 / SAM 3 interactive smart annotation, and full image + video object tracking. Exports are first-class YOLO and COCO with class remap and train/val/test split.
 
@@ -19,7 +19,7 @@ On-prem, web-based annotation editor for computer-vision datasets — detection,
 | v1.1.0 | SAM model selector, bf16, compile, eviction, SAM 3 | `v1.1.0` |
 | v1.3.0 | SAM 3 click-prompt routing fix (Sam3TrackerModel + Sam3TrackerVideoModel) | (current branch) |
 
-Tag history: <https://github.com/your-org/VisualAutoAnnotator/tags> (replace with your fork).
+Tag history: <https://github.com/your-org/Carve/tags> (replace with your fork).
 
 ## Features
 
@@ -63,8 +63,8 @@ The steps below take you from a fresh clone to the **first-run admin wizard** in
 ### 1. Clone
 
 ```bash
-git clone <repo-url> VisualAutoAnnotator
-cd VisualAutoAnnotator
+git clone <repo-url> Carve
+cd Carve
 ```
 
 ### 2. Copy and edit env
@@ -75,7 +75,7 @@ sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
 sed -i "s|^PASSWORD_PEPPER=.*|PASSWORD_PEPPER=$(openssl rand -hex 16)|" .env
 ```
 
-Open `.env` in an editor and review the rest. At minimum, set `POSTGRES_PASSWORD` and `MINIO_ROOT_PASSWORD` to non-default values, and set `VAA_DOMAIN` to your real hostname (or leave `localhost` for a local install).
+Open `.env` in an editor and review the rest. At minimum, set `POSTGRES_PASSWORD` and `MINIO_ROOT_PASSWORD` to non-default values, and set `CARVE_DOMAIN` to your real hostname (or leave `localhost` for a local install).
 
 Never commit `.env` — it is in `.gitignore`.
 
@@ -107,13 +107,13 @@ You should see all services as `healthy` after a minute or two:
 
 ```text
 NAME             SERVICE    STATUS
-vaa-api-1        api        healthy
-vaa-caddy-1      caddy      running
-vaa-minio-1      minio      healthy
-vaa-model-1      model      healthy
-vaa-postgres-1   postgres   healthy
-vaa-redis-1      redis      healthy
-vaa-web-1        web        healthy
+carve-api-1        api        healthy
+carve-caddy-1      caddy      running
+carve-minio-1      minio      healthy
+carve-model-1      model      healthy
+carve-postgres-1   postgres   healthy
+carve-redis-1      redis      healthy
+carve-web-1        web        healthy
 ```
 
 Quick smoke checks:
@@ -125,7 +125,7 @@ curl -fsS http://localhost/api/auth/bootstrap-status   # → {"users_exist":fals
 
 ### 6. First-run admin wizard
 
-Visit `https://<VAA_DOMAIN>` (or `http://localhost` in dev). On a fresh database, the web app shows the **First-run admin wizard**: enter a username, email, and password. Submitting creates the bootstrap admin and locks public registration.
+Visit `https://<CARVE_DOMAIN>` (or `http://localhost` in dev). On a fresh database, the web app shows the **First-run admin wizard**: enter a username, email, and password. Submitting creates the bootstrap admin and locks public registration.
 
 After that:
 
@@ -155,16 +155,16 @@ All variables live in `.env`. Defaults below are the values shipped in `.env.exa
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VAA_DOMAIN` | `localhost` | Public domain. Caddy auto-issues a Let's Encrypt cert when set to a real DNS name. |
+| `CARVE_DOMAIN` | `localhost` | Public domain. Caddy auto-issues a Let's Encrypt cert when set to a real DNS name. |
 | `LETSENCRYPT_EMAIL` | empty | Email for Let's Encrypt account + expiry alerts. |
 
 ### Database
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `POSTGRES_USER` | `vaa` | Postgres role used by the API. |
+| `POSTGRES_USER` | `carve` | Postgres role used by the API. |
 | `POSTGRES_PASSWORD` | placeholder | Postgres password. |
-| `POSTGRES_DB` | `vaa` | Database name. |
+| `POSTGRES_DB` | `carve` | Database name. |
 | `POSTGRES_HOST` | `postgres` | Hostname (resolved via Docker DNS). |
 | `POSTGRES_PORT` | `5432` | Port. |
 
@@ -172,10 +172,10 @@ All variables live in `.env`. Defaults below are the values shipped in `.env.exa
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MINIO_ROOT_USER` | `vaa` | MinIO admin user. |
+| `MINIO_ROOT_USER` | `carve` | MinIO admin user. |
 | `MINIO_ROOT_PASSWORD` | placeholder | MinIO admin password. |
 | `MINIO_ENDPOINT` | `http://minio:9000` | S3 endpoint used by the API and worker. |
-| `MINIO_BUCKET` | `vaa-assets` | Bucket name. Created automatically by `minio-init`. |
+| `MINIO_BUCKET` | `carve-assets` | Bucket name. Created automatically by `minio-init`. |
 
 ### Redis
 
@@ -319,7 +319,7 @@ docker compose exec api alembic upgrade head
 ### Postgres shell
 
 ```bash
-docker compose exec postgres psql -U vaa vaa
+docker compose exec postgres psql -U carve carve
 ```
 
 ### MinIO console
@@ -357,32 +357,32 @@ This also clears any in-flight RQ job state and rate-limit counters — only run
 ### Run a backup
 
 ```bash
-./scripts/backup.sh /var/backups/vaa
+./scripts/backup.sh /var/backups/carve
 # Produces:
-#   /var/backups/vaa/pg-20260425T030000Z.sql.gz
-#   /var/backups/vaa/minio-20260425T030000Z/...
+#   /var/backups/carve/pg-20260425T030000Z.sql.gz
+#   /var/backups/carve/minio-20260425T030000Z/...
 ```
 
 ### Recommended cron (daily at 03:00)
 
 ```text
-0 3 * * * cd /opt/vaa && /opt/vaa/scripts/backup.sh /var/backups/vaa >> /var/log/vaa-backup.log 2>&1
+0 3 * * * cd /opt/carve && /opt/carve/scripts/backup.sh /var/backups/carve >> /var/log/carve-backup.log 2>&1
 ```
 
 ### Restore Postgres
 
 ```bash
-gunzip -c /var/backups/vaa/pg-<TS>.sql.gz | docker compose exec -T postgres psql -U vaa vaa
+gunzip -c /var/backups/carve/pg-<TS>.sql.gz | docker compose exec -T postgres psql -U carve carve
 ```
 
 ### Restore MinIO
 
 ```bash
-docker run --rm --network vaa_default \
+docker run --rm --network carve_default \
   -e MC_HOST_local="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
-  -v /var/backups/vaa/minio-<TS>:/in \
+  -v /var/backups/carve/minio-<TS>:/in \
   minio/mc:latest \
-  mirror /in local/vaa-assets
+  mirror /in local/carve-assets
 ```
 
 ## Troubleshooting
@@ -406,7 +406,7 @@ You can run any subset of the services natively. Postgres / Redis / MinIO still 
 cd apps/api && python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 alembic upgrade head
-uvicorn vaa_api.main:app --reload --port 8000
+uvicorn carve_api.main:app --reload --port 8000
 ```
 
 ### Model
@@ -414,7 +414,7 @@ uvicorn vaa_api.main:app --reload --port 8000
 ```bash
 cd apps/model && python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,gpu]"   # gpu extras: torch, ultralytics, opencv, ffmpeg
-uvicorn vaa_model.main:app --reload --port 8100
+uvicorn carve_model.main:app --reload --port 8100
 ```
 
 The `gpu` extras bring in `torch==2.7.1`, `torchvision==0.22.1`, `ultralytics==8.4.41`, `opencv-python-headless`, `pycocotools`, and `ffmpeg-python`. SAM weights download from Hugging Face on first inference call. To use a YOLO release newer than the pinned Ultralytics version supports (e.g., a future YOLO26), override the pin in `apps/model/pyproject.toml` and rebuild the model service — the loader is version-agnostic.
@@ -456,5 +456,5 @@ slowapi is a defensive control against brute-force login, signup spam, and DoS t
 ## License and contributing
 
 - License: TBD (no `LICENSE` file in the repo yet).
-- Operator docs: [`apps/docs/admin.md`](apps/docs/admin.md), or the live VitePress site at `https://<VAA_DOMAIN>/docs`.
+- Operator docs: [`apps/docs/admin.md`](apps/docs/admin.md), or the live VitePress site at `https://<CARVE_DOMAIN>/docs`.
 - Design specs and per-sprint plans: `docs/superpowers/specs/` and `docs/superpowers/plans/`.

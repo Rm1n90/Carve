@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -54,7 +54,7 @@ def _make_class(client, token: str, pid: str) -> str:
 
 def _seed_frame(db_session, task_id: str) -> uuid.UUID:
     """Seed one Asset with a single frame; return the frame ID."""
-    from vaa_api.assets.models import Asset, AssetKind, Frame
+    from carve_api.assets.models import Asset, AssetKind, Frame
 
     asset = Asset(
         task_id=uuid.UUID(task_id),
@@ -74,7 +74,7 @@ def _seed_frame(db_session, task_id: str) -> uuid.UUID:
 
 
 def _user_id_for(db_session, email: str) -> uuid.UUID:
-    from vaa_api.auth.models import User
+    from carve_api.auth.models import User
 
     return db_session.query(User).filter_by(email=email).one().id
 
@@ -88,7 +88,7 @@ def _seed_annotation_at(
     created_by: uuid.UUID | None,
     created_at: datetime,
 ) -> None:
-    from vaa_api.annotations.models import Annotation, AnnotationKind
+    from carve_api.annotations.models import Annotation, AnnotationKind
 
     a = Annotation(
         task_id=uuid.UUID(task_id),

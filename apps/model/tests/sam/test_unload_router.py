@@ -11,9 +11,9 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from vaa_model.main import create_app
-from vaa_model.sam import predictor as p_mod
-from vaa_model.sam import tracker as t_mod
+from carve_model.main import create_app
+from carve_model.sam import predictor as p_mod
+from carve_model.sam import tracker as t_mod
 
 
 @pytest.fixture(autouse=True)

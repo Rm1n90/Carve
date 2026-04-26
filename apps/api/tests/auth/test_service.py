@@ -1,8 +1,8 @@
 import pytest
 
-from vaa_api.auth.models import User, UserRole
-from vaa_api.auth.passwords import verify_password
-from vaa_api.auth.service import AuthService, EmailTaken, InvalidCredentials
+from carve_api.auth.models import User, UserRole
+from carve_api.auth.passwords import verify_password
+from carve_api.auth.service import AuthService, EmailTaken, InvalidCredentials
 
 
 def test_register_creates_member(db_session) -> None:

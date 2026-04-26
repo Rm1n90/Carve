@@ -3,8 +3,8 @@ from typing import Any
 
 import pytest
 
-from vaa_api.annotations.models import AnnotationKind
-from vaa_api.io.coco_out import build_coco
+from carve_api.annotations.models import AnnotationKind
+from carve_api.io.coco_out import build_coco
 
 
 class _FakeAnnotation:

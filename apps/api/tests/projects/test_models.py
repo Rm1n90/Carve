@@ -3,8 +3,8 @@ import uuid
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from vaa_api.auth.models import User, UserRole
-from vaa_api.projects.models import Class, Project, Task, TaskKind
+from carve_api.auth.models import User, UserRole
+from carve_api.projects.models import Class, Project, Task, TaskKind
 
 
 def test_project_task_class_create(db_session) -> None:

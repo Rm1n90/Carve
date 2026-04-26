@@ -26,17 +26,17 @@
 
 ## Task 1: Annotation domain model + migration 0004
 
-**Files:** `apps/api/src/vaa_api/annotations/{__init__,models}.py`; `apps/api/alembic/versions/0004_annotations.py`; modify `alembic/env.py`; tests `apps/api/tests/annotations/{__init__,test_models}.py`.
+**Files:** `apps/api/src/carve_api/annotations/{__init__,models}.py`; `apps/api/alembic/versions/0004_annotations.py`; modify `alembic/env.py`; tests `apps/api/tests/annotations/{__init__,test_models}.py`.
 
 **Step 1.1 — Failing test** `tests/annotations/test_models.py`:
 
 ```python
 import uuid
 
-from vaa_api.annotations.models import Annotation, AnnotationKind
-from vaa_api.assets.models import Asset, AssetKind, Frame
-from vaa_api.auth.models import User, UserRole
-from vaa_api.projects.models import Class, Project, Task, TaskKind
+from carve_api.annotations.models import Annotation, AnnotationKind
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.auth.models import User, UserRole
+from carve_api.projects.models import Class, Project, Task, TaskKind
 
 
 def _setup(db):
@@ -80,7 +80,7 @@ from sqlalchemy import DateTime, Enum, ForeignKey, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from vaa_api.db import Base
+from carve_api.db import Base
 
 
 class AnnotationKind(str, enum.Enum):
@@ -119,7 +119,7 @@ class Annotation(Base):
 
 **Step 1.3 — Migration 0004** creates `annotation_kind` ENUM and the `annotations` table with all FKs, indexes (`task_id`, `frame_id`, `class_id`, `track_id`), and `created_at`/`updated_at` timestamps. Revision `0004`, down_revision `0003`. Pattern matches 0001/0002/0003.
 
-**Step 1.4 — Update** `alembic/env.py` to import `vaa_api.annotations.models`.
+**Step 1.4 — Update** `alembic/env.py` to import `carve_api.annotations.models`.
 
 **Step 1.5 — Run** `pytest tests/annotations/test_models.py -v` then full suite. Commit: `feat(api): Annotation model + migration 0004`
 
@@ -127,7 +127,7 @@ class Annotation(Base):
 
 ## Task 2: Annotation service + REST + batch endpoint
 
-**Files:** `apps/api/src/vaa_api/annotations/{schemas,service,router}.py`; tests `tests/annotations/{test_service,test_router}.py`; modify `main.py`.
+**Files:** `apps/api/src/carve_api/annotations/{schemas,service,router}.py`; tests `tests/annotations/{test_service,test_router}.py`; modify `main.py`.
 
 **Step 2.1 — `schemas.py`:**
 
@@ -137,7 +137,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from vaa_api.annotations.models import AnnotationKind
+from carve_api.annotations.models import AnnotationKind
 
 
 class AnnotationIn(BaseModel):
@@ -205,9 +205,9 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from vaa_api.annotations.models import Annotation, AnnotationKind
-from vaa_api.errors import AppError
-from vaa_api.projects.models import Class, Task
+from carve_api.annotations.models import Annotation, AnnotationKind
+from carve_api.errors import AppError
+from carve_api.projects.models import Class, Task
 
 
 class AnnotationInvalid(AppError):
@@ -279,7 +279,7 @@ class AnnotationService:
         self.session.flush()
 ```
 
-**Step 2.3 — `router.py`:** mount at `/tasks/{task_id}/annotations` with single-row `GET`, `POST`, `PATCH`, `DELETE`, plus `POST /tasks/{task_id}/annotations:batch` consuming `BatchIn` and returning `BatchOut`. Use the `_require_visible_task` helper from Plan 03 (refactor it into a shared `vaa_api.deps` helper if needed).
+**Step 2.3 — `router.py`:** mount at `/tasks/{task_id}/annotations` with single-row `GET`, `POST`, `PATCH`, `DELETE`, plus `POST /tasks/{task_id}/annotations:batch` consuming `BatchIn` and returning `BatchOut`. Use the `_require_visible_task` helper from Plan 03 (refactor it into a shared `carve_api.deps` helper if needed).
 
 ```python
 @router.post("/{task_id}/annotations:batch", response_model=BatchOut)

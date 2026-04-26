@@ -1,4 +1,4 @@
-# VisualAutoAnnotator — Design Spec
+# Carve — Design Spec
 
 **Status:** Draft for user review
 **Owner:** Armin
@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-VisualAutoAnnotator is an on-prem, web-based annotation editor for computer-vision datasets. It supports **detection**, **segmentation**, and **classification** across both still images and video, with first-class auto-annotation (custom YOLO weights), interactive smart annotation (SAM 2 / SAM 3 — clicks, positive/negative prompts, text prompts), and object tracking across frames.
+Carve is an on-prem, web-based annotation editor for computer-vision datasets. It supports **detection**, **segmentation**, and **classification** across both still images and video, with first-class auto-annotation (custom YOLO weights), interactive smart annotation (SAM 2 / SAM 3 — clicks, positive/negative prompts, text prompts), and object tracking across frames.
 
 The product target is a "modern CVAT alternative" focused on:
 - Better UI/UX (faster canvas, command palette, keyboard-first workflow).
@@ -476,7 +476,7 @@ Open questions — **resolved by user 2026-04-25**:
 ## 22. Repository Layout (planned)
 
 ```
-VisualAutoAnnotator/
+Carve/
 ├── docker-compose.yml
 ├── docker-compose.gpu.yml
 ├── apps/
@@ -506,7 +506,7 @@ VisualAutoAnnotator/
 
 ## 23. Naming and Branding
 
-Working name: **VisualAutoAnnotator**.
+Working name: **Carve**.
 
 Short slug for code paths and CLI: **vaa**.
 

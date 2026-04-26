@@ -57,7 +57,7 @@ export function FirstRunWizard({ onSuccess }: Props) {
           Welcome — set up your admin account
         </h1>
         <p style={{ margin: 0, opacity: 0.7, fontSize: 14 }}>
-          This is the first user of this VisualAutoAnnotator instance and will
+          This is the first user of this Carve instance and will
           have full administrative privileges.
         </p>
       </header>

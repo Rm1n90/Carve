@@ -3,9 +3,9 @@ import io
 import httpx
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.inference import model_client as model_client_mod
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.inference import model_client as model_client_mod
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -37,8 +37,8 @@ class _FakeStorage:
 
 
 def _setup_asset(client, monkeypatch):
-    from vaa_api.assets import service as assets_svc
-    from vaa_api.inference import autoannotate as aa_mod
+    from carve_api.assets import service as assets_svc
+    from carve_api.inference import autoannotate as aa_mod
     monkeypatch.setattr(assets_svc, "MinioClient", _FakeStorage)
     monkeypatch.setattr(aa_mod, "MinioClient", _FakeStorage)
 
@@ -165,8 +165,8 @@ def test_sam_decode_502_on_model_error(db_session, monkeypatch) -> None:
 
 def test_sam_unknown_asset_returns_404(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    from vaa_api.assets import service as assets_svc
-    from vaa_api.inference import autoannotate as aa_mod
+    from carve_api.assets import service as assets_svc
+    from carve_api.inference import autoannotate as aa_mod
     monkeypatch.setattr(assets_svc, "MinioClient", _FakeStorage)
     monkeypatch.setattr(aa_mod, "MinioClient", _FakeStorage)
     client.post("/auth/register", json={"email": "u@x.com", "password": "hunter22"})
@@ -211,7 +211,7 @@ def test_sam_encode_caches_in_redis(db_session, monkeypatch) -> None:
     client = _client(db_session)
     token, aid = _setup_asset(client, monkeypatch)
 
-    from vaa_api.inference import sam as sam_mod
+    from carve_api.inference import sam as sam_mod
     fake = _FakeRedis()
     monkeypatch.setattr(sam_mod, "_redis_or_none", lambda: fake)
 
@@ -247,7 +247,7 @@ def test_sam_encode_returns_cached_on_repeat(db_session, monkeypatch) -> None:
     client = _client(db_session)
     token, aid = _setup_asset(client, monkeypatch)
 
-    from vaa_api.inference import sam as sam_mod
+    from carve_api.inference import sam as sam_mod
     fake = _FakeRedis()
     monkeypatch.setattr(sam_mod, "_redis_or_none", lambda: fake)
 
@@ -280,7 +280,7 @@ def test_sam_encode_falls_back_when_redis_unavailable(db_session, monkeypatch) -
     client = _client(db_session)
     token, aid = _setup_asset(client, monkeypatch)
 
-    from vaa_api.inference import sam as sam_mod
+    from carve_api.inference import sam as sam_mod
     monkeypatch.setattr(sam_mod, "_redis_or_none", lambda: None)
 
     def handler(request: httpx.Request) -> httpx.Response:

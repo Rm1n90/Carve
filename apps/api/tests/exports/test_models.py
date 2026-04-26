@@ -1,6 +1,6 @@
-from vaa_api.auth.models import User, UserRole
-from vaa_api.exports.models import Export
-from vaa_api.projects.models import Project, Task, TaskKind
+from carve_api.auth.models import User, UserRole
+from carve_api.exports.models import Export
+from carve_api.projects.models import Project, Task, TaskKind
 
 
 def test_create_export(db_session) -> None:
@@ -25,5 +25,5 @@ def test_export_format_choices_are_string_no_enum() -> None:
     """We use a String column rather than an enum so adding new formats
     in v2 (VOC, KITTI, MOT, Datumaro) is a code change only — no migration.
     """
-    from vaa_api.exports.models import Export
+    from carve_api.exports.models import Export
     assert Export.__table__.c.format.type.length == 20

@@ -2,7 +2,7 @@
 
 Mirrors ``tests/sam/test_predictor_resolver.py``. The tracker reads
 ``SAM_MODEL`` (or the legacy ``SAM_VARIANT``) via the shared resolver in
-``vaa_model.sam.predictor`` and binds the matching HF repo. Tests stub
+``carve_model.sam.predictor`` and binds the matching HF repo. Tests stub
 out ``torch`` and ``sam2.sam2_video_predictor`` via ``sys.modules`` so
 the production factory can run end-to-end without GPUs or real weights.
 """
@@ -12,7 +12,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from vaa_model.sam import tracker as t_mod
+from carve_model.sam import tracker as t_mod
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +90,7 @@ def test_default_factory_routes_to_sam3_adapter_when_sam3_selected(
         return object()
 
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.build_sam3_video_tracker",
+        "carve_model.sam.sam3_adapter.build_sam3_video_tracker",
         _fake_build,
     )
 
@@ -109,7 +109,7 @@ def test_default_factory_routes_to_sam3_adapter_when_legacy_sam_variant_sam3(
         return object()
 
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.build_sam3_video_tracker",
+        "carve_model.sam.sam3_adapter.build_sam3_video_tracker",
         _fake_build,
     )
 

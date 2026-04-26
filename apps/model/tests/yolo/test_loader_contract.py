@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from vaa_model.yolo.registry import WeightRegistry
+from carve_model.yolo.registry import WeightRegistry
 
 
 class _FakeBoxes:
@@ -51,7 +51,7 @@ def test_loader_factory_returns_predict_capable_object(tmp_path):
 def test_default_loader_is_ultralytics_yolo():
     """The production default loader imports `ultralytics.YOLO`. We can't
     actually call it (no torch in test venv), but verify it's wired."""
-    from vaa_model.yolo import registry as r_mod
+    from carve_model.yolo import registry as r_mod
     # Inspect the default loader function source — must reference ultralytics.YOLO
     import inspect
     src = inspect.getsource(r_mod._default_loader)

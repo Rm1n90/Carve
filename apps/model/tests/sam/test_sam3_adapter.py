@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from vaa_model.sam import sam3_adapter as a_mod
+from carve_model.sam import sam3_adapter as a_mod
 
 
 # --- shared fakes -----------------------------------------------------------

@@ -12,7 +12,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from vaa_model.sam import predictor as p_mod
+from carve_model.sam import predictor as p_mod
 
 
 @pytest.fixture(autouse=True)

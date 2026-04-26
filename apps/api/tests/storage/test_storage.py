@@ -1,6 +1,6 @@
 import io
 
-from vaa_api.storage.hashing import stream_xxh3_128
+from carve_api.storage.hashing import stream_xxh3_128
 
 
 def test_stream_xxh3_128_returns_32_hex_for_known_input() -> None:
@@ -29,6 +29,6 @@ def test_stream_xxh3_128_handles_chunked_reads() -> None:
 
 def test_minio_client_from_settings_constructs() -> None:
     # Don't require a live MinIO; just verify construction reads env.
-    from vaa_api.storage.client import MinioClient
+    from carve_api.storage.client import MinioClient
     client = MinioClient.from_settings()
     assert client.bucket  # attribute exists

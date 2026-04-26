@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from vaa_model.sam import predictor as p_mod
-from vaa_model.sam import tracker as t_mod
+from carve_model.sam import predictor as p_mod
+from carve_model.sam import tracker as t_mod
 
 
 @pytest.fixture(autouse=True)

@@ -25,4 +25,4 @@ ENV PYTHONPATH=/app/src
 EXPOSE 8100
 
 # CUDA libraries are present in the base image; PyTorch will detect cuda:0 automatically.
-CMD ["uvicorn", "vaa_model.main:app", "--host", "0.0.0.0", "--port", "8100"]
+CMD ["uvicorn", "carve_model.main:app", "--host", "0.0.0.0", "--port", "8100"]

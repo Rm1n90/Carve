@@ -8,8 +8,8 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 # --- Helpers ---------------------------------------------------------------
@@ -66,7 +66,7 @@ def _seed_frame(
     height: int | None = 100,
 ) -> uuid.UUID:
     """Create one Asset (with optional width/height) and one Frame on it."""
-    from vaa_api.assets.models import Asset, AssetKind, Frame
+    from carve_api.assets.models import Asset, AssetKind, Frame
 
     asset = Asset(
         task_id=uuid.UUID(task_id),
@@ -96,7 +96,7 @@ def _seed_geom(
     kind: str,
     geometry: dict,
 ) -> None:
-    from vaa_api.annotations.models import Annotation, AnnotationKind
+    from carve_api.annotations.models import Annotation, AnnotationKind
 
     a = Annotation(
         task_id=uuid.UUID(task_id),

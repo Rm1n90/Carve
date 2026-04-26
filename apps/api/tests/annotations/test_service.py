@@ -2,15 +2,15 @@ import uuid
 
 import pytest
 
-from vaa_api.annotations.models import Annotation, AnnotationKind
-from vaa_api.annotations.service import (
+from carve_api.annotations.models import Annotation, AnnotationKind
+from carve_api.annotations.service import (
     AnnotationInvalid,
     AnnotationNotFound,
     AnnotationService,
 )
-from vaa_api.assets.models import Asset, AssetKind, Frame
-from vaa_api.auth.models import User, UserRole
-from vaa_api.projects.models import Class, Project, Task, TaskKind
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.auth.models import User, UserRole
+from carve_api.projects.models import Class, Project, Task, TaskKind
 
 
 def _setup(db):

@@ -3,8 +3,8 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -53,7 +53,7 @@ def _make_class(client, token: str, pid: str, idx: int, name: str) -> str:
 
 def _seed_asset_with_frames(db_session, task_id: str, frame_count: int) -> list[uuid.UUID]:
     """Seed one Asset with `frame_count` frames; return list of frame IDs."""
-    from vaa_api.assets.models import Asset, AssetKind, Frame
+    from carve_api.assets.models import Asset, AssetKind, Frame
 
     asset = Asset(
         task_id=uuid.UUID(task_id),
@@ -78,7 +78,7 @@ def _seed_asset_with_frames(db_session, task_id: str, frame_count: int) -> list[
 def _seed_annotation(
     db_session, task_id: str, frame_id: uuid.UUID, class_id: str
 ) -> None:
-    from vaa_api.annotations.models import Annotation, AnnotationKind
+    from carve_api.annotations.models import Annotation, AnnotationKind
 
     a = Annotation(
         task_id=uuid.UUID(task_id),

@@ -12,9 +12,9 @@ import numpy as np
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from vaa_model.main import create_app
-from vaa_model.yolo import registry as registry_mod
-from vaa_model.yolo.registry import REGISTRY
+from carve_model.main import create_app
+from carve_model.yolo import registry as registry_mod
+from carve_model.yolo.registry import REGISTRY
 
 
 class _FakeBoxes:
@@ -59,7 +59,7 @@ def test_load_then_predict(monkeypatch, tmp_path) -> None:
     def fake_download(url: str, dest: str) -> None:
         Path(dest).write_bytes(b"fake-pt-bytes")
 
-    from vaa_model.yolo import router as router_mod
+    from carve_model.yolo import router as router_mod
     monkeypatch.setattr(router_mod, "_download", fake_download)
 
     # Inject a fake loader that ignores the file and returns _FakeModel
@@ -101,7 +101,7 @@ def test_predict_bad_image_b64_returns_400() -> None:
     REGISTRY.set_loader(lambda _p: _FakeModel())
     REGISTRY.evict("w-bad")
 
-    from vaa_model.yolo import router as router_mod
+    from carve_model.yolo import router as router_mod
     # need to load a weight first
     def fake_download(url: str, dest: str) -> None:
         Path(dest).write_bytes(b"x")
@@ -127,7 +127,7 @@ def test_load_url_failure_returns_502(monkeypatch) -> None:
     def fake_download(url: str, dest: str) -> None:
         raise OSError("network is down")
 
-    from vaa_model.yolo import router as router_mod
+    from carve_model.yolo import router as router_mod
     monkeypatch.setattr(router_mod, "_download", fake_download)
 
     r = _client().post(
@@ -143,7 +143,7 @@ def test_load_without_loader_returns_503() -> None:
     REGISTRY._loader = None  # noqa: SLF001 — direct reset for test
     REGISTRY.evict("any")
 
-    from vaa_model.yolo import router as router_mod
+    from carve_model.yolo import router as router_mod
     import pytest
     with pytest.MonkeyPatch.context() as m:
         m.setattr(router_mod, "_download", lambda u, d: Path(d).write_bytes(b"x"))
@@ -154,7 +154,7 @@ def test_load_without_loader_returns_503() -> None:
     assert r.status_code == 503
 
     # Restore default loader so subsequent tests in the same session work
-    from vaa_model.yolo.registry import install_default_loader
+    from carve_model.yolo.registry import install_default_loader
     install_default_loader()
 
 

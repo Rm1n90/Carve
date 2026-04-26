@@ -4,9 +4,9 @@ from typing import Any
 import httpx
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.inference import model_client as model_client_mod
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.inference import model_client as model_client_mod
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -40,9 +40,9 @@ class _FakeStorage:
 
 
 def _install_fake_storage(monkeypatch) -> None:
-    from vaa_api.assets import service as assets_svc
-    from vaa_api.weights import service as weights_svc
-    from vaa_api.inference import autoannotate as aa_mod
+    from carve_api.assets import service as assets_svc
+    from carve_api.weights import service as weights_svc
+    from carve_api.inference import autoannotate as aa_mod
     monkeypatch.setattr(assets_svc, "MinioClient", _FakeStorage)
     monkeypatch.setattr(weights_svc, "MinioClient", _FakeStorage)
     monkeypatch.setattr(aa_mod, "MinioClient", _FakeStorage)
@@ -162,7 +162,7 @@ def test_auto_annotate_overwrite_replaces_existing(db_session, monkeypatch) -> N
     # The auto-annotate path attaches new rows to the asset's idx=0 Frame.
     # Mirror that placement on the seeded annotation so overwrite=true can find it.
     from sqlalchemy import select
-    from vaa_api.assets.models import Frame
+    from carve_api.assets.models import Frame
     frame_id = str(db_session.execute(
         select(Frame.id).where(Frame.asset_id == aid).order_by(Frame.idx).limit(1)
     ).scalar_one())

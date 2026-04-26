@@ -10,7 +10,7 @@
 
 ```bash
 git clone <repo-url>
-cd VisualAutoAnnotator
+cd Carve
 cp .env.example .env
 ```
 
@@ -18,7 +18,7 @@ Edit `.env` and set at minimum:
 
 | Variable | Purpose |
 |---|---|
-| `VAA_DOMAIN` | Your domain, e.g. `annotate.example.com` |
+| `CARVE_DOMAIN` | Your domain, e.g. `annotate.example.com` |
 | `JWT_SECRET` | Random hex string — `openssl rand -hex 32` |
 | `PASSWORD_PEPPER` | Random hex string — `openssl rand -hex 16` |
 | `POSTGRES_PASSWORD` | Postgres password |

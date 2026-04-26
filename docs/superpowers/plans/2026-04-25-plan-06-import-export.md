@@ -5,7 +5,7 @@
 **Goal:** Import existing YOLO and COCO annotations into a task so users can review and correct them; export annotations to YOLO and COCO with optional class remap (merge / rename / skip). Both formats handle detection, segmentation, and classification.
 
 **Architecture:**
-- A small `apps/api/src/vaa_api/io/` package holds parsers (`yolo_in.py`, `coco_in.py`) and writers (`yolo_out.py`, `coco_out.py`).
+- A small `apps/api/src/carve_api/io/` package holds parsers (`yolo_in.py`, `coco_in.py`) and writers (`yolo_out.py`, `coco_out.py`).
 - Imports: a streaming RQ job parses the uploaded archive, matches files by name to existing assets, and creates `Annotation` rows.
 - Exports: an RQ job streams output into a ZIP file in MinIO at `exports/<task_id>/<export_id>.zip`; the user downloads via a presigned URL.
 - Class remap is stored alongside the export config as JSONB.
@@ -22,7 +22,7 @@
 
 ## Task 1: `Export` model + migration 0006
 
-**Files:** `apps/api/src/vaa_api/exports/{__init__,models}.py`; `apps/api/alembic/versions/0006_exports.py`; modify `alembic/env.py`.
+**Files:** `apps/api/src/carve_api/exports/{__init__,models}.py`; `apps/api/alembic/versions/0006_exports.py`; modify `alembic/env.py`.
 
 **Step 1.1 — `models.py`:**
 
@@ -34,7 +34,7 @@ from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from vaa_api.db import Base
+from carve_api.db import Base
 
 
 class Export(Base):
@@ -65,7 +65,7 @@ class Export(Base):
 
 ## Task 2: YOLO writer
 
-**Files:** `apps/api/src/vaa_api/io/{__init__,yolo_out}.py`; `apps/api/tests/io/test_yolo_out.py`.
+**Files:** `apps/api/src/carve_api/io/{__init__,yolo_out}.py`; `apps/api/tests/io/test_yolo_out.py`.
 
 **Behavior:**
 - Detection (`bbox`): one `.txt` per image at `labels/<asset_basename>.txt`, lines `class_idx cx cy w h` (normalized 0–1).
@@ -82,8 +82,8 @@ class Export(Base):
 ```python
 from collections.abc import Iterable
 
-from vaa_api.annotations.models import Annotation, AnnotationKind
-from vaa_api.projects.models import Class
+from carve_api.annotations.models import Annotation, AnnotationKind
+from carve_api.projects.models import Class
 
 
 def write_yolo_label(
@@ -137,7 +137,7 @@ def write_data_yaml(remap_targets: list[tuple[int, str]], splits: dict[str, str]
 
 ## Task 3: COCO writer
 
-**Files:** `apps/api/src/vaa_api/io/coco_out.py`; tests.
+**Files:** `apps/api/src/carve_api/io/coco_out.py`; tests.
 
 **Behavior:**
 - Single `coco.json` plus optional `images/<asset_basename>` files (controlled by `include_images` flag).
@@ -150,7 +150,7 @@ def write_data_yaml(remap_targets: list[tuple[int, str]], splits: dict[str, str]
 ```python
 from typing import Any
 
-from vaa_api.annotations.models import Annotation, AnnotationKind
+from carve_api.annotations.models import Annotation, AnnotationKind
 
 
 def build_coco(
@@ -212,7 +212,7 @@ def _bbox_of(points):
 
 ## Task 4: Importers — YOLO + COCO
 
-**Files:** `apps/api/src/vaa_api/io/{yolo_in,coco_in}.py`; tests.
+**Files:** `apps/api/src/carve_api/io/{yolo_in,coco_in}.py`; tests.
 
 **`yolo_in.py`** parses `data.yaml` (the names list) and walks `labels/`. For each `.txt`:
 - 5 numbers per line → bbox (un-normalize using the matched asset's `width`/`height`).
@@ -234,7 +234,7 @@ Returns `(filename_basename, list[AnnotationDraft], warnings: list[str])`. Class
 
 ## Task 5: Import endpoint + RQ job
 
-**Files:** `apps/api/src/vaa_api/io/{import_router,import_job}.py`; modify `main.py`.
+**Files:** `apps/api/src/carve_api/io/{import_router,import_job}.py`; modify `main.py`.
 
 **Endpoint:** `POST /tasks/{tid}/imports?format=yolo|coco` accepts a multipart `.zip`. Save to MinIO at `imports/<task_id>/<import_id>.zip`, enqueue RQ job, return `{"import_id": "<uuid>"}`.
 
@@ -250,7 +250,7 @@ Returns `(filename_basename, list[AnnotationDraft], warnings: list[str])`. Class
 
 ## Task 6: Export endpoint + RQ job
 
-**Files:** `apps/api/src/vaa_api/exports/{schemas,service,router,job}.py`; modify `main.py`.
+**Files:** `apps/api/src/carve_api/exports/{schemas,service,router,job}.py`; modify `main.py`.
 
 **Endpoint:** `POST /tasks/{tid}/exports` body:
 

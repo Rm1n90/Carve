@@ -3,8 +3,8 @@ from typing import Any
 
 import pytest
 
-from vaa_api.annotations.models import AnnotationKind
-from vaa_api.io.yolo_out import RemapTarget, write_data_yaml, write_yolo_label
+from carve_api.annotations.models import AnnotationKind
+from carve_api.io.yolo_out import RemapTarget, write_data_yaml, write_yolo_label
 
 
 class _FakeAnnotation:

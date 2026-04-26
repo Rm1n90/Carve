@@ -15,7 +15,7 @@ A backup script is provided at `scripts/backup.sh`. It dumps Postgres and snapsh
 Recommended cron (daily at 03:00):
 
 ```cron
-0 3 * * * /path/to/repo/scripts/backup.sh >> /var/log/vaa-backup.log 2>&1
+0 3 * * * /path/to/repo/scripts/backup.sh >> /var/log/carve-backup.log 2>&1
 ```
 
 ### Restore
@@ -112,7 +112,7 @@ License + weights: AGPL-3.0 / Enterprise. Same model weights
   returns K=3 multimask candidates per object; the router picks the
   highest-scoring mask via `np.argmax(scores)`. The container loads
   `transformers.Sam3TrackerModel` + `Sam3TrackerProcessor` lazily on
-  first request via `vaa_model.sam.sam3_adapter.build_sam3_image_predictor`.
+  first request via `carve_model.sam.sam3_adapter.build_sam3_image_predictor`.
 - **Text prompts** (`/sam/text-prompt`): functional. Uses `Sam3Model` +
   `Sam3Processor` (concept). The text predictor is registered
   automatically by the SAM 3 image factory the first time `/sam/encode`
@@ -157,7 +157,7 @@ License + weights: AGPL-3.0 / Enterprise. Same model weights
 
 The model service uses Ultralytics' unified `YOLO()` loader, which
 auto-detects the architecture from the `.pt` file's metadata. The
-loader is version-agnostic — `apps/model/src/vaa_model/yolo/registry.py`
+loader is version-agnostic — `apps/model/src/carve_model/yolo/registry.py`
 contains no architecture-specific logic.
 
 Currently pinned: `ultralytics==8.4.41` (PyPI). This release supports:

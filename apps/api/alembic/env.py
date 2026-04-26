@@ -8,14 +8,14 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from vaa_api.config import get_settings  # noqa: E402
-from vaa_api.db import Base  # noqa: E402
-import vaa_api.auth.models  # noqa: F401, E402  (populate metadata)
-import vaa_api.projects.models  # noqa: F401, E402  (populate metadata)
-import vaa_api.assets.models  # noqa: F401, E402  (populate metadata)
-import vaa_api.annotations.models  # noqa: F401, E402  (populate metadata)
-import vaa_api.weights.models  # noqa: F401, E402  (populate metadata)
-import vaa_api.exports.models  # noqa: F401, E402  (populate metadata)
+from carve_api.config import get_settings  # noqa: E402
+from carve_api.db import Base  # noqa: E402
+import carve_api.auth.models  # noqa: F401, E402  (populate metadata)
+import carve_api.projects.models  # noqa: F401, E402  (populate metadata)
+import carve_api.assets.models  # noqa: F401, E402  (populate metadata)
+import carve_api.annotations.models  # noqa: F401, E402  (populate metadata)
+import carve_api.weights.models  # noqa: F401, E402  (populate metadata)
+import carve_api.exports.models  # noqa: F401, E402  (populate metadata)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)

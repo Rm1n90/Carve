@@ -2,8 +2,8 @@ import io
 import json
 import zipfile
 
-from vaa_api.annotations.models import AnnotationKind
-from vaa_api.io.coco_in import parse_coco_archive, parse_coco_bytes
+from carve_api.annotations.models import AnnotationKind
+from carve_api.io.coco_in import parse_coco_archive, parse_coco_bytes
 
 
 def test_parses_bbox_annotation() -> None:
@@ -167,7 +167,7 @@ def test_oversized_member_rejected(monkeypatch) -> None:
     """Per-member zip-bomb guard: a single .json larger than the cap raises."""
     import pytest
 
-    from vaa_api.io import coco_in
+    from carve_api.io import coco_in
 
     monkeypatch.setattr(coco_in, "_MAX_MEMBER_BYTES", 100)
     big_json = (b"{}" + b" " * 5000)

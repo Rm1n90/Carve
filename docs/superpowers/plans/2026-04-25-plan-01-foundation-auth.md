@@ -28,7 +28,7 @@
 Files this plan creates (paths relative to repo root):
 
 ```
-VisualAutoAnnotator/
+Carve/
 ├── README.md
 ├── .env.example
 ├── .editorconfig
@@ -43,7 +43,7 @@ VisualAutoAnnotator/
 │   │   ├── alembic/
 │   │   │   ├── env.py
 │   │   │   └── versions/0001_users.py
-│   │   ├── src/vaa_api/
+│   │   ├── src/carve_api/
 │   │   │   ├── __init__.py
 │   │   │   ├── main.py
 │   │   │   ├── config.py
@@ -75,7 +75,7 @@ VisualAutoAnnotator/
 │   ├── model/
 │   │   ├── Dockerfile
 │   │   ├── pyproject.toml
-│   │   ├── src/vaa_model/
+│   │   ├── src/carve_model/
 │   │   │   ├── __init__.py
 │   │   │   └── main.py
 │   │   └── tests/test_health.py
@@ -113,7 +113,7 @@ VisualAutoAnnotator/
 
 ## Conventions used in this plan
 
-- **Python package layout** uses `src/`. Imports are `from vaa_api.x import y`.
+- **Python package layout** uses `src/`. Imports are `from carve_api.x import y`.
 - **Frontend tests** use Vitest + Testing Library.
 - **Backend tests** use Pytest with FastAPI `TestClient` and a Postgres test database.
 - **Commits** are conventional commits (`feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refactor:`).
@@ -216,9 +216,9 @@ git commit -m "chore: env template for app, model, web, postgres, redis, minio"
 
 **Files:**
 - Create: `apps/api/pyproject.toml`
-- Create: `apps/api/src/vaa_api/__init__.py`
-- Create: `apps/api/src/vaa_api/main.py`
-- Create: `apps/api/src/vaa_api/health.py`
+- Create: `apps/api/src/carve_api/__init__.py`
+- Create: `apps/api/src/carve_api/main.py`
+- Create: `apps/api/src/carve_api/health.py`
 - Create: `apps/api/tests/conftest.py`
 - Create: `apps/api/tests/test_health.py`
 
@@ -226,7 +226,7 @@ git commit -m "chore: env template for app, model, web, postgres, redis, minio"
 
 ```toml
 [project]
-name = "vaa-api"
+name = "carve-api"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -262,7 +262,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vaa_api"]
+packages = ["src/carve_api"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -282,7 +282,7 @@ ignore = ["S101"]
 ```python
 from fastapi.testclient import TestClient
 
-from vaa_api.main import create_app
+from carve_api.main import create_app
 
 
 def test_health_endpoint_returns_ok():
@@ -312,17 +312,17 @@ pip install -e ".[dev]"
 pytest tests/test_health.py -v
 ```
 
-Expected: FAIL — `ModuleNotFoundError: No module named 'vaa_api.main'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'carve_api.main'`
 
 - [ ] **Step 3.5: Implement minimal app**
 
-`apps/api/src/vaa_api/__init__.py`:
+`apps/api/src/carve_api/__init__.py`:
 
 ```python
 __version__ = "0.1.0"
 ```
 
-`apps/api/src/vaa_api/health.py`:
+`apps/api/src/carve_api/health.py`:
 
 ```python
 from fastapi import APIRouter
@@ -335,16 +335,16 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 ```
 
-`apps/api/src/vaa_api/main.py`:
+`apps/api/src/carve_api/main.py`:
 
 ```python
 from fastapi import FastAPI
 
-from vaa_api.health import router as health_router
+from carve_api.health import router as health_router
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="VisualAutoAnnotator API", version="0.1.0")
+    app = FastAPI(title="Carve API", version="0.1.0")
     app.include_router(health_router)
     return app
 
@@ -372,8 +372,8 @@ git commit -m "feat(api): minimal FastAPI app with /health endpoint"
 ## Task 4: API config + DB engine + Alembic init
 
 **Files:**
-- Create: `apps/api/src/vaa_api/config.py`
-- Create: `apps/api/src/vaa_api/db.py`
+- Create: `apps/api/src/carve_api/config.py`
+- Create: `apps/api/src/carve_api/db.py`
 - Create: `apps/api/alembic.ini`
 - Create: `apps/api/alembic/env.py`
 - Create: `apps/api/alembic/script.py.mako`
@@ -385,7 +385,7 @@ git commit -m "feat(api): minimal FastAPI app with /health endpoint"
 ```python
 import pytest
 
-from vaa_api.config import Settings, get_settings
+from carve_api.config import Settings, get_settings
 
 
 def _base_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -422,7 +422,7 @@ pytest tests/test_config.py -v
 
 Expected: FAIL
 
-- [ ] **Step 4.3: Implement `apps/api/src/vaa_api/config.py`**
+- [ ] **Step 4.3: Implement `apps/api/src/carve_api/config.py`**
 
 ```python
 from functools import lru_cache
@@ -487,7 +487,7 @@ pytest tests/test_config.py -v
 
 Expected: 2 PASS
 
-- [ ] **Step 4.5: `apps/api/src/vaa_api/db.py`**
+- [ ] **Step 4.5: `apps/api/src/carve_api/db.py`**
 
 ```python
 from collections.abc import Iterator
@@ -495,7 +495,7 @@ from collections.abc import Iterator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from vaa_api.config import get_settings
+from carve_api.config import get_settings
 
 
 class Base(DeclarativeBase):
@@ -572,9 +572,9 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from vaa_api.config import get_settings  # noqa: E402
-from vaa_api.db import Base  # noqa: E402
-import vaa_api.auth.models  # noqa: F401, E402  (populate metadata)
+from carve_api.config import get_settings  # noqa: E402
+from carve_api.db import Base  # noqa: E402
+import carve_api.auth.models  # noqa: F401, E402  (populate metadata)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
@@ -616,7 +616,7 @@ else:
 - [ ] **Step 4.7: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/config.py apps/api/src/vaa_api/db.py
+git add apps/api/src/carve_api/config.py apps/api/src/carve_api/db.py
 git add apps/api/alembic apps/api/alembic.ini apps/api/tests/test_config.py
 git commit -m "feat(api): pydantic-settings config, SQLAlchemy session, Alembic init"
 ```
@@ -626,8 +626,8 @@ git commit -m "feat(api): pydantic-settings config, SQLAlchemy session, Alembic 
 ## Task 5: Argon2id password hashing with HMAC pepper
 
 **Files:**
-- Create: `apps/api/src/vaa_api/auth/__init__.py`
-- Create: `apps/api/src/vaa_api/auth/passwords.py`
+- Create: `apps/api/src/carve_api/auth/__init__.py`
+- Create: `apps/api/src/carve_api/auth/passwords.py`
 - Create: `apps/api/tests/auth/__init__.py`
 - Create: `apps/api/tests/auth/test_passwords.py`
 
@@ -636,8 +636,8 @@ git commit -m "feat(api): pydantic-settings config, SQLAlchemy session, Alembic 
 ```python
 import pytest
 
-from vaa_api.auth.passwords import hash_password, verify_password
-from vaa_api.config import get_settings
+from carve_api.auth.passwords import hash_password, verify_password
+from carve_api.config import get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -682,7 +682,7 @@ pytest tests/auth/test_passwords.py -v
 
 Expected: FAIL
 
-- [ ] **Step 5.3: Implement `apps/api/src/vaa_api/auth/passwords.py`**
+- [ ] **Step 5.3: Implement `apps/api/src/carve_api/auth/passwords.py`**
 
 ```python
 import hmac
@@ -690,7 +690,7 @@ from hashlib import sha256
 
 from passlib.hash import argon2
 
-from vaa_api.config import get_settings
+from carve_api.config import get_settings
 
 
 def _peppered(password: str) -> str:
@@ -711,7 +711,7 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 ```
 
-`apps/api/src/vaa_api/auth/__init__.py` and `apps/api/tests/auth/__init__.py`: empty files.
+`apps/api/src/carve_api/auth/__init__.py` and `apps/api/tests/auth/__init__.py`: empty files.
 
 - [ ] **Step 5.4: Run, verify pass**
 
@@ -724,7 +724,7 @@ Expected: 4 PASS
 - [ ] **Step 5.5: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/auth apps/api/tests/auth
+git add apps/api/src/carve_api/auth apps/api/tests/auth
 git commit -m "feat(api): argon2id password hashing with HMAC pepper"
 ```
 
@@ -733,7 +733,7 @@ git commit -m "feat(api): argon2id password hashing with HMAC pepper"
 ## Task 6: JWT issue + verify
 
 **Files:**
-- Create: `apps/api/src/vaa_api/auth/jwt.py`
+- Create: `apps/api/src/carve_api/auth/jwt.py`
 - Create: `apps/api/tests/auth/test_jwt.py`
 
 - [ ] **Step 6.1: Failing test `apps/api/tests/auth/test_jwt.py`**
@@ -743,13 +743,13 @@ import time
 
 import pytest
 
-from vaa_api.auth.jwt import (
+from carve_api.auth.jwt import (
     InvalidToken,
     create_access_token,
     create_refresh_token,
     decode_token,
 )
-from vaa_api.config import get_settings
+from carve_api.config import get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -806,7 +806,7 @@ pytest tests/auth/test_jwt.py -v
 
 Expected: FAIL
 
-- [ ] **Step 6.3: Implement `apps/api/src/vaa_api/auth/jwt.py`**
+- [ ] **Step 6.3: Implement `apps/api/src/carve_api/auth/jwt.py`**
 
 ```python
 from datetime import UTC, datetime, timedelta
@@ -814,7 +814,7 @@ from typing import Literal
 
 from jose import JWTError, jwt
 
-from vaa_api.config import get_settings
+from carve_api.config import get_settings
 
 ALGORITHM = "HS256"
 TokenType = Literal["access", "refresh"]
@@ -875,7 +875,7 @@ Expected: 5 PASS
 - [ ] **Step 6.5: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/auth/jwt.py apps/api/tests/auth/test_jwt.py
+git add apps/api/src/carve_api/auth/jwt.py apps/api/tests/auth/test_jwt.py
 git commit -m "feat(api): JWT access/refresh with type binding and expiry"
 ```
 
@@ -884,7 +884,7 @@ git commit -m "feat(api): JWT access/refresh with type binding and expiry"
 ## Task 7: User model + first migration + db_session test fixture
 
 **Files:**
-- Create: `apps/api/src/vaa_api/auth/models.py`
+- Create: `apps/api/src/carve_api/auth/models.py`
 - Create: `apps/api/alembic/versions/0001_users.py`
 - Create: `apps/api/tests/auth/test_user_model.py`
 - Modify: `apps/api/tests/conftest.py`
@@ -895,7 +895,7 @@ git commit -m "feat(api): JWT access/refresh with type binding and expiry"
 import pytest
 from sqlalchemy import select
 
-from vaa_api.auth.models import User, UserRole
+from carve_api.auth.models import User, UserRole
 
 
 def test_user_role_enum_values() -> None:
@@ -947,8 +947,8 @@ def _env() -> None:
 @pytest.fixture(scope="session")
 def engine():
     _set_test_env()
-    from vaa_api.db import Base
-    import vaa_api.auth.models  # noqa: F401
+    from carve_api.db import Base
+    import carve_api.auth.models  # noqa: F401
 
     url = (
         f"postgresql+psycopg://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}"
@@ -980,9 +980,9 @@ createdb -h localhost -U vaa vaa_test || true
 pytest tests/auth/test_user_model.py -v
 ```
 
-Expected: FAIL — `ModuleNotFoundError: vaa_api.auth.models`
+Expected: FAIL — `ModuleNotFoundError: carve_api.auth.models`
 
-- [ ] **Step 7.4: Implement `apps/api/src/vaa_api/auth/models.py`**
+- [ ] **Step 7.4: Implement `apps/api/src/carve_api/auth/models.py`**
 
 ```python
 import enum
@@ -993,7 +993,7 @@ from sqlalchemy import DateTime, Enum, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from vaa_api.db import Base
+from carve_api.db import Base
 
 
 class UserRole(str, enum.Enum):
@@ -1085,7 +1085,7 @@ Expected: 2 PASS
 - [ ] **Step 7.7: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/auth/models.py apps/api/alembic/versions/0001_users.py
+git add apps/api/src/carve_api/auth/models.py apps/api/alembic/versions/0001_users.py
 git add apps/api/tests/auth/test_user_model.py apps/api/tests/conftest.py
 git commit -m "feat(api): User model with admin/member/viewer roles + migration"
 ```
@@ -1095,9 +1095,9 @@ git commit -m "feat(api): User model with admin/member/viewer roles + migration"
 ## Task 8: Auth schemas + service layer (register/authenticate)
 
 **Files:**
-- Create: `apps/api/src/vaa_api/errors.py`
-- Create: `apps/api/src/vaa_api/auth/schemas.py`
-- Create: `apps/api/src/vaa_api/auth/service.py`
+- Create: `apps/api/src/carve_api/errors.py`
+- Create: `apps/api/src/carve_api/auth/schemas.py`
+- Create: `apps/api/src/carve_api/auth/service.py`
 - Create: `apps/api/tests/auth/test_service.py`
 
 - [ ] **Step 8.1: Failing test `apps/api/tests/auth/test_service.py`**
@@ -1105,9 +1105,9 @@ git commit -m "feat(api): User model with admin/member/viewer roles + migration"
 ```python
 import pytest
 
-from vaa_api.auth.models import User, UserRole
-from vaa_api.auth.passwords import verify_password
-from vaa_api.auth.service import AuthService, EmailTaken, InvalidCredentials
+from carve_api.auth.models import User, UserRole
+from carve_api.auth.passwords import verify_password
+from carve_api.auth.service import AuthService, EmailTaken, InvalidCredentials
 
 
 def test_register_creates_member(db_session) -> None:
@@ -1159,7 +1159,7 @@ pytest tests/auth/test_service.py -v
 
 Expected: FAIL
 
-- [ ] **Step 8.3: Implement `apps/api/src/vaa_api/errors.py`**
+- [ ] **Step 8.3: Implement `apps/api/src/carve_api/errors.py`**
 
 ```python
 class AppError(Exception):
@@ -1173,12 +1173,12 @@ class AppError(Exception):
         self.message = message or self.code
 ```
 
-- [ ] **Step 8.4: Implement `apps/api/src/vaa_api/auth/schemas.py`**
+- [ ] **Step 8.4: Implement `apps/api/src/carve_api/auth/schemas.py`**
 
 ```python
 from pydantic import BaseModel, EmailStr, Field
 
-from vaa_api.auth.models import UserRole
+from carve_api.auth.models import UserRole
 
 
 class RegisterIn(BaseModel):
@@ -1211,15 +1211,15 @@ class RefreshIn(BaseModel):
     refresh_token: str
 ```
 
-- [ ] **Step 8.5: Implement `apps/api/src/vaa_api/auth/service.py`**
+- [ ] **Step 8.5: Implement `apps/api/src/carve_api/auth/service.py`**
 
 ```python
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from vaa_api.auth.models import User, UserRole
-from vaa_api.auth.passwords import hash_password, verify_password
-from vaa_api.errors import AppError
+from carve_api.auth.models import User, UserRole
+from carve_api.auth.passwords import hash_password, verify_password
+from carve_api.errors import AppError
 
 
 class EmailTaken(AppError):
@@ -1271,8 +1271,8 @@ Expected: 5 PASS
 - [ ] **Step 8.7: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/errors.py apps/api/src/vaa_api/auth/schemas.py
-git add apps/api/src/vaa_api/auth/service.py apps/api/tests/auth/test_service.py
+git add apps/api/src/carve_api/errors.py apps/api/src/carve_api/auth/schemas.py
+git add apps/api/src/carve_api/auth/service.py apps/api/tests/auth/test_service.py
 git commit -m "feat(api): AuthService.register + .authenticate; first user is admin"
 ```
 
@@ -1281,12 +1281,12 @@ git commit -m "feat(api): AuthService.register + .authenticate; first user is ad
 ## Task 9: Auth router + FastAPI deps
 
 **Files:**
-- Create: `apps/api/src/vaa_api/deps.py`
-- Create: `apps/api/src/vaa_api/auth/router.py`
+- Create: `apps/api/src/carve_api/deps.py`
+- Create: `apps/api/src/carve_api/auth/router.py`
 - Create: `apps/api/tests/auth/test_register.py`
 - Create: `apps/api/tests/auth/test_login.py`
 - Create: `apps/api/tests/auth/test_refresh.py`
-- Modify: `apps/api/src/vaa_api/main.py`
+- Modify: `apps/api/src/carve_api/main.py`
 
 - [ ] **Step 9.1: Failing tests**
 
@@ -1295,8 +1295,8 @@ git commit -m "feat(api): AuthService.register + .authenticate; first user is ad
 ```python
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -1324,7 +1324,7 @@ def test_register_returns_user(db_session) -> None:
 
 
 def test_register_short_password() -> None:
-    from vaa_api.main import create_app
+    from carve_api.main import create_app
     client = TestClient(create_app())
     r = client.post(
         "/auth/register", json={"email": "u2@example.com", "password": "short"}
@@ -1347,8 +1347,8 @@ def test_register_duplicate(db_session) -> None:
 ```python
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -1404,8 +1404,8 @@ def test_me_with_token(db_session) -> None:
 ```python
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -1450,7 +1450,7 @@ pytest tests/auth/test_register.py tests/auth/test_login.py tests/auth/test_refr
 
 Expected: import errors / fail
 
-- [ ] **Step 9.3: Implement `apps/api/src/vaa_api/deps.py`**
+- [ ] **Step 9.3: Implement `apps/api/src/carve_api/deps.py`**
 
 ```python
 from collections.abc import Iterator
@@ -1458,9 +1458,9 @@ from collections.abc import Iterator
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from vaa_api.auth.jwt import InvalidToken, decode_token
-from vaa_api.auth.models import User, UserRole
-from vaa_api.db import db_session
+from carve_api.auth.jwt import InvalidToken, decode_token
+from carve_api.auth.models import User, UserRole
+from carve_api.db import db_session
 
 
 def get_db() -> Iterator[Session]:
@@ -1505,23 +1505,23 @@ def require_role(*roles: UserRole):
     return _checker
 ```
 
-- [ ] **Step 9.4: Implement `apps/api/src/vaa_api/auth/router.py`**
+- [ ] **Step 9.4: Implement `apps/api/src/carve_api/auth/router.py`**
 
 ```python
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from vaa_api.auth.jwt import (
+from carve_api.auth.jwt import (
     InvalidToken,
     create_access_token,
     create_refresh_token,
     decode_token,
 )
-from vaa_api.auth.models import User
-from vaa_api.auth.schemas import LoginIn, RefreshIn, RegisterIn, TokenPair, UserOut
-from vaa_api.auth.service import AuthService, EmailTaken, InvalidCredentials
-from vaa_api.deps import get_current_user, get_db
-from vaa_api.errors import AppError
+from carve_api.auth.models import User
+from carve_api.auth.schemas import LoginIn, RefreshIn, RegisterIn, TokenPair, UserOut
+from carve_api.auth.service import AuthService, EmailTaken, InvalidCredentials
+from carve_api.deps import get_current_user, get_db
+from carve_api.errors import AppError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -1573,22 +1573,22 @@ def me(current: User = Depends(get_current_user)) -> UserOut:
     return UserOut.from_orm_user(current)
 ```
 
-- [ ] **Step 9.5: Update `apps/api/src/vaa_api/main.py`**
+- [ ] **Step 9.5: Update `apps/api/src/carve_api/main.py`**
 
 ```python
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from vaa_api.auth.router import router as auth_router
-from vaa_api.config import get_settings
-from vaa_api.errors import AppError
-from vaa_api.health import router as health_router
+from carve_api.auth.router import router as auth_router
+from carve_api.config import get_settings
+from carve_api.errors import AppError
+from carve_api.health import router as health_router
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="VisualAutoAnnotator API", version="0.1.0")
+    app = FastAPI(title="Carve API", version="0.1.0")
 
     if settings.cors_origin_list:
         app.add_middleware(
@@ -1629,8 +1629,8 @@ Expected: all green
 - [ ] **Step 9.7: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/main.py apps/api/src/vaa_api/deps.py
-git add apps/api/src/vaa_api/auth/router.py apps/api/tests/auth
+git add apps/api/src/carve_api/main.py apps/api/src/carve_api/deps.py
+git add apps/api/src/carve_api/auth/router.py apps/api/tests/auth
 git commit -m "feat(api): /auth/register, /auth/login, /auth/refresh, /auth/me with RBAC dep"
 ```
 
@@ -1639,7 +1639,7 @@ git commit -m "feat(api): /auth/register, /auth/login, /auth/refresh, /auth/me w
 ## Task 10: Role-protected endpoint demo
 
 **Files:**
-- Modify: `apps/api/src/vaa_api/main.py`
+- Modify: `apps/api/src/carve_api/main.py`
 - Create: `apps/api/tests/auth/test_roles.py`
 
 - [ ] **Step 10.1: Failing test `apps/api/tests/auth/test_roles.py`**
@@ -1647,9 +1647,9 @@ git commit -m "feat(api): /auth/register, /auth/login, /auth/refresh, /auth/me w
 ```python
 from fastapi.testclient import TestClient
 
-from vaa_api.auth.models import User
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.auth.models import User
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -1690,15 +1690,15 @@ def test_admin_only_rejects_member(db_session) -> None:
     assert r.status_code == 403
 ```
 
-- [ ] **Step 10.2: Add an admin-only endpoint inside `create_app` in `apps/api/src/vaa_api/main.py`**
+- [ ] **Step 10.2: Add an admin-only endpoint inside `create_app` in `apps/api/src/carve_api/main.py`**
 
 After the `app.include_router(auth_router)` line, add:
 
 ```python
     from fastapi import APIRouter, Depends
 
-    from vaa_api.auth.models import UserRole
-    from vaa_api.deps import require_role
+    from carve_api.auth.models import UserRole
+    from carve_api.deps import require_role
 
     admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -1720,7 +1720,7 @@ Expected: 2 PASS
 - [ ] **Step 10.4: Commit**
 
 ```bash
-git add apps/api/src/vaa_api/main.py apps/api/tests/auth/test_roles.py
+git add apps/api/src/carve_api/main.py apps/api/tests/auth/test_roles.py
 git commit -m "feat(api): role-gated endpoint demo and tests for require_role"
 ```
 
@@ -1759,13 +1759,13 @@ ENV PYTHONPATH=/app/src
 
 EXPOSE 8000
 
-CMD ["bash", "-c", "alembic upgrade head && uvicorn vaa_api.main:app --host 0.0.0.0 --port 8000"]
+CMD ["bash", "-c", "alembic upgrade head && uvicorn carve_api.main:app --host 0.0.0.0 --port 8000"]
 ```
 
 - [ ] **Step 11.2: Smoke build**
 
 ```bash
-docker build -t vaa-api:dev apps/api
+docker build -t carve-api:dev apps/api
 ```
 
 Expected: image builds.
@@ -1783,8 +1783,8 @@ git commit -m "build(api): Dockerfile with auto migration on container start"
 
 **Files:**
 - Create: `apps/model/pyproject.toml`
-- Create: `apps/model/src/vaa_model/__init__.py`
-- Create: `apps/model/src/vaa_model/main.py`
+- Create: `apps/model/src/carve_model/__init__.py`
+- Create: `apps/model/src/carve_model/main.py`
 - Create: `apps/model/tests/test_health.py`
 - Create: `apps/model/Dockerfile`
 
@@ -1792,7 +1792,7 @@ git commit -m "build(api): Dockerfile with auto migration on container start"
 
 ```toml
 [project]
-name = "vaa-model"
+name = "carve-model"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -1810,7 +1810,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vaa_model"]
+packages = ["src/carve_model"]
 ```
 
 - [ ] **Step 12.2: Failing test `apps/model/tests/test_health.py`**
@@ -1823,7 +1823,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fastapi.testclient import TestClient
 
-from vaa_model.main import create_app
+from carve_model.main import create_app
 
 
 def test_health() -> None:
@@ -1851,14 +1851,14 @@ pytest tests -v
 
 Expected: FAIL
 
-- [ ] **Step 12.4: Implement `apps/model/src/vaa_model/main.py`**
+- [ ] **Step 12.4: Implement `apps/model/src/carve_model/main.py`**
 
 ```python
 from fastapi import FastAPI
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="VisualAutoAnnotator Model Service", version="0.1.0")
+    app = FastAPI(title="Carve Model Service", version="0.1.0")
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -1875,7 +1875,7 @@ def create_app() -> FastAPI:
 app = create_app()
 ```
 
-`apps/model/src/vaa_model/__init__.py`:
+`apps/model/src/carve_model/__init__.py`:
 
 ```python
 __version__ = "0.1.0"
@@ -1901,7 +1901,7 @@ RUN pip install -e .
 COPY src ./src
 ENV PYTHONPATH=/app/src
 EXPOSE 8100
-CMD ["uvicorn", "vaa_model.main:app", "--host", "0.0.0.0", "--port", "8100"]
+CMD ["uvicorn", "carve_model.main:app", "--host", "0.0.0.0", "--port", "8100"]
 ```
 
 - [ ] **Step 12.7: Commit**
@@ -1929,7 +1929,7 @@ git commit -m "feat(model): stub FastAPI service with /health and /capabilities"
 
 ```json
 {
-  "name": "vaa-web",
+  "name": "carve-web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -2025,7 +2025,7 @@ export default defineConfig({
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>VisualAutoAnnotator</title>
+    <title>Carve</title>
   </head>
   <body>
     <div id="root"></div>
@@ -2060,7 +2060,7 @@ body {
 export default function App() {
   return (
     <main style={{ padding: 32 }}>
-      <h1>VisualAutoAnnotator</h1>
+      <h1>Carve</h1>
       <p>Foundation skeleton ready. Auth UI loads in Task 15.</p>
     </main>
   );
@@ -2598,7 +2598,7 @@ function Home() {
   const nav = useNavigate();
   return (
     <main style={{ padding: 32 }}>
-      <h1>VisualAutoAnnotator</h1>
+      <h1>Carve</h1>
       <p>
         Signed in as {user?.email} ({user?.role})
       </p>
@@ -2909,12 +2909,12 @@ services:
     volumes:
       - ./apps/api/src:/app/src
       - ./apps/api/alembic:/app/alembic
-    command: ["bash", "-c", "alembic upgrade head && uvicorn vaa_api.main:app --host 0.0.0.0 --port 8000 --reload"]
+    command: ["bash", "-c", "alembic upgrade head && uvicorn carve_api.main:app --host 0.0.0.0 --port 8000 --reload"]
   model:
     ports: ["8100:8100"]
     volumes:
       - ./apps/model/src:/app/src
-    command: ["uvicorn", "vaa_model.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
+    command: ["uvicorn", "carve_model.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
   web:
     ports: ["5173:80"]
 ```
@@ -2970,7 +2970,7 @@ git commit -m "infra: docker-compose stack — postgres, redis, minio, api, mode
 - [ ] **Step 18.1: `README.md`**
 
 ````markdown
-# VisualAutoAnnotator
+# Carve
 
 On-prem, web-based annotation editor for computer-vision datasets — detection, segmentation, classification — with auto-annotation (custom YOLO weights), interactive smart annotation (SAM 2/3), and video object tracking.
 
@@ -2982,7 +2982,7 @@ Requirements: Docker 26+, Docker Compose v2, ~12 GB free disk for images. An NVI
 
 ```bash
 git clone <this repo>
-cd VisualAutoAnnotator
+cd Carve
 cp .env.example .env
 sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
 sed -i "s|^PASSWORD_PEPPER=.*|PASSWORD_PEPPER=$(openssl rand -hex 16)|" .env
@@ -3016,12 +3016,12 @@ The first registered user becomes the admin.
 cd apps/api && python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 alembic upgrade head
-uvicorn vaa_api.main:app --reload --port 8000
+uvicorn carve_api.main:app --reload --port 8000
 
 # Model
 cd apps/model && python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-uvicorn vaa_model.main:app --reload --port 8100
+uvicorn carve_model.main:app --reload --port 8100
 
 # Web
 cd apps/web && npm install && npm run dev

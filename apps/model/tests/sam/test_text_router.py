@@ -13,8 +13,8 @@ import io
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from vaa_model.main import create_app
-from vaa_model.sam import predictor as predictor_mod
+from carve_model.main import create_app
+from carve_model.sam import predictor as predictor_mod
 
 
 def _png_b64(w: int = 16, h: int = 16) -> str:

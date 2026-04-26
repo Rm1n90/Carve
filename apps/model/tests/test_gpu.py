@@ -3,7 +3,7 @@
 These tests must run on a CPU-only dev box (where ``torch`` may not even be
 installed). They assert the fallback contract.
 """
-from vaa_model.gpu import DeviceName, get_device, has_cuda, vram_free_mb
+from carve_model.gpu import DeviceName, get_device, has_cuda, vram_free_mb
 
 
 def test_get_device_returns_cpu_or_cuda() -> None:

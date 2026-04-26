@@ -2,7 +2,7 @@
 ``tracker._default_factory``.
 
 The actual SAM 3 model is not loaded; we monkeypatch the
-``vaa_model.sam.sam3_adapter.build_sam3_image_predictor``,
+``carve_model.sam.sam3_adapter.build_sam3_image_predictor``,
 ``make_sam3_text_predictor``, and ``build_sam3_video_tracker`` symbols to
 verify the factories route to them when ``SAM_MODEL=sam3`` is selected,
 and stay out of the way otherwise.
@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from vaa_model.sam import predictor as p_mod
-from vaa_model.sam import tracker as t_mod
+from carve_model.sam import predictor as p_mod
+from carve_model.sam import tracker as t_mod
 
 
 @pytest.fixture(autouse=True)
@@ -52,11 +52,11 @@ def test_predictor_factory_uses_sam3_adapter_when_sam3_selected(monkeypatch):
         return lambda *, image_b64, text: []
 
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.build_sam3_image_predictor",
+        "carve_model.sam.sam3_adapter.build_sam3_image_predictor",
         _fake_build,
     )
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.make_sam3_text_predictor",
+        "carve_model.sam.sam3_adapter.make_sam3_text_predictor",
         _fake_text_factory,
     )
 
@@ -88,11 +88,11 @@ def test_predictor_factory_skips_text_predictor_if_already_set(monkeypatch):
         return lambda *, image_b64, text: []
 
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.build_sam3_image_predictor",
+        "carve_model.sam.sam3_adapter.build_sam3_image_predictor",
         _fake_build,
     )
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.make_sam3_text_predictor",
+        "carve_model.sam.sam3_adapter.make_sam3_text_predictor",
         _fake_text_factory,
     )
 
@@ -116,7 +116,7 @@ def test_tracker_factory_uses_sam3_adapter_when_sam3_selected(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.build_sam3_video_tracker",
+        "carve_model.sam.sam3_adapter.build_sam3_video_tracker",
         _fake_build,
     )
 
@@ -159,7 +159,7 @@ def test_predictor_factory_uses_sam2_path_for_default(monkeypatch):
         raise AssertionError("sam2 default path must not call the SAM 3 builder")
 
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.build_sam3_image_predictor",
+        "carve_model.sam.sam3_adapter.build_sam3_image_predictor",
         _explode,
     )
 
@@ -198,7 +198,7 @@ def test_tracker_factory_uses_sam2_path_for_default(monkeypatch):
         raise AssertionError("sam2 default path must not call the SAM 3 builder")
 
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.build_sam3_video_tracker",
+        "carve_model.sam.sam3_adapter.build_sam3_video_tracker",
         _explode,
     )
 
@@ -218,11 +218,11 @@ def test_predictor_factory_with_legacy_sam_variant_sam3(monkeypatch):
         return SimpleNamespace(set_image=lambda img: None, predict=lambda **kw: ([], [], None))
 
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.build_sam3_image_predictor",
+        "carve_model.sam.sam3_adapter.build_sam3_image_predictor",
         _fake_build,
     )
     monkeypatch.setattr(
-        "vaa_model.sam.sam3_adapter.make_sam3_text_predictor",
+        "carve_model.sam.sam3_adapter.make_sam3_text_predictor",
         lambda: (lambda *, image_b64, text: []),
     )
 

@@ -6,8 +6,8 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 # --- Helpers (mirror test_stats.py to keep this file standalone) -----------
@@ -57,7 +57,7 @@ def _make_class(client, token: str, pid: str, idx: int = 0, name: str = "obj") -
 
 
 def _seed_frame(db_session, task_id: str) -> uuid.UUID:
-    from vaa_api.assets.models import Asset, AssetKind, Frame
+    from carve_api.assets.models import Asset, AssetKind, Frame
 
     asset = Asset(
         task_id=uuid.UUID(task_id),
@@ -85,7 +85,7 @@ def _seed_geom(
     kind: str,
     geometry: dict,
 ) -> None:
-    from vaa_api.annotations.models import Annotation, AnnotationKind
+    from carve_api.annotations.models import Annotation, AnnotationKind
 
     a = Annotation(
         task_id=uuid.UUID(task_id),

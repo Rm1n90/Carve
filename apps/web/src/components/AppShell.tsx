@@ -18,7 +18,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         }}
       >
         <Link to="/" style={{ fontWeight: 700, textDecoration: "none", color: "inherit" }}>
-          VisualAutoAnnotator
+          Carve
         </Link>
         <nav style={{ display: "flex", gap: 16, alignItems: "center" }}>
           <Link to="/projects">Projects</Link>

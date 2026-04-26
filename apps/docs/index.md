@@ -2,7 +2,7 @@
 layout: home
 
 hero:
-  name: "VisualAutoAnnotator"
+  name: "Carve"
   tagline: "On-prem annotation editor for computer-vision datasets — detection, segmentation, classification — with YOLO + SAM 2 auto-annotation and video tracking."
   actions:
     - theme: brand

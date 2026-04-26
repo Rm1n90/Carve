@@ -2,8 +2,8 @@ import io
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -19,7 +19,7 @@ def _hdr(t): return {"Authorization": f"Bearer {t}"}
 
 
 def _setup(client, monkeypatch):
-    from vaa_api.weights import service as svc_mod
+    from carve_api.weights import service as svc_mod
 
     class _FakeStorage:
         @classmethod

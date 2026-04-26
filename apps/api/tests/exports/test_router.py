@@ -2,8 +2,8 @@ import io
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -35,8 +35,8 @@ class _FakeStorage:
 
 
 def _setup(client, monkeypatch):
-    from vaa_api.assets import service as assets_svc
-    from vaa_api.exports import router as router_mod
+    from carve_api.assets import service as assets_svc
+    from carve_api.exports import router as router_mod
     monkeypatch.setattr(assets_svc, "MinioClient", _FakeStorage)
     monkeypatch.setattr(router_mod, "MinioClient", _FakeStorage)
 
@@ -87,8 +87,8 @@ def test_export_unknown_id_returns_404(db_session, monkeypatch) -> None:
 
 def test_unknown_task_returns_404(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    from vaa_api.assets import service as assets_svc
-    from vaa_api.exports import router as router_mod
+    from carve_api.assets import service as assets_svc
+    from carve_api.exports import router as router_mod
     monkeypatch.setattr(assets_svc, "MinioClient", _FakeStorage)
     monkeypatch.setattr(router_mod, "MinioClient", _FakeStorage)
     client.post("/auth/register", json={"email": "u@x.com", "password": "hunter22"})

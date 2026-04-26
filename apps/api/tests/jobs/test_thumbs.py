@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 from PIL import Image
 
-from vaa_api.jobs import thumbs as thumbs_mod
+from carve_api.jobs import thumbs as thumbs_mod
 
 
 def _png_bytes(w: int = 1024, h: int = 768) -> bytes:

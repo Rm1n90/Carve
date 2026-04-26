@@ -1,8 +1,8 @@
 from fastapi.testclient import TestClient
 
-from vaa_api.auth.models import User
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.auth.models import User
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:

@@ -3,8 +3,8 @@ import zipfile
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session):
@@ -46,7 +46,7 @@ def _build_zip(images: list[tuple[str, bytes]]) -> bytes:
 
 
 def test_zip_upload_extracts_three_pngs(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
 
     class _FakeStorage:
         @classmethod
@@ -76,7 +76,7 @@ def test_zip_upload_extracts_three_pngs(db_session, monkeypatch) -> None:
 
 
 def test_zip_upload_skips_non_image_members(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
 
     class _FakeStorage:
         @classmethod

@@ -2,7 +2,7 @@
   email {$LETSENCRYPT_EMAIL:admin@localhost}
 }
 
-{$VAA_DOMAIN:localhost} {
+{$CARVE_DOMAIN:localhost} {
   encode zstd gzip
 
   header {

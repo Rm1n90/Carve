@@ -12,11 +12,11 @@ services:
     volumes:
       - ./apps/api/src:/app/src
       - ./apps/api/alembic:/app/alembic
-    command: ["bash", "-c", "alembic upgrade head && uvicorn vaa_api.main:app --host 0.0.0.0 --port 8000 --reload"]
+    command: ["bash", "-c", "alembic upgrade head && uvicorn carve_api.main:app --host 0.0.0.0 --port 8000 --reload"]
   model:
     ports: ["8100:8100"]
     volumes:
       - ./apps/model/src:/app/src
-    command: ["uvicorn", "vaa_model.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
+    command: ["uvicorn", "carve_model.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
   web:
     ports: ["5173:80"]

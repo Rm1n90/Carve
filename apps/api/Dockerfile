@@ -23,4 +23,4 @@ ENV PYTHONPATH=/app/src
 
 EXPOSE 8000
 
-CMD ["bash", "-c", "alembic upgrade head && uvicorn vaa_api.main:app --host 0.0.0.0 --port 8000"]
+CMD ["bash", "-c", "alembic upgrade head && uvicorn carve_api.main:app --host 0.0.0.0 --port 8000"]

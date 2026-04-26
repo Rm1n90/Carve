@@ -1,6 +1,6 @@
 import pytest
 
-from vaa_api.config import Settings, get_settings
+from carve_api.config import Settings, get_settings
 
 
 def _base_env(monkeypatch: pytest.MonkeyPatch) -> None:

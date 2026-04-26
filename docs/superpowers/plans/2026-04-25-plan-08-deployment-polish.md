@@ -5,7 +5,7 @@
 **Goal:** Tighten the production posture — Caddy TLS, rate limits, CSP, first-run wizard, backup script, in-browser WebGPU SAM decoder, SAM 3 admin toggle, and a docs site. Final v1 plan.
 
 **Architecture:**
-- Caddy auto-https with `LETSENCRYPT_EMAIL` and `VAA_DOMAIN` env vars; falls back to local cert when domain is `localhost`.
+- Caddy auto-https with `LETSENCRYPT_EMAIL` and `CARVE_DOMAIN` env vars; falls back to local cert when domain is `localhost`.
 - Rate limit middleware (`slowapi`) on auth + heavy upload endpoints.
 - Security headers (HSTS, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, CSP) emitted by Caddy.
 - First-run wizard: when no users exist, the SPA shows an admin bootstrap page; afterward, public registration is disabled.
@@ -33,7 +33,7 @@
   email {$LETSENCRYPT_EMAIL:admin@localhost}
 }
 
-{$VAA_DOMAIN:localhost} {
+{$CARVE_DOMAIN:localhost} {
   encode zstd gzip
 
   header {
@@ -76,12 +76,12 @@
 
 **Step 1.2 — `.env.example`** add at the bottom:
 ```
-VAA_DOMAIN=localhost
+CARVE_DOMAIN=localhost
 LETSENCRYPT_EMAIL=
 SAM_VARIANT=sam2
 ```
 
-**Step 1.3 — Smoke** start with `VAA_DOMAIN=test.local` (after editing `/etc/hosts` to point `test.local` at the host). `curl -k https://test.local/api/health` returns `{"status":"ok"}`.
+**Step 1.3 — Smoke** start with `CARVE_DOMAIN=test.local` (after editing `/etc/hosts` to point `test.local` at the host). `curl -k https://test.local/api/health` returns `{"status":"ok"}`.
 
 **Step 1.4 — Commit:** `infra: Caddy TLS + HSTS/CSP/Permissions-Policy headers`
 
@@ -89,7 +89,7 @@ SAM_VARIANT=sam2
 
 ## Task 2: Migrate `python-jose` → `PyJWT`
 
-**Files:** modify `apps/api/pyproject.toml`; rewrite `apps/api/src/vaa_api/auth/jwt.py`.
+**Files:** modify `apps/api/pyproject.toml`; rewrite `apps/api/src/carve_api/auth/jwt.py`.
 
 **Step 2.1 — Replace dep:** remove `python-jose[cryptography]==3.3.0`; add `PyJWT==2.9.0`.
 
@@ -101,7 +101,7 @@ from typing import Literal
 
 import jwt as pyjwt
 
-from vaa_api.config import get_settings
+from carve_api.config import get_settings
 
 ALGORITHM = "HS256"
 TokenType = Literal["access", "refresh"]
@@ -155,7 +155,7 @@ def decode_token(token: str, *, expected_type: TokenType) -> dict:
 
 ## Task 3: Rate limiting (slowapi)
 
-**Files:** add `slowapi==0.1.9` to `apps/api/pyproject.toml`; new `apps/api/src/vaa_api/ratelimit.py`; modify `main.py` and decorate endpoints.
+**Files:** add `slowapi==0.1.9` to `apps/api/pyproject.toml`; new `apps/api/src/carve_api/ratelimit.py`; modify `main.py` and decorate endpoints.
 
 **Step 3.1 — `ratelimit.py`:**
 
@@ -172,7 +172,7 @@ limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from vaa_api.ratelimit import limiter
+from carve_api.ratelimit import limiter
 
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
@@ -210,7 +210,7 @@ Apply also: `30/minute` on `/projects/{pid}/weights` (uploads), `100/minute` on 
 
 ## Task 4: First-run wizard + admin user creation
 
-**Files:** modify `apps/api/src/vaa_api/auth/router.py` and `service.py`; web `apps/web/src/pages/FirstRunWizard.tsx`; modify `routes/_root.tsx`.
+**Files:** modify `apps/api/src/carve_api/auth/router.py` and `service.py`; web `apps/web/src/pages/FirstRunWizard.tsx`; modify `routes/_root.tsx`.
 
 **Step 4.1 — API:**
 
@@ -233,8 +233,8 @@ def register(
     bootstrapped = db.execute(select(User).limit(1)).scalar_one_or_none() is not None
     if bootstrapped:
         # Require admin auth from this point on
-        from vaa_api.deps import _bearer_token
-        from vaa_api.auth.jwt import decode_token, InvalidToken
+        from carve_api.deps import _bearer_token
+        from carve_api.auth.jwt import decode_token, InvalidToken
         try:
             tok = _bearer_token(authorization)
             claims = decode_token(tok, expected_type="access")
@@ -280,7 +280,7 @@ def register(
 
 ## Task 6: SAM 3 admin toggle + text-prompt UI
 
-**Files:** modify `apps/model/Dockerfile` (optional sam3 install via build arg); `apps/model/src/vaa_model/sam/model.py`; new `text-prompt` endpoint; web `pages/DescribeAndSegmentModal.tsx`.
+**Files:** modify `apps/model/Dockerfile` (optional sam3 install via build arg); `apps/model/src/carve_model/sam/model.py`; new `text-prompt` endpoint; web `pages/DescribeAndSegmentModal.tsx`.
 
 **Step 6.1 — Backend toggle:** env `SAM_VARIANT=sam2|sam3` (default `sam2`). When `sam3`, `_ensure()` loads `facebook/sam3` (gated HF repo; admin must accept license and provide HF token). Loading evicts the YOLO LRU.
 
@@ -312,7 +312,7 @@ docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
   | gzip > "$OUT/pg-$TS.sql.gz"
 
 echo "==> minio mirror"
-docker run --rm --network vaa_default \
+docker run --rm --network carve_default \
   -e MC_HOST_local="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
   -v "$OUT:/out" \
   minio/mc:latest \
@@ -373,7 +373,7 @@ EXPOSE 80
 ## Task 9: Tag v1.0.0
 
 ```bash
-git tag -a v1.0.0 -m "VisualAutoAnnotator v1.0.0 — full MVP feature set"
+git tag -a v1.0.0 -m "Carve v1.0.0 — full MVP feature set"
 ```
 
 ---

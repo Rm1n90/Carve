@@ -28,14 +28,14 @@
 
 ## Task 1: Asset & Frame ORM models + migration 0003
 
-**Files:** `apps/api/src/vaa_api/assets/{__init__,models}.py`; `apps/api/alembic/versions/0003_assets_frames.py`; `apps/api/tests/assets/{__init__,test_models}.py`; modify `alembic/env.py` and `pyproject.toml`.
+**Files:** `apps/api/src/carve_api/assets/{__init__,models}.py`; `apps/api/alembic/versions/0003_assets_frames.py`; `apps/api/tests/assets/{__init__,test_models}.py`; modify `alembic/env.py` and `pyproject.toml`.
 
 **Step 1.1 — Failing test** `tests/assets/test_models.py`:
 
 ```python
-from vaa_api.assets.models import Asset, AssetKind, Frame
-from vaa_api.auth.models import User, UserRole
-from vaa_api.projects.models import Project, Task, TaskKind
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.auth.models import User, UserRole
+from carve_api.projects.models import Project, Task, TaskKind
 
 
 def _setup(db):
@@ -70,7 +70,7 @@ def test_create_video_asset_with_frames(db_session) -> None:
     assert f.id is not None
 ```
 
-**Step 1.2 — Implement** `apps/api/src/vaa_api/assets/models.py`:
+**Step 1.2 — Implement** `apps/api/src/carve_api/assets/models.py`:
 
 ```python
 import enum
@@ -83,7 +83,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from vaa_api.db import Base
+from carve_api.db import Base
 
 
 class AssetKind(str, enum.Enum):
@@ -128,7 +128,7 @@ class Frame(Base):
 
 **Step 1.3 — Migration** `0003_assets_frames.py`: revision `0003`, down_revision `0002`. Creates `asset_kind` ENUM, `assets` table (with all columns above), `frames` table, indexes on `task_id`/`asset_id`, and the two unique constraints. Use the same pattern as 0001 and 0002. Downgrade drops everything in reverse.
 
-**Step 1.4 — Update** `alembic/env.py`: add `import vaa_api.assets.models  # noqa: F401, E402`.
+**Step 1.4 — Update** `alembic/env.py`: add `import carve_api.assets.models  # noqa: F401, E402`.
 
 **Step 1.5 — Add deps** to `apps/api/pyproject.toml [project].dependencies`:
 ```
@@ -146,7 +146,7 @@ Re-run `pip install -e ".[dev]"`.
 
 ## Task 2: Storage layer — MinioClient + xxh3 hashing
 
-**Files:** `apps/api/src/vaa_api/storage/{__init__,client,hashing}.py`; `apps/api/tests/storage/{__init__,test_storage}.py`; modify `config.py` (add MinIO settings) and `tests/conftest.py` (add MinIO env defaults).
+**Files:** `apps/api/src/carve_api/storage/{__init__,client,hashing}.py`; `apps/api/tests/storage/{__init__,test_storage}.py`; modify `config.py` (add MinIO settings) and `tests/conftest.py` (add MinIO env defaults).
 
 **Step 2.1 — Add to `Settings`:**
 
@@ -192,7 +192,7 @@ import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
-from vaa_api.config import get_settings
+from carve_api.config import get_settings
 
 
 class MinioClient:
@@ -251,7 +251,7 @@ class MinioClient:
 
 ## Task 3: AssetService + upload/list endpoints
 
-**Files:** `apps/api/src/vaa_api/assets/{schemas,service,router}.py`; `apps/api/tests/assets/{test_service,test_router}.py`; modify `main.py`.
+**Files:** `apps/api/src/carve_api/assets/{schemas,service,router}.py`; `apps/api/tests/assets/{test_service,test_router}.py`; modify `main.py`.
 
 **Step 3.1 — Failing test** `tests/assets/test_router.py`:
 
@@ -260,8 +260,8 @@ import io
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session):
@@ -285,7 +285,7 @@ def _setup(client):
 
 
 def test_upload_image_creates_asset(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
 
     client = _client(db_session)
@@ -302,7 +302,7 @@ def test_upload_image_creates_asset(db_session, monkeypatch) -> None:
 
 
 def test_list_assets_for_task(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
     client = _client(db_session)
     token, pid, tid = _setup(client)
@@ -317,7 +317,7 @@ def test_list_assets_for_task(db_session, monkeypatch) -> None:
 
 
 def test_duplicate_asset_returns_409(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
     client = _client(db_session)
     token, pid, tid = _setup(client)
@@ -336,7 +336,7 @@ def test_duplicate_asset_returns_409(db_session, monkeypatch) -> None:
 
 
 def test_mime_mismatch_returns_400(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
     client = _client(db_session)
     token, pid, tid = _setup(client)  # image task
@@ -369,7 +369,7 @@ class _FakeStorage:
 ```python
 from datetime import datetime
 from pydantic import BaseModel
-from vaa_api.assets.models import AssetKind
+from carve_api.assets.models import AssetKind
 
 
 class AssetOut(BaseModel):
@@ -404,11 +404,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from vaa_api.assets.models import Asset, AssetKind, Frame
-from vaa_api.errors import AppError
-from vaa_api.projects.models import Task, TaskKind
-from vaa_api.storage.client import MinioClient
-from vaa_api.storage.hashing import stream_xxh3_128
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.errors import AppError
+from carve_api.projects.models import Task, TaskKind
+from carve_api.storage.client import MinioClient
+from carve_api.storage.hashing import stream_xxh3_128
 
 _IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp"}
 _VIDEO_MIMES = {"video/mp4", "video/webm", "video/quicktime"}
@@ -507,13 +507,13 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from vaa_api.assets.schemas import AssetOut
-from vaa_api.assets.service import AssetService
-from vaa_api.auth.models import User
-from vaa_api.deps import get_current_user, get_db
-from vaa_api.errors import AppError
-from vaa_api.projects.models import Task as TaskModel
-from vaa_api.projects.service import ProjectService, TaskService
+from carve_api.assets.schemas import AssetOut
+from carve_api.assets.service import AssetService
+from carve_api.auth.models import User
+from carve_api.deps import get_current_user, get_db
+from carve_api.errors import AppError
+from carve_api.projects.models import Task as TaskModel
+from carve_api.projects.service import ProjectService, TaskService
 
 router = APIRouter(prefix="/tasks", tags=["assets"])
 asset_router = APIRouter(prefix="/assets", tags=["assets"])  # /assets/{id} endpoints
@@ -564,7 +564,7 @@ def list_assets(
 
 **Step 3.5 — Mount in `main.py`:**
 ```python
-from vaa_api.assets.router import asset_router, router as task_assets_router
+from carve_api.assets.router import asset_router, router as task_assets_router
 app.include_router(task_assets_router)
 app.include_router(asset_router)
 ```
@@ -637,7 +637,7 @@ def get_asset(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    from vaa_api.assets.models import Asset
+    from carve_api.assets.models import Asset
     a = db.get(Asset, asset_id)
     if a is None: raise HTTPException(404, "asset_not_found")
     task = _require_visible_task(db, user, a.task_id)
@@ -655,12 +655,12 @@ def delete_asset(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
-    from vaa_api.assets.models import Asset
+    from carve_api.assets.models import Asset
     a = db.get(Asset, asset_id)
     if a is None: raise HTTPException(404, "asset_not_found")
     task = _require_visible_task(db, user, a.task_id)
     project = ProjectService(db).get(actor=user, project_id=task.project_id)
-    from vaa_api.projects.service import _can_modify, NotProjectOwner
+    from carve_api.projects.service import _can_modify, NotProjectOwner
     if not _can_modify(user, project):
         raise _http(NotProjectOwner("only owner or admin can delete an asset"))
     AssetService(db).delete(asset=a)
@@ -673,7 +673,7 @@ def delete_asset(
 
 ## Task 6: RQ worker — thumbnail + video probe
 
-**Files:** `apps/api/src/vaa_api/jobs/{__init__,queue,thumbs}.py`; modify `docker-compose.yml`/override.
+**Files:** `apps/api/src/carve_api/jobs/{__init__,queue,thumbs}.py`; modify `docker-compose.yml`/override.
 
 **Step 6.1 — `jobs/queue.py`:**
 
@@ -681,7 +681,7 @@ def delete_asset(
 from redis import Redis
 from rq import Queue
 
-from vaa_api.config import get_settings
+from carve_api.config import get_settings
 
 
 def get_queue() -> Queue:
@@ -698,9 +698,9 @@ import ffmpeg
 from PIL import Image
 from sqlalchemy import update
 
-from vaa_api.assets.models import Asset
-from vaa_api.db import get_session_factory
-from vaa_api.storage.client import MinioClient
+from carve_api.assets.models import Asset
+from carve_api.db import get_session_factory
+from carve_api.storage.client import MinioClient
 
 
 def generate_image_thumbnail(asset_hash: str, ext: str, max_side: int = 320) -> None:
@@ -739,8 +739,8 @@ def probe_video_metadata(asset_id: str, asset_hash: str, ext: str) -> None:
 
 **Step 6.3 — Enqueue from `AssetService.upload`** (after the row is committed):
 ```python
-from vaa_api.jobs.queue import get_queue
-from vaa_api.jobs.thumbs import generate_image_thumbnail, probe_video_metadata
+from carve_api.jobs.queue import get_queue
+from carve_api.jobs.thumbs import generate_image_thumbnail, probe_video_metadata
 
 if kind == AssetKind.image:
     get_queue().enqueue(generate_image_thumbnail, h, ext)

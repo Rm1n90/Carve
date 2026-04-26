@@ -1,4 +1,4 @@
-name: vaa
+name: carve
 services:
   postgres:
     image: postgres:16-alpine

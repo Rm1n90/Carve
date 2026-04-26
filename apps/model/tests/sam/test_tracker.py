@@ -1,7 +1,7 @@
 """Unit tests for the in-memory tracker session store."""
 import numpy as np
 
-from vaa_model.sam import tracker as tracker_mod
+from carve_model.sam import tracker as tracker_mod
 
 
 class _FakeTracker:

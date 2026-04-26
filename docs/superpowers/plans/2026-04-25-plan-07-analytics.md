@@ -22,7 +22,7 @@
 
 ## Task 1: Class frequency + annotation density + task progress
 
-**Files:** `apps/api/src/vaa_api/stats/{__init__,sql,service,router}.py`; tests `apps/api/tests/stats/test_stats.py`; modify `main.py`.
+**Files:** `apps/api/src/carve_api/stats/{__init__,sql,service,router}.py`; tests `apps/api/tests/stats/test_stats.py`; modify `main.py`.
 
 **Step 1.1 — `sql.py`:**
 
@@ -70,7 +70,7 @@ SELECT
 import uuid
 from sqlalchemy.orm import Session
 
-from vaa_api.stats.sql import (
+from carve_api.stats.sql import (
     ANNOTATION_DENSITY_SQL, CLASS_FREQUENCY_SQL, TASK_PROGRESS_SQL,
 )
 
@@ -142,7 +142,7 @@ For each `bbox`, compute `w/h`; bucket into `<0.33, 0.33-0.67, 0.67-1.5, 1.5-3, 
 
 ## Task 3: Spatial heatmap
 
-**Files:** `apps/api/src/vaa_api/stats/heatmap.py`; modify `stats/router.py`; tests.
+**Files:** `apps/api/src/carve_api/stats/heatmap.py`; modify `stats/router.py`; tests.
 
 **Step 3.1 — Service:**
 

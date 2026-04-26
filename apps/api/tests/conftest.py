@@ -14,6 +14,10 @@ sys.path.insert(0, str(ROOT / "src"))
 def _set_test_env() -> None:
     os.environ.setdefault("JWT_SECRET", "j" * 64)
     os.environ.setdefault("PASSWORD_PEPPER", "p" * 32)
+    # Test infrastructure references a locally-provisioned Postgres role/DB
+    # (and MinIO bucket). These are persistent external identifiers, not
+    # internal package names — leave as-is across the Carve rename so existing
+    # local test setups keep working. The .env.example defaults use `carve`.
     os.environ.setdefault("POSTGRES_USER", "vaa")
     os.environ.setdefault("POSTGRES_PASSWORD", "vaa")
     os.environ.setdefault("POSTGRES_HOST", "localhost")
@@ -39,12 +43,12 @@ def _env() -> None:
 @pytest.fixture(scope="session")
 def engine():
     _set_test_env()
-    from vaa_api.db import Base
-    import vaa_api.auth.models  # noqa: F401
-    import vaa_api.assets.models  # noqa: F401
-    import vaa_api.annotations.models  # noqa: F401
-    import vaa_api.weights.models  # noqa: F401
-    import vaa_api.exports.models  # noqa: F401
+    from carve_api.db import Base
+    import carve_api.auth.models  # noqa: F401
+    import carve_api.assets.models  # noqa: F401
+    import carve_api.annotations.models  # noqa: F401
+    import carve_api.weights.models  # noqa: F401
+    import carve_api.exports.models  # noqa: F401
 
     url = (
         f"postgresql+psycopg://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}"
@@ -62,7 +66,7 @@ def _reset_limiter() -> Generator[None, None, None]:
     # The slowapi Limiter is a module-level singleton with in-memory storage that
     # persists across tests; reset it so existing tests aren't accidentally throttled
     # and rate-limit tests start from a clean state.
-    from vaa_api.ratelimit import limiter
+    from carve_api.ratelimit import limiter
 
     limiter.reset()
     yield

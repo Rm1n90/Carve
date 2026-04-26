@@ -1,7 +1,7 @@
 import pytest
 
-from vaa_api.auth.passwords import hash_password, verify_password
-from vaa_api.config import get_settings
+from carve_api.auth.passwords import hash_password, verify_password
+from carve_api.config import get_settings
 
 
 @pytest.fixture(autouse=True)

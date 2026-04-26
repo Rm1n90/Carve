@@ -1,6 +1,6 @@
 """Tests for the SAM model variant resolver.
 
-The resolver lives in ``vaa_model.sam.predictor`` and is the single source
+The resolver lives in ``carve_model.sam.predictor`` and is the single source
 of truth for which SAM checkpoint the image predictor should load. It
 reads ``SAM_MODEL`` first and falls back to the legacy Plan 08
 ``SAM_VARIANT`` env var so existing operator setups keep working.
@@ -8,7 +8,7 @@ reads ``SAM_MODEL`` first and falls back to the legacy Plan 08
 
 import pytest
 
-from vaa_model.sam import predictor as p_mod
+from carve_model.sam import predictor as p_mod
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +43,7 @@ def test_sam3_flips_variant(monkeypatch):
 def test_unknown_falls_back_to_default(monkeypatch, caplog):
     import logging
     monkeypatch.setenv("SAM_MODEL", "totally-not-a-model")
-    with caplog.at_level(logging.WARNING, logger="vaa_model.sam.predictor"):
+    with caplog.at_level(logging.WARNING, logger="carve_model.sam.predictor"):
         assert p_mod.get_sam_model() == "sam2.1-large"
     assert any("totally-not-a-model" in r.message for r in caplog.records)
 

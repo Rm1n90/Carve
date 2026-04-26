@@ -2,8 +2,8 @@ import io
 import json
 import zipfile
 
-from vaa_api.annotations.models import AnnotationKind
-from vaa_api.io.yolo_in import (
+from carve_api.annotations.models import AnnotationKind
+from carve_api.io.yolo_in import (
     AnnotationDraft, ParsedArchive,
     _parse_yaml_names, parse_yolo_archive,
 )
@@ -105,7 +105,7 @@ def test_oversized_member_rejected(monkeypatch) -> None:
     """Per-member zip-bomb guard: a single .txt larger than the cap raises."""
     import pytest
 
-    from vaa_api.io import yolo_in
+    from carve_api.io import yolo_in
 
     monkeypatch.setattr(yolo_in, "_MAX_MEMBER_BYTES", 100)
     yaml_text = 'names: ["car"]\n'
@@ -119,7 +119,7 @@ def test_total_uncompressed_cap(monkeypatch) -> None:
     """Total uncompressed bytes exceeding the global cap raises."""
     import pytest
 
-    from vaa_api.io import yolo_in
+    from carve_api.io import yolo_in
 
     monkeypatch.setattr(yolo_in, "_MAX_TOTAL_UNCOMPRESSED", 200)
     yaml_text = 'names: ["car"]\n'

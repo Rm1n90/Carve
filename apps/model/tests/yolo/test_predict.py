@@ -8,7 +8,7 @@ import io
 import numpy as np
 from PIL import Image
 
-from vaa_model.yolo.predict import predict_image
+from carve_model.yolo.predict import predict_image
 
 
 class _FakeBoxes:

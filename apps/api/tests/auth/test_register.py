@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session) -> TestClient:
@@ -29,7 +29,7 @@ def test_register_returns_user(db_session) -> None:
 
 
 def test_register_short_password() -> None:
-    from vaa_api.main import create_app
+    from carve_api.main import create_app
     client = TestClient(create_app())
     r = client.post(
         "/auth/register", json={"email": "u2@example.com", "password": "short"}

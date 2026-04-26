@@ -4,12 +4,12 @@ import json
 import uuid
 import zipfile
 
-from vaa_api.annotations.models import Annotation, AnnotationKind
-from vaa_api.assets.models import Asset, AssetKind, Frame
-from vaa_api.auth.models import User, UserRole
-from vaa_api.exports.job import ExportJobPayload, run_export_inline
-from vaa_api.exports.models import Export
-from vaa_api.projects.models import Class, Project, Task, TaskKind
+from carve_api.annotations.models import Annotation, AnnotationKind
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.auth.models import User, UserRole
+from carve_api.exports.job import ExportJobPayload, run_export_inline
+from carve_api.exports.models import Export
+from carve_api.projects.models import Class, Project, Task, TaskKind
 
 
 class _FakeStorage:
@@ -246,7 +246,7 @@ def test_unknown_format_marks_failed(db_session) -> None:
 
 def test_archive_build_exception_returns_static_code(db_session, monkeypatch) -> None:
     """If the archive builder raises, the persisted Export.error must NOT leak details."""
-    from vaa_api.exports import job as export_job
+    from carve_api.exports import job as export_job
 
     u, t, _, car, e = _seed(db_session)
     storage = _FakeStorage()

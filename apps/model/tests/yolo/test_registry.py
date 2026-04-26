@@ -1,6 +1,6 @@
 import pytest
 
-from vaa_model.yolo.registry import WeightRegistry
+from carve_model.yolo.registry import WeightRegistry
 
 
 def test_load_and_get(tmp_path) -> None:

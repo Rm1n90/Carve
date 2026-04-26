@@ -2,8 +2,8 @@ import io
 
 from fastapi.testclient import TestClient
 
-from vaa_api.deps import get_db
-from vaa_api.main import create_app
+from carve_api.deps import get_db
+from carve_api.main import create_app
 
 
 def _client(db_session):
@@ -27,7 +27,7 @@ def _setup(client):
 
 
 def test_upload_image_creates_asset(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
 
     client = _client(db_session)
@@ -44,7 +44,7 @@ def test_upload_image_creates_asset(db_session, monkeypatch) -> None:
 
 
 def test_list_assets_for_task(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
     client = _client(db_session)
     token, pid, tid = _setup(client)
@@ -59,7 +59,7 @@ def test_list_assets_for_task(db_session, monkeypatch) -> None:
 
 
 def test_duplicate_asset_returns_409(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
     client = _client(db_session)
     token, pid, tid = _setup(client)
@@ -78,7 +78,7 @@ def test_duplicate_asset_returns_409(db_session, monkeypatch) -> None:
 
 
 def test_mime_mismatch_returns_400(db_session, monkeypatch) -> None:
-    from vaa_api.assets import service as svc_mod
+    from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
     client = _client(db_session)
     token, pid, tid = _setup(client)  # image task

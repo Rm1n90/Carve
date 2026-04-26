@@ -1,6 +1,6 @@
 import numpy as np
 
-from vaa_model.sam.codec import encode_mask_rle
+from carve_model.sam.codec import encode_mask_rle
 
 
 def test_encode_all_zero_mask() -> None:

@@ -2,8 +2,8 @@
 import numpy as np
 from fastapi.testclient import TestClient
 
-from vaa_model.main import create_app
-from vaa_model.sam import tracker as tracker_mod
+from carve_model.main import create_app
+from carve_model.sam import tracker as tracker_mod
 
 
 class _FakeTracker:
@@ -496,7 +496,7 @@ class _ConceptModeFakeTracker:
         labels=None,
         boxes=None,
     ):
-        from vaa_model.sam.sam3_adapter import ConceptModeError
+        from carve_model.sam.sam3_adapter import ConceptModeError
 
         raise ConceptModeError(
             "/objects is not supported in concept (text) mode",

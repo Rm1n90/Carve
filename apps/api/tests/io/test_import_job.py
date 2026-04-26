@@ -3,16 +3,16 @@ import io
 import json
 import uuid
 
-from vaa_api.annotations.models import AnnotationKind
-from vaa_api.assets.models import Asset, AssetKind, Frame
-from vaa_api.auth.models import User, UserRole
-from vaa_api.io.import_job import (
+from carve_api.annotations.models import AnnotationKind
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.auth.models import User, UserRole
+from carve_api.io.import_job import (
     _build_asset_map, _build_class_map, _build_dim_map,
     finalize_progress, import_drafts, init_progress, progress_key,
     read_progress, update_progress,
 )
-from vaa_api.io.yolo_in import AnnotationDraft
-from vaa_api.projects.models import Class, Project, Task, TaskKind
+from carve_api.io.yolo_in import AnnotationDraft
+from carve_api.projects.models import Class, Project, Task, TaskKind
 
 
 class _FakeRedis:

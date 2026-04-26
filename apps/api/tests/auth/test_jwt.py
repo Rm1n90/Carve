@@ -2,13 +2,13 @@ import time
 
 import pytest
 
-from vaa_api.auth.jwt import (
+from carve_api.auth.jwt import (
     InvalidToken,
     create_access_token,
     create_refresh_token,
     decode_token,
 )
-from vaa_api.config import get_settings
+from carve_api.config import get_settings
 
 
 @pytest.fixture(autouse=True)
