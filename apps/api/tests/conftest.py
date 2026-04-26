@@ -42,6 +42,7 @@ def engine():
     import vaa_api.auth.models  # noqa: F401
     import vaa_api.assets.models  # noqa: F401
     import vaa_api.annotations.models  # noqa: F401
+    import vaa_api.weights.models  # noqa: F401
 
     url = (
         f"postgresql+psycopg://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}"
