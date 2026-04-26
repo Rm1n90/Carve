@@ -35,6 +35,9 @@ accept the license and provide an HF token before enabling it.
 - **Performance:** SAM inference runs in bf16 by default on Ampere+ GPUs
   (RTX 30/40 series, A100, H100) for roughly half the VRAM and ~2x the
   throughput vs FP32. Set `SAM_BF16=0` to force FP32 for debugging.
+- **torch.compile (optional):** Set `SAM_COMPILE=1` for ~1.3-2x faster
+  inference after a one-time 30-60s warmup. Falls back gracefully on
+  incompatible hardware.
 - **GPU memory management:** SAM models are unloaded from GPU memory
   after `SAM_IDLE_TIMEOUT_S` seconds of inactivity (default `900` =
   15 min). Set to `0` to disable idle eviction. Force-unload immediately

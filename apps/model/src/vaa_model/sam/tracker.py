@@ -21,6 +21,7 @@ from vaa_model.sam.predictor import (
     _idle_timeout_s,
     autocast_ctx,
     get_sam_model,
+    maybe_compile,
 )
 
 
@@ -125,6 +126,7 @@ def _default_factory() -> TrackerProtocol:
 
     p = SAM2VideoPredictor.from_pretrained(repo)
     p.model.to("cuda" if torch.cuda.is_available() else "cpu")
+    p.model = maybe_compile(p.model)
     return p
 
 

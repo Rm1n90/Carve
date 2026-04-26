@@ -124,6 +124,53 @@ def autocast_ctx() -> Iterator[None]:
         yield
 
 
+# --- torch.compile gate -----------------------------------------------------
+#
+# ``torch.compile(model, mode="reduce-overhead")`` traces the SAM forward
+# pass through TorchInductor and yields ~1.3-2x speedups after a one-time
+# 30-60s warmup. It requires CUDA + a working triton/inductor backend, so
+# we gate it behind the env toggle and fail open at compile time on any
+# error (some hardware/driver combinations don't support it). Default OFF
+# because the warmup cost is not worth it for short dev sessions.
+
+_TRUTHY_COMPILE = ("1", "true", "yes", "on")
+
+
+def use_compile() -> bool:
+    """Return True when the loaded SAM model should be wrapped in torch.compile."""
+    if os.getenv("SAM_COMPILE", "0") not in _TRUTHY_COMPILE:
+        return False
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        # torch.compile requires CUDA + a working triton/inductor backend.
+        # We don't probe further — fail open at compile time.
+        return torch.cuda.is_available()
+    except Exception:
+        return False
+
+
+def maybe_compile(model: Any) -> Any:
+    """Return ``torch.compile(model, mode="reduce-overhead")`` if enabled, else ``model``.
+
+    Best-effort: if ``torch.compile`` raises (hardware/driver
+    incompatibility, missing triton, etc.), log a warning and return the
+    uncompiled model. The compiled model is a drop-in replacement at the
+    call sites we use (``predict`` / ``propagate_in_video``).
+    """
+    if not use_compile():
+        return model
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        compiled = torch.compile(model, mode="reduce-overhead")
+        log.info("torch.compile enabled for SAM model")
+        return compiled
+    except Exception as exc:  # noqa: BLE001
+        log.warning("torch.compile failed (%s); falling back to uncompiled model", exc)
+        return model
+
+
 class SamPredictor(Protocol):
     """Duck type matching the parts of SAM2ImagePredictor we use."""
 
@@ -269,6 +316,7 @@ def _default_factory() -> SamPredictor:
 
     p = SAM2ImagePredictor.from_pretrained(repo)
     p.model.to("cuda" if torch.cuda.is_available() else "cpu")
+    p.model = maybe_compile(p.model)
     return p
 
 
