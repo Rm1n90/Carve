@@ -27,6 +27,7 @@ from vaa_api.inference.sam import (
     sam_encode_for_asset,
 )
 from vaa_api.inference.sam_track import (
+    add_object as _track_add_object,
     release as _track_release,
     start as _track_start,
     step as _track_step,
@@ -170,8 +171,17 @@ def sam_decode_endpoint(
 
 class TrackStartIn(BaseModel):
     frame_idx: int = Field(default=0, ge=0)
-    points: list[list[int]] = Field(min_length=1)
-    labels: list[int] = Field(min_length=1)
+    points: list[list[int]] = Field(default_factory=list)
+    labels: list[int] = Field(default_factory=list)
+    text: str | None = None
+
+
+class TrackAddObjectIn(BaseModel):
+    frame_idx: int = Field(ge=0)
+    obj_id: int = Field(ge=1)
+    points: list[list[int]] = Field(default_factory=list)
+    labels: list[int] = Field(default_factory=list)
+    boxes: list[list[float]] = Field(default_factory=list)
 
 
 @router.post("/{asset_id}/sam-track/start")
@@ -185,10 +195,47 @@ def sam_track_start_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     _require_visible_task(db, user, asset.task_id)
-    if len(payload.points) != len(payload.labels):
+    # Multi-object workflow: empty points + labels is OK (objects are added
+    # via /objects later). Length-match is only enforced when points are given.
+    if payload.points and len(payload.points) != len(payload.labels):
         raise HTTPException(status_code=422, detail="points and labels must have equal length")
     try:
-        return _track_start(asset, payload.frame_idx, payload.points, payload.labels)
+        return _track_start(
+            asset,
+            payload.frame_idx,
+            payload.points,
+            payload.labels,
+            text=payload.text,
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/{asset_id}/sam-track/{session_id}/objects")
+def sam_track_add_object_endpoint(
+    asset_id: uuid.UUID,
+    session_id: str,
+    payload: TrackAddObjectIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    if not payload.points and not payload.boxes:
+        raise HTTPException(status_code=422, detail="object_requires_points_or_boxes")
+    if payload.points and len(payload.points) != len(payload.labels):
+        raise HTTPException(status_code=422, detail="points and labels must have equal length")
+    try:
+        return _track_add_object(
+            session_id,
+            payload.frame_idx,
+            payload.obj_id,
+            payload.points,
+            payload.labels,
+            payload.boxes,
+        )
     except AppError as exc:
         raise _http(exc) from exc
 
