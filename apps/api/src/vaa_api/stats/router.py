@@ -41,3 +41,23 @@ def progress(
 ) -> dict:
     task = _require_visible_task(db, user, task_id)
     return StatsService(db).task_progress(task_id=task.id)
+
+
+@router.get("/{task_id}/stats/size-distribution")
+def size_distribution(
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    task = _require_visible_task(db, user, task_id)
+    return StatsService(db).size_distribution(task_id=task.id)
+
+
+@router.get("/{task_id}/stats/aspect-ratio")
+def aspect_ratio(
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    task = _require_visible_task(db, user, task_id)
+    return StatsService(db).aspect_ratio_histogram(task_id=task.id)

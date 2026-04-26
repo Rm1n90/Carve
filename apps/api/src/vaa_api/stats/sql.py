@@ -33,3 +33,30 @@ SELECT
     (SELECT COUNT(DISTINCT a.frame_id) FROM annotations a
        WHERE a.task_id = :task_id AND a.frame_id IS NOT NULL) AS labeled_frames
 """)
+
+
+SIZE_DISTRIBUTION_BBOX_SQL = text("""
+SELECT
+    SUM(CASE WHEN area_px < 1024 THEN 1 ELSE 0 END) AS small,
+    SUM(CASE WHEN area_px BETWEEN 1024 AND 9215 THEN 1 ELSE 0 END) AS medium,
+    SUM(CASE WHEN area_px >= 9216 THEN 1 ELSE 0 END) AS large
+FROM (
+    SELECT (a.geometry->>'w')::float * (a.geometry->>'h')::float AS area_px
+    FROM annotations a
+    WHERE a.task_id = :task_id AND a.kind = 'bbox'
+) t
+""")
+
+
+GEOMETRY_BY_KIND_SQL = text("""
+SELECT a.geometry AS geometry
+FROM annotations a
+WHERE a.task_id = :task_id AND a.kind = :kind
+""")
+
+
+BBOX_GEOMETRIES_SQL = text("""
+SELECT a.geometry AS geometry
+FROM annotations a
+WHERE a.task_id = :task_id AND a.kind = 'bbox'
+""")

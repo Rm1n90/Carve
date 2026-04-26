@@ -4,9 +4,69 @@ from sqlalchemy.orm import Session
 
 from vaa_api.stats.sql import (
     ANNOTATION_DENSITY_SQL,
+    BBOX_GEOMETRIES_SQL,
     CLASS_FREQUENCY_SQL,
+    GEOMETRY_BY_KIND_SQL,
+    SIZE_DISTRIBUTION_BBOX_SQL,
     TASK_PROGRESS_SQL,
 )
+
+
+# COCO size thresholds in pixels^2
+_SMALL_MAX = 1024  # 32^2; area < 1024 is "small"
+_MEDIUM_MAX = 9216  # 96^2; 1024 <= area < 9216 is "medium"; >= 9216 is "large"
+
+
+def _bucket_area(area_px: float) -> str:
+    if area_px < _SMALL_MAX:
+        return "small"
+    if area_px < _MEDIUM_MAX:
+        return "medium"
+    return "large"
+
+
+def _polygon_area(points: list[list[float]]) -> float:
+    """Shoelace area; returns 0.0 for degenerate polygons (< 3 points)."""
+    if not points or len(points) < 3:
+        return 0.0
+    total = 0.0
+    n = len(points)
+    for i in range(n):
+        x1, y1 = points[i][0], points[i][1]
+        x2, y2 = points[(i + 1) % n][0], points[(i + 1) % n][1]
+        total += x1 * y2 - x2 * y1
+    return 0.5 * abs(total)
+
+
+def _mask_foreground_pixels(counts: str) -> int:
+    """Sum foreground runs in the comma-separated RLE counts string.
+
+    Per Plan 04 codec (`apps/model/src/vaa_model/sam/codec.py`), runs alternate
+    starting with background (0). So odd-indexed runs are foreground (1).
+    """
+    if not counts:
+        return 0
+    runs = counts.split(",")
+    fg = 0
+    for i in range(1, len(runs), 2):
+        try:
+            fg += int(runs[i])
+        except ValueError:
+            continue
+    return fg
+
+
+# Aspect-ratio bucket boundaries (in dict insertion order for stable JSON keys).
+def _aspect_bucket(ratio: float) -> str:
+    if ratio < 0.33:
+        return "<0.33"
+    if ratio < 0.67:
+        return "0.33-0.67"
+    if ratio < 1.5:
+        return "0.67-1.5"
+    if ratio < 3.0:
+        return "1.5-3"
+    return ">=3"
 
 
 class StatsService:
@@ -35,3 +95,69 @@ class StatsService:
             "labeled_frames": labeled,
             "progress_pct": (labeled / total) if total else 0.0,
         }
+
+    def size_distribution(self, *, task_id: uuid.UUID) -> dict:
+        """Combined small/medium/large counts across bbox, polygon, mask kinds."""
+        buckets = {"small": 0, "medium": 0, "large": 0}
+
+        # Bbox path: SQL aggregate.
+        bbox_row = self.session.execute(
+            SIZE_DISTRIBUTION_BBOX_SQL, {"task_id": task_id}
+        ).one()
+        m = bbox_row._mapping
+        buckets["small"] += int(m["small"] or 0)
+        buckets["medium"] += int(m["medium"] or 0)
+        buckets["large"] += int(m["large"] or 0)
+
+        # Polygon path: shoelace area in Python.
+        poly_rows = self.session.execute(
+            GEOMETRY_BY_KIND_SQL, {"task_id": task_id, "kind": "polygon"}
+        ).all()
+        for r in poly_rows:
+            geom = r._mapping["geometry"] or {}
+            points = geom.get("points") or []
+            area = _polygon_area(points)
+            if area <= 0:
+                continue  # skip degenerate polygons
+            buckets[_bucket_area(area)] += 1
+
+        # Mask path: foreground pixel count from RLE counts.
+        mask_rows = self.session.execute(
+            GEOMETRY_BY_KIND_SQL, {"task_id": task_id, "kind": "mask"}
+        ).all()
+        for r in mask_rows:
+            geom = r._mapping["geometry"] or {}
+            counts = geom.get("counts") or ""
+            fg = _mask_foreground_pixels(counts)
+            if fg <= 0:
+                continue
+            buckets[_bucket_area(fg)] += 1
+
+        return buckets
+
+    def aspect_ratio_histogram(self, *, task_id: uuid.UUID) -> dict:
+        """w/h histogram for bbox annotations only.
+
+        Bbox keys are `<0.33`, `0.33-0.67`, `0.67-1.5`, `1.5-3`, `>=3` —
+        insertion order preserved (Python 3.7+).
+        """
+        buckets: dict[str, int] = {
+            "<0.33": 0,
+            "0.33-0.67": 0,
+            "0.67-1.5": 0,
+            "1.5-3": 0,
+            ">=3": 0,
+        }
+        rows = self.session.execute(BBOX_GEOMETRIES_SQL, {"task_id": task_id}).all()
+        for r in rows:
+            geom = r._mapping["geometry"] or {}
+            try:
+                w = float(geom.get("w", 0))
+                h = float(geom.get("h", 0))
+            except (TypeError, ValueError):
+                continue
+            if h <= 0 or w <= 0:
+                continue  # skip degenerate bboxes
+            ratio = w / h
+            buckets[_aspect_bucket(ratio)] += 1
+        return buckets
