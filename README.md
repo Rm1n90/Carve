@@ -69,6 +69,43 @@ cd apps/web && npm test
 
 Three Docker services on one machine: a FastAPI **app service** (Postgres + Redis + MinIO + REST/WS), a FastAPI **model service** pinned to the GPU (SAM, YOLO, encode/decode/predict endpoints), and a Vite-built React **web service** behind Caddy. The browser SAM decoder runs in WebGPU so click-to-mask is < 30 ms after the encoder runs once on the server.
 
+## Backups & restore
+
+The repo includes `scripts/backup.sh` which dumps Postgres and mirrors MinIO into a timestamped directory.
+
+### Run a backup
+
+```bash
+./scripts/backup.sh /var/backups/vaa
+# Produces:
+#   /var/backups/vaa/pg-20260425T030000Z.sql.gz
+#   /var/backups/vaa/minio-20260425T030000Z/...
+```
+
+The script sources `.env` from the working directory, so run it from the repo root.
+
+### Recommended schedule
+
+```cron
+0 3 * * * cd /opt/vaa && /opt/vaa/scripts/backup.sh /var/backups/vaa
+```
+
+### Restore Postgres
+
+```bash
+gunzip -c /var/backups/vaa/pg-<TS>.sql.gz | docker compose exec -T postgres psql -U vaa vaa
+```
+
+### Restore MinIO
+
+```bash
+docker run --rm --network vaa_default \
+  -e MC_HOST_local="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000" \
+  -v /var/backups/vaa/minio-<TS>:/in \
+  minio/mc:latest \
+  mirror /in local/vaa-assets
+```
+
 ## License
 
 TBD.
