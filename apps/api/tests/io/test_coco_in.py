@@ -161,3 +161,18 @@ def test_archive_without_json_raises() -> None:
         zf.writestr("readme.txt", "no json here")
     with pytest.raises(ValueError):
         parse_coco_archive(buf.getvalue())
+
+
+def test_oversized_member_rejected(monkeypatch) -> None:
+    """Per-member zip-bomb guard: a single .json larger than the cap raises."""
+    import pytest
+
+    from vaa_api.io import coco_in
+
+    monkeypatch.setattr(coco_in, "_MAX_MEMBER_BYTES", 100)
+    big_json = (b"{}" + b" " * 5000)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("coco.json", big_json)
+    with pytest.raises(ValueError, match="import_archive_member_too_large"):
+        coco_in.parse_coco_archive(buf.getvalue())

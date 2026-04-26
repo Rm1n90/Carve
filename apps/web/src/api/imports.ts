@@ -1,7 +1,12 @@
 import { api } from "./client";
 
 export type ImportFormat = "yolo" | "coco";
-export type ImportStatus = "pending" | "running" | "complete" | "failed";
+export type ImportStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "completed_with_warnings"
+  | "failed";
 
 export interface ImportProgress {
   status: ImportStatus;

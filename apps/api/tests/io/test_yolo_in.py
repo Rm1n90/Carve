@@ -99,3 +99,36 @@ def test_blank_lines_skipped() -> None:
     archive = _build_zip({"data.yaml": yaml_text.encode(), "labels/a.txt": label_text.encode()})
     parsed = parse_yolo_archive(archive, image_dimensions={"a": (10, 10)})
     assert len(parsed.drafts) == 1
+
+
+def test_oversized_member_rejected(monkeypatch) -> None:
+    """Per-member zip-bomb guard: a single .txt larger than the cap raises."""
+    import pytest
+
+    from vaa_api.io import yolo_in
+
+    monkeypatch.setattr(yolo_in, "_MAX_MEMBER_BYTES", 100)
+    yaml_text = 'names: ["car"]\n'
+    big_label = ("0 0.5 0.5 0.1 0.1\n" * 200).encode()  # ~3700 bytes uncompressed
+    archive = _build_zip({"data.yaml": yaml_text.encode(), "labels/a.txt": big_label})
+    with pytest.raises(ValueError, match="import_archive_member_too_large"):
+        yolo_in.parse_yolo_archive(archive, image_dimensions={"a": (10, 10)})
+
+
+def test_total_uncompressed_cap(monkeypatch) -> None:
+    """Total uncompressed bytes exceeding the global cap raises."""
+    import pytest
+
+    from vaa_api.io import yolo_in
+
+    monkeypatch.setattr(yolo_in, "_MAX_TOTAL_UNCOMPRESSED", 200)
+    yaml_text = 'names: ["car"]\n'
+    label_a = ("0 0.5 0.5 0.1 0.1\n" * 10).encode()  # ~190 bytes
+    label_b = ("0 0.5 0.5 0.1 0.1\n" * 10).encode()  # ~190 bytes
+    archive = _build_zip({
+        "data.yaml": yaml_text.encode(),
+        "labels/a.txt": label_a,
+        "labels/b.txt": label_b,
+    })
+    with pytest.raises(ValueError, match="import_archive_too_large"):
+        yolo_in.parse_yolo_archive(archive, image_dimensions={"a": (10, 10), "b": (10, 10)})

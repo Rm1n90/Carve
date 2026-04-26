@@ -43,14 +43,15 @@ export function ImportDialog({ taskId }: Props) {
     enabled: !!importId,
     refetchInterval: (q) => {
       const s = q.state.data?.status;
-      return s === "complete" || s === "failed" ? false : 1000;
+      if (!s) return 1000;
+      return s === "failed" || s.startsWith("completed") ? false : 1000;
     },
     refetchIntervalInBackground: true,
   });
 
   const status = progressQ.data?.status;
   useEffect(() => {
-    if (status === "complete") {
+    if (status && status.startsWith("completed")) {
       qc.invalidateQueries({ queryKey: ["annotations", taskId] });
     }
   }, [status, qc, taskId]);
@@ -108,7 +109,7 @@ export function ImportDialog({ taskId }: Props) {
           {status ?? "pending"} · {done}/{total}
         </p>
       )}
-      {status === "complete" && (
+      {status && status.startsWith("completed") && (
         <p style={{ color: "rgb(120, 220, 160)", fontSize: 13, margin: 0 }}>Done.</p>
       )}
       {status === "failed" && (

@@ -13,6 +13,11 @@ from typing import Any
 from vaa_api.annotations.models import AnnotationKind
 from vaa_api.io.yolo_in import AnnotationDraft, ParsedArchive
 
+# Zip-bomb / oversized-archive mitigations. Limits apply to uncompressed size
+# (the central-directory ``file_size``) before any read is performed.
+_MAX_MEMBER_BYTES = 256 * 1024 * 1024  # 256 MiB per file inside the archive
+_MAX_TOTAL_UNCOMPRESSED = 4 * 1024 * 1024 * 1024  # 4 GiB total uncompressed
+
 
 def parse_coco_bytes(coco_bytes: bytes) -> ParsedArchive:
     """Parse raw coco.json bytes."""
@@ -112,13 +117,20 @@ def parse_coco_archive(archive_bytes: bytes) -> ParsedArchive:
     except zipfile.BadZipFile as exc:
         raise ValueError(f"not a valid zip archive: {exc}") from exc
     coco_member: zipfile.ZipInfo | None = None
+    total_uncompressed = 0
     with zf:
         for member in zf.infolist():
             if member.is_dir():
                 continue
+            # Per-member zip-bomb guard.
+            if member.file_size > _MAX_MEMBER_BYTES:
+                raise ValueError("import_archive_member_too_large")
             if member.filename.lower().endswith(".json"):
                 coco_member = member
                 break
         if coco_member is None:
             raise ValueError("no JSON file found in archive")
+        total_uncompressed += coco_member.file_size
+        if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
+            raise ValueError("import_archive_too_large")
         return parse_coco_bytes(zf.read(coco_member))

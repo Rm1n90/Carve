@@ -3,13 +3,22 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ExportSplits(BaseModel):
     train: float = Field(default=0.8, ge=0.0, le=1.0)
     val: float = Field(default=0.1, ge=0.0, le=1.0)
     test: float = Field(default=0.1, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _splits_sum_to_one(self) -> "ExportSplits":
+        total = self.train + self.val + self.test
+        if abs(total - 1.0) >= 1e-6:
+            raise ValueError(
+                f"splits must sum to 1.0 (got {total:.6f})",
+            )
+        return self
 
 
 class ExportIn(BaseModel):

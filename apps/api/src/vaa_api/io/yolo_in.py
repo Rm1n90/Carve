@@ -13,6 +13,11 @@ import zipfile
 
 from vaa_api.annotations.models import AnnotationKind
 
+# Zip-bomb / oversized-archive mitigations. Limits apply to uncompressed size
+# (the central-directory ``file_size``) before any read is performed.
+_MAX_MEMBER_BYTES = 256 * 1024 * 1024  # 256 MiB per file inside the archive
+_MAX_TOTAL_UNCOMPRESSED = 4 * 1024 * 1024 * 1024  # 4 GiB total uncompressed
+
 
 @dataclass
 class AnnotationDraft:
@@ -174,13 +179,21 @@ def parse_yolo_archive(
 
     yaml_text = ""
     label_members: list[zipfile.ZipInfo] = []
+    total_uncompressed = 0
     with zf:
         for member in zf.infolist():
             if member.is_dir():
                 continue
+            # Per-member zip-bomb guard: bail before reading if the central-directory
+            # uncompressed size already exceeds the cap.
+            if member.file_size > _MAX_MEMBER_BYTES:
+                raise ValueError("import_archive_member_too_large")
             name_lower = member.filename.lower()
             if name_lower.endswith(".yaml") or name_lower.endswith(".yml"):
                 if not yaml_text:
+                    total_uncompressed += member.file_size
+                    if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
+                        raise ValueError("import_archive_too_large")
                     yaml_text = zf.read(member).decode("utf-8", errors="replace")
             elif name_lower.endswith(".txt"):
                 label_members.append(member)
@@ -190,6 +203,9 @@ def parse_yolo_archive(
         out.class_names = _parse_yaml_names(yaml_text) if yaml_text else []
 
         for member in label_members:
+            total_uncompressed += member.file_size
+            if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
+                raise ValueError("import_archive_too_large")
             stem = Path(member.filename).stem
             # Try several common image basename forms when matching dimensions
             dims = (

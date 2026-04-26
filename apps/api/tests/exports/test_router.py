@@ -111,3 +111,20 @@ def test_invalid_format_rejected_by_validation(db_session, monkeypatch) -> None:
         headers=_hdr(token),
     )
     assert r.status_code == 422
+
+
+def test_splits_sum_not_one_rejected(db_session, monkeypatch) -> None:
+    """Splits whose train+val+test does not sum to 1.0 must be rejected (422)."""
+    client = _client(db_session)
+    token, pid, tid, _ = _setup(client, monkeypatch)
+    r = client.post(
+        f"/tasks/{tid}/exports",
+        json={
+            "format": "yolo",
+            "class_remap": {},
+            "splits": {"train": 0.6, "val": 0.6, "test": 0.0},
+            "include_images": False,
+        },
+        headers=_hdr(token),
+    )
+    assert r.status_code == 422

@@ -62,10 +62,10 @@ describe("ImportDialog", () => {
     });
   });
 
-  it("polls progress and stops when status=complete", async () => {
+  it("polls progress and stops when status=completed", async () => {
     (importsApi.create as any).mockResolvedValue({ import_id: "imp-1" });
     (importsApi.get as any).mockResolvedValue({
-      status: "complete",
+      status: "completed",
       done: 5,
       total: 5,
       warnings: ["missing-class:dog"],
@@ -81,6 +81,28 @@ describe("ImportDialog", () => {
       expect(importsApi.get).toHaveBeenCalledWith("t1", "imp-1");
     });
     await findByText(/missing-class:dog/);
+    await findByText(/^Done\.$/);
+  });
+
+  it("treats status=completed_with_warnings as terminal+success", async () => {
+    (importsApi.create as any).mockResolvedValue({ import_id: "imp-3" });
+    (importsApi.get as any).mockResolvedValue({
+      status: "completed_with_warnings",
+      done: 3,
+      total: 5,
+      warnings: ["missing-asset:foo"],
+    });
+    const { container, findByText } = render(wrap(<ImportDialog taskId="t1" />));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const zip = new File([new Uint8Array([0x50, 0x4b])], "labels.zip", {
+      type: "application/zip",
+    });
+    fireEvent.change(input, { target: { files: [zip] } });
+
+    await waitFor(() => {
+      expect(importsApi.get).toHaveBeenCalledWith("t1", "imp-3");
+    });
+    await findByText(/missing-asset:foo/);
     await findByText(/^Done\.$/);
   });
 });
