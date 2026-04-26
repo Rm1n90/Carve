@@ -1,16 +1,22 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from vaa_api.auth.router import router as auth_router
 from vaa_api.config import get_settings
 from vaa_api.errors import AppError
 from vaa_api.health import router as health_router
+from vaa_api.ratelimit import limiter
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="VisualAutoAnnotator API", version="0.1.0")
+
+    app.state.limiter = limiter
+    app.add_middleware(SlowAPIMiddleware)
 
     if settings.cors_origin_list:
         app.add_middleware(
@@ -67,6 +73,10 @@ def create_app() -> FastAPI:
         return {"pong": "admin"}
 
     app.include_router(admin_router)
+
+    @app.exception_handler(RateLimitExceeded)
+    async def _rate_limited(_request: Request, _exc: RateLimitExceeded) -> JSONResponse:
+        return JSONResponse(status_code=429, content={"error": "rate_limited"})
 
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError) -> JSONResponse:

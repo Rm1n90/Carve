@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from vaa_api.auth.jwt import (
@@ -12,6 +12,7 @@ from vaa_api.auth.schemas import LoginIn, RefreshIn, RegisterIn, TokenPair, User
 from vaa_api.auth.service import AuthService, EmailTaken, InvalidCredentials
 from vaa_api.deps import get_current_user, get_db
 from vaa_api.errors import AppError
+from vaa_api.ratelimit import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -28,7 +29,8 @@ def _to_http(err: AppError) -> HTTPException:
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def register(payload: RegisterIn, db: Session = Depends(get_db)) -> UserOut:
+@limiter.limit("5/minute")
+def register(request: Request, payload: RegisterIn, db: Session = Depends(get_db)) -> UserOut:
     try:
         user = AuthService(db).register(email=payload.email, password=payload.password)
     except EmailTaken as exc:
@@ -38,7 +40,8 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> UserOut:
 
 
 @router.post("/login", response_model=TokenPair)
-def login(payload: LoginIn, db: Session = Depends(get_db)) -> TokenPair:
+@limiter.limit("10/minute")
+def login(request: Request, payload: LoginIn, db: Session = Depends(get_db)) -> TokenPair:
     try:
         user = AuthService(db).authenticate(email=payload.email, password=payload.password)
     except InvalidCredentials as exc:

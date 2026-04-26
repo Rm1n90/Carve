@@ -1,13 +1,14 @@
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
 from vaa_api.auth.models import User
 from vaa_api.deps import get_current_user, get_db
 from vaa_api.errors import AppError
 from vaa_api.projects.service import ProjectService
+from vaa_api.ratelimit import limiter
 from vaa_api.weights.models import WeightTaskKind
 from vaa_api.weights.schemas import WeightOut
 from vaa_api.weights.service import WeightInvalid, WeightService
@@ -25,7 +26,9 @@ def _http(err: AppError) -> HTTPException:
     response_model=WeightOut,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit("30/minute")
 async def upload_weight(
+    request: Request,
     project_id: uuid.UUID,
     name: str = Form(...),
     task_kind: WeightTaskKind = Form(...),

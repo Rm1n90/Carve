@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
 from vaa_api.assets.models import AssetKind
@@ -11,6 +11,7 @@ from vaa_api.deps import get_current_user, get_db
 from vaa_api.errors import AppError
 from vaa_api.projects.models import Task as TaskModel
 from vaa_api.projects.service import ProjectService, TaskService, _can_modify, NotProjectOwner
+from vaa_api.ratelimit import limiter
 from vaa_api.storage.client import MinioClient
 
 router = APIRouter(prefix="/tasks", tags=["assets"])
@@ -47,7 +48,9 @@ def _require_visible_task(db: Session, user: User, task_id: uuid.UUID) -> TaskMo
 
 
 @router.post("/{task_id}/assets", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
+@limiter.limit("100/minute")
 async def upload_asset(
+    request: Request,
     task_id: uuid.UUID,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
@@ -78,7 +81,9 @@ def list_assets(
 
 
 @router.post("/{task_id}/assets:zip", response_model=list[AssetOut], status_code=status.HTTP_201_CREATED)
+@limiter.limit("100/minute")
 async def upload_archive(
+    request: Request,
     task_id: uuid.UUID,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
