@@ -43,6 +43,9 @@ packages = ["src/vaa_api"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# importlib mode lets us use a tests/io/ subpackage without colliding with the
+# stdlib `io` module (the default prepend mode would shadow it).
+addopts = "--import-mode=importlib"
 
 [tool.ruff]
 line-length = 100
