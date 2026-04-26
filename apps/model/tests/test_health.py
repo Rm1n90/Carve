@@ -15,8 +15,10 @@ def test_health() -> None:
     assert r.json()["status"] == "ok"
 
 
-def test_capabilities_empty_at_startup() -> None:
+def test_capabilities_reports_models_and_device() -> None:
     client = TestClient(create_app())
     r = client.get("/capabilities")
     assert r.status_code == 200
-    assert r.json() == {"models": []}
+    body = r.json()
+    assert "yolo" in body["models"]
+    assert body["device"] in ("cpu", "cuda:0")

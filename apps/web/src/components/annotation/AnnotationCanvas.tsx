@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { CanvasApp } from "@/canvas/App";
 import { BboxTool, type Point } from "@/canvas/tools/BboxTool";
 import { PolygonTool } from "@/canvas/tools/PolygonTool";
 import { MaskBrushTool } from "@/canvas/tools/MaskBrushTool";
 import { TagTool } from "@/canvas/tools/TagTool";
+import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
 
 interface Props {
@@ -12,17 +13,30 @@ interface Props {
   height: number;
   imageUrl: string;
   frameId: string | null;
+  assetId: string;
 }
 
 /**
  * Mounts a Pixi canvas, loads the image, and routes pointer/keyboard events
  * to the active tool. Re-renders when tool, dimensions, or image change.
  */
-export function AnnotationCanvas({ width, height, imageUrl, frameId }: Props) {
+export function AnnotationCanvas({ width, height, imageUrl, frameId, assetId }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<CanvasApp | null>(null);
   const tool = useTool((s) => s.active);
   const activeClassId = useTool((s) => s.activeClassId);
+
+  // SamTool retains state (image_hash, accumulated points) across pointer
+  // event re-renders. Recreate only when the asset (or active frame) changes.
+  const samTool = useMemo(
+    () =>
+      new SamTool(
+        assetId,
+        () => useTool.getState().activeClassId,
+        () => frameId,
+      ),
+    [assetId, frameId],
+  );
 
   const [imageSize, setImageSize] = useState<{ w: number; h: number }>({ w: width, h: height });
 
@@ -60,6 +74,8 @@ export function AnnotationCanvas({ width, height, imageUrl, frameId }: Props) {
   }, [imageUrl, width, height]);
 
   // Tool routing — closures captured per render for current tool + class + frame
+  // TODO: track tool is not a click-driven canvas tool. Wire it from
+  // AnnotateAssetPage's "Track →" button using TrackPropagateTool directly.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -73,6 +89,16 @@ export function AnnotationCanvas({ width, height, imageUrl, frameId }: Props) {
     const mask = new MaskBrushTool(getClass, getFrame, getSize, 12, idGen);
     const tag = new TagTool(getClass, getFrame, idGen);
 
+    // Switching INTO sam fires-and-forgets the image encode. SamTool.activate
+    // is idempotent (it short-circuits once image_hash is cached).
+    if (tool === "sam") {
+      void samTool.activate();
+    } else {
+      // Switching AWAY from sam clears any in-progress click sequence so a
+      // stale set of clicks doesn't bleed into the next sam session.
+      samTool.reset();
+    }
+
     function pointerXY(e: PointerEvent): Point {
       const rect = host!.getBoundingClientRect();
       return { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -83,6 +109,10 @@ export function AnnotationCanvas({ width, height, imageUrl, frameId }: Props) {
       if (tool === "bbox") bbox.onPointerDown(p);
       else if (tool === "polygon") polygon.onPointerDown(p);
       else if (tool === "mask") mask.onPointerDown(p);
+      else if (tool === "sam") {
+        e.preventDefault();
+        void samTool.addClick(p, { pointer: e.button });
+      }
     }
 
     function onMove(e: PointerEvent) {
@@ -97,25 +127,37 @@ export function AnnotationCanvas({ width, height, imageUrl, frameId }: Props) {
       else if (tool === "mask") mask.onPointerUp(p);
     }
 
+    function onContextMenu(e: MouseEvent) {
+      // Suppress the browser context menu so right-click can be used as a
+      // negative-prompt for SAM.
+      if (tool === "sam") e.preventDefault();
+    }
+
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       if (tool === "polygon") polygon.onKeyDown(e.key);
       else if (tool === "mask") mask.onKeyDown(e.key);
       else if (tool === "tag" && e.key.toLowerCase() === "t") tag.apply();
+      else if (tool === "sam") {
+        if (e.key === "Enter") samTool.commit();
+        else if (e.key === "Escape") samTool.reset();
+      }
     }
 
     host.addEventListener("pointerdown", onDown);
     host.addEventListener("pointermove", onMove);
     host.addEventListener("pointerup", onUp);
+    host.addEventListener("contextmenu", onContextMenu);
     window.addEventListener("keydown", onKey);
     return () => {
       host.removeEventListener("pointerdown", onDown);
       host.removeEventListener("pointermove", onMove);
       host.removeEventListener("pointerup", onUp);
+      host.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("keydown", onKey);
     };
-  }, [tool, activeClassId, frameId, imageSize]);
+  }, [tool, activeClassId, frameId, imageSize, samTool]);
 
   return (
     <div
@@ -139,6 +181,7 @@ function toolCursor(t: ToolName): string {
     case "bbox":
     case "polygon":
     case "mask":
+    case "sam":
       return "crosshair";
     default:
       return "default";

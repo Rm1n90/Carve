@@ -35,6 +35,16 @@ def create_app() -> FastAPI:
     app.include_router(task_annotations_router)
     app.include_router(ann_router)
 
+    from vaa_api.weights.router import project_weights_router, router as weights_router
+    app.include_router(project_weights_router)
+    app.include_router(weights_router)
+
+    from vaa_api.inference.router import router as inference_router
+    app.include_router(inference_router)
+
+    from vaa_api.inference.router import task_inference_router
+    app.include_router(task_inference_router)
+
     from fastapi import APIRouter, Depends
 
     from vaa_api.auth.models import UserRole

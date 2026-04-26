@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     redis_host: str = Field(alias="REDIS_HOST", default="redis")
     redis_port: int = Field(alias="REDIS_PORT", default=6379)
 
+    model_base_url: str = Field(alias="MODEL_BASE_URL", default="http://model:8100")
+    model_timeout_seconds: float = Field(alias="MODEL_TIMEOUT_SECONDS", default=120.0)
+
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
     api_env: str = Field(default="development", alias="API_ENV")
 

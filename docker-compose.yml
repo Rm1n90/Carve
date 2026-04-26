@@ -74,10 +74,17 @@ services:
       JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS:-14}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       API_ENV: ${API_ENV:-development}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-http://model:8100}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
