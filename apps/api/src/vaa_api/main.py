@@ -31,6 +31,10 @@ def create_app() -> FastAPI:
     app.include_router(task_assets_router)
     app.include_router(asset_router)
 
+    from vaa_api.annotations.router import ann_router, router as task_annotations_router
+    app.include_router(task_annotations_router)
+    app.include_router(ann_router)
+
     from fastapi import APIRouter, Depends
 
     from vaa_api.auth.models import UserRole
