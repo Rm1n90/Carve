@@ -112,23 +112,67 @@ unaffected.
 
 ### Supported YOLO weight versions
 
-The model service uses Ultralytics' unified YOLO loader, which auto-detects
-the architecture from the `.pt` file. The currently pinned version of
-`ultralytics` is `8.4.41`, which supports:
+The model service uses Ultralytics' unified `YOLO()` loader, which
+auto-detects the architecture from the `.pt` file's metadata. The
+loader is version-agnostic — `apps/model/src/vaa_model/yolo/registry.py`
+contains no architecture-specific logic.
 
-- YOLOv5 / YOLOv8 (legacy)
-- YOLO11 (recommended)
-- Any newer YOLO release supported by Ultralytics >= 8.4.41
+Currently pinned: `ultralytics==8.4.41` (PyPI). This release supports:
 
-To support a newer YOLO release (e.g., YOLO26, YOLOv12), override the pin in
-`apps/model/pyproject.toml` and rebuild:
+- **YOLOv5 / YOLOv8** (legacy detect/seg/cls/pose/OBB)
+- **YOLO11** (recommended for general use; Sep 2024)
+- **YOLO26** (Jan 14, 2026 — the current state-of-the-art)
+
+#### YOLO26 variant matrix
+
+| Task | n | s | m | l | x |
+|---|---|---|---|---|---|
+| Detection | yolo26n.pt | yolo26s.pt | yolo26m.pt | yolo26l.pt | yolo26x.pt |
+| Segmentation | yolo26n-seg.pt | yolo26s-seg.pt | yolo26m-seg.pt | yolo26l-seg.pt | yolo26x-seg.pt |
+| Classification | yolo26n-cls.pt | yolo26s-cls.pt | yolo26m-cls.pt | yolo26l-cls.pt | yolo26x-cls.pt |
+| Pose | yolo26n-pose.pt | yolo26s-pose.pt | yolo26m-pose.pt | yolo26l-pose.pt | yolo26x-pose.pt |
+| OBB | yolo26n-obb.pt | yolo26s-obb.pt | yolo26m-obb.pt | yolo26l-obb.pt | yolo26x-obb.pt |
+
+Param counts (approximate):
+- nano (n): 2.4–2.9M params
+- small (s): 9.5–10.4M params
+- medium (m): 20.4–23.6M params
+- large (l): 24.8–28.0M params
+- xlarge (x): 55.7–62.8M params
+
+#### Editor compatibility today
+
+The editor's task kinds (`detect`, `segment`, `classify`) work with
+YOLO26 detection, segmentation, and classification weights without any
+code change. **Pose and OBB weights load** via the registry (the test
+suite proves it) but the editor's annotation UI does not yet draw or
+store keypoints / oriented boxes — those are the v2 deferred items.
+Operators uploading YOLO26 pose/OBB weights today should expect the
+weight to be cached but unused by the auto-annotation pipeline.
+
+#### Bumping for newer releases
+
+To support a release post-YOLO26 (e.g., YOLO27), edit
+`apps/model/pyproject.toml`:
+
+```toml
+"ultralytics==<NEW_VERSION>",
+```
+
+Then rebuild only the inference-profile container:
 
 ```bash
 docker compose build model && docker compose --profile inference up -d model
 ```
 
-The loader contract (`registry.WeightRegistry`) is version-agnostic — bumping
-the dependency is the only required change.
+The editor stack does not need to restart.
+
+#### License
+
+YOLO26 is dual-licensed: AGPL-3.0 (open source) and Enterprise. The same
+licensing applies to other Ultralytics YOLO releases. AGPL-3.0 imposes
+copyleft requirements on derivatives — verify with your legal team
+before integrating into a closed-source product.
 
 ### Independence from YOLO
 
