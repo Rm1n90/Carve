@@ -6,6 +6,7 @@ import { AssetUploadDialog } from "@/pages/AssetUploadDialog";
 import { ImportDialog } from "@/pages/ImportDialog";
 import { ExportDialog } from "@/pages/ExportDialog";
 import { AssetGrid } from "@/pages/AssetGrid";
+import { StatsPanel } from "@/pages/StatsPanel";
 import { projectsApi } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
 
@@ -36,6 +37,7 @@ function TaskDetail() {
         <ImportDialog taskId={taskId} />
         <ExportDialog projectId={projectId} taskId={taskId} />
         <AssetGrid projectId={projectId} taskId={taskId} />
+        <StatsPanel taskId={taskId} />
       </div>
     </RequireAuth>
   );
