@@ -35,6 +35,17 @@ from __future__ import annotations
 from typing import Any
 
 
+class ConceptModeError(RuntimeError):
+    """Raised when /objects is called on a SAM 3 concept (text) session.
+
+    The dispatcher commits to ``state["mode"] == "concept"`` on the first
+    text prompt; subsequent ``add_inputs_at_frame`` (the multi-object
+    /objects entrypoint) cannot be served because the concept sub-tracker
+    has no per-object click API. Surfacing a typed exception lets the HTTP
+    boundary map to a clean 422 instead of a generic 502.
+    """
+
+
 # --- image adapter (clicks → Sam3TrackerModel) ------------------------------
 
 
@@ -516,7 +527,19 @@ class Sam3VideoDispatcherAdapter:
         tracker processor accepts both at once but the router validates
         that at the HTTP boundary). Concept (text) mode is NOT handled
         here — text prompts belong on /sam-track/start, not /objects.
+
+        If the session was already started in concept mode (text prompt at
+        /start), a ``ConceptModeError`` is raised. Without this guard the
+        previous implementation would silently switch to tracker mode and
+        re-init the video session, orphaning the concept session.
         """
+        if (
+            isinstance(inference_state, dict)
+            and inference_state.get("mode") == "concept"
+        ):
+            raise ConceptModeError(
+                "/objects is not supported in concept (text) mode",
+            )
         if not points and not boxes:
             raise RuntimeError(
                 "add_inputs_at_frame requires points or boxes",

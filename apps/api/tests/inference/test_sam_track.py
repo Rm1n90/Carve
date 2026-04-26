@@ -272,3 +272,17 @@ def test_add_object_endpoint_requires_points_or_boxes(db_session, monkeypatch) -
         headers=_hdr(token),
     )
     assert r.status_code == 422
+
+
+def test_add_object_validates_obj_id_upper_bound(db_session, monkeypatch) -> None:
+    """obj_id is capped at 256 to prevent unbounded session-state growth.
+    Larger values must be rejected at the HTTP boundary as 422 — Pydantic
+    schema-level validation, no model-service round-trip."""
+    client = _client(db_session)
+    token, aid = _setup_video_asset(client, monkeypatch)
+    r = client.post(
+        f"/assets/{aid}/sam-track/S-1/objects",
+        json={"frame_idx": 0, "obj_id": 1000, "points": [[1, 1]], "labels": [1]},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 422

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from vaa_model.sam.codec import encode_mask_rle
 from vaa_model.sam.predictor import autocast_ctx, get_sam_model
+from vaa_model.sam.sam3_adapter import ConceptModeError
 from vaa_model.sam.tracker import (
     TrackerSession,
     add_object_to_session,
@@ -47,7 +48,11 @@ class StartOut(BaseModel):
 
 class AddObjectIn(BaseModel):
     frame_idx: int = Field(ge=0)
-    obj_id: int = Field(ge=1)
+    # Cap obj_id at 256: tracking that many distinct objects in a single
+    # video session is already unusual, and the bound prevents a buggy or
+    # malicious caller from triggering unbounded dict growth in the
+    # tracker's per-session state.
+    obj_id: int = Field(ge=1, le=256)
     points: list[list[int]] = Field(default_factory=list)
     labels: list[int] = Field(default_factory=list)
     boxes: list[list[float]] = Field(default_factory=list)
@@ -154,6 +159,14 @@ def add_object(session_id: str, payload: AddObjectIn) -> AddObjectOut:
             labels=payload.labels or None,
             boxes=payload.boxes or None,
         )
+    except ConceptModeError as exc:
+        # The session was started in SAM 3 concept (text) mode; /objects
+        # is unsupported there. Map to 422 so the client knows the request
+        # is structurally invalid (vs. a 502 transient upstream error).
+        raise HTTPException(
+            status_code=422,
+            detail="add_object_unsupported_in_concept_mode",
+        ) from exc
     except Exception as exc:  # noqa: BLE001 — wrap upstream failure
         raise HTTPException(status_code=502, detail=f"add_object_failed: {exc!r}") from exc
     return AddObjectOut(obj_id=payload.obj_id, frame_idx=payload.frame_idx)

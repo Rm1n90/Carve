@@ -16,6 +16,13 @@ export interface AnnotationDraft {
   frameId: string | null;
   serverId: string | null;
   dirty: boolean;
+  /**
+   * Optional client-generated track identifier. Annotations sharing a
+   * trackId belong to the same tracked object across frames (e.g. a
+   * multi-object SAM tracking session emits one trackId per obj_id).
+   * Defaults to ``null`` for callers that don't track per-object groups.
+   */
+  trackId?: string | null;
 }
 
 interface State {

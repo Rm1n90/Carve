@@ -18,9 +18,10 @@ import { samTrackApi, type TrackFrameStep } from "@/api/sam_track";
  * The legacy single-object ``start({frameIdx, points, labels})`` shape stays
  * as a convenience wrapper that calls ``startEmpty()`` then ``addObjectAtFrame``.
  *
- * Note: ``AnnotationDraft`` does not carry a track_id field today, so the
- * generated track_id is grouped client-side only. Database persistence of
- * track_id is deferred to v1.5.
+ * Each generated ``track_id`` is forwarded into the ``AnnotationDraft``
+ * (via the optional ``trackId`` field) so the per-object grouping survives
+ * the save round-trip — the api-side ``AnnotationIn`` schema and the
+ * ``annotations.track_id`` column already accept it.
  */
 export class TrackPropagateTool {
   private sessionId: string | null = null;
@@ -149,8 +150,7 @@ export class TrackPropagateTool {
         if (!trackByObjId.has(obj.obj_id)) {
           trackByObjId.set(obj.obj_id, this.generateTrackId());
         }
-        // The track_id is generated for client-side grouping; AnnotationDraft
-        // does not yet surface it (deferred to v1.5).
+        const trackId = trackByObjId.get(obj.obj_id)!;
         useAnnotations.getState().add({
           tempId: this.generateTempId(),
           classId,
@@ -159,6 +159,7 @@ export class TrackPropagateTool {
           frameId: fid,
           serverId: null,
           dirty: true,
+          trackId,
         });
         count += 1;
       }

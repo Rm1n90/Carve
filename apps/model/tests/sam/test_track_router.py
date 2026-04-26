@@ -468,3 +468,79 @@ def test_start_with_no_points_creates_empty_session() -> None:
     )
     assert r.status_code == 200, r.text
     assert r.json()["session_id"]
+
+
+# --- HIGH #1: concept-mode guard for /objects -------------------------------
+
+
+class _ConceptModeFakeTracker:
+    """Fake whose ``add_inputs_at_frame`` always raises ``ConceptModeError``.
+
+    Tests the router-level mapping: a SAM 3 dispatcher in concept mode
+    rejects /objects calls with a typed error → the router maps that to
+    422 ``add_object_unsupported_in_concept_mode`` (instead of leaking
+    a 502 ``add_object_failed`` like other upstream failures)."""
+
+    def init_state(self, video_path):
+        return {"video": video_path, "mode": "concept"}
+
+    def add_new_points(self, state, frame_idx, points, labels):
+        return None, None, None
+
+    def add_inputs_at_frame(
+        self,
+        inference_state,
+        frame_idx,
+        obj_id,
+        points=None,
+        labels=None,
+        boxes=None,
+    ):
+        from vaa_model.sam.sam3_adapter import ConceptModeError
+
+        raise ConceptModeError(
+            "/objects is not supported in concept (text) mode",
+        )
+
+    def propagate_in_video(self, state):
+        if False:
+            yield  # empty generator
+
+
+def test_add_object_returns_422_in_sam3_concept_mode() -> None:
+    """When a session was started in SAM 3 concept (text) mode, /objects
+    must return 422 ``add_object_unsupported_in_concept_mode`` rather than
+    silently corrupting the session."""
+    tracker_mod.set_test_tracker_factory(lambda: _ConceptModeFakeTracker())
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    ).json()["session_id"]
+
+    r = client.post(
+        f"/sam-track/{sid}/objects",
+        json={"frame_idx": 0, "obj_id": 1, "points": [[1, 1]], "labels": [1]},
+    )
+    assert r.status_code == 422
+    assert "add_object_unsupported_in_concept_mode" in r.text
+
+
+# --- HIGH #3: obj_id upper bound (model side) -------------------------------
+
+
+def test_add_object_validates_obj_id_upper_bound() -> None:
+    """obj_id is capped at 256 — larger values must be rejected as 422 to
+    prevent unbounded session-state growth."""
+    tracker_mod.set_test_tracker_factory(lambda: _MultiObjectFakeTracker())
+    client = _client()
+    sid = client.post(
+        "/sam-track/start",
+        json={"video_url": "https://fake/v.mp4"},
+    ).json()["session_id"]
+
+    r = client.post(
+        f"/sam-track/{sid}/objects",
+        json={"frame_idx": 0, "obj_id": 1000, "points": [[1, 1]], "labels": [1]},
+    )
+    assert r.status_code == 422

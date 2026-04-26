@@ -178,7 +178,11 @@ class TrackStartIn(BaseModel):
 
 class TrackAddObjectIn(BaseModel):
     frame_idx: int = Field(ge=0)
-    obj_id: int = Field(ge=1)
+    # Cap obj_id at 256: tracking that many distinct objects in a single
+    # video session is already unusual, and the bound prevents a buggy or
+    # malicious caller from triggering unbounded session-state growth on
+    # the model side.
+    obj_id: int = Field(ge=1, le=256)
     points: list[list[int]] = Field(default_factory=list)
     labels: list[int] = Field(default_factory=list)
     boxes: list[list[float]] = Field(default_factory=list)

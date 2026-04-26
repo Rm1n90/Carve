@@ -224,6 +224,68 @@ describe("TrackPropagateTool", () => {
     expect(trackCounter).toBe(2);
   });
 
+  it("commit passes per-obj track_id to the annotation store", async () => {
+    (samTrackApi.start as any).mockResolvedValue({
+      session_id: "S-1",
+      mask_at_start: { counts: "", size: [0, 0] },
+    });
+    (samTrackApi.addObject as any).mockImplementation(
+      async (_aid: string, _sid: string, body: any) => ({
+        obj_id: body.obj_id,
+        frame_idx: body.frame_idx,
+      }),
+    );
+    (samTrackApi.step as any).mockResolvedValue({
+      steps: [
+        {
+          frame_idx: 0,
+          objects: [
+            { obj_id: 1, counts: "0,2", size: [4, 4], score: 1.0 },
+            { obj_id: 2, counts: "0,3", size: [4, 4], score: 0.9 },
+          ],
+        },
+        {
+          frame_idx: 1,
+          objects: [
+            { obj_id: 1, counts: "0,4", size: [4, 4], score: 1.0 },
+            { obj_id: 2, counts: "0,5", size: [4, 4], score: 0.8 },
+          ],
+        },
+      ],
+    });
+    let trackCounter = 0;
+    let tempCounter = 0;
+    const tool = new TrackPropagateTool(
+      "a-1",
+      () => "c-active",
+      () => `tr-${++trackCounter}`,
+      () => `t-${++tempCounter}`,
+    );
+    await tool.startEmpty();
+    await tool.addObjectAtFrame(0, [[1, 1]], [1], "c-A");
+    await tool.addObjectAtFrame(0, [[2, 2]], [1], "c-B");
+    await tool.step(2);
+    tool.commit({ 0: "frame-0", 1: "frame-1" });
+
+    const drafts = Object.values(useAnnotations.getState().byId);
+    // Each obj_id has its own track_id; 4 drafts total, 2 per obj_id.
+    const trackIds = drafts.map((d) => d.trackId);
+    expect(trackIds.every((t) => t !== null && t !== undefined)).toBe(true);
+    // All drafts whose classId === "c-A" share one track_id (obj_id=1).
+    const aTracks = new Set(
+      drafts.filter((d) => d.classId === "c-A").map((d) => d.trackId),
+    );
+    const bTracks = new Set(
+      drafts.filter((d) => d.classId === "c-B").map((d) => d.trackId),
+    );
+    expect(aTracks.size).toBe(1);
+    expect(bTracks.size).toBe(1);
+    // Different obj_ids must end up with different track_ids.
+    const [aOnly] = aTracks;
+    const [bOnly] = bTracks;
+    expect(aOnly).not.toBe(bOnly);
+  });
+
   it("commit drops frames that are not in the frameId map", async () => {
     (samTrackApi.start as any).mockResolvedValue({
       session_id: "S-1",
