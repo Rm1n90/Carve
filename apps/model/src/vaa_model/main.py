@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from vaa_model.gpu import get_device
+from vaa_model.sam.router import router as sam_router
 from vaa_model.yolo.router import router as yolo_router
 
 
@@ -14,11 +15,12 @@ def create_app() -> FastAPI:
     @app.get("/capabilities")
     def capabilities() -> dict:
         return {
-            "models": ["yolo"],
+            "models": ["yolo", "sam"],
             "device": get_device(),
         }
 
     app.include_router(yolo_router)
+    app.include_router(sam_router)
     return app
 
 
