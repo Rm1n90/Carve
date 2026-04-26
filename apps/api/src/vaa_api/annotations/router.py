@@ -107,6 +107,22 @@ def batch(
     )
 
 
+def _resolve_annotation_for_user(db: Session, user: User, annotation_id: uuid.UUID):
+    """Look up the annotation only after confirming task visibility.
+    Returns (annotation, task) or raises 404 for both not-found and not-visible
+    so existence isn't leaked to unauthorized callers (IDOR mitigation).
+    """
+    from vaa_api.annotations.models import Annotation
+    a = db.get(Annotation, annotation_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="annotation_not_found")
+    try:
+        task = _require_visible_task(db, user, a.task_id)
+    except HTTPException as exc:
+        raise HTTPException(status_code=404, detail="annotation_not_found") from exc
+    return a, task
+
+
 @ann_router.patch("/{annotation_id}", response_model=AnnotationOut)
 def patch_annotation(
     annotation_id: uuid.UUID,
@@ -114,11 +130,7 @@ def patch_annotation(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AnnotationOut:
-    from vaa_api.annotations.models import Annotation
-    a = db.get(Annotation, annotation_id)
-    if a is None:
-        raise HTTPException(status_code=404, detail="annotation_not_found")
-    task = _require_visible_task(db, user, a.task_id)
+    _a, task = _resolve_annotation_for_user(db, user, annotation_id)
     try:
         a = AnnotationService(db).update(
             task=task, annotation_id=annotation_id,
@@ -138,11 +150,7 @@ def delete_annotation(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
-    from vaa_api.annotations.models import Annotation
-    a = db.get(Annotation, annotation_id)
-    if a is None:
-        raise HTTPException(status_code=404, detail="annotation_not_found")
-    task = _require_visible_task(db, user, a.task_id)
+    _a, task = _resolve_annotation_for_user(db, user, annotation_id)
     try:
         AnnotationService(db).delete(task=task, annotation_id=annotation_id)
     except AppError as exc:

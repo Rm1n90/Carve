@@ -62,6 +62,11 @@ class AnnotationService:
         a = self.session.get(Annotation, annotation_id)
         if a is None or a.task_id != task.id:
             raise AnnotationNotFound("annotation not found")
+        # Cross-project class reassignment must be rejected to match create() invariant.
+        if patch.get("class_id") is not None:
+            cls = self.session.get(Class, patch["class_id"])
+            if cls is None or cls.project_id != task.project_id:
+                raise AnnotationInvalid("class not in this project")
         if patch.get("geometry") is not None:
             _validate_geometry(a.kind, patch["geometry"])
             a.geometry = patch["geometry"]

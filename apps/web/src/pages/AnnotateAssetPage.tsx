@@ -122,6 +122,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     saveMutation.mutate(payload);
   }
 
+  // Keep a ref to the latest saveNow so subscribe/keydown effects always call
+  // the freshest closure (saveMutation is recreated each render).
+  const saveNowRef = useRef(saveNow);
+  saveNowRef.current = saveNow;
+
   // Debounced autosave on store changes
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -131,14 +136,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         clearTimeout(debounceRef.current);
       }
       debounceRef.current = setTimeout(() => {
-        saveNow();
+        saveNowRef.current();
       }, AUTOSAVE_DEBOUNCE_MS);
     });
     return () => {
       unsub();
       if (debounceRef.current !== null) clearTimeout(debounceRef.current);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Manual Cmd+S
@@ -146,12 +150,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     function handler(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        saveNow();
+        saveNowRef.current();
       }
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (assetQ.isLoading || classesQ.isLoading) {
