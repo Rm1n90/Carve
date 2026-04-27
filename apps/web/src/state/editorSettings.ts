@@ -18,6 +18,12 @@ import { create } from "zustand";
 export type ColorBy = "label" | "instance" | "group";
 export type LabelPosition = "auto" | "above" | "below" | "left" | "right";
 export type PlayerSpeed = "slowest" | "slow" | "usual" | "fast" | "fastest";
+/**
+ * Canvas backdrop pattern. ``"none"`` is the default — best for opaque
+ * images and transparent images alike. ``"subtle"`` and ``"visible"`` are
+ * opt-in. See ``.canvas-checker`` in ``global.css`` for the rendering.
+ */
+export type CanvasPattern = "none" | "subtle" | "visible";
 
 export interface LabelTextFlags {
   id: boolean;
@@ -34,6 +40,7 @@ export interface EditorSettings {
   resetZoomOnFrameChange: boolean;
   smoothImage: boolean;
   canvasBgColor: string;
+  canvasPattern: CanvasPattern;
 
   // Workspace tab
   autoSaveIntervalSeconds: number;
@@ -56,11 +63,12 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   resetZoomOnFrameChange: false,
   smoothImage: true,
   canvasBgColor: "#0F0F12",
+  canvasPattern: "none",
 
   // Workspace
   autoSaveIntervalSeconds: 1.5,
   colorBy: "label",
-  opacity: 30,
+  opacity: 25,
   selectedOpacity: 50,
   showLabelText: {
     id: false,

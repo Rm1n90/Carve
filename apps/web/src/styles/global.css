@@ -109,6 +109,10 @@
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", monospace;
   --font-serif: var(--font-display);
 
+  /* Canvas checker pattern color — only slightly lighter than --bg-canvas so
+     transparent images stay readable. See ``.canvas-checker`` rule. */
+  --canvas-checker-color: oklch(0.18 0.014 240);
+
   /* Tailwind v4 expects these */
   --color-bg: var(--bg-app);
   --color-fg: var(--text-primary);
@@ -167,6 +171,9 @@
   --shadow-elev-2: var(--shadow-2);
   --shadow-elev-3: var(--shadow-3);
   --shadow-popover: var(--shadow-2);
+
+  /* Light-theme checker color — barely visible on the light canvas. */
+  --canvas-checker-color: oklch(0.92 0 0);
 }
 
 /* ============================================================
@@ -360,25 +367,78 @@ input:where([type="number"])::-webkit-inner-spin-button {
 }
 
 /* ============================================================
-   Canvas checker pattern background
-   (Phase B will rework this; keep working in both themes for now)
+   Canvas backdrop — solid by default, opt-in pattern.
+
+   Phase B v2.4 fix: the previous 16px high-contrast checker
+   destroyed readability for transparent images. The pattern is
+   now CSS-variable-driven (theme-aware), tuned to be very subtle,
+   and only applied when ``data-pattern`` is set explicitly.
    ============================================================ */
 .canvas-checker {
   background-color: var(--bg-canvas);
-  background-image:
-    linear-gradient(45deg, oklch(0.20 0.012 240) 25%, transparent 25%),
-    linear-gradient(-45deg, oklch(0.20 0.012 240) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, oklch(0.20 0.012 240) 75%),
-    linear-gradient(-45deg, transparent 75%, oklch(0.20 0.012 240) 75%);
-  background-size: 16px 16px;
-  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
-  opacity: 1;
+  /* Default: solid backdrop — best for opaque images and
+     transparent images alike. */
+  background-image: none;
 }
 
-[data-theme="light"] .canvas-checker {
+.canvas-checker[data-pattern="subtle"] {
   background-image:
-    linear-gradient(45deg, #e5e7eb 25%, transparent 25%),
-    linear-gradient(-45deg, #e5e7eb 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #e5e7eb 75%),
-    linear-gradient(-45deg, transparent 75%, #e5e7eb 75%);
+    linear-gradient(
+      45deg,
+      var(--canvas-checker-color) 25%,
+      transparent 25%
+    ),
+    linear-gradient(
+      -45deg,
+      var(--canvas-checker-color) 25%,
+      transparent 25%
+    ),
+    linear-gradient(
+      45deg,
+      transparent 75%,
+      var(--canvas-checker-color) 75%
+    ),
+    linear-gradient(
+      -45deg,
+      transparent 75%,
+      var(--canvas-checker-color) 75%
+    );
+  background-size: 32px 32px;
+  background-position: 0 0, 0 16px, 16px -16px, -16px 0;
+}
+
+.canvas-checker[data-pattern="visible"] {
+  background-image:
+    linear-gradient(
+      45deg,
+      var(--canvas-checker-color) 25%,
+      transparent 25%
+    ),
+    linear-gradient(
+      -45deg,
+      var(--canvas-checker-color) 25%,
+      transparent 25%
+    ),
+    linear-gradient(
+      45deg,
+      transparent 75%,
+      var(--canvas-checker-color) 75%
+    ),
+    linear-gradient(
+      -45deg,
+      transparent 75%,
+      var(--canvas-checker-color) 75%
+    );
+  background-size: 24px 24px;
+  background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+}
+
+/* Light theme — bump the contrast a touch on the visible variant
+   so the squares are still discernible on a near-white surface. */
+[data-theme="light"] .canvas-checker[data-pattern="visible"] {
+  background-image:
+    linear-gradient(45deg, oklch(0.88 0 0) 25%, transparent 25%),
+    linear-gradient(-45deg, oklch(0.88 0 0) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, oklch(0.88 0 0) 75%),
+    linear-gradient(-45deg, transparent 75%, oklch(0.88 0 0) 75%);
 }

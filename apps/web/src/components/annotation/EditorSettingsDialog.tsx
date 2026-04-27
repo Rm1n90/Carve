@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/Dialog";
 import {
   useEditorSettings,
+  type CanvasPattern,
   type ColorBy,
   type LabelPosition,
   type LabelTextFlags,
@@ -43,6 +44,12 @@ const COLOR_BYS: { value: ColorBy; label: string }[] = [
   { value: "label", label: "Label" },
   { value: "instance", label: "Instance" },
   { value: "group", label: "Group" },
+];
+
+const CANVAS_PATTERNS: { value: CanvasPattern; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "subtle", label: "Subtle" },
+  { value: "visible", label: "Visible" },
 ];
 
 const LABEL_TEXT_KEYS: { key: keyof LabelTextFlags; label: string }[] = [
@@ -299,7 +306,41 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
               testId="setting-smoothImage"
             />
 
-            <Field label="Canvas background color">
+            <Field
+              label="Canvas backdrop"
+              hint="Optional pattern for spotting transparency. Default is solid."
+            >
+              <div
+                className="flex gap-2"
+                role="radiogroup"
+                aria-label="Canvas backdrop"
+              >
+                {CANVAS_PATTERNS.map((p) => (
+                  <label
+                    key={p.value}
+                    className={cn(
+                      "px-2.5 h-8 inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border text-[12.5px] cursor-pointer",
+                      s.canvasPattern === p.value
+                        ? "border-[var(--accent)] bg-[var(--accent-bg)] text-[color:var(--accent)]"
+                        : "border-[var(--border-subtle)] text-[color:var(--text-secondary)] hover:border-[var(--border-strong)]",
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="canvasPattern"
+                      value={p.value}
+                      checked={s.canvasPattern === p.value}
+                      onChange={() => s.set("canvasPattern", p.value)}
+                      className="sr-only"
+                      data-testid={`setting-canvasPattern-${p.value}`}
+                    />
+                    {p.label}
+                  </label>
+                ))}
+              </div>
+            </Field>
+
+            <Field label="Backdrop color">
               <div className="flex items-center gap-2">
                 <input
                   type="color"

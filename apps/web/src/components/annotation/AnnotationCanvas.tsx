@@ -1201,9 +1201,10 @@ export function AnnotationCanvas({
     [toImageXY, frameId],
   );
 
-  // Subscribe to canvas bg color so changes from Settings → Player apply
-  // immediately. Selecting from the store ensures a re-render on change.
+  // Subscribe to canvas bg color + pattern so changes from Settings → Player
+  // apply immediately. Selecting from the store ensures a re-render on change.
   const canvasBg = useEditorSettings((s) => s.canvasBgColor);
+  const canvasPattern = useEditorSettings((s) => s.canvasPattern);
 
   return (
     <div
@@ -1211,6 +1212,7 @@ export function AnnotationCanvas({
       role="region"
       aria-label={`Annotation canvas (${tool})`}
       className="canvas-checker"
+      data-pattern={canvasPattern === "none" ? undefined : canvasPattern}
       style={{
         position: "absolute",
         inset: 0,
