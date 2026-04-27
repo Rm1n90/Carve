@@ -116,6 +116,10 @@ function SamModelPicker() {
   });
   const active = q.data?.active ?? "sam2.1-base+";
   const available = q.data?.available ?? [];
+  // The picker has no runtime mutation — switching SAM_MODEL requires a
+  // service restart. We treat a query error / empty available list as
+  // "model service is not reachable" and show a banner. (audit bug 8b)
+  const unreachable = !!q.error || (q.isFetched && available.length === 0);
 
   return (
     <Popover>
@@ -136,31 +140,42 @@ function SamModelPicker() {
           <ChevronDown className="h-3 w-3" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="min-w-[260px] p-1">
+      <PopoverContent align="end" className="min-w-[300px] p-1">
         <p className="px-2 py-1.5 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
           SAM model
         </p>
-        {available.length === 0 ? (
+        {unreachable && (
+          <div
+            data-testid="sam-picker-unreachable-banner"
+            className="mx-1 mb-1 px-2 py-2 text-[11.5px] rounded-[var(--radius-xs)] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)] flex items-start gap-1.5"
+          >
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 text-[color:var(--danger)] shrink-0" />
+            <span>
+              Model service is not running. Start it with
+              <code className="mx-1 px-1 py-0.5 rounded bg-[var(--bg-app)] text-[10.5px] font-mono">
+                docker compose --profile inference up -d
+              </code>
+              .
+            </span>
+          </div>
+        )}
+        {q.isLoading && !unreachable ? (
           <p className="px-2 py-2 text-[12px] text-[color:var(--text-tertiary)] italic">
             Loading…
           </p>
         ) : (
           available.map((name) => (
-            <button
+            <div
               key={name}
-              type="button"
-              onClick={() => {
-                window.alert(
-                  "To switch SAM variant: edit SAM_MODEL in the model service .env and restart it.",
-                );
-              }}
+              role="listitem"
+              aria-label={`${name}${name === active ? " (active)" : ""}`}
+              data-testid={`sam-variant-${name}`}
+              data-active={name === active ? "true" : undefined}
               className={cn(
                 "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
-                "text-[12.5px] tracking-tight cursor-pointer outline-none",
-                "hover:bg-[var(--bg-hover)] data-[active=true]:bg-[var(--accent-bg)]",
+                "text-[12.5px] tracking-tight outline-none",
+                name === active ? "bg-[var(--accent-bg)]" : "",
               )}
-              data-active={name === active ? "true" : undefined}
-              data-testid={`sam-variant-${name}`}
             >
               {name === active ? (
                 <Check className="h-3.5 w-3.5 text-[color:var(--accent)]" />
@@ -171,9 +186,25 @@ function SamModelPicker() {
               <span className="text-[10.5px] text-[color:var(--text-tertiary)]">
                 {VARIANT_NOTES[name] ?? ""}
               </span>
-            </button>
+              {name === active && (
+                <span className="text-[9.5px] uppercase tracking-[0.10em] px-1.5 py-0.5 rounded bg-[var(--accent)] text-white font-medium">
+                  active
+                </span>
+              )}
+            </div>
           ))
         )}
+        <p className="px-2 py-2 mt-1 border-t border-[var(--border-subtle)] text-[11px] text-[color:var(--text-tertiary)] leading-snug">
+          To change the active SAM variant, set{" "}
+          <code className="px-1 py-0.5 rounded bg-[var(--bg-subtle)] text-[10.5px] font-mono">
+            SAM_MODEL
+          </code>{" "}
+          in your model service{" "}
+          <code className="px-1 py-0.5 rounded bg-[var(--bg-subtle)] text-[10.5px] font-mono">
+            .env
+          </code>{" "}
+          and restart it.
+        </p>
       </PopoverContent>
     </Popover>
   );

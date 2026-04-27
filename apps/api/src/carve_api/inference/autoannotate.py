@@ -26,6 +26,13 @@ class AutoAnnotateModelFailed(AppError):
     code = "model_service_failed"
 
 
+class AutoAnnotateModelUnreachable(AppError):
+    """Model service is offline (DNS/connect/timeout)."""
+
+    http_status = 503
+    code = "model_service_unreachable"
+
+
 def _index_classes_by_lower_name(classes: list[Class]) -> dict[str, uuid.UUID]:
     return {c.name.lower(): c.id for c in classes}
 
@@ -65,12 +72,16 @@ def auto_annotate_asset(
     try:
         yolo_load(str(weight.id), presigned_url_for_weight)
     except ModelServiceError as exc:
+        if exc.status_code == 503:
+            raise AutoAnnotateModelUnreachable(f"yolo/load: {exc.body!r}") from exc
         raise AutoAnnotateModelFailed(f"yolo/load: {exc.body!r}") from exc
 
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
     try:
         result = yolo_predict(str(weight.id), image_b64)
     except ModelServiceError as exc:
+        if exc.status_code == 503:
+            raise AutoAnnotateModelUnreachable(f"yolo/predict: {exc.body!r}") from exc
         raise AutoAnnotateModelFailed(f"yolo/predict: {exc.body!r}") from exc
 
     frame_id = _resolve_frame_id(session, asset)

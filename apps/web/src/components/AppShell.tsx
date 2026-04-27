@@ -4,6 +4,7 @@ import { useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { TopBar } from "@/components/nav/TopBar";
 import { LeftNav } from "@/components/nav/LeftNav";
+import { Toaster } from "@/components/ui/Toaster";
 import { projectsApi } from "@/api/projects";
 
 /**
@@ -37,6 +38,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <TooltipProvider delayDuration={250}>
       <div className="flex h-screen flex-col bg-[var(--bg-app)] text-[color:var(--text-primary)]">
+        <Toaster />
         <TopBar crumbs={crumbs.length > 0 ? crumbs : undefined} />
         <div className="flex flex-1 min-h-0">
           <LeftNav />
@@ -56,7 +58,10 @@ export function AppShell({ children }: { children: ReactNode }) {
 export function AppShellBleed({ children }: { children: ReactNode }) {
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-app)]">{children}</div>
+      <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-app)]">
+        <Toaster />
+        {children}
+      </div>
     </TooltipProvider>
   );
 }

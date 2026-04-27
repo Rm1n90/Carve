@@ -1,10 +1,11 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2, Plus } from "lucide-react";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
+import { nextHexForIdx } from "@/lib/swatch";
 
 export function ClassesEditor({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
@@ -22,14 +23,22 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
   });
 
+  const classCount = q.data?.length ?? 0;
   const [name, setName] = useState("");
-  const [color, setColor] = useState("#6366f1");
+  const [color, setColor] = useState<string>(() => nextHexForIdx(classCount));
   const nextIdx = (q.data ?? []).reduce((m, c) => Math.max(m, c.idx + 1), 0);
+
+  // Track the next-up palette slot so successive adds get distinct colors.
+  // Runs only when the count changes (after fetch / create / delete).
+  useEffect(() => {
+    setColor(nextHexForIdx(classCount));
+  }, [classCount]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     await create.mutateAsync({ idx: nextIdx, name, color });
     setName("");
+    setColor(nextHexForIdx(classCount + 1));
   }
 
   return (

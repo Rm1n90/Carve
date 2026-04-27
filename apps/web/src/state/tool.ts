@@ -29,7 +29,9 @@ const DEFAULT_VISIBILITY: VisibilityFlags = {
   labels: true,
   pixels: true,
   crosshairs: false,
-  thumbnails: false,
+  // Thumbnails are on by default in v2.1 so users can navigate between assets
+  // without needing to discover the visibility menu. See audit bug 3 / D.
+  thumbnails: true,
 };
 
 export const useTool = create<ToolState>((set) => ({

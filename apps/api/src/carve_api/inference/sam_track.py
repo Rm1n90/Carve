@@ -17,6 +17,13 @@ class SamTrackFailed(AppError):
     code = "sam_track_failed"
 
 
+class SamTrackUnreachable(AppError):
+    """Model service is offline (DNS/connect/timeout)."""
+
+    http_status = 503
+    code = "model_service_unreachable"
+
+
 class SamTrackSessionMissing(AppError):
     http_status = 404
     code = "sam_track_session_not_found"
@@ -39,6 +46,8 @@ def start(
     try:
         return _sam_track_start(url, frame_idx, points, labels, text=text)
     except ModelServiceError as exc:
+        if exc.status_code == 503:
+            raise SamTrackUnreachable(f"start: {exc.body!r}") from exc
         raise SamTrackFailed(f"start: {exc.body!r}") from exc
 
 
@@ -55,6 +64,8 @@ def add_object(
     except ModelServiceError as exc:
         if exc.status_code == 404:
             raise SamTrackSessionMissing("session not found") from exc
+        if exc.status_code == 503:
+            raise SamTrackUnreachable(f"add_object: {exc.body!r}") from exc
         raise SamTrackFailed(f"add_object: {exc.body!r}") from exc
 
 
@@ -64,6 +75,8 @@ def step(session_id: str, frames: int) -> dict:
     except ModelServiceError as exc:
         if exc.status_code == 404:
             raise SamTrackSessionMissing("session not found") from exc
+        if exc.status_code == 503:
+            raise SamTrackUnreachable(f"step: {exc.body!r}") from exc
         raise SamTrackFailed(f"step: {exc.body!r}") from exc
 
 
@@ -71,4 +84,6 @@ def release(session_id: str) -> None:
     try:
         _sam_track_release(session_id)
     except ModelServiceError as exc:
+        if exc.status_code == 503:
+            raise SamTrackUnreachable(f"release: {exc.body!r}") from exc
         raise SamTrackFailed(f"release: {exc.body!r}") from exc

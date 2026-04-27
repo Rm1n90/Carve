@@ -25,6 +25,20 @@ class SamModelFailed(AppError):
     code = "sam_model_failed"
 
 
+class SamModelUnreachable(AppError):
+    """Model service is offline (DNS/connect/timeout) — distinct from 5xx.
+
+    Raised when the carve api can't even open a connection to the model
+    service (e.g. the docker-compose ``inference`` profile isn't running).
+    Maps to a 503 response with ``error: model_service_unreachable`` so the
+    SAM tool in the web app can show a clear "model service is offline"
+    toast instead of treating it as a generic upstream error.
+    """
+
+    http_status = 503
+    code = "model_service_unreachable"
+
+
 class SamEmbeddingMissing(AppError):
     http_status = 409
     code = "sam_embedding_missing"
@@ -78,6 +92,8 @@ def sam_encode_for_asset(asset: Asset) -> dict:
     try:
         result = sam_encode(b64)
     except ModelServiceError as exc:
+        if exc.status_code == 503:
+            raise SamModelUnreachable(f"encode: {exc.body!r}") from exc
         raise SamModelFailed(f"encode: {exc.body!r}") from exc
 
     if redis_client is not None:
@@ -99,4 +115,6 @@ def sam_decode_with_hash(image_hash: str, points: list[list[int]], labels: list[
     except ModelServiceError as exc:
         if exc.status_code == 409:
             raise SamEmbeddingMissing("embedding not loaded; call /sam/encode first") from exc
+        if exc.status_code == 503:
+            raise SamModelUnreachable(f"decode: {exc.body!r}") from exc
         raise SamModelFailed(f"decode: {exc.body!r}") from exc

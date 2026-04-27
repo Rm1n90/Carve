@@ -19,6 +19,15 @@ interface BatchOut {
   created: AnnotationOut[];
   updated: AnnotationOut[];
   deleted: string[];
+  /**
+   * Parallel to ``created`` — server echoes the client-supplied temp_id
+   * (or null when omitted). Lets the client correlate server IDs to
+   * draft state without iteration order. Audit bug M.
+   *
+   * Optional in the type so older API responses (which omit the field)
+   * fall through to the legacy correlation path.
+   */
+  created_temp_ids?: (string | null)[];
 }
 
 interface AnnotationIn {
@@ -28,6 +37,11 @@ interface AnnotationIn {
   geometry: Record<string, unknown>;
   track_id: string | null;
   z_order?: number;
+  /**
+   * Optional client-supplied identifier echoed back in the batch
+   * response under ``created_temp_ids``. See audit bug M.
+   */
+  temp_id?: string | null;
 }
 
 interface BatchUpdateIn {

@@ -29,6 +29,7 @@ import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
 import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/lib/cn";
+import { PALETTE_HEX, nextHexForIdx } from "@/lib/swatch";
 
 interface Props {
   classes: ClassRow[];
@@ -48,20 +49,8 @@ const KIND_ICON = {
   tag: Tag,
 } as const;
 
-const PALETTE = [
-  "#EF4444",
-  "#F59E0B",
-  "#EAB308",
-  "#22C55E",
-  "#10B981",
-  "#06B6D4",
-  "#3B82F6",
-  "#6366F1",
-  "#8B5CF6",
-  "#EC4899",
-  "#F43F5E",
-  "#64748B",
-];
+// PALETTE is now imported from lib/swatch.ts as PALETTE_HEX so all color
+// surfaces share the same deterministic order. See bug F in the v2.1 audit.
 
 function ColorPickerPopover({
   color,
@@ -88,7 +77,7 @@ function ColorPickerPopover({
         />
       </PopoverTrigger>
       <PopoverContent align="start" sideOffset={4} className="grid grid-cols-6 gap-1 p-2">
-        {PALETTE.map((c) => (
+        {PALETTE_HEX.map((c) => (
           <button
             key={c}
             type="button"
@@ -345,12 +334,15 @@ function ClassRowItem({
 function AddClassInline({
   onCreate,
   onCancel,
+  currentClassCount,
 }: {
   onCreate: (name: string, color: string) => void;
   onCancel: () => void;
+  /** Used to seed the next-up palette slot so successive adds get distinct colors. */
+  currentClassCount: number;
 }) {
   const [name, setName] = useState("");
-  const [color, setColor] = useState(PALETTE[0]);
+  const [color, setColor] = useState<string>(() => nextHexForIdx(currentClassCount));
   return (
     <div
       data-testid="add-class-inline"
@@ -619,6 +611,7 @@ export function ClassesPanel({
       <div className="border-t border-[var(--border-subtle)] p-2">
         {showAdd && onCreateClass ? (
           <AddClassInline
+            currentClassCount={classes.length}
             onCreate={(n, c) => {
               onCreateClass(n, c);
               setShowAdd(false);

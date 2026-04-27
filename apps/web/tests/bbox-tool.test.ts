@@ -2,9 +2,17 @@ import { describe, expect, it, beforeEach } from "vitest";
 
 import { useAnnotations } from "@/state/annotations";
 import { BboxTool } from "@/canvas/tools/BboxTool";
+import {
+  subscribeToasts,
+  _resetToastBusForTests,
+  type ToastEvent,
+} from "@/lib/toast";
 
 describe("BboxTool", () => {
-  beforeEach(() => useAnnotations.getState().reset([]));
+  beforeEach(() => {
+    useAnnotations.getState().reset([]);
+    _resetToastBusForTests();
+  });
 
   it("creates one bbox after a sufficient drag", () => {
     let n = 0;
@@ -37,6 +45,30 @@ describe("BboxTool", () => {
     tool.onPointerMove({ x: 50, y: 50 });
     const created = tool.onPointerUp({ x: 50, y: 50 });
     expect(created).toBe(false);
+  });
+
+  it("emits a 'Pick a class first' toast when drawing without an active class", () => {
+    const events: ToastEvent[] = [];
+    const unsub = subscribeToasts((e) => events.push(e));
+    const tool = new BboxTool(() => null, () => null);
+    tool.onPointerDown({ x: 0, y: 0 });
+    tool.onPointerMove({ x: 50, y: 50 });
+    tool.onPointerUp({ x: 50, y: 50 });
+    unsub();
+    expect(events).toHaveLength(1);
+    expect(events[0].message).toMatch(/pick a class/i);
+    expect(events[0].variant).toBe("warning");
+  });
+
+  it("does NOT emit a toast for a tiny drag below the threshold", () => {
+    const events: ToastEvent[] = [];
+    const unsub = subscribeToasts((e) => events.push(e));
+    const tool = new BboxTool(() => null, () => null);
+    tool.onPointerDown({ x: 0, y: 0 });
+    tool.onPointerMove({ x: 1, y: 1 });
+    tool.onPointerUp({ x: 1, y: 1 });
+    unsub();
+    expect(events).toHaveLength(0);
   });
 
   it("normalises reverse drag (right→left, bottom→top)", () => {

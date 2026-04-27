@@ -216,3 +216,103 @@ def test_z_order_unspecified_remains_default(db_session, monkeypatch) -> None:
     rb = client.post(f"/tasks/{tid}/annotations:batch", json=payload, headers=_hdr(token))
     assert rb.status_code == 200, rb.text
     assert rb.json()["created"][0]["z_order"] == 0
+
+
+# --- Audit bug L: per-kind geometry validation rejects bad inputs at the edge.
+
+
+def test_bbox_negative_x_rejected_at_edge(db_session, monkeypatch) -> None:
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    r = client.post(
+        f"/tasks/{tid}/annotations",
+        json={"class_id": cid, "kind": "bbox",
+              "geometry": {"kind": "bbox", "x": -10, "y": 0, "w": 5, "h": 5}},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 422
+
+
+def test_polygon_with_two_points_rejected_at_edge(db_session, monkeypatch) -> None:
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    r = client.post(
+        f"/tasks/{tid}/annotations",
+        json={"class_id": cid, "kind": "polygon",
+              "geometry": {"kind": "polygon", "points": [[0, 0], [10, 10]]}},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 422
+
+
+def test_mask_with_empty_counts_rejected_at_edge(db_session, monkeypatch) -> None:
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    r = client.post(
+        f"/tasks/{tid}/annotations",
+        json={"class_id": cid, "kind": "mask",
+              "geometry": {"counts": "", "size": [100, 100]}},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 422
+
+
+def test_mask_with_zero_size_rejected_at_edge(db_session, monkeypatch) -> None:
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    r = client.post(
+        f"/tasks/{tid}/annotations",
+        json={"class_id": cid, "kind": "mask",
+              "geometry": {"counts": "abc", "size": [0, 100]}},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 422
+
+
+# --- Audit bug M: server echoes client temp_ids so the client doesn't need
+# order-based correlation when matching server IDs back to drafts.
+
+
+def test_batch_create_echoes_temp_ids(db_session, monkeypatch) -> None:
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    payload = {
+        "create": [
+            {"class_id": cid, "kind": "bbox",
+             "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 2, "h": 2},
+             "temp_id": "draft-alpha"},
+            {"class_id": cid, "kind": "bbox",
+             "geometry": {"kind": "bbox", "x": 3, "y": 3, "w": 4, "h": 4},
+             "temp_id": "draft-beta"},
+        ],
+        "update": [],
+        "delete": [],
+    }
+    r = client.post(f"/tasks/{tid}/annotations:batch", json=payload, headers=_hdr(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "created_temp_ids" in body
+    assert body["created_temp_ids"] == ["draft-alpha", "draft-beta"]
+    # Sanity: correlate server IDs to temp IDs by index.
+    assert len(body["created"]) == 2
+    assert body["created"][0]["geometry"]["x"] == 1
+    assert body["created"][1]["geometry"]["x"] == 3
+
+
+def test_batch_create_temp_id_optional_defaults_null(db_session, monkeypatch) -> None:
+    """Backward compat: clients that don't send temp_id still work; the
+    server echoes ``null`` for those entries."""
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    payload = {
+        "create": [
+            {"class_id": cid, "kind": "bbox",
+             "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 2, "h": 2}},
+        ],
+        "update": [],
+        "delete": [],
+    }
+    r = client.post(f"/tasks/{tid}/annotations:batch", json=payload, headers=_hdr(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created_temp_ids"] == [None]
