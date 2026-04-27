@@ -1,16 +1,20 @@
 import zipfile
 from io import BytesIO
+from typing import Literal
 
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import distinct, exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from carve_api.annotations.models import Annotation
 from carve_api.assets.models import Asset, AssetKind, Frame
 from carve_api.errors import AppError
 from carve_api.projects.models import Task, TaskKind
 from carve_api.storage.client import MinioClient
 from carve_api.storage.hashing import stream_xxh3_128
+
+AssetStatusFilter = Literal["all", "annotated", "unannotated"]
 
 _IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp"}
 _VIDEO_MIMES = {"video/mp4", "video/webm", "video/quicktime"}
@@ -76,10 +80,83 @@ class AssetService:
             self.session.flush()
         return asset
 
-    def list_for_task(self, *, task: Task) -> list[Asset]:
-        return list(self.session.execute(
-            select(Asset).where(Asset.task_id == task.id).order_by(Asset.created_at)
-        ).scalars())
+    def list_for_task(
+        self,
+        *,
+        task: Task,
+        limit: int | None = None,
+        offset: int = 0,
+        q: str | None = None,
+        status: AssetStatusFilter = "all",
+    ) -> list[Asset]:
+        stmt = self._task_assets_query(task=task, q=q, status=status).order_by(Asset.created_at)
+        if offset:
+            stmt = stmt.offset(offset)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return list(self.session.execute(stmt).scalars())
+
+    def count_for_task(
+        self,
+        *,
+        task: Task,
+        q: str | None = None,
+        status: AssetStatusFilter = "all",
+    ) -> int:
+        """Total number of assets matching the same filters as ``list_for_task``."""
+        sub = self._task_assets_query(task=task, q=q, status=status).subquery()
+        return int(self.session.execute(select(func.count()).select_from(sub)).scalar() or 0)
+
+    def annotated_count_for_task(self, *, task: Task) -> int:
+        """Number of assets in ``task`` that have at least one annotation row.
+
+        Uses a single SQL query (DISTINCT asset id via the frames join) so
+        it stays cheap even with 10K+ assets.
+        """
+        stmt = (
+            select(func.count(distinct(Asset.id)))
+            .select_from(Asset)
+            .join(Frame, Frame.asset_id == Asset.id)
+            .join(Annotation, Annotation.frame_id == Frame.id)
+            .where(Asset.task_id == task.id)
+        )
+        return int(self.session.execute(stmt).scalar() or 0)
+
+    def thumbnail_url_for(self, asset: Asset, *, expires_seconds: int = 600) -> str | None:
+        """Presigned URL for the cached 200x200 JPEG thumbnail.
+
+        Returns ``None`` when no thumbnail has been generated yet so the
+        UI can render a skeleton or fall back to a placeholder. Image
+        assets fall back to the original (still useful but heavier) when
+        the thumbnail key is unset; video assets return ``None`` since
+        the original video bytes aren't a usable preview.
+        """
+        if asset.thumbnail_minio_key:
+            return self.storage.presigned_get(
+                asset.thumbnail_minio_key, expires_seconds=expires_seconds
+            )
+        if asset.kind == AssetKind.image:
+            ext = asset.original_name.rsplit(".", 1)[-1] if "." in asset.original_name else "bin"
+            return self.storage.presigned_get(
+                f"assets/{asset.xxh3_128}/original.{ext}", expires_seconds=expires_seconds
+            )
+        return None
+
+    def _task_assets_query(
+        self, *, task: Task, q: str | None, status: AssetStatusFilter
+    ):
+        stmt = select(Asset).where(Asset.task_id == task.id)
+        if q:
+            stmt = stmt.where(Asset.original_name.ilike(f"%{q}%"))
+        if status != "all":
+            ann_exists = exists().where(
+                Annotation.frame_id == Frame.id, Frame.asset_id == Asset.id
+            )
+            if status == "annotated":
+                stmt = stmt.where(ann_exists)
+            else:  # "unannotated"
+                stmt = stmt.where(~ann_exists)
+        return stmt
 
     def delete(self, *, asset: Asset) -> None:
         ext = asset.original_name.rsplit(".", 1)[-1] if "." in asset.original_name else "bin"
