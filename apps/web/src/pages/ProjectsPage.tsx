@@ -45,7 +45,7 @@ export function ProjectsPage() {
           </p>
         </div>
         <Button
-          variant={showForm ? "secondary" : "success"}
+          variant={showForm ? "secondary" : "primary"}
           size="md"
           leftIcon={<Plus className="h-4 w-4" />}
           onClick={() => setShowForm((s) => !s)}
@@ -118,7 +118,7 @@ export function ProjectsPage() {
           </span>
           <div className="mt-1">
             <Button
-              variant="success"
+              variant="primary"
               size="md"
               leftIcon={<Plus className="h-4 w-4" />}
               onClick={() => setShowForm(true)}

@@ -1,14 +1,37 @@
 <!doctype html>
-<html lang="en" class="h-full">
+<html lang="en" class="h-full" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#1e1f24" />
     <meta
       name="description"
       content="Carve — visual annotation, on your own infrastructure."
     />
     <title>Carve</title>
+    <script>
+      // Pre-paint theme hydration. Runs before React mounts so the
+      // first paint already reflects the user's preference, avoiding
+      // a flash-of-wrong-theme on refresh.
+      (function () {
+        try {
+          var stored = localStorage.getItem("carve.theme.v1");
+          var pref =
+            stored === "light" || stored === "dark" || stored === "system"
+              ? stored
+              : "dark";
+          var resolved =
+            pref === "system"
+              ? window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+              : pref;
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (_e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
   </head>
   <body class="h-full antialiased">
     <div id="root"></div>

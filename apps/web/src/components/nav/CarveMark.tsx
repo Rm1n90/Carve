@@ -9,7 +9,7 @@ export function CarveMark({ className }: { className?: string }) {
     <span className={cn("inline-flex items-center gap-2", className)}>
       <span
         aria-hidden
-        className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-white text-[13px] font-semibold tracking-tight"
+        className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[color:var(--accent-fg)] text-[13px] font-semibold tracking-tight"
       >
         C
       </span>

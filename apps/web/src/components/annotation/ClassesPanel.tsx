@@ -395,7 +395,7 @@ function AddClassInline({
           onClick={() => name.trim() && onCreate(name.trim(), color)}
           className={cn(
             "h-7 px-2.5 rounded-[var(--radius-sm)] text-[12px] font-medium",
-            "bg-[var(--accent)] text-white",
+            "bg-[var(--accent)] text-[color:var(--accent-fg)]",
             "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
             "enabled:hover:bg-[var(--accent-hover)]",
           )}

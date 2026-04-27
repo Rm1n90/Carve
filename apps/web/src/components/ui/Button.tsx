@@ -15,25 +15,29 @@ const buttonStyles = cva(
   {
     variants: {
       variant: {
+        // Default primary action — cyan accent with dark text for contrast.
         primary: [
-          "bg-[var(--accent)] text-white border-[var(--accent)]",
+          "bg-[var(--accent)] text-[color:var(--accent-fg)] border-[var(--accent)]",
           "hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]",
           "active:bg-[var(--accent-active)]",
         ],
+        // Quiet button — transparent surface + subtle border.
         secondary: [
-          "bg-[var(--bg-elev)] text-[color:var(--text-primary)] border-[var(--border-subtle)]",
+          "bg-transparent text-[color:var(--text-primary)] border-[var(--border-subtle)]",
           "hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)]",
         ],
         ghost: [
           "bg-transparent text-[color:var(--text-secondary)] border-transparent",
           "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
         ],
+        // Reserved for "commit" actions only — Save, Build, Commit final.
         success: [
-          "bg-[var(--success)] text-white border-[var(--success)]",
+          "bg-[var(--success)] text-[color:var(--success-fg)] border-[var(--success)]",
           "hover:bg-[var(--success-hover)] hover:border-[var(--success-hover)]",
+          "active:bg-[var(--success-active)]",
         ],
         danger: [
-          "bg-[var(--bg-elev)] text-[color:var(--danger)] border-[var(--border-subtle)]",
+          "bg-transparent text-[color:var(--danger)] border-[var(--border-subtle)]",
           "hover:bg-[var(--danger-bg)] hover:border-[var(--danger)]",
         ],
       },

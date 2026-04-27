@@ -1,15 +1,20 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   LogOut,
+  Monitor,
+  Moon,
   Settings as SettingsIcon,
+  Sun,
   User as UserIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAuth } from "@/auth/store";
 import { logout } from "@/auth/api";
+import { useTheme, type ThemePreference } from "@/components/theme/ThemeProvider";
 import { CarveMark } from "./CarveMark";
 import { cn } from "@/lib/cn";
 
@@ -29,9 +34,20 @@ interface TopBarProps {
  * Top chrome — 48px tall white bar. Wordmark left, optional breadcrumb,
  * action button + avatar right.
  */
+const THEME_OPTIONS: ReadonlyArray<{
+  value: ThemePreference;
+  label: string;
+  Icon: typeof Moon;
+}> = [
+  { value: "dark", label: "Dark", Icon: Moon },
+  { value: "light", label: "Light", Icon: Sun },
+  { value: "system", label: "System", Icon: Monitor },
+];
+
 export function TopBar({ crumbs, rightAction }: TopBarProps) {
   const user = useAuth((s) => s.user);
   const nav = useNavigate();
+  const { theme, setTheme } = useTheme();
 
   const userInitial = user?.email ? user.email[0]?.toUpperCase() : "?";
 
@@ -128,6 +144,40 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
                   <SettingsIcon className="h-3.5 w-3.5" /> Settings
                 </Link>
               </DropdownMenu.Item>
+              <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
+              <DropdownMenu.Label
+                className="px-2 pt-1.5 pb-1 text-[10.5px] uppercase tracking-wider text-[color:var(--text-tertiary)]"
+              >
+                Theme
+              </DropdownMenu.Label>
+              <div role="radiogroup" aria-label="Theme">
+                {THEME_OPTIONS.map((opt) => {
+                  const selected = theme === opt.value;
+                  return (
+                    <DropdownMenu.Item
+                      key={opt.value}
+                      data-testid={`theme-option-${opt.value}`}
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      onSelect={(event) => {
+                        // Keep the menu open after selection so users can
+                        // preview themes before dismissing.
+                        event.preventDefault();
+                        setTheme(opt.value);
+                      }}
+                      className={cn(
+                        "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px]",
+                        "hover:bg-[var(--bg-hover)] cursor-pointer outline-none",
+                        selected && "text-[color:var(--accent)]",
+                      )}
+                    >
+                      <opt.Icon className="h-3.5 w-3.5" aria-hidden />
+                      <span className="flex-1">{opt.label}</span>
+                      {selected && <Check className="h-3.5 w-3.5" aria-hidden />}
+                    </DropdownMenu.Item>
+                  );
+                })}
+              </div>
               <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
               <DropdownMenu.Item
                 onSelect={() => {

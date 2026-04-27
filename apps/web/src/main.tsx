@@ -23,6 +23,7 @@ import {
   settingsWorkspaceRoute,
   trashRoute,
 } from "./routes/phase2";
+import { ThemeProvider } from "./components/theme/ThemeProvider";
 import "./styles/global.css";
 
 const routeTree = rootRoute.addChildren([
@@ -58,8 +59,10 @@ const el = document.getElementById("root");
 if (!el) throw new Error("root element not found");
 createRoot(el).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </ThemeProvider>
   </React.StrictMode>,
 );
