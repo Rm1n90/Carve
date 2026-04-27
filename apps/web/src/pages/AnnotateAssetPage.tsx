@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import * as Tabs from "@radix-ui/react-tabs";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
-import { Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 
 import { AnnotationCanvas } from "@/components/annotation/AnnotationCanvas";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
@@ -15,6 +16,7 @@ import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip
 import { TopBar } from "@/components/nav/TopBar";
 import { LeftNav } from "@/components/nav/LeftNav";
 import { BottomBar } from "@/components/nav/BottomBar";
+import { IconButton } from "@/components/ui/IconButton";
 import { annotationsApi, type BatchPayload } from "@/api/annotations";
 import { assetsApi } from "@/api/assets";
 import { classesApi } from "@/api/classes";
@@ -53,6 +55,7 @@ function ThumbnailStripGate({
 
 export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
   const [zoomPct, setZoomPct] = useState(100);
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
@@ -70,6 +73,14 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     queryFn: () => classesApi.listForProject(projectId),
   });
 
+  // List of all assets in this task — drives ArrowLeft/ArrowRight navigation
+  // and the prev/next IconButtons in the toolbar. The same query is consumed
+  // by AssetThumbnailStrip below; React Query dedupes by key.
+  const taskAssetsQ = useQuery({
+    queryKey: ["task-assets", taskId],
+    queryFn: () => assetsApi.listForTask(taskId),
+  });
+
   // For images, the single Frame for the asset.
   const frameId: string | null = null;
 
@@ -85,14 +96,36 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     }
   }, [annotationsQ.data]);
 
-  // Publish class colors to the canvas via a window event so the canvas can
-  // render shapes in the correct color without a context dependency.
-  useEffect(() => {
-    if (!classesQ.data) return;
-    const map: Record<string, string> = {};
-    for (const c of classesQ.data) map[c.id] = c.color;
-    window.dispatchEvent(new CustomEvent("carve:class-colors", { detail: map }));
+  // Class colors flow into the canvas as a prop (formerly a CustomEvent —
+  // see audit bug H for the timing race that motivated this change).
+  const classColorMap = useMemo<Record<string, string>>(() => {
+    if (!classesQ.data) return {};
+    const m: Record<string, string> = {};
+    for (const c of classesQ.data) m[c.id] = c.color;
+    return m;
   }, [classesQ.data]);
+
+  // Prev/next asset navigation — wraps both the ArrowLeft/ArrowRight handler
+  // below and the IconButtons in the editor top bar.
+  const taskAssets = taskAssetsQ.data ?? [];
+  const currentAssetIdx = taskAssets.findIndex((a) => a.id === assetId);
+  const prevAsset = currentAssetIdx > 0 ? taskAssets[currentAssetIdx - 1] : null;
+  const nextAsset =
+    currentAssetIdx >= 0 && currentAssetIdx < taskAssets.length - 1
+      ? taskAssets[currentAssetIdx + 1]
+      : null;
+  const navAssetRef = useRef<{ prev: typeof prevAsset; next: typeof nextAsset }>({
+    prev: prevAsset,
+    next: nextAsset,
+  });
+  navAssetRef.current = { prev: prevAsset, next: nextAsset };
+
+  function goToAsset(targetId: string) {
+    void navigate({
+      to: "/projects/$projectId/tasks/$taskId/assets/$assetId",
+      params: { projectId, taskId, assetId: targetId },
+    });
+  }
 
   // Reactive dirty count from store
   const byId = useAnnotations((s) => s.byId);
@@ -238,6 +271,23 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         }
         return;
       }
+      // Prev/next asset navigation. Stop at boundaries (no wrap).
+      if (!meta && e.key === "ArrowLeft") {
+        const target = navAssetRef.current.prev;
+        if (target) {
+          e.preventDefault();
+          goToAsset(target.id);
+        }
+        return;
+      }
+      if (!meta && e.key === "ArrowRight") {
+        const target = navAssetRef.current.next;
+        if (target) {
+          e.preventDefault();
+          goToAsset(target.id);
+        }
+        return;
+      }
       // Esc clears selection
       if (e.key === "Escape") {
         useAnnotations.getState().clearSelection();
@@ -245,7 +295,8 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, taskId]);
 
   const crumbs = useMemo(() => {
     const c: { label: string; to?: string }[] = [{ label: "Projects", to: "/projects" }];
@@ -282,7 +333,38 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   return (
     <TooltipProvider delayDuration={250}>
     <div className="flex h-screen flex-col bg-[var(--bg-app)] overflow-hidden">
-      <TopBar crumbs={crumbs} />
+      <TopBar
+        crumbs={crumbs}
+        rightAction={
+          taskAssets.length > 1 ? (
+            <div
+              data-testid="asset-nav-buttons"
+              className="flex items-center gap-1 mr-2"
+            >
+              <IconButton
+                aria-label="Previous asset"
+                size="sm"
+                disabled={!prevAsset}
+                onClick={() => prevAsset && goToAsset(prevAsset.id)}
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </IconButton>
+              <span className="font-mono text-[11px] tabular-nums text-[color:var(--text-tertiary)] px-1">
+                {currentAssetIdx >= 0 ? currentAssetIdx + 1 : "?"}
+                <span className="opacity-60"> / {taskAssets.length}</span>
+              </span>
+              <IconButton
+                aria-label="Next asset"
+                size="sm"
+                disabled={!nextAsset}
+                onClick={() => nextAsset && goToAsset(nextAsset.id)}
+              >
+                <ChevronRight className="h-4 w-4" />
+              </IconButton>
+            </div>
+          ) : null
+        }
+      />
 
       <div className="flex flex-1 min-h-0">
         <LeftNav />
@@ -338,6 +420,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 frameId={frameId}
                 assetId={assetId}
                 onZoomChange={setZoomPct}
+                classColorMap={classColorMap}
               />
               <div className="absolute top-2 right-2 z-20">
                 <KeyboardCheatSheet />

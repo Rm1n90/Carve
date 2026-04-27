@@ -13,7 +13,29 @@ vi.mock("@/api/assets", () => ({
       },
       url: "https://fake/a.png",
     }),
+    listForTask: vi.fn().mockResolvedValue([
+      { id: "a-1", task_id: "t-1", kind: "image", xxh3_128: "x", mime: "image/png",
+        size_bytes: 1, width: 200, height: 150, frames: 1, original_name: "a.png",
+        created_at: "2026-04-25" },
+      { id: "a-2", task_id: "t-1", kind: "image", xxh3_128: "y", mime: "image/png",
+        size_bytes: 2, width: 200, height: 150, frames: 1, original_name: "b.png",
+        created_at: "2026-04-26" },
+    ]),
   },
+}));
+
+// useNavigate / useRouterState require a router; stub the bits the page uses.
+const navigateMock = vi.fn();
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => navigateMock,
+  Link: ({ children, to }: { children: React.ReactNode; to?: string }) => (
+    <a href={to}>{children}</a>
+  ),
+  useRouterState: ({
+    select,
+  }: {
+    select: (s: { location: { pathname: string } }) => unknown;
+  }) => select({ location: { pathname: "/projects/p-1/tasks/t-1/assets/a-1" } }),
 }));
 
 vi.mock("@/api/classes", () => ({
@@ -92,6 +114,7 @@ function wrap(node: React.ReactNode) {
 describe("AnnotateAssetPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    navigateMock.mockReset();
     useAnnotations.getState().reset([]);
   });
 
@@ -116,6 +139,32 @@ describe("AnnotateAssetPage", () => {
     ).toBeGreaterThan(0);
     // Canvas mount point (mocked above as a div with this testid).
     expect(screen.getByTestId("annotation-canvas")).toBeInTheDocument();
+  });
+
+  it("ArrowRight navigates to the next asset in the task list", async () => {
+    render(wrap(<AnnotateAssetPage projectId="p-1" taskId="t-1" assetId="a-1" />));
+    await screen.findByText("a.png");
+    // Wait for the task-assets query to resolve so navAssetRef has the
+    // up-to-date prev/next pair.
+    await waitFor(() => {
+      expect(navigateMock).not.toHaveBeenCalled();
+    });
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    await waitFor(() => {
+      expect(navigateMock).toHaveBeenCalled();
+    });
+    const arg = navigateMock.mock.calls[navigateMock.mock.calls.length - 1][0];
+    expect(arg.params.assetId).toBe("a-2");
+    expect(arg.params.taskId).toBe("t-1");
+    expect(arg.params.projectId).toBe("p-1");
+  });
+
+  it("ArrowLeft at the first asset does not navigate (no wrap)", async () => {
+    render(wrap(<AnnotateAssetPage projectId="p-1" taskId="t-1" assetId="a-1" />));
+    await screen.findByText("a.png");
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    // No navigate call (we're already at the first asset).
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 
   it("Save now triggers annotationsApi.batch with current dirty drafts", async () => {

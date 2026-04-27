@@ -44,7 +44,6 @@ const GROUPS: ShortcutGroup[] = [
       { keys: ["←"], label: "Previous asset" },
       { keys: ["→"], label: "Next asset" },
       { keys: ["F"], label: "Fit to screen" },
-      { keys: ["Space", "drag"], label: "Pan canvas" },
     ],
   },
   {

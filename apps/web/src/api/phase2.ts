@@ -51,11 +51,32 @@ export interface Weight {
   created_at: string;
 }
 
+export interface UploadWeightInput {
+  name: string;
+  task_kind: "detect" | "segment" | "classify" | "pose";
+  /** Class names extracted from the YOLO model. Backend can also auto-detect. */
+  class_names: string[];
+  file: File;
+}
+
 export const weightsApi = {
   listWorkspace: async (): Promise<Weight[]> =>
     (await api.get<Weight[]>("/weights")).data,
   listForProject: async (projectId: string): Promise<Weight[]> =>
     (await api.get<Weight[]>(`/projects/${projectId}/weights`)).data,
+  upload: async (projectId: string, input: UploadWeightInput): Promise<Weight> => {
+    const fd = new FormData();
+    fd.append("name", input.name);
+    fd.append("task_kind", input.task_kind);
+    fd.append("class_names", JSON.stringify(input.class_names));
+    fd.append("file", input.file);
+    return (await api.post<Weight>(`/projects/${projectId}/weights`, fd, {
+      headers: { "Content-Type": "multipart/form-data" },
+    })).data;
+  },
+  delete: async (weightId: string): Promise<void> => {
+    await api.delete(`/weights/${weightId}`);
+  },
 };
 
 // --------------------------- /assets/{aid}/auto-annotate ---------------------------

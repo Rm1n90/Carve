@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CanvasApp } from "@/canvas/App";
 import { BboxTool, type Point } from "@/canvas/tools/BboxTool";
-import { PolygonTool } from "@/canvas/tools/PolygonTool";
+import { PolygonTool, CLOSE_RADIUS_PX } from "@/canvas/tools/PolygonTool";
 import { MaskBrushTool } from "@/canvas/tools/MaskBrushTool";
 import { TagTool } from "@/canvas/tools/TagTool";
 import { SamTool } from "@/canvas/tools/SamTool";
@@ -22,13 +22,22 @@ interface Props {
   assetId: string;
   /** Optional: callback fired when zoom changes so the page can render it. */
   onZoomChange?: (pct: number) => void;
+  /**
+   * Map of classId → hex color (`#RRGGBB`). Replaces the previous
+   * window-CustomEvent propagation, which had a race on first mount where
+   * shapes briefly rendered in the default amber color. See audit bug H.
+   */
+  classColorMap?: Record<string, string>;
 }
 
+const DEFAULT_AMBER = 0xeab308;
+const EMPTY_CLASS_MAP: Readonly<Record<string, string>> = Object.freeze({});
+
 function hexFromColor(color: string | undefined): number {
-  if (!color) return 0xeab308;
+  if (!color) return DEFAULT_AMBER;
   const m = /^#?([0-9a-fA-F]{6})$/.exec(color.trim());
   if (m) return parseInt(m[1], 16);
-  return 0xeab308;
+  return DEFAULT_AMBER;
 }
 
 /**
@@ -37,7 +46,13 @@ function hexFromColor(color: string | undefined): number {
  * the store onto the shape layer. Live drag preview lives on the overlay
  * layer and clears on commit.
  */
-export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: Props) {
+export function AnnotationCanvas({
+  imageUrl,
+  frameId,
+  assetId,
+  onZoomChange,
+  classColorMap,
+}: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<CanvasApp | null>(null);
   const tool = useTool((s) => s.active);
@@ -61,7 +76,11 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
   const offsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const previewGfxRef = useRef<unknown | null>(null);
   const shapeGfxByIdRef = useRef<Map<string, unknown>>(new Map());
-  const [classMap, setClassMap] = useState<Record<string, string>>({});
+  // Empty map fallback so the renderer doesn't depend on prop being provided.
+  const classMap = classColorMap ?? EMPTY_CLASS_MAP;
+  // Live ref for the in-flight polygon preview graphics. Mirrors previewGfxRef
+  // (used for bbox) but rendered as separate vertex/edge/rubber-band primitives.
+  const polygonPreviewGfxRef = useRef<unknown | null>(null);
 
   // ----- Mount Pixi app once. Re-mount when imageUrl changes.
   useEffect(() => {
@@ -158,15 +177,9 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
     onZoomChange?.(s * 100);
   }, [hostSize, imageSize, onZoomChange]);
 
-  // ----- Resolve class colors for the shape renderer via a window event.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const ce = e as CustomEvent<Record<string, string>>;
-      if (ce.detail) setClassMap(ce.detail);
-    };
-    window.addEventListener("carve:class-colors", handler as EventListener);
-    return () => window.removeEventListener("carve:class-colors", handler as EventListener);
-  }, []);
+  // Class colors now arrive via the `classColorMap` prop (see audit bug H).
+  // The window-event approach had a race on first mount where the canvas
+  // listener registered after the dispatch fired, leaving shapes amber.
 
   // ----- Render annotations from the store onto shapeLayer.
   useEffect(() => {
@@ -283,6 +296,71 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
     if (g && typeof g.clear === "function") g.clear();
   }
 
+  // ----- Polygon in-progress preview (vertices + edges + rubber-band).
+  async function drawPolygonPreview(
+    vertices: readonly Point[],
+    cursor: Point | null,
+    closeHint: boolean,
+  ) {
+    const app = appRef.current;
+    if (!app) return;
+    let Graphics: typeof import("pixi.js").Graphics | undefined;
+    try {
+      const pixi = await import("pixi.js");
+      Graphics = pixi.Graphics;
+    } catch {
+      return;
+    }
+    if (!Graphics) return;
+    let g = polygonPreviewGfxRef.current as InstanceType<typeof Graphics> | null;
+    if (!g) {
+      g = new Graphics();
+      polygonPreviewGfxRef.current = g;
+      app.overlayLayer.addChild(g);
+    }
+    g.clear();
+    if (vertices.length === 0) return;
+
+    const indigo = 0x6366f1;
+
+    // Edges between placed vertices.
+    if (vertices.length >= 2) {
+      g.moveTo(vertices[0].x, vertices[0].y);
+      for (let i = 1; i < vertices.length; i++) {
+        g.lineTo(vertices[i].x, vertices[i].y);
+      }
+      g.stroke({ color: indigo, width: 1.5, alpha: 1 });
+    }
+
+    // Rubber-band segment from last vertex to current cursor.
+    if (cursor && vertices.length >= 1) {
+      const last = vertices[vertices.length - 1];
+      g.moveTo(last.x, last.y);
+      g.lineTo(cursor.x, cursor.y);
+      g.stroke({ color: indigo, width: 1.5, alpha: 0.5 });
+    }
+
+    // Vertex dots — render last so they sit on top of edges. The first vertex
+    // gets a larger ring when the cursor is within CLOSE_RADIUS_PX (and >= 3
+    // vertices placed) to indicate "click here to close".
+    for (let i = 0; i < vertices.length; i++) {
+      const v = vertices[i];
+      const isFirst = i === 0;
+      const radius = isFirst && closeHint ? 12 : 8;
+      g.circle(v.x, v.y, radius);
+      g.fill({ color: indigo, alpha: 1 });
+      if (isFirst && closeHint) {
+        g.circle(v.x, v.y, CLOSE_RADIUS_PX);
+        g.stroke({ color: indigo, width: 1.5, alpha: 0.5 });
+      }
+    }
+  }
+
+  function clearPolygonPreview() {
+    const g = polygonPreviewGfxRef.current as { clear?: () => void } | null;
+    if (g && typeof g.clear === "function") g.clear();
+  }
+
   // ----- Tool routing — recreate per render-relevant change.
   useEffect(() => {
     const host = hostRef.current;
@@ -362,7 +440,19 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
         return;
       }
       if (tool === "bbox") bbox.onPointerDown(p);
-      else if (tool === "polygon") polygon.onPointerDown(p);
+      else if (tool === "polygon") {
+        const r = polygon.onPointerDown(p);
+        if (r.committed) {
+          clearPolygonPreview();
+        } else {
+          // Re-render the preview immediately so a newly placed vertex shows
+          // even before the next pointer-move arrives.
+          const move = polygon.onPointerMove(p);
+          if (move) {
+            void drawPolygonPreview(move.vertices, move.cursor, move.closeHint);
+          }
+        }
+      }
       else if (tool === "mask") mask.onPointerDown(p);
       else if (tool === "sam") {
         e.preventDefault();
@@ -375,6 +465,11 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
       if (tool === "bbox") {
         const r = bbox.onPointerMove(p);
         if (r) void drawPreviewRect(r.preview);
+      } else if (tool === "polygon") {
+        const r = polygon.onPointerMove(p);
+        if (r) {
+          void drawPolygonPreview(r.vertices, r.cursor, r.closeHint);
+        }
       } else if (tool === "mask") {
         mask.onPointerMove(p);
       } else if (tool === "cursor") {
@@ -401,7 +496,10 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      if (tool === "polygon") polygon.onKeyDown(e.key);
+      if (tool === "polygon") {
+        const r = polygon.onKeyDown(e.key);
+        if (r.committed || r.cancelled) clearPolygonPreview();
+      }
       else if (tool === "mask") mask.onKeyDown(e.key);
       else if (tool === "tag" && e.key.toLowerCase() === "t") tag.apply();
       else if (tool === "sam") {
@@ -421,6 +519,10 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
       host.removeEventListener("pointerup", onUp);
       host.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("keydown", onKey);
+      // Reset any in-flight polygon when the tool changes / the asset
+      // unmounts so the preview doesn't linger.
+      polygon.cancel();
+      clearPolygonPreview();
     };
   }, [tool, activeClassId, frameId, imageSize, samTool]);
 

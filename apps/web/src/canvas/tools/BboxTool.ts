@@ -1,4 +1,5 @@
 import { useAnnotations } from "@/state/annotations";
+import { showToast } from "@/lib/toast";
 
 export interface Point {
   x: number;
@@ -38,7 +39,15 @@ export class BboxTool {
     const dy = p.y - this.anchor.y;
     const distSq = dx * dx + dy * dy;
     const classId = this.getActiveClassId();
-    if (distSq < MIN_DRAG_PX * MIN_DRAG_PX || !classId) {
+    // Tiny drags are noise — silently discard.
+    if (distSq < MIN_DRAG_PX * MIN_DRAG_PX) {
+      this.reset();
+      return false;
+    }
+    // Real drag but no active class — surface a toast so the user understands
+    // why nothing was created. Audit bug 1+I.
+    if (!classId) {
+      showToast("Pick a class first", { variant: "warning" });
       this.reset();
       return false;
     }

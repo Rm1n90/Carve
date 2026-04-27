@@ -1,4 +1,5 @@
 import { useAnnotations } from "@/state/annotations";
+import { showToast } from "@/lib/toast";
 
 export class TagTool {
   constructor(
@@ -11,7 +12,10 @@ export class TagTool {
    *  with the same classId + frameId already exists in the local store, returns false. */
   apply(): boolean {
     const classId = this.getActiveClassId();
-    if (!classId) return false;
+    if (!classId) {
+      showToast("Pick a class first", { variant: "warning" });
+      return false;
+    }
     const frameId = this.getFrameId();
     const existing = Object.values(useAnnotations.getState().byId).find(
       (a) => a.kind === "tag" && a.classId === classId && a.frameId === frameId,

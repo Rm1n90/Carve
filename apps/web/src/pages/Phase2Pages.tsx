@@ -1,10 +1,13 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cpu, Layers, RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { Cpu, Layers, RotateCcw, Sparkles, Trash2, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { trashApi, modelsApi, weightsApi, type TrashItem } from "@/api/phase2";
 import { useAuth } from "@/auth/store";
+import { showToast } from "@/lib/toast";
+import { UploadWeightDialog } from "@/pages/UploadWeightDialog";
 
 // =========================== /models/yolo ===========================
 
@@ -13,11 +16,28 @@ function bytesToMb(n: number): string {
 }
 
 export function ModelsYoloPage() {
+  const me = useAuth((s) => s.user);
+  const qc = useQueryClient();
   const wsQ = useQuery({
     queryKey: ["weights", "workspace"],
     queryFn: weightsApi.listWorkspace,
   });
   const weights = wsQ.data ?? [];
+  const [uploadOpen, setUploadOpen] = useState(false);
+
+  const deleteM = useMutation({
+    mutationFn: (id: string) => weightsApi.delete(id),
+    onSuccess: () => {
+      showToast("Weight deleted", { variant: "success" });
+      qc.invalidateQueries({ queryKey: ["weights"] });
+      qc.invalidateQueries({ queryKey: ["weights", "workspace"] });
+    },
+    onError: (err: Error) => {
+      showToast(err?.message ?? "Delete failed", { variant: "error" });
+    },
+  });
+
+  const canDelete = me?.role === "admin";
 
   return (
     <div className="grid gap-6 max-w-[1100px]">
@@ -29,7 +49,17 @@ export function ModelsYoloPage() {
             zoo weights are managed by the model service.
           </p>
         </div>
+        <Button
+          variant="primary"
+          size="md"
+          leftIcon={<Upload className="h-4 w-4" />}
+          onClick={() => setUploadOpen(true)}
+          data-testid="upload-weight-trigger"
+        >
+          Upload weight
+        </Button>
       </header>
+      <UploadWeightDialog open={uploadOpen} onOpenChange={setUploadOpen} />
 
       <Card variant="surface" radius="lg" className="overflow-hidden">
         {wsQ.isLoading ? (
@@ -59,6 +89,7 @@ export function ModelsYoloPage() {
                 <th className="text-left font-medium px-4 py-2.5">Classes</th>
                 <th className="text-right font-medium px-4 py-2.5">Size</th>
                 <th className="text-left font-medium px-4 py-2.5">Uploaded</th>
+                <th className="text-right font-medium px-4 py-2.5">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -81,6 +112,28 @@ export function ModelsYoloPage() {
                   </td>
                   <td className="px-4 py-2.5 text-[color:var(--text-tertiary)]">
                     {new Date(w.created_at).toLocaleDateString()}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center justify-end">
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        leftIcon={<Trash2 className="h-3.5 w-3.5" />}
+                        disabled={!canDelete || deleteM.isPending}
+                        data-testid={`weight-delete-${w.id}`}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Delete weight "${w.name}"? This cannot be undone.`,
+                            )
+                          ) {
+                            deleteM.mutate(w.id);
+                          }
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
