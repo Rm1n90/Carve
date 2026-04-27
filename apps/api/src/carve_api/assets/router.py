@@ -1,10 +1,12 @@
 import uuid
+from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from carve_api.assets.models import AssetKind
-from carve_api.assets.schemas import AssetOut
+from carve_api.assets.schemas import AssetCount, AssetListPage, AssetOut
 from carve_api.assets.service import AssetService
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
@@ -17,6 +19,11 @@ from carve_api.storage.client import MinioClient
 router = APIRouter(prefix="/tasks", tags=["assets"])
 asset_router = APIRouter(prefix="/assets", tags=["assets"])
 
+# Hard upper bound on how many assets the API will return for a single
+# page. Keeps response payloads predictable even if a client requests
+# limit=999999 in the URL.
+_MAX_PAGE_LIMIT = 500
+
 
 def _enqueue_post_upload(asset) -> None:
     """Best-effort enqueue of post-upload work; swallow Redis errors so HTTP returns succeed even if Redis is down."""
@@ -26,7 +33,8 @@ def _enqueue_post_upload(asset) -> None:
         ext = asset.original_name.rsplit(".", 1)[-1] if "." in asset.original_name else "bin"
         q = get_queue()
         if asset.kind == AssetKind.image:
-            q.enqueue(generate_image_thumbnail, asset.xxh3_128, ext)
+            # Pass asset_id so the worker can persist the thumbnail key.
+            q.enqueue(generate_image_thumbnail, asset.xxh3_128, ext, asset_id=str(asset.id))
         else:
             q.enqueue(probe_video_metadata, str(asset.id), asset.xxh3_128, ext)
     except Exception:
@@ -70,14 +78,48 @@ async def upload_asset(
     return AssetOut.from_orm_asset(asset)
 
 
-@router.get("/{task_id}/assets", response_model=list[AssetOut])
+@router.get("/{task_id}/assets", response_model=AssetListPage)
 def list_assets(
+    task_id: uuid.UUID,
+    limit: int = Query(default=100, ge=1, le=_MAX_PAGE_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=255),
+    status: Literal["all", "annotated", "unannotated"] = Query(default="all"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AssetListPage:
+    """Paginated list of assets for a task with optional filename search and status filter.
+
+    Each AssetOut carries a presigned ``thumbnail_url`` so the web grid
+    can render tiles without a per-asset fetch. Returns a single page
+    + total count so the UI can show "Showing N–M of T".
+    """
+    task = _require_visible_task(db, user, task_id)
+    svc = AssetService(db)
+    items = svc.list_for_task(task=task, limit=limit, offset=offset, q=q, status=status)
+    total = svc.count_for_task(task=task, q=q, status=status)
+    return AssetListPage(
+        items=[
+            AssetOut.from_orm_asset(a, thumbnail_url=svc.thumbnail_url_for(a)) for a in items
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/{task_id}/assets/count", response_model=AssetCount)
+def asset_count(
     task_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[AssetOut]:
+) -> AssetCount:
+    """Total / annotated / unannotated counts for filter chips above the grid."""
     task = _require_visible_task(db, user, task_id)
-    return [AssetOut.from_orm_asset(a) for a in AssetService(db).list_for_task(task=task)]
+    svc = AssetService(db)
+    total = svc.count_for_task(task=task)
+    annotated = svc.annotated_count_for_task(task=task)
+    return AssetCount(total=total, annotated=annotated, unannotated=total - annotated)
 
 
 @router.post("/{task_id}/assets:zip", response_model=list[AssetOut], status_code=status.HTTP_201_CREATED)
@@ -101,6 +143,31 @@ async def upload_archive(
     return [AssetOut.from_orm_asset(a) for a in assets]
 
 
+@asset_router.get("/{asset_id}/thumbnail")
+def asset_thumbnail(
+    asset_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """302 redirect to a presigned URL of the cached 200x200 JPEG.
+
+    Returns 404 if the thumbnail hasn't been generated yet — clients
+    should retry shortly after upload (the worker generates the thumb
+    asynchronously). Image assets without a generated thumbnail fall
+    back to the original so the UI never sees a 404 in steady state.
+    """
+    from carve_api.assets.models import Asset
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, a.task_id)
+    svc = AssetService(db)
+    url = svc.thumbnail_url_for(a)
+    if url is None:
+        raise HTTPException(status_code=404, detail="thumbnail_not_ready")
+    return RedirectResponse(url=url, status_code=302)
+
+
 @asset_router.get("/{asset_id}")
 def get_asset(
     asset_id: uuid.UUID,
@@ -115,7 +182,9 @@ def get_asset(
     svc = AssetService(db)
     ext = a.original_name.rsplit(".", 1)[-1] if "." in a.original_name else "bin"
     return {
-        "asset": AssetOut.from_orm_asset(a).model_dump(mode="json"),
+        "asset": AssetOut.from_orm_asset(a, thumbnail_url=svc.thumbnail_url_for(a)).model_dump(
+            mode="json"
+        ),
         "url": svc.storage.presigned_get(f"assets/{a.xxh3_128}/original.{ext}"),
     }
 

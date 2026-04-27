@@ -34,6 +34,7 @@ class Asset(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     frames: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     original_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    thumbnail_minio_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
