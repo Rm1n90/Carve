@@ -1,9 +1,22 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
+import axios from "axios";
 import { Plus } from "lucide-react";
-import { tasksApi, type TaskKind } from "@/api/tasks";
+import { tasksApi, type Task, type TaskKind } from "@/api/tasks";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+
+function extractErrorCode(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const data = error.response?.data as { error?: string } | undefined;
+    if (data?.error) return data.error;
+    if (error.response?.status) return `http_${error.response.status}`;
+    return error.code ?? "network_error";
+  }
+  if (error instanceof Error) return error.message;
+  return "unknown_error";
+}
 
 export function NewTaskDialog({
   projectId,
@@ -13,14 +26,25 @@ export function NewTaskDialog({
   onCreated: () => void;
 }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<TaskKind>("image");
-  const create = useMutation({
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const create = useMutation<Task, unknown, void>({
     mutationFn: () => tasksApi.create(projectId, { name, kind }),
-    onSuccess: () => {
+    onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ["tasks", projectId] });
       setName("");
       onCreated();
+      navigate({
+        to: "/projects/$projectId/tasks/$taskId",
+        params: { projectId, taskId: created.id },
+      });
     },
   });
 
@@ -35,6 +59,7 @@ export function NewTaskDialog({
       className="grid gap-3 sm:grid-cols-[1fr_auto_auto] items-end rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3"
     >
       <Input
+        ref={inputRef}
         label="Task name"
         required
         minLength={1}
@@ -64,6 +89,15 @@ export function NewTaskDialog({
       >
         {create.isPending ? "Creating" : "Add task"}
       </Button>
+      {create.error != null ? (
+        <p
+          role="alert"
+          data-testid="new-task-error"
+          className="sm:col-span-3 text-[12.5px] text-[color:var(--danger)]"
+        >
+          Failed to create task: {extractErrorCode(create.error)}
+        </p>
+      ) : null}
     </form>
   );
 }

@@ -33,6 +33,7 @@ vi.mock("@/api/classes", () => ({
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
+  useNavigate: () => vi.fn(),
 }));
 
 import { statsApi } from "@/api/stats";

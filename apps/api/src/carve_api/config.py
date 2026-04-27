@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     password_pepper: str = Field(alias="PASSWORD_PEPPER")
 
     minio_endpoint: str = Field(alias="MINIO_ENDPOINT", default="http://localhost:9000")
+    # Public, host-reachable endpoint used only when generating presigned URLs
+    # for the browser. When unset, falls back to `minio_endpoint` (back-compat).
+    minio_public_endpoint: str | None = Field(alias="MINIO_PUBLIC_ENDPOINT", default=None)
     minio_root_user: str = Field(alias="MINIO_ROOT_USER")
     minio_root_password: str = Field(alias="MINIO_ROOT_PASSWORD")
     minio_bucket: str = Field(alias="MINIO_BUCKET", default="carve-assets")
