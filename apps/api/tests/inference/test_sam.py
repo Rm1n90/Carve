@@ -276,6 +276,30 @@ def test_sam_encode_returns_cached_on_repeat(db_session, monkeypatch) -> None:
         model_client_mod.set_test_transport(None)
 
 
+def test_sam_encode_raises_503_when_model_service_down(db_session, monkeypatch) -> None:
+    """When the model service hostname can't be resolved (i.e. the
+    ``inference`` docker-compose profile isn't running), the api previously
+    surfaced the raw httpx.ConnectError as a generic 500. We now translate
+    it to a 503 with ``error: model_service_unreachable`` so the SAM tool
+    can show a clear "model service is offline" toast."""
+    client = _client(db_session)
+    token, aid = _setup_asset(client, monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(
+            "[Errno -3] Temporary failure in name resolution",
+            request=request,
+        )
+
+    model_client_mod.set_test_transport(httpx.MockTransport(handler))
+    try:
+        r = client.post(f"/assets/{aid}/sam/encode", headers=_hdr(token))
+        assert r.status_code == 503, r.text
+        assert r.json()["error"] == "model_service_unreachable"
+    finally:
+        model_client_mod.set_test_transport(None)
+
+
 def test_sam_encode_falls_back_when_redis_unavailable(db_session, monkeypatch) -> None:
     client = _client(db_session)
     token, aid = _setup_asset(client, monkeypatch)

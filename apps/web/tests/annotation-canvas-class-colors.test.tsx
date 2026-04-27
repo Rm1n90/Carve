@@ -51,6 +51,22 @@ const renderPolygonSpy = vi.fn();
 vi.mock("@/canvas/ShapeRenderer", () => ({
   renderBbox: (...args: unknown[]) => renderBboxSpy(...args),
   renderPolygon: (...args: unknown[]) => renderPolygonSpy(...args),
+  // bboxEdit.ts (transitively imported by AnnotationCanvas) uses these
+  // exports, so the mock must provide them; otherwise the module-level
+  // const initialisation throws at import time.
+  BBOX_HANDLE_SIZE_PX: 8,
+  BBOX_HANDLE_NAMES: ["nw", "ne", "se", "sw", "n", "e", "s", "w"],
+  getBboxHandlePositions: (b: { x: number; y: number; w: number; h: number }) => [
+    { name: "nw", cx: b.x, cy: b.y },
+    { name: "ne", cx: b.x + b.w, cy: b.y },
+    { name: "se", cx: b.x + b.w, cy: b.y + b.h },
+    { name: "sw", cx: b.x, cy: b.y + b.h },
+    { name: "n", cx: b.x + b.w / 2, cy: b.y },
+    { name: "e", cx: b.x + b.w, cy: b.y + b.h / 2 },
+    { name: "s", cx: b.x + b.w / 2, cy: b.y + b.h },
+    { name: "w", cx: b.x, cy: b.y + b.h / 2 },
+  ],
+  cursorForHandle: () => "default",
 }));
 
 import { useTool } from "@/state/tool";

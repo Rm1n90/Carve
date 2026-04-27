@@ -7,8 +7,20 @@ import { MaskBrushTool } from "@/canvas/tools/MaskBrushTool";
 import { TagTool } from "@/canvas/tools/TagTool";
 import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
-import { useAnnotations, type AnnotationDraft } from "@/state/annotations";
-import { renderBbox, renderPolygon } from "@/canvas/ShapeRenderer";
+import { useAnnotations, type AnnotationDraft, type Bbox } from "@/state/annotations";
+import {
+  renderBbox,
+  renderPolygon,
+  cursorForHandle,
+  type BboxHandleName,
+} from "@/canvas/ShapeRenderer";
+import {
+  applyResize,
+  applyTranslate,
+  hitTestHandle,
+  pointInsideBbox,
+} from "@/canvas/bboxEdit";
+import { showToast } from "@/lib/toast";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
 import { AnnotationContextMenu } from "@/components/annotation/AnnotationContextMenu";
 
@@ -76,6 +88,15 @@ export function AnnotationCanvas({
   const offsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const previewGfxRef = useRef<unknown | null>(null);
   const shapeGfxByIdRef = useRef<Map<string, unknown>>(new Map());
+  // Active bbox-edit drag state. Lives in a ref so updates don't re-trigger
+  // the tool-routing useEffect (which would recreate every pointer handler).
+  const dragRef = useRef<
+    | { mode: "translate"; id: string; offset: Point; original: Bbox }
+    | { mode: "resize"; id: string; handle: BboxHandleName; original: Bbox }
+    | null
+  >(null);
+  // Cursor override during a drag — clears when the drag ends.
+  const [dragCursor, setDragCursor] = useState<string | null>(null);
   // Empty map fallback so the renderer doesn't depend on prop being provided.
   const classMap = classColorMap ?? EMPTY_CLASS_MAP;
   // Live ref for the in-flight polygon preview graphics. Mirrors previewGfxRef
@@ -206,6 +227,10 @@ export function AnnotationCanvas({
       const seen = new Set<string>();
       const hovered = useTool.getState().hoveredAnnotationId;
       const visAnn = useTool.getState().visibility.annotations;
+      const activeTool = useTool.getState().active;
+      // Handles only render when the cursor (transform) tool is active —
+      // they'd visually compete with the bbox-tool's drag preview otherwise.
+      const showHandles = activeTool === "cursor";
       const sortedDrafts = Object.values(state.byId)
         .filter((d) => d.frameId === frameId)
         .sort((a, b) => (a.zOrder ?? 0) - (b.zOrder ?? 0));
@@ -232,7 +257,13 @@ export function AnnotationCanvas({
           state.selectedId === id || state.selectedIds.includes(id);
         const isHovered = hovered === id;
         if (draft.geometry.kind === "bbox") {
-          renderBbox(g, draft.geometry, color, isSelected || isHovered);
+          renderBbox(
+            g,
+            draft.geometry,
+            color,
+            isSelected || isHovered,
+            showHandles && isSelected,
+          );
         } else if (draft.geometry.kind === "polygon") {
           renderPolygon(g, draft.geometry, color, isSelected || isHovered);
         }
@@ -376,7 +407,14 @@ export function AnnotationCanvas({
     const tag = new TagTool(getClass, getFrame, idGen);
 
     if (tool === "sam") {
-      void samTool.activate();
+      // SAM activation calls /sam/encode. When the model service is offline
+      // (audit bug 8a), the api now returns 503 model_service_unreachable.
+      // Surface that to the user as a toast — without it the failed promise
+      // would just become an unhandled rejection in the console.
+      void samTool.activate().catch((err: unknown) => {
+        const message = describeSamError(err);
+        showToast(message, { variant: "error", duration: 5000 });
+      });
     } else {
       samTool.reset();
     }
@@ -424,9 +462,57 @@ export function AnnotationCanvas({
       return null;
     }
 
+    function getSelectedBbox(): { id: string; bbox: Bbox } | null {
+      const state = useAnnotations.getState();
+      for (const id of state.selectedIds) {
+        const d = state.byId[id];
+        if (d && d.geometry.kind === "bbox" && d.frameId === frameId) {
+          return { id, bbox: d.geometry };
+        }
+      }
+      return null;
+    }
+
     function onDown(e: PointerEvent) {
       const p = pointerXY(e);
       if (tool === "cursor") {
+        // 1. If we have a selected bbox, did we click one of its handles?
+        const sel = getSelectedBbox();
+        if (sel) {
+          const handle = hitTestHandle(sel.bbox, p);
+          if (handle) {
+            dragRef.current = {
+              mode: "resize",
+              id: sel.id,
+              handle,
+              original: sel.bbox,
+            };
+            setDragCursor(cursorForHandle(handle));
+            try {
+              host!.setPointerCapture(e.pointerId);
+            } catch {
+              /* setPointerCapture not always available in jsdom */
+            }
+            return;
+          }
+          if (pointInsideBbox(sel.bbox, p)) {
+            dragRef.current = {
+              mode: "translate",
+              id: sel.id,
+              offset: { x: p.x - sel.bbox.x, y: p.y - sel.bbox.y },
+              original: sel.bbox,
+            };
+            setDragCursor("move");
+            try {
+              host!.setPointerCapture(e.pointerId);
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
+        }
+
+        // 2. No drag intent → fall through to selection (existing behaviour).
         const hit = hitTest(p);
         if (hit) {
           if (e.shiftKey) {
@@ -473,6 +559,38 @@ export function AnnotationCanvas({
       } else if (tool === "mask") {
         mask.onPointerMove(p);
       } else if (tool === "cursor") {
+        const drag = dragRef.current;
+        if (drag) {
+          // Active drag — translate or resize the selected bbox.
+          if (drag.mode === "translate") {
+            const next = applyTranslate(
+              drag.original,
+              p.x - drag.offset.x,
+              p.y - drag.offset.y,
+            );
+            useAnnotations.getState().update(drag.id, { geometry: next });
+          } else {
+            const next = applyResize(drag.original, drag.handle, p);
+            useAnnotations.getState().update(drag.id, { geometry: next });
+          }
+          return;
+        }
+        // No drag → update hover + cursor based on what's under the pointer.
+        const sel = getSelectedBbox();
+        if (sel) {
+          const handle = hitTestHandle(sel.bbox, p);
+          if (handle) {
+            setDragCursor(cursorForHandle(handle));
+            useTool.getState().setHoveredAnnotationId(null);
+            return;
+          }
+          if (pointInsideBbox(sel.bbox, p)) {
+            setDragCursor("move");
+            useTool.getState().setHoveredAnnotationId(null);
+            return;
+          }
+        }
+        if (dragCursor !== null) setDragCursor(null);
         const hit = hitTest(p);
         const cur = useTool.getState().hoveredAnnotationId;
         if (hit !== cur) useTool.getState().setHoveredAnnotationId(hit);
@@ -486,6 +604,16 @@ export function AnnotationCanvas({
         clearPreview();
       } else if (tool === "mask") {
         mask.onPointerUp(p);
+      } else if (tool === "cursor") {
+        if (dragRef.current) {
+          dragRef.current = null;
+          setDragCursor(null);
+          try {
+            host!.releasePointerCapture(e.pointerId);
+          } catch {
+            /* not all environments implement releasePointerCapture */
+          }
+        }
       }
     }
 
@@ -496,6 +624,31 @@ export function AnnotationCanvas({
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (tool === "cursor") {
+        // ArrowKey nudge — only when the cursor tool has a bbox selected
+        // AND the user has no modifier (asset prev/next is non-modifier
+        // ArrowLeft/Right; we want to override only when there's a target).
+        const isArrow =
+          e.key === "ArrowLeft" ||
+          e.key === "ArrowRight" ||
+          e.key === "ArrowUp" ||
+          e.key === "ArrowDown";
+        if (isArrow && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          const sel = getSelectedBbox();
+          if (sel) {
+            e.preventDefault();
+            // stopPropagation prevents the asset-nav handler in AnnotateAssetPage
+            // from also handling the same key.
+            e.stopPropagation();
+            const step = e.shiftKey ? 10 : 1;
+            const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+            const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+            const next = applyTranslate(sel.bbox, sel.bbox.x + dx, sel.bbox.y + dy);
+            useAnnotations.getState().update(sel.id, { geometry: next });
+            return;
+          }
+        }
+      }
       if (tool === "polygon") {
         const r = polygon.onKeyDown(e.key);
         if (r.committed || r.cancelled) clearPolygonPreview();
@@ -512,13 +665,16 @@ export function AnnotationCanvas({
     host.addEventListener("pointermove", onMove);
     host.addEventListener("pointerup", onUp);
     host.addEventListener("contextmenu", onContextMenu);
-    window.addEventListener("keydown", onKey);
+    // Capture-phase keydown so the bbox nudge runs BEFORE the page-level
+    // ArrowLeft/Right asset-navigation handler — the canvas calls
+    // stopPropagation() when it nudges, preventing accidental nav.
+    window.addEventListener("keydown", onKey, true);
     return () => {
       host.removeEventListener("pointerdown", onDown);
       host.removeEventListener("pointermove", onMove);
       host.removeEventListener("pointerup", onUp);
       host.removeEventListener("contextmenu", onContextMenu);
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
       // Reset any in-flight polygon when the tool changes / the asset
       // unmounts so the preview doesn't linger.
       polygon.cancel();
@@ -589,7 +745,7 @@ export function AnnotationCanvas({
       style={{
         position: "absolute",
         inset: 0,
-        cursor: toolCursor(tool),
+        cursor: dragCursor ?? toolCursor(tool),
         overflow: "hidden",
         touchAction: "none",
       }}
@@ -614,4 +770,21 @@ function toolCursor(t: ToolName): string {
     default:
       return "default";
   }
+}
+
+/**
+ * Translate a SAM activation/decode failure into a user-friendly toast
+ * message. The api returns 503 + ``error: model_service_unreachable``
+ * when the model service isn't running; everything else is treated as a
+ * generic SAM failure.
+ */
+function describeSamError(err: unknown): string {
+  // Axios error shape: ``err.response.data.error``.
+  const errObj = err as { response?: { status?: number; data?: { error?: string } } };
+  const status = errObj?.response?.status;
+  const errorCode = errObj?.response?.data?.error;
+  if (status === 503 || errorCode === "model_service_unreachable") {
+    return "SAM unavailable — model service is not running.";
+  }
+  return "SAM unavailable — please try again later.";
 }
