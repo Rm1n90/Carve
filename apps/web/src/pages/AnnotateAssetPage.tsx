@@ -96,12 +96,33 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     }
   }, [annotationsQ.data]);
 
+  // Browser tab title — show the current asset name so multi-tab workflows
+  // are tractable. Restore the default title on unmount. Audit bug R.
+  useEffect(() => {
+    const name = assetQ.data?.asset?.original_name;
+    if (!name) return;
+    const previous = document.title;
+    document.title = `${name} — Carve`;
+    return () => {
+      document.title = previous;
+    };
+  }, [assetQ.data?.asset?.original_name]);
+
   // Class colors flow into the canvas as a prop (formerly a CustomEvent —
   // see audit bug H for the timing race that motivated this change).
   const classColorMap = useMemo<Record<string, string>>(() => {
     if (!classesQ.data) return {};
     const m: Record<string, string> = {};
     for (const c of classesQ.data) m[c.id] = c.color;
+    return m;
+  }, [classesQ.data]);
+
+  // Class names — used by the canvas's floating bbox label tags when the
+  // `labels` visibility flag is on. See audit bug O.
+  const classNameMap = useMemo<Record<string, string>>(() => {
+    if (!classesQ.data) return {};
+    const m: Record<string, string> = {};
+    for (const c of classesQ.data) m[c.id] = c.name;
     return m;
   }, [classesQ.data]);
 
@@ -138,13 +159,25 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     onSuccess: (res, variables) => {
       const created = res.created;
       const sentCreates = variables.create;
-      const sentTemp = Object.values(useAnnotations.getState().byId)
-        .filter((a) => a.serverId === null && a.dirty)
-        .slice(0, sentCreates.length);
-      sentTemp.forEach((draft, i) => {
-        const server = created[i];
-        if (server) useAnnotations.getState().markPersisted(draft.tempId, server.id);
-      });
+      // Prefer temp_id correlation (audit bug M). Falls back to the legacy
+      // order-based path if the server didn't echo created_temp_ids — for
+      // safety during rolling deploys.
+      if (res.created_temp_ids && res.created_temp_ids.length === created.length) {
+        for (let i = 0; i < created.length; i++) {
+          const tempId = res.created_temp_ids[i];
+          if (tempId) {
+            useAnnotations.getState().markPersisted(tempId, created[i].id);
+          }
+        }
+      } else {
+        const sentTemp = Object.values(useAnnotations.getState().byId)
+          .filter((a) => a.serverId === null && a.dirty)
+          .slice(0, sentCreates.length);
+        sentTemp.forEach((draft, i) => {
+          const server = created[i];
+          if (server) useAnnotations.getState().markPersisted(draft.tempId, server.id);
+        });
+      }
       res.updated.forEach((u) => {
         useAnnotations.setState((s) => ({
           byId: {
@@ -168,6 +201,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         kind: d.kind,
         geometry: d.geometry as unknown as Record<string, unknown>,
         track_id: d.trackId ?? null,
+        // Echoed back in res.created_temp_ids so we can correlate without
+        // relying on iteration order. Audit bug M.
+        temp_id: d.tempId,
       }));
     const update = drafts
       .filter((d) => d.serverId !== null && d.dirty)
@@ -421,6 +457,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 assetId={assetId}
                 onZoomChange={setZoomPct}
                 classColorMap={classColorMap}
+                classNameMap={classNameMap}
               />
               <div className="absolute top-2 right-2 z-20">
                 <KeyboardCheatSheet />

@@ -16,6 +16,31 @@ api.interceptors.request.use((config) => {
 
 let refreshing: Promise<string | null> | null = null;
 
+/**
+ * Send the user to the login page and clear stored tokens. Audit bug T:
+ * previously, when the refresh endpoint also returned 401 we only
+ * cleared local state, leaving the user on a half-broken page until
+ * they navigated manually. Now we kick them to /login.
+ *
+ * Guarded against test environments where ``window.location.assign``
+ * may be missing or stubbed — falls back to setting ``href`` and to a
+ * silent no-op when navigation is unavailable. Skips when already on
+ * /login to avoid an infinite redirect loop.
+ */
+function redirectToLogin(): void {
+  try {
+    if (typeof window === "undefined" || !window.location) return;
+    if (window.location.pathname === "/login") return;
+    if (typeof window.location.assign === "function") {
+      window.location.assign("/login");
+    } else {
+      window.location.href = "/login";
+    }
+  } catch {
+    /* navigation unavailable in this environment */
+  }
+}
+
 api.interceptors.response.use(
   (r) => r,
   async (error: AxiosError) => {
@@ -24,6 +49,7 @@ api.interceptors.response.use(
       const refresh = useAuth.getState().refreshToken;
       if (!refresh) {
         useAuth.getState().clear();
+        redirectToLogin();
         return Promise.reject(error);
       }
       refreshing ??= (async () => {
@@ -39,7 +65,12 @@ api.interceptors.response.use(
         }
       })();
       const newToken = await refreshing;
-      if (!newToken) return Promise.reject(error);
+      if (!newToken) {
+        // Refresh also failed — kick the user to /login instead of
+        // leaving them on a half-broken page. Audit bug T.
+        redirectToLogin();
+        return Promise.reject(error);
+      }
       original.__retried = true;
       original.headers = original.headers ?? new AxiosHeaders();
       (original.headers as AxiosHeaders).set("Authorization", `Bearer ${newToken}`);

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ChevronRight, Image as ImageIcon, Video } from "lucide-react";
@@ -114,6 +115,17 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     queryKey: ["project-stats", projectId],
     queryFn: () => statsApi.projectStats(projectId),
   });
+
+  // Browser tab title — show the current project name. See audit bug R.
+  useEffect(() => {
+    const name = projectQ.data?.name;
+    if (!name) return;
+    const previous = document.title;
+    document.title = `${name} — Carve`;
+    return () => {
+      document.title = previous;
+    };
+  }, [projectQ.data?.name]);
 
   if (projectQ.isLoading) return <p className="text-[color:var(--text-tertiary)] text-[13px]">Loading…</p>;
   if (projectQ.error || !projectQ.data)

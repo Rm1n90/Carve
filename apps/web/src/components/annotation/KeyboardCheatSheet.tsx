@@ -15,6 +15,15 @@ interface ShortcutGroup {
   rows: { keys: string[]; label: string }[];
 }
 
+// IMPORTANT: only document shortcuts that are actually wired up in the
+// app — see audit bug N. The handlers live in:
+//   - EditorToolbar.tsx (V/B/P/M/T/S tool hotkeys, A auto-apply, F fit)
+//   - AnnotateAssetPage.tsx (Cmd+S, Cmd+Z, Cmd+Shift+Z, Cmd+A, Backspace,
+//     Delete, Cmd+]/[, Cmd+Shift+]/[, ArrowLeft/Right asset nav, Esc)
+//   - AnnotationCanvas.tsx (Arrow keys nudge selected bbox; Shift+arrow
+//     nudges 10px; Shift+click multi-selects)
+//   - PolygonTool.onKeyDown — Enter commits, Esc cancels in-flight polygon
+//   - ClassesPanel.tsx — number keys 1..9 switch active class
 const GROUPS: ShortcutGroup[] = [
   {
     title: "Tools",
@@ -25,33 +34,18 @@ const GROUPS: ShortcutGroup[] = [
       { keys: ["M"], label: "Mask brush" },
       { keys: ["T"], label: "Tag" },
       { keys: ["S"], label: "Smart (SAM)" },
-      { keys: ["R"], label: "Track" },
       { keys: ["A"], label: "Auto-apply (smart)" },
     ],
   },
   {
     title: "Editing",
     rows: [
-      { keys: ["Enter"], label: "Commit shape" },
+      { keys: ["Enter"], label: "Commit polygon" },
       { keys: ["Esc"], label: "Cancel / clear selection" },
       { keys: ["Delete"], label: "Delete selected" },
       { keys: ["Backspace"], label: "Delete selected" },
-    ],
-  },
-  {
-    title: "Navigation",
-    rows: [
-      { keys: ["←"], label: "Previous asset" },
-      { keys: ["→"], label: "Next asset" },
-      { keys: ["F"], label: "Fit to screen" },
-    ],
-  },
-  {
-    title: "Files",
-    rows: [
-      { keys: ["⌘", "S"], label: "Save now" },
-      { keys: ["⌘", "Z"], label: "Undo" },
-      { keys: ["⌘", "⇧", "Z"], label: "Redo" },
+      { keys: ["←", "→", "↑", "↓"], label: "Nudge selected bbox" },
+      { keys: ["⇧", "+", "arrow"], label: "Nudge by 10px" },
     ],
   },
   {
@@ -63,12 +57,28 @@ const GROUPS: ShortcutGroup[] = [
     ],
   },
   {
+    title: "Navigation",
+    rows: [
+      { keys: ["←"], label: "Previous asset" },
+      { keys: ["→"], label: "Next asset" },
+      { keys: ["F"], label: "Fit to screen" },
+    ],
+  },
+  {
     title: "Z-order",
     rows: [
       { keys: ["⌘", "⇧", "]"], label: "Bring to front" },
       { keys: ["⌘", "⇧", "["], label: "Send to back" },
       { keys: ["⌘", "]"], label: "Bring forward" },
       { keys: ["⌘", "["], label: "Send backward" },
+    ],
+  },
+  {
+    title: "Files",
+    rows: [
+      { keys: ["⌘", "S"], label: "Save now" },
+      { keys: ["⌘", "Z"], label: "Undo" },
+      { keys: ["⌘", "⇧", "Z"], label: "Redo" },
     ],
   },
 ];
@@ -136,6 +146,9 @@ export function KeyboardCheatSheet() {
                 </div>
               ))}
             </div>
+            <p className="mt-4 pt-3 border-t border-[var(--border-subtle)] text-[11.5px] text-[color:var(--text-tertiary)] italic">
+              More shortcuts coming.
+            </p>
           </DialogContent>
         </Dialog>
       )}

@@ -40,16 +40,39 @@ interface Props {
    * shapes briefly rendered in the default amber color. See audit bug H.
    */
   classColorMap?: Record<string, string>;
+  /**
+   * Map of classId → display name. Used to render small floating tags
+   * above each bbox when the `labels` visibility flag is on. See audit
+   * bug O. Falls back to "?" if a class is missing from the map.
+   */
+  classNameMap?: Record<string, string>;
 }
 
 const DEFAULT_AMBER = 0xeab308;
 const EMPTY_CLASS_MAP: Readonly<Record<string, string>> = Object.freeze({});
 
-function hexFromColor(color: string | undefined): number {
-  if (!color) return DEFAULT_AMBER;
-  const m = /^#?([0-9a-fA-F]{6})$/.exec(color.trim());
-  if (m) return parseInt(m[1], 16);
-  return DEFAULT_AMBER;
+/**
+ * Convert a hex color string (e.g. "#ff0000" or "ff0000") into the numeric
+ * form Pixi expects. On any non-conforming input — including the OKLCH
+ * `var(--swatch-N)` strings the design tokens emit — fall back to amber.
+ *
+ * Defensive: wrapped in try/catch so a malformed input never crashes the
+ * render pipeline. See audit bug Q.
+ */
+export function hexFromColor(color: string | undefined): number {
+  try {
+    if (!color || typeof color !== "string") return DEFAULT_AMBER;
+    const trimmed = color.trim();
+    const m = /^#?([0-9a-fA-F]{6})$/.exec(trimmed);
+    if (m) {
+      const n = parseInt(m[1], 16);
+      // Guard against NaN from a malformed digit class — paranoia.
+      return Number.isFinite(n) ? n : DEFAULT_AMBER;
+    }
+    return DEFAULT_AMBER;
+  } catch {
+    return DEFAULT_AMBER;
+  }
 }
 
 /**
@@ -64,6 +87,7 @@ export function AnnotationCanvas({
   assetId,
   onZoomChange,
   classColorMap,
+  classNameMap,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<CanvasApp | null>(null);
@@ -99,9 +123,16 @@ export function AnnotationCanvas({
   const [dragCursor, setDragCursor] = useState<string | null>(null);
   // Empty map fallback so the renderer doesn't depend on prop being provided.
   const classMap = classColorMap ?? EMPTY_CLASS_MAP;
+  const classNames = classNameMap ?? EMPTY_CLASS_MAP;
   // Live ref for the in-flight polygon preview graphics. Mirrors previewGfxRef
   // (used for bbox) but rendered as separate vertex/edge/rubber-band primitives.
   const polygonPreviewGfxRef = useRef<unknown | null>(null);
+  // Per-annotation label tag (a Pixi Container holding a fill rect + Text).
+  // Rendered above each bbox when the `labels` visibility flag is on.
+  // Audit bug O.
+  const labelGfxByIdRef = useRef<Map<string, { container: unknown; text: unknown; bg: unknown }>>(
+    new Map(),
+  );
 
   // ----- Mount Pixi app once. Re-mount when imageUrl changes.
   useEffect(() => {
@@ -148,6 +179,7 @@ export function AnnotationCanvas({
       }
       appRef.current = null;
       shapeGfxByIdRef.current.clear();
+      labelGfxByIdRef.current.clear();
       previewGfxRef.current = null;
     };
   }, [imageUrl]);
@@ -224,13 +256,27 @@ export function AnnotationCanvas({
       }
       if (!Graphics || !mounted) return;
       const gfxMap = shapeGfxByIdRef.current;
+      const labelMap = labelGfxByIdRef.current;
       const seen = new Set<string>();
+      const seenLabels = new Set<string>();
       const hovered = useTool.getState().hoveredAnnotationId;
-      const visAnn = useTool.getState().visibility.annotations;
+      const vis = useTool.getState().visibility;
+      const visAnn = vis.annotations;
+      const visLabels = vis.labels;
+      const visPixels = vis.pixels;
       const activeTool = useTool.getState().active;
       // Handles only render when the cursor (transform) tool is active —
       // they'd visually compete with the bbox-tool's drag preview otherwise.
       const showHandles = activeTool === "cursor";
+      // Lazy-import Container / Text only when we actually need a label.
+      // We keep them in this scope so each label render uses one resolved
+      // module reference (cheaper than re-importing per draft).
+      let pixiText:
+        | typeof import("pixi.js").Text
+        | undefined;
+      let pixiContainer:
+        | typeof import("pixi.js").Container
+        | undefined;
       const sortedDrafts = Object.values(state.byId)
         .filter((d) => d.frameId === frameId)
         .sort((a, b) => (a.zOrder ?? 0) - (b.zOrder ?? 0));
@@ -239,13 +285,18 @@ export function AnnotationCanvas({
         const hidden =
           state.hiddenAnnotationIds.includes(id) ||
           state.hiddenClassIds.includes(draft.classId);
+        // Pixels visibility — currently only gates mask annotations (the
+        // mask renderer is a placeholder; future raster decoding will hook
+        // here). When pixels=false, hide masks entirely. Audit bug O.
+        const isMask = draft.kind === "mask";
+        const hiddenByPixels = isMask && !visPixels;
         const g =
           (gfxMap.get(id) as InstanceType<typeof Graphics> | undefined) ?? new Graphics();
         if (!gfxMap.has(id)) {
           gfxMap.set(id, g);
           app.shapeLayer.addChild(g);
         }
-        if (!visAnn || hidden) {
+        if (!visAnn || hidden || hiddenByPixels) {
           (g as { clear?: () => void }).clear?.();
           (g as { visible?: boolean }).visible = false;
           seen.add(id);
@@ -264,10 +315,55 @@ export function AnnotationCanvas({
             isSelected || isHovered,
             showHandles && isSelected,
           );
+          // Class-name tag floating above the bbox top-left when the
+          // `labels` flag is on. Skipped when the label flag is off OR no
+          // name is known for the class (defensive).
+          if (visLabels) {
+            const className = classNames[draft.classId];
+            if (className) {
+              if (!pixiText || !pixiContainer) {
+                try {
+                  const pixi = await import("pixi.js");
+                  pixiText = pixi.Text;
+                  pixiContainer = pixi.Container;
+                } catch {
+                  /* leave undefined; loop below skips */
+                }
+              }
+              if (pixiText && pixiContainer) {
+                renderLabel(
+                  app.shapeLayer as unknown as { addChild: (c: never) => unknown },
+                  labelMap,
+                  id,
+                  draft.geometry,
+                  className,
+                  color,
+                  pixiText,
+                  pixiContainer,
+                  Graphics,
+                );
+                seenLabels.add(id);
+              }
+            }
+          }
         } else if (draft.geometry.kind === "polygon") {
           renderPolygon(g, draft.geometry, color, isSelected || isHovered);
         }
         seen.add(id);
+      }
+      // Remove labels for drafts that aren't visible / weren't seen.
+      for (const id of Array.from(labelMap.keys())) {
+        if (!seenLabels.has(id)) {
+          const entry = labelMap.get(id);
+          if (entry) {
+            try {
+              app.shapeLayer.removeChild(entry.container as never);
+            } catch {
+              /* ignore */
+            }
+          }
+          labelMap.delete(id);
+        }
       }
       for (const id of Array.from(gfxMap.keys())) {
         if (!seen.has(id)) {
@@ -296,7 +392,7 @@ export function AnnotationCanvas({
       unsubA();
       unsubT();
     };
-  }, [frameId, classMap, imageSize]);
+  }, [frameId, classMap, classNames, imageSize]);
 
   // ----- Draw / clear the live preview rectangle while dragging a bbox.
   async function drawPreviewRect(rect: { x: number; y: number; w: number; h: number }) {
@@ -758,6 +854,79 @@ export function AnnotationCanvas({
       <AnnotationContextMenu hostRef={hostRef} hitTest={hitTestClient} />
     </div>
   );
+}
+
+/**
+ * Render (or update) a small floating tag above the bbox top-left corner
+ * showing the class name. The tag is built from a Pixi Container holding
+ * a fill rect + Text. The container is added to the shape layer so it
+ * inherits the layer's pan/zoom transform without extra math.
+ *
+ * Pixi text rendering creates a transient texture per .text setter call,
+ * so we cache the per-annotation Container in `labelMap` and only update
+ * the underlying text/position. Audit bug O.
+ */
+// Pixi's typings for ``addChild`` are quite strict (variadic typed). We
+// only need a minimal contract to attach a child container, so we widen
+// at the call sites with these structural types.
+interface AddChildSink {
+  addChild: (c: never) => unknown;
+}
+
+function renderLabel(
+  layer: AddChildSink,
+  labelMap: Map<string, { container: unknown; text: unknown; bg: unknown }>,
+  id: string,
+  bbox: { x: number; y: number; w: number; h: number },
+  className: string,
+  color: number,
+  TextCtor: typeof import("pixi.js").Text,
+  ContainerCtor: typeof import("pixi.js").Container,
+  GraphicsCtor: typeof import("pixi.js").Graphics,
+): void {
+  let entry = labelMap.get(id);
+  if (!entry) {
+    const container = new ContainerCtor();
+    const bg = new GraphicsCtor();
+    const text = new TextCtor({
+      text: className,
+      style: {
+        fontFamily: "Inter, system-ui, sans-serif",
+        fontSize: 11,
+        fill: 0xffffff,
+        fontWeight: "500",
+      },
+    });
+    (container as unknown as AddChildSink).addChild(bg as never);
+    (container as unknown as AddChildSink).addChild(text as never);
+    layer.addChild(container as never);
+    entry = { container, bg, text };
+    labelMap.set(id, entry);
+  }
+  // Update text content if changed.
+  const text = entry.text as { text: string; width: number; height: number };
+  if (text.text !== className) text.text = className;
+  // Lay out: tag height ~14px, padding ~3px h / 2px v.
+  const padX = 4;
+  const padY = 2;
+  const tw = text.width + padX * 2;
+  const th = text.height + padY * 2;
+  // Position the container above the bbox so the tag's bottom-left aligns
+  // with the bbox top-left corner. Small 2px gap.
+  const container = entry.container as { position: { set: (x: number, y: number) => void } };
+  container.position.set(bbox.x, bbox.y - th - 2);
+  // Re-paint the bg rect with the class color.
+  const bg = entry.bg as {
+    clear: () => void;
+    rect: (x: number, y: number, w: number, h: number) => void;
+    fill: (opts: { color: number; alpha: number }) => void;
+  };
+  bg.clear();
+  bg.rect(0, 0, tw, th);
+  bg.fill({ color, alpha: 1 });
+  // Position text inside the bg.
+  const tpos = (entry.text as { position: { set: (x: number, y: number) => void } }).position;
+  tpos.set(padX, padY);
 }
 
 function toolCursor(t: ToolName): string {

@@ -86,6 +86,9 @@ def batch(
             )
             for c in payload.create
         ]
+        # Parallel array of client-supplied temp_ids so the response can
+        # echo them back. None for entries without a temp_id. Audit bug M.
+        created_temp_ids: list[str | None] = [c.temp_id for c in payload.create]
         updated = []
         for u in payload.update:
             a = svc.update(
@@ -107,6 +110,7 @@ def batch(
         created=[AnnotationOut.from_orm_annotation(a) for a in created],
         updated=[AnnotationOut.from_orm_annotation(a) for a in updated],
         deleted=deleted,
+        created_temp_ids=created_temp_ids,
     )
 
 
