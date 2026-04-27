@@ -7,7 +7,7 @@ import { MaskBrushTool } from "@/canvas/tools/MaskBrushTool";
 import { TagTool } from "@/canvas/tools/TagTool";
 import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
-import { useAnnotations, type AnnotationDraft, type Bbox } from "@/state/annotations";
+import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
 import {
   renderBbox,
   renderPolygon,
@@ -20,9 +20,20 @@ import {
   hitTestHandle,
   pointInsideBbox,
 } from "@/canvas/bboxEdit";
+import {
+  applyVertexTranslate,
+  hitTestVertex,
+} from "@/canvas/polygonEdit";
 import { showToast } from "@/lib/toast";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
 import { AnnotationContextMenu } from "@/components/annotation/AnnotationContextMenu";
+
+/**
+ * State of the underlying image's load lifecycle. Surfaced to callers
+ * (the editor page) so they can render a status badge and an error overlay
+ * when loading fails. Phase A core 1.
+ */
+export type ImageLoadStatus = "loading" | "loaded" | "error";
 
 interface Props {
   /** Intrinsic image width (px). Optional now — kept for compat with existing call sites. */
@@ -34,6 +45,15 @@ interface Props {
   assetId: string;
   /** Optional: callback fired when zoom changes so the page can render it. */
   onZoomChange?: (pct: number) => void;
+  /**
+   * Optional: callback fired when the image load lifecycle changes. The
+   * callback receives a status string and, on error, an error message.
+   * Phase A core 1 — without this, image load failures left a blank canvas
+   * with no feedback. See ref code path in `useEffect` below.
+   */
+  onImageStatusChange?: (status: ImageLoadStatus, errorMessage?: string) => void;
+  /** Bumps when the parent wants the canvas to retry loading the image. */
+  reloadKey?: number;
   /**
    * Map of classId → hex color (`#RRGGBB`). Replaces the previous
    * window-CustomEvent propagation, which had a race on first mount where
@@ -86,6 +106,8 @@ export function AnnotationCanvas({
   frameId,
   assetId,
   onZoomChange,
+  onImageStatusChange,
+  reloadKey,
   classColorMap,
   classNameMap,
 }: Props) {
@@ -117,6 +139,7 @@ export function AnnotationCanvas({
   const dragRef = useRef<
     | { mode: "translate"; id: string; offset: Point; original: Bbox }
     | { mode: "resize"; id: string; handle: BboxHandleName; original: Bbox }
+    | { mode: "vertex"; id: string; index: number; original: Polygon }
     | null
   >(null);
   // Cursor override during a drag — clears when the drag ends.
@@ -134,11 +157,13 @@ export function AnnotationCanvas({
     new Map(),
   );
 
-  // ----- Mount Pixi app once. Re-mount when imageUrl changes.
+  // ----- Mount Pixi app once. Re-mount when imageUrl changes (or reloadKey
+  // bumps, signalling a parent-driven retry after an image-load error).
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     let cancelled = false;
+    onImageStatusChange?.("loading");
     const app = new CanvasApp({ width: 1, height: 1, backgroundAlpha: 0 });
     appRef.current = app;
 
@@ -155,6 +180,28 @@ export function AnnotationCanvas({
       cv.style.width = "100%";
       cv.style.height = "100%";
 
+      // Pre-flight the image with a plain HTMLImageElement. Pixi's Assets cache
+      // sometimes hides 404s as an empty texture; the <img> error handler is
+      // the simplest reliable signal we can surface to the parent. Phase A
+      // core 1.
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const probe = new Image();
+          probe.onload = () => resolve();
+          probe.onerror = () =>
+            reject(new Error("network or 404 — image could not be fetched"));
+          // Allow cross-origin texture sampling in Pixi later.
+          probe.crossOrigin = "anonymous";
+          probe.src = imageUrl;
+        });
+      } catch (e) {
+        if (cancelled) return;
+        const message =
+          e instanceof Error ? e.message : "image failed to load";
+        onImageStatusChange?.("error", message);
+        return;
+      }
+
       // Load image into imageLayer
       try {
         const { Assets, Sprite } = await import("pixi.js");
@@ -165,8 +212,11 @@ export function AnnotationCanvas({
         const realW = sprite.width || 1;
         const realH = sprite.height || 1;
         setImageSize({ w: realW, h: realH });
-      } catch {
-        // Image load failures (e.g. headless environments) leave canvas empty.
+        onImageStatusChange?.("loaded");
+      } catch (e) {
+        if (cancelled) return;
+        const message = e instanceof Error ? e.message : "pixi load failed";
+        onImageStatusChange?.("error", message);
       }
     })();
 
@@ -182,7 +232,8 @@ export function AnnotationCanvas({
       labelGfxByIdRef.current.clear();
       previewGfxRef.current = null;
     };
-  }, [imageUrl]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageUrl, reloadKey]);
 
   // ----- Track host element size (for fit-to-host scaling).
   useEffect(() => {
@@ -347,7 +398,13 @@ export function AnnotationCanvas({
             }
           }
         } else if (draft.geometry.kind === "polygon") {
-          renderPolygon(g, draft.geometry, color, isSelected || isHovered);
+          renderPolygon(
+            g,
+            draft.geometry,
+            color,
+            isSelected || isHovered,
+            showHandles && isSelected,
+          );
         }
         seen.add(id);
       }
@@ -569,6 +626,18 @@ export function AnnotationCanvas({
       return null;
     }
 
+    /** Mirror of ``getSelectedBbox`` for polygon selection. Phase A core 3. */
+    function getSelectedPolygon(): { id: string; poly: Polygon } | null {
+      const state = useAnnotations.getState();
+      for (const id of state.selectedIds) {
+        const d = state.byId[id];
+        if (d && d.geometry.kind === "polygon" && d.frameId === frameId) {
+          return { id, poly: d.geometry };
+        }
+      }
+      return null;
+    }
+
     function onDown(e: PointerEvent) {
       const p = pointerXY(e);
       if (tool === "cursor") {
@@ -599,6 +668,27 @@ export function AnnotationCanvas({
               original: sel.bbox,
             };
             setDragCursor("move");
+            try {
+              host!.setPointerCapture(e.pointerId);
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
+        }
+
+        // 1b. If we have a selected polygon, did we click one of its vertex handles?
+        const polySel = getSelectedPolygon();
+        if (polySel) {
+          const idx = hitTestVertex(polySel.poly, p);
+          if (idx !== null) {
+            dragRef.current = {
+              mode: "vertex",
+              id: polySel.id,
+              index: idx,
+              original: polySel.poly,
+            };
+            setDragCursor("grabbing");
             try {
               host!.setPointerCapture(e.pointerId);
             } catch {
@@ -657,7 +747,8 @@ export function AnnotationCanvas({
       } else if (tool === "cursor") {
         const drag = dragRef.current;
         if (drag) {
-          // Active drag — translate or resize the selected bbox.
+          // Active drag — translate or resize the selected bbox, or move
+          // a polygon vertex (Phase A core 3).
           if (drag.mode === "translate") {
             const next = applyTranslate(
               drag.original,
@@ -665,8 +756,12 @@ export function AnnotationCanvas({
               p.y - drag.offset.y,
             );
             useAnnotations.getState().update(drag.id, { geometry: next });
-          } else {
+          } else if (drag.mode === "resize") {
             const next = applyResize(drag.original, drag.handle, p);
+            useAnnotations.getState().update(drag.id, { geometry: next });
+          } else {
+            // mode === "vertex"
+            const next = applyVertexTranslate(drag.original, drag.index, p);
             useAnnotations.getState().update(drag.id, { geometry: next });
           }
           return;
@@ -682,6 +777,15 @@ export function AnnotationCanvas({
           }
           if (pointInsideBbox(sel.bbox, p)) {
             setDragCursor("move");
+            useTool.getState().setHoveredAnnotationId(null);
+            return;
+          }
+        }
+        const polySel = getSelectedPolygon();
+        if (polySel) {
+          const idx = hitTestVertex(polySel.poly, p);
+          if (idx !== null) {
+            setDragCursor("grab");
             useTool.getState().setHoveredAnnotationId(null);
             return;
           }
@@ -832,6 +936,29 @@ export function AnnotationCanvas({
     [toImageXY, frameId],
   );
 
+  /**
+   * Vertex-level hit test for the context menu. Walks the currently selected
+   * polygon (only — non-selected polygons don't render handles, so right-click
+   * on those is treated as a body click). Phase A core 3.
+   */
+  const vertexHitTestClient = useCallback(
+    (clientX: number, clientY: number): { annId: string; vertexIndex: number } | null => {
+      const p = toImageXY(clientX, clientY);
+      const state = useAnnotations.getState();
+      for (const id of state.selectedIds) {
+        const d = state.byId[id];
+        if (d && d.geometry.kind === "polygon" && d.frameId === frameId) {
+          const idx = hitTestVertex(d.geometry, p);
+          if (idx !== null) {
+            return { annId: id, vertexIndex: idx };
+          }
+        }
+      }
+      return null;
+    },
+    [toImageXY, frameId],
+  );
+
   return (
     <div
       ref={hostRef}
@@ -851,7 +978,11 @@ export function AnnotationCanvas({
         toImageXY={toImageXY}
         enabled={showCrosshair}
       />
-      <AnnotationContextMenu hostRef={hostRef} hitTest={hitTestClient} />
+      <AnnotationContextMenu
+        hostRef={hostRef}
+        hitTest={hitTestClient}
+        vertexHitTest={vertexHitTestClient}
+      />
     </div>
   );
 }
