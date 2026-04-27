@@ -139,7 +139,7 @@ export function LeftNav() {
       aria-label="Primary navigation"
       className={cn(
         "w-[220px] shrink-0 h-full flex flex-col",
-        "border-r border-[var(--border-subtle)] bg-[var(--bg-nav)]",
+        "border-r border-[var(--border-subtle)] bg-[var(--bg-nav)] nav-atmosphere",
       )}
     >
       {/* Search */}
@@ -171,7 +171,7 @@ export function LeftNav() {
           Workspace
         </p>
         <div className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)]">
-          <span className="grid h-5 w-5 place-items-center rounded-[3px] bg-[var(--accent)] text-white text-[10px] font-medium">
+          <span className="grid h-5 w-5 place-items-center rounded-[3px] bg-[var(--accent)] text-[color:var(--accent-fg)] text-[10px] font-medium">
             C
           </span>
           <span className="text-[13px] tracking-tight font-medium">Carve</span>

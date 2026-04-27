@@ -529,7 +529,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                       data-testid="canvas-image-retry"
                       className={cn(
                         "inline-flex w-fit items-center gap-1.5 h-8 px-3 rounded-[var(--radius-sm)]",
-                        "bg-[var(--accent)] text-white text-[12.5px] font-medium",
+                        "bg-[var(--accent)] text-[color:var(--accent-fg)] text-[12.5px] font-medium",
                         "hover:bg-[var(--accent-hover)] transition-colors",
                       )}
                     >

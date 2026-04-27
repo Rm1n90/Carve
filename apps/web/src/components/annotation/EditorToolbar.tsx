@@ -210,7 +210,7 @@ function SamModelPicker() {
                 {VARIANT_NOTES[name] ?? ""}
               </span>
               {name === active && (
-                <span className="text-[9.5px] uppercase tracking-[0.10em] px-1.5 py-0.5 rounded bg-[var(--accent)] text-white font-medium">
+                <span className="text-[9.5px] uppercase tracking-[0.10em] px-1.5 py-0.5 rounded bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium">
                   active
                 </span>
               )}
@@ -566,7 +566,7 @@ function MaskBrushSizeControl() {
             className={cn(
               "h-6 px-1.5 rounded-[var(--radius-xs)] text-[10.5px] font-mono",
               radius === p
-                ? "bg-[var(--accent)] text-white"
+                ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
                 : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
             )}
           >
@@ -893,7 +893,7 @@ export function EditorToolbar({
           aria-disabled={dirtyCount === 0 && !isSaving && !hasError}
           className={cn(
             "ml-1 inline-flex h-8 items-center gap-1.5 px-3 rounded-full",
-            "bg-[var(--success)] text-white text-[12.5px] font-medium tracking-tight",
+            "bg-[var(--success)] text-[color:var(--success-fg)] text-[12.5px] font-medium tracking-tight",
             "hover:bg-[var(--success-hover)] transition-colors",
             "aria-[disabled=true]:bg-[var(--bg-subtle)] aria-[disabled=true]:text-[color:var(--text-tertiary)] aria-[disabled=true]:opacity-60",
             "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",

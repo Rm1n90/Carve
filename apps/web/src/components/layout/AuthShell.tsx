@@ -40,7 +40,7 @@ export function AuthShell({
         <div className="mb-5 flex items-center gap-2">
           <span
             aria-hidden
-            className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-white text-[14px] font-semibold tracking-tight"
+            className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[color:var(--accent-fg)] text-[14px] font-semibold tracking-tight"
           >
             C
           </span>

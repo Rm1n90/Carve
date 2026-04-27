@@ -449,7 +449,7 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="inline-flex items-center h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]"
+            className="inline-flex items-center h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium bg-[var(--accent)] text-[color:var(--accent-fg)] hover:bg-[var(--accent-hover)]"
           >
             Done
           </button>

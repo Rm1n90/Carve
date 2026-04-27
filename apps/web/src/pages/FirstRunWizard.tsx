@@ -106,7 +106,7 @@ export function FirstRunWizard({ onSuccess }: Props) {
         )}
         <Button
           type="submit"
-          variant="success"
+          variant="primary"
           size="lg"
           block
           disabled={!canSubmit}
