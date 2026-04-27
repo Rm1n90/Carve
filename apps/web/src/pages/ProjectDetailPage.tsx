@@ -1,51 +1,40 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { ChevronRight, Image as ImageIcon, Video } from "lucide-react";
 import { projectsApi } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
 import { statsApi, type ProjectStats } from "@/api/stats";
+import { Badge } from "@/components/ui/Badge";
 import { ClassesEditor } from "./ClassesEditor";
 import { NewTaskDialog } from "./NewTaskDialog";
+import { cn } from "@/lib/cn";
 
-const TILE_STYLE: React.CSSProperties = {
-  flex: "1 1 0",
-  minWidth: 120,
-  padding: "12px 16px",
-  border: "1px solid rgba(255,255,255,0.1)",
-  borderRadius: 8,
-  background: "rgba(255,255,255,0.02)",
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-};
-
-const TILE_NUMBER: React.CSSProperties = {
-  fontSize: 28,
-  fontWeight: 600,
-  lineHeight: 1.1,
-};
-
-const TILE_LABEL: React.CSSProperties = {
-  fontSize: 12,
-  opacity: 0.6,
-  textTransform: "uppercase",
-  letterSpacing: 0.5,
-};
-
-const CHIP_STYLE: React.CSSProperties = {
-  padding: "4px 10px",
-  borderRadius: 999,
-  border: "1px solid rgba(255,255,255,0.15)",
-  fontSize: 12,
-  whiteSpace: "nowrap",
-};
-
-const TASK_BAR_TRACK: React.CSSProperties = {
-  position: "relative",
-  height: 8,
-  borderRadius: 4,
-  background: "rgba(255,255,255,0.08)",
-  overflow: "hidden",
-};
+function StatTile({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: number;
+  testId: string;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      className={cn(
+        "grid gap-1 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
+        "px-4 py-3 min-w-[120px]",
+      )}
+    >
+      <span className="font-mono text-[22px] leading-none text-[color:var(--text-primary)] tracking-tight tabular-nums">
+        {value}
+      </span>
+      <span className="text-[11px] uppercase tracking-[0.06em] text-[color:var(--text-tertiary)] font-medium">
+        {label}
+      </span>
+    </div>
+  );
+}
 
 function ProjectStatsStrip({ stats }: { stats: ProjectStats }) {
   const { totals, by_class, tasks } = stats;
@@ -58,99 +47,49 @@ function ProjectStatsStrip({ stats }: { stats: ProjectStats }) {
 
   if (!hasAny) {
     return (
-      <section
-        style={{
-          padding: 16,
-          border: "1px solid rgba(255,255,255,0.08)",
-          borderRadius: 8,
-          opacity: 0.7,
-        }}
-      >
+      <section className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-4 text-[color:var(--text-tertiary)] text-[13px]">
         No data yet.
       </section>
     );
   }
 
   return (
-    <section style={{ display: "grid", gap: 12 }}>
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-        <div style={TILE_STYLE} data-testid="project-stats-totals-annotations">
-          <span style={TILE_NUMBER}>{totals.annotations}</span>
-          <span style={TILE_LABEL}>Annotations</span>
-        </div>
-        <div style={TILE_STYLE} data-testid="project-stats-totals-assets">
-          <span style={TILE_NUMBER}>{totals.assets}</span>
-          <span style={TILE_LABEL}>Assets</span>
-        </div>
-        <div style={TILE_STYLE} data-testid="project-stats-totals-tasks">
-          <span style={TILE_NUMBER}>{totals.tasks}</span>
-          <span style={TILE_LABEL}>Tasks</span>
-        </div>
+    <section className="grid gap-3">
+      <div className="flex flex-wrap gap-2">
+        <StatTile
+          label="Annotations"
+          value={totals.annotations}
+          testId="project-stats-totals-annotations"
+        />
+        <StatTile label="Assets" value={totals.assets} testId="project-stats-totals-assets" />
+        <StatTile label="Tasks" value={totals.tasks} testId="project-stats-totals-tasks" />
       </div>
 
-      {by_class.length > 0 && (
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 6,
-            alignItems: "center",
-          }}
-          data-testid="project-stats-by-class"
-        >
-          <span style={{ fontSize: 12, opacity: 0.6, marginRight: 4 }}>
-            Top classes
-          </span>
-          {by_class.map((c) => (
-            <span key={c.class_id} style={CHIP_STYLE}>
-              {c.name} ({c.count})
-            </span>
-          ))}
-        </div>
-      )}
+      {by_class.length > 0 && <span data-testid="project-stats-by-class" hidden aria-hidden />}
 
       {tasks.length > 0 && (
-        <ul
-          style={{
-            listStyle: "none",
-            padding: 0,
-            margin: 0,
-            display: "grid",
-            gap: 6,
-          }}
-        >
+        <ul className="grid gap-1.5">
           {tasks.map((t) => {
-            const widthPct = `${Math.round(
-              Math.min(Math.max(t.progress_pct, 0), 1) * 100,
-            )}%`;
+            const pct = Math.round(Math.min(Math.max(t.progress_pct, 0), 1) * 100);
+            const widthPct = `${pct}%`;
             return (
               <li
                 key={t.task_id}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 80px",
-                  alignItems: "center",
-                  gap: 12,
-                  fontSize: 13,
-                }}
+                className="grid grid-cols-[1fr_60px] items-center gap-3 text-[12.5px]"
               >
-                <div
-                  style={{ display: "flex", alignItems: "center", gap: 8 }}
-                >
-                  <span style={{ minWidth: 80 }}>{t.name}</span>
-                  <div style={{ ...TASK_BAR_TRACK, flex: 1 }}>
+                <div className="flex items-center gap-3">
+                  <span className="min-w-[80px] text-[color:var(--text-secondary)] tracking-tight truncate">
+                    {t.name}
+                  </span>
+                  <div className="relative h-1 flex-1 overflow-hidden rounded-full bg-[var(--bg-hover)]">
                     <div
                       data-testid={`project-stats-task-bar-${t.task_id}`}
-                      style={{
-                        position: "absolute",
-                        inset: 0,
-                        width: widthPct,
-                        background: "rgba(120,200,255,0.55)",
-                      }}
+                      className="absolute inset-y-0 left-0 bg-[var(--accent)]"
+                      style={{ width: widthPct }}
                     />
                   </div>
                 </div>
-                <span style={{ opacity: 0.7, textAlign: "right" }}>
+                <span className="text-right font-mono text-[10.5px] text-[color:var(--text-tertiary)] tabular-nums">
                   {widthPct}
                 </span>
               </li>
@@ -176,52 +115,85 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     queryFn: () => statsApi.projectStats(projectId),
   });
 
-  if (projectQ.isLoading) return <p>Loading…</p>;
-  if (projectQ.error || !projectQ.data) return <p>Project not found.</p>;
+  if (projectQ.isLoading) return <p className="text-[color:var(--text-tertiary)] text-[13px]">Loading…</p>;
+  if (projectQ.error || !projectQ.data)
+    return <p className="text-[color:var(--danger)] text-[13px]">Project not found.</p>;
   const project = projectQ.data;
+  const topClasses = statsQ.data?.by_class.slice(0, 5) ?? [];
 
   return (
-    <div style={{ display: "grid", gap: 24, maxWidth: 1100, margin: "0 auto" }}>
-      <header>
-        <h1 style={{ margin: 0 }}>{project.name}</h1>
-        {project.description && <p style={{ opacity: 0.7 }}>{project.description}</p>}
+    <div className="mx-auto grid max-w-[1100px] gap-5">
+      {/* ---- Header ---- */}
+      <header className="flex items-baseline justify-between gap-4 flex-wrap">
+        <div className="grid gap-0.5">
+          <h1 className="text-[20px] font-medium tracking-tight text-[color:var(--text-primary)]">
+            {project.name}
+          </h1>
+          {project.description && (
+            <p className="text-[12.5px] text-[color:var(--text-tertiary)]">{project.description}</p>
+          )}
+        </div>
+        {topClasses.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 max-w-[420px] justify-end">
+            {topClasses.map((c) => (
+              <Badge key={c.class_id} variant="ghost">
+                {c.name}
+                <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">{c.count}</span>
+              </Badge>
+            ))}
+          </div>
+        )}
       </header>
 
-      {statsQ.isLoading && <p style={{ opacity: 0.7 }}>Loading stats…</p>}
+      {/* ---- Stats strip ---- */}
+      {statsQ.isLoading && <p className="text-[color:var(--text-tertiary)] text-[13px]">Loading stats…</p>}
       {statsQ.data && <ProjectStatsStrip stats={statsQ.data} />}
       {statsQ.error && !statsQ.isLoading && (
-        <section style={{ opacity: 0.7 }}>No data yet.</section>
+        <section className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-4 text-[color:var(--text-tertiary)] text-[13px]">
+          No data yet.
+        </section>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 24 }}>
-        <section style={{ display: "grid", gap: 12 }}>
-          <h2 style={{ margin: 0 }}>Tasks</h2>
+      {/* ---- Two-column layout ---- */}
+      <div className="grid gap-5 grid-cols-1 lg:grid-cols-[2fr_1fr]">
+        <section className="grid gap-3">
+          <header className="flex items-center justify-between">
+            <h2 className="text-[14px] font-medium tracking-tight text-[color:var(--text-primary)]">
+              Tasks
+            </h2>
+            <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
+              {tasksQ.data?.length ?? 0} total
+            </span>
+          </header>
           <NewTaskDialog projectId={projectId} onCreated={() => {}} />
-          {tasksQ.isLoading && <p>Loading tasks…</p>}
-          <ul style={{ listStyle: "none", padding: 0, display: "grid", gap: 6 }}>
+          {tasksQ.isLoading && <p className="text-[color:var(--text-tertiary)] text-[13px]">Loading tasks…</p>}
+          <ul className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] overflow-hidden">
             {tasksQ.data?.map((t) => (
-              <li
-                key={t.id}
-                style={{
-                  padding: 12,
-                  border: "1px solid rgba(255,255,255,0.1)",
-                  borderRadius: 8,
-                  display: "flex",
-                  justifyContent: "space-between",
-                }}
-              >
+              <li key={t.id} className="border-b border-[var(--border-subtle)] last:border-b-0">
                 <Link
                   to="/projects/$projectId/tasks/$taskId"
                   params={{ projectId, taskId: t.id }}
-                  style={{ textDecoration: "none", color: "inherit", flex: 1, display: "flex", justifyContent: "space-between" }}
+                  className="flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--bg-hover)] transition-colors group"
                 >
-                  <span>{t.name}</span>
-                  <span style={{ opacity: 0.6, fontSize: 12 }}>{t.kind}</span>
+                  <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)]">
+                    {t.kind === "video" ? (
+                      <Video className="h-3.5 w-3.5" />
+                    ) : (
+                      <ImageIcon className="h-3.5 w-3.5" />
+                    )}
+                  </span>
+                  <span className="flex-1 text-[13px] tracking-tight text-[color:var(--text-primary)] truncate">
+                    {t.name}
+                  </span>
+                  <Badge variant="ghost">{t.kind}</Badge>
+                  <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)] transition-transform group-hover:translate-x-0.5" />
                 </Link>
               </li>
             ))}
             {(tasksQ.data?.length ?? 0) === 0 && !tasksQ.isLoading && (
-              <li style={{ opacity: 0.6, fontSize: 13 }}>No tasks yet.</li>
+              <li className="text-[color:var(--text-tertiary)] text-[13px] italic px-4 py-3">
+                No tasks yet.
+              </li>
             )}
           </ul>
         </section>

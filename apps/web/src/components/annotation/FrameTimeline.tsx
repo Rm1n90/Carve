@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { cn } from "@/lib/cn";
 
 interface Props {
   totalFrames: number;
@@ -24,7 +25,6 @@ export function FrameTimeline({ totalFrames, currentIdx, onChange }: Props) {
           playingRef.current = null;
         } else {
           playingRef.current = window.setInterval(() => {
-            // Capture current via the prop; advance until last frame, then stop
             onChange(Math.min(totalFrames - 1, currentIdx + 1));
           }, 1000);
         }
@@ -48,30 +48,27 @@ export function FrameTimeline({ totalFrames, currentIdx, onChange }: Props) {
       aria-valuemin={0}
       aria-valuemax={totalFrames - 1}
       aria-valuenow={currentIdx}
-      style={{
-        display: "flex",
-        gap: 1,
-        padding: 8,
-        borderTop: "1px solid rgba(255,255,255,0.1)",
-        background: "rgba(255,255,255,0.02)",
-        overflowX: "auto",
-      }}
+      className={cn(
+        "flex h-[60px] items-center gap-px overflow-x-auto px-3 py-2",
+        "border-t border-[var(--border-subtle)]",
+        "bg-[var(--bg-glass-strong)] backdrop-blur-xl",
+      )}
     >
+      <span className="font-mono-data text-[10px] text-tertiary mr-3 shrink-0">
+        {currentIdx + 1} / {totalFrames}
+      </span>
       {Array.from({ length: totalFrames }).map((_, i) => (
         <button
           key={i}
           onClick={() => onChange(i)}
           aria-label={`Go to frame ${i}`}
           aria-current={i === currentIdx}
-          style={{
-            flex: "0 0 auto",
-            width: 4,
-            height: 24,
-            background: i === currentIdx ? "rgba(120,200,255,0.9)" : "rgba(255,255,255,0.18)",
-            border: "none",
-            cursor: "pointer",
-            padding: 0,
-          }}
+          className={cn(
+            "shrink-0 transition-all",
+            i === currentIdx
+              ? "h-9 w-1 bg-[var(--accent)] shadow-[0_0_8px_oklch(0.78_0.16_215_/_0.6)]"
+              : "h-6 w-[3px] bg-[var(--border-strong)] hover:bg-[var(--accent)] hover:h-7",
+          )}
         />
       ))}
     </div>

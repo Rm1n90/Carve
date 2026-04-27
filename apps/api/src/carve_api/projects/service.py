@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -29,18 +30,28 @@ class ProjectService:
         self.session.flush()
         return p
 
-    def list_visible(self, *, actor: User) -> list[Project]:  # noqa: ARG002
+    def list_visible(
+        self, *, actor: User, include_deleted: bool = False
+    ) -> list[Project]:  # noqa: ARG002
         # v1 simplification: all authenticated users see all projects.
         # `actor` reserved for the future per-project ACL (Plan 03+).
-        return list(
-            self.session.execute(
-                select(Project).order_by(Project.created_at.desc())
-            ).scalars()
-        )
+        stmt = select(Project)
+        if not include_deleted:
+            stmt = stmt.where(Project.deleted_at.is_(None))
+        stmt = stmt.order_by(Project.created_at.desc())
+        return list(self.session.execute(stmt).scalars())
 
-    def get(self, *, actor: User, project_id: uuid.UUID) -> Project:
+    def get(
+        self,
+        *,
+        actor: User,  # noqa: ARG002
+        project_id: uuid.UUID,
+        include_deleted: bool = False,
+    ) -> Project:
         p = self.session.get(Project, project_id)
         if p is None:
+            raise ProjectNotFound("project not found")
+        if not include_deleted and p.deleted_at is not None:
             raise ProjectNotFound("project not found")
         return p
 
@@ -63,10 +74,17 @@ class ProjectService:
         return p
 
     def delete(self, *, actor: User, project_id: uuid.UUID) -> None:
+        """Soft-delete: set ``deleted_at = now()``. Restorable via /trash."""
         p = self.get(actor=actor, project_id=project_id)
         if not _can_modify(actor, p):
             raise NotProjectOwner("only owner or admin can delete a project")
-        self.session.delete(p)
+        p.deleted_at = datetime.now(timezone.utc)
+        # Cascade-soft-delete tasks belonging to this project so they stop
+        # appearing in lists and stats.
+        for t in self.session.execute(
+            select(Task).where(Task.project_id == p.id, Task.deleted_at.is_(None))
+        ).scalars():
+            t.deleted_at = p.deleted_at
         self.session.flush()
 
 
@@ -89,26 +107,35 @@ class TaskService:
         self.session.flush()
         return t
 
-    def list_for_project(self, *, project: Project) -> list[Task]:
-        return list(
-            self.session.execute(
-                select(Task)
-                .where(Task.project_id == project.id)
-                .order_by(Task.created_at.desc())
-            ).scalars()
-        )
+    def list_for_project(
+        self, *, project: Project, include_deleted: bool = False
+    ) -> list[Task]:
+        stmt = select(Task).where(Task.project_id == project.id)
+        if not include_deleted:
+            stmt = stmt.where(Task.deleted_at.is_(None))
+        stmt = stmt.order_by(Task.created_at.desc())
+        return list(self.session.execute(stmt).scalars())
 
-    def get(self, *, project: Project, task_id: uuid.UUID) -> Task:
+    def get(
+        self,
+        *,
+        project: Project,
+        task_id: uuid.UUID,
+        include_deleted: bool = False,
+    ) -> Task:
         t = self.session.get(Task, task_id)
         if t is None or t.project_id != project.id:
+            raise TaskNotFound("task not found")
+        if not include_deleted and t.deleted_at is not None:
             raise TaskNotFound("task not found")
         return t
 
     def delete(self, *, actor: User, project: Project, task_id: uuid.UUID) -> None:
+        """Soft-delete: set ``deleted_at = now()``. Restorable via /trash."""
         if not _can_modify(actor, project):
             raise NotProjectOwner("only owner or admin can delete a task")
         t = self.get(project=project, task_id=task_id)
-        self.session.delete(t)
+        t.deleted_at = datetime.now(timezone.utc)
         self.session.flush()
 
 

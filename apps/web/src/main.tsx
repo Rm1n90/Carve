@@ -2,6 +2,9 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import "@fontsource-variable/geist";
+import "@fontsource-variable/jetbrains-mono";
+import "@fontsource/instrument-serif";
 import { rootRoute } from "./routes/_root";
 import { indexRoute } from "./routes/index";
 import { loginRoute } from "./routes/login";
@@ -10,6 +13,16 @@ import { projectsRoute } from "./routes/projects";
 import { projectDetailRoute } from "./routes/projects.$projectId";
 import { taskDetailRoute } from "./routes/projects.$projectId.tasks.$taskId";
 import { annotateAssetRoute } from "./routes/projects.$projectId.tasks.$taskId.assets.$assetId";
+import {
+  modelsSamRoute,
+  modelsYoloRoute,
+  settingsApiKeysRoute,
+  settingsIndexRoute,
+  settingsMembersRoute,
+  settingsProfileRoute,
+  settingsWorkspaceRoute,
+  trashRoute,
+} from "./routes/phase2";
 import "./styles/global.css";
 
 const routeTree = rootRoute.addChildren([
@@ -20,6 +33,14 @@ const routeTree = rootRoute.addChildren([
   projectDetailRoute,
   taskDetailRoute,
   annotateAssetRoute,
+  settingsIndexRoute,
+  settingsProfileRoute,
+  settingsApiKeysRoute,
+  settingsMembersRoute,
+  settingsWorkspaceRoute,
+  modelsYoloRoute,
+  modelsSamRoute,
+  trashRoute,
 ]);
 const router = createRouter({ routeTree });
 

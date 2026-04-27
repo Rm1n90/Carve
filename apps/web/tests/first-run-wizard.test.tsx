@@ -19,7 +19,7 @@ describe("FirstRunWizard", () => {
   it("renders the wizard heading", () => {
     render(<FirstRunWizard onSuccess={() => {}} />);
     expect(
-      screen.getByRole("heading", { name: /set up your admin account/i }),
+      screen.getByRole("heading", { name: /welcome to carve/i }),
     ).toBeInTheDocument();
   });
 

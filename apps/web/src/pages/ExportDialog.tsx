@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Download, FileDown } from "lucide-react";
 import { classesApi, type ClassRow } from "@/api/classes";
 import {
   exportsApi,
@@ -9,6 +10,7 @@ import {
   type ExportRequest,
   type ExportSplits,
 } from "@/api/exports";
+import { Button } from "@/components/ui/Button";
 
 interface Props {
   projectId: string;
@@ -97,161 +99,161 @@ export function ExportDialog({ projectId, taskId }: Props) {
     create.mutate(body);
   };
 
-  const inputBox: React.CSSProperties = {
-    padding: "4px 6px",
-    background: "rgba(255,255,255,0.05)",
-    border: "1px solid rgba(255,255,255,0.15)",
-    borderRadius: 4,
-    color: "inherit",
-  };
+  const numInput =
+    "h-8 w-[80px] rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2 text-[12px] text-primary focus:outline-none focus:border-[var(--accent)] disabled:opacity-50 font-mono-data";
+  const textInput =
+    "h-8 w-[160px] rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2 text-[12px] text-primary focus:outline-none focus:border-[var(--accent)] disabled:opacity-50";
 
   return (
-    <section style={{ display: "grid", gap: 10 }}>
-      <h2 style={{ margin: 0 }}>Export annotations</h2>
+    <section className="grid gap-4">
+      <h2 className="text-[18px] font-medium tracking-tight text-primary">Export annotations</h2>
 
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-          Format:
+      <div className="flex flex-wrap items-center gap-4 text-[13px] text-secondary">
+        <label className="flex items-center gap-2.5">
+          <span className="font-medium tracking-tight">Format</span>
           <select
             aria-label="export-format"
             value={format}
             onChange={(e) => setFormat(e.target.value as ExportFormat)}
-            style={inputBox}
+            className="h-8 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2 text-[12px] text-primary focus:outline-none focus:border-[var(--accent)]"
           >
             <option value="yolo">YOLO</option>
             <option value="coco">COCO</option>
           </select>
         </label>
-        <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}>
+        <label className="flex items-center gap-2 cursor-pointer">
           <input
             type="checkbox"
             checked={includeImages}
             onChange={(e) => setIncludeImages(e.target.checked)}
             aria-label="include-images"
+            className="h-4 w-4 accent-[var(--accent)]"
           />
           Include images
         </label>
       </div>
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 13 }}>
-        <span>Splits:</span>
+      <div className="flex flex-wrap items-center gap-3 text-[13px] text-secondary">
+        <span className="font-medium tracking-tight">Splits</span>
         {(["train", "val", "test"] as const).map((k) => (
-          <label key={k} style={{ display: "flex", gap: 4, alignItems: "center" }}>
-            {k}
+          <label key={k} className="flex items-center gap-1.5">
+            <span className="text-tertiary text-[11px] uppercase tracking-wide">{k}</span>
             <input
               type="number"
               step="0.1"
               min={0}
               max={1}
               value={splits[k]}
-              onChange={(e) =>
-                setSplits((p) => ({ ...p, [k]: Number(e.target.value) }))
-              }
+              onChange={(e) => setSplits((p) => ({ ...p, [k]: Number(e.target.value) }))}
               aria-label={`split-${k}`}
-              style={{ ...inputBox, width: 70 }}
+              className={numInput}
             />
           </label>
         ))}
-        <span style={{ opacity: sumValid ? 0.6 : 1, color: sumValid ? undefined : "rgb(240, 200, 120)" }}>
+        <span
+          className={
+            sumValid
+              ? "font-mono-data text-[11px] text-tertiary"
+              : "font-mono-data text-[11px] text-[color:var(--warning)]"
+          }
+        >
           Sum: {splitSum.toFixed(2)}
           {!sumValid && " — should be 1.0"}
         </span>
       </div>
 
-      {classesQ.isLoading && <p style={{ opacity: 0.6, fontSize: 13, margin: 0 }}>Loading classes…</p>}
+      {classesQ.isLoading && (
+        <p className="text-tertiary text-[13px]">Loading classes…</p>
+      )}
 
       {sortedClasses.length > 0 && (
-        <table style={{ borderCollapse: "collapse", fontSize: 13 }}>
-          <thead>
-            <tr style={{ textAlign: "left", opacity: 0.7 }}>
-              <th style={{ padding: "4px 8px" }}>Source</th>
-              <th style={{ padding: "4px 8px" }}>Export id</th>
-              <th style={{ padding: "4px 8px" }}>Export name</th>
-              <th style={{ padding: "4px 8px" }}>Skip</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedClasses.map((c) => {
-              const row = remap[c.id] ?? { export_id: c.idx, name: c.name, skip: false };
-              return (
-                <tr key={c.id} style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-                  <td style={{ padding: "4px 8px" }}>
-                    <span style={{ opacity: 0.6, marginRight: 6 }}>{c.idx}</span>
-                    {c.name}
-                  </td>
-                  <td style={{ padding: "4px 8px" }}>
-                    <input
-                      type="number"
-                      value={row.export_id}
-                      disabled={row.skip}
-                      onChange={(e) =>
-                        updateRow(c.id, { export_id: Number(e.target.value) })
-                      }
-                      aria-label={`export-id-${c.id}`}
-                      style={{ ...inputBox, width: 70 }}
-                    />
-                  </td>
-                  <td style={{ padding: "4px 8px" }}>
-                    <input
-                      type="text"
-                      value={row.name}
-                      disabled={row.skip}
-                      onChange={(e) => updateRow(c.id, { name: e.target.value })}
-                      aria-label={`export-name-${c.id}`}
-                      style={{ ...inputBox, width: 140 }}
-                    />
-                  </td>
-                  <td style={{ padding: "4px 8px" }}>
-                    <input
-                      type="checkbox"
-                      checked={row.skip}
-                      onChange={(e) => updateRow(c.id, { skip: e.target.checked })}
-                      aria-label={`skip-${c.id}`}
-                    />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] overflow-hidden">
+          <table className="w-full border-collapse text-[12px]">
+            <thead>
+              <tr className="bg-[var(--bg-raised)] text-tertiary uppercase tracking-[0.08em]">
+                <th className="px-3 py-2 text-left font-medium">Source</th>
+                <th className="px-3 py-2 text-left font-medium">Export id</th>
+                <th className="px-3 py-2 text-left font-medium">Export name</th>
+                <th className="px-3 py-2 text-left font-medium">Skip</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedClasses.map((c) => {
+                const row = remap[c.id] ?? { export_id: c.idx, name: c.name, skip: false };
+                return (
+                  <tr key={c.id} className="border-t border-[var(--border-subtle)]">
+                    <td className="px-3 py-2">
+                      <span className="font-mono-data text-tertiary mr-2">{c.idx}</span>
+                      <span className="text-primary tracking-tight">{c.name}</span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="number"
+                        value={row.export_id}
+                        disabled={row.skip}
+                        onChange={(e) => updateRow(c.id, { export_id: Number(e.target.value) })}
+                        aria-label={`export-id-${c.id}`}
+                        className={numInput}
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="text"
+                        value={row.name}
+                        disabled={row.skip}
+                        onChange={(e) => updateRow(c.id, { name: e.target.value })}
+                        aria-label={`export-name-${c.id}`}
+                        className={textInput}
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={row.skip}
+                        onChange={(e) => updateRow(c.id, { skip: e.target.checked })}
+                        aria-label={`skip-${c.id}`}
+                        className="h-4 w-4 accent-[var(--accent)]"
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <div>
-        <button
+        <Button
           type="button"
+          variant="primary"
           onClick={handleExport}
-          disabled={inFlight}
-          style={{
-            padding: "6px 14px",
-            background: inFlight ? "rgba(255,255,255,0.05)" : "rgba(120,200,255,0.15)",
-            border: "1px solid rgba(120,200,255,0.3)",
-            borderRadius: 6,
-            color: "inherit",
-            cursor: inFlight ? "not-allowed" : "pointer",
-          }}
+          loading={inFlight}
+          leftIcon={!inFlight && <FileDown className="h-4 w-4" />}
         >
           Export
-        </button>
+        </Button>
       </div>
 
       {exportId && status && status !== "completed" && status !== "failed" && (
-        <p style={{ opacity: 0.75, fontSize: 13, margin: 0 }}>{status}…</p>
+        <p className="font-mono-data text-[12px] text-tertiary">{status}…</p>
       )}
 
       {status === "completed" && progressQ.data?.download_url && (
-        <p style={{ margin: 0 }}>
+        <p>
           <a
             href={progressQ.data.download_url}
             download
-            style={{ color: "rgb(120, 220, 160)" }}
+            className="inline-flex items-center gap-1.5 text-[color:var(--success)] hover:underline tracking-tight"
           >
+            <Download className="h-4 w-4" />
             Download
           </a>
         </p>
       )}
 
       {status === "failed" && (
-        <p role="alert" style={{ color: "tomato", fontSize: 13, margin: 0 }}>
+        <p role="alert" className="text-[color:var(--danger)] text-[13px]">
           {progressQ.data?.error ?? "Export failed."}
         </p>
       )}

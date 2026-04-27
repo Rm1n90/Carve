@@ -1,16 +1,27 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as Tabs from "@radix-ui/react-tabs";
+import { TooltipProvider } from "@radix-ui/react-tooltip";
+import { Loader2 } from "lucide-react";
 
 import { AnnotationCanvas } from "@/components/annotation/AnnotationCanvas";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
 import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
-import { Toolbar } from "@/components/annotation/Toolbar";
+import { EditorToolbar } from "@/components/annotation/EditorToolbar";
+import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
+import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip";
+import { TopBar } from "@/components/nav/TopBar";
+import { LeftNav } from "@/components/nav/LeftNav";
+import { BottomBar } from "@/components/nav/BottomBar";
 import { annotationsApi, type BatchPayload } from "@/api/annotations";
 import { assetsApi } from "@/api/assets";
 import { classesApi } from "@/api/classes";
+import { projectsApi } from "@/api/projects";
 import { useAnnotations } from "@/state/annotations";
+import { useTool } from "@/state/tool";
+import { cn } from "@/lib/cn";
 
 interface Props {
   projectId: string;
@@ -20,9 +31,36 @@ interface Props {
 
 const AUTOSAVE_DEBOUNCE_MS = 2000;
 
+function ThumbnailStripGate({
+  taskId,
+  projectId,
+  activeAssetId,
+}: {
+  taskId: string;
+  projectId: string;
+  activeAssetId: string;
+}) {
+  const enabled = useTool((s) => s.visibility.thumbnails);
+  if (!enabled) return null;
+  return (
+    <AssetThumbnailStrip
+      taskId={taskId}
+      projectId={projectId}
+      activeAssetId={activeAssetId}
+    />
+  );
+}
+
 export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const qc = useQueryClient();
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
+  const [zoomPct, setZoomPct] = useState(100);
+  const [annotationsVisible, setAnnotationsVisible] = useState(true);
+
+  const projectQ = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => projectsApi.get(projectId),
+  });
   const assetQ = useQuery({
     queryKey: ["asset", assetId],
     queryFn: () => assetsApi.get(assetId),
@@ -32,10 +70,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     queryFn: () => classesApi.listForProject(projectId),
   });
 
-  // For images, the single Frame for the asset. We resolve frameId by fetching annotations
-  // (which includes frame_id) — but the simplest path is to load all annotations for the task
-  // unfiltered and pick the ones for this asset's frame. For v1 image flow, we treat the
-  // frame_id as null on the client and let the server resolve via the Frame row.
+  // For images, the single Frame for the asset.
   const frameId: string | null = null;
 
   const annotationsQ = useQuery({
@@ -50,6 +85,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     }
   }, [annotationsQ.data]);
 
+  // Publish class colors to the canvas via a window event so the canvas can
+  // render shapes in the correct color without a context dependency.
+  useEffect(() => {
+    if (!classesQ.data) return;
+    const map: Record<string, string> = {};
+    for (const c of classesQ.data) map[c.id] = c.color;
+    window.dispatchEvent(new CustomEvent("carve:class-colors", { detail: map }));
+  }, [classesQ.data]);
+
   // Reactive dirty count from store
   const byId = useAnnotations((s) => s.byId);
   const pendingDeletes = useAnnotations((s) => s.pendingDeletes);
@@ -59,10 +103,8 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const saveMutation = useMutation({
     mutationFn: (payload: BatchPayload) => annotationsApi.batch(taskId, payload),
     onSuccess: (res, variables) => {
-      // Replace tempIds with serverIds; clear pendingDeletes
       const created = res.created;
       const sentCreates = variables.create;
-      // Pair created drafts (ordered) by index — server returns in same order as request
       const sentTemp = Object.values(useAnnotations.getState().byId)
         .filter((a) => a.serverId === null && a.dirty)
         .slice(0, sentCreates.length);
@@ -70,7 +112,6 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         const server = created[i];
         if (server) useAnnotations.getState().markPersisted(draft.tempId, server.id);
       });
-      // Mark updated drafts as non-dirty
       res.updated.forEach((u) => {
         useAnnotations.setState((s) => ({
           byId: {
@@ -84,7 +125,6 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     },
   });
 
-  // Build a payload from the current store state
   function buildPayload(): BatchPayload {
     const drafts = Object.values(useAnnotations.getState().byId);
     const create = drafts
@@ -122,8 +162,6 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     saveMutation.mutate(payload);
   }
 
-  // Keep a ref to the latest saveNow so subscribe/keydown effects always call
-  // the freshest closure (saveMutation is recreated each render).
   const saveNowRef = useRef(saveNow);
   saveNowRef.current = saveNow;
 
@@ -145,86 +183,238 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     };
   }, []);
 
-  // Manual Cmd+S
+  // Manual Cmd+S, Cmd+Z, Cmd+Shift+Z, Cmd+A, Backspace, z-order shortcuts
   useEffect(() => {
     function handler(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
+        return;
+      }
+      const k = e.key.toLowerCase();
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && k === "s") {
         e.preventDefault();
         saveNowRef.current();
+        return;
+      }
+      if (meta && k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        useAnnotations.getState().undo();
+        return;
+      }
+      if (meta && k === "z" && e.shiftKey) {
+        e.preventDefault();
+        useAnnotations.getState().redo();
+        return;
+      }
+      if (meta && k === "a") {
+        e.preventDefault();
+        useAnnotations.getState().selectAll(null);
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const ids = useAnnotations.getState().selectedIds;
+        if (ids.length > 0) {
+          e.preventDefault();
+          for (const id of ids) {
+            useAnnotations.getState().remove(id);
+          }
+        }
+        return;
+      }
+      // Z-order: Cmd+Shift+] / Cmd+] / Cmd+[ / Cmd+Shift+[
+      if (meta && (e.key === "]" || e.key === "[")) {
+        const sel = useAnnotations.getState().selectedId;
+        if (!sel) return;
+        e.preventDefault();
+        if (e.key === "]" && e.shiftKey) {
+          useAnnotations.getState().bringToFront(sel);
+        } else if (e.key === "]") {
+          useAnnotations.getState().bringForward(sel);
+        } else if (e.key === "[" && e.shiftKey) {
+          useAnnotations.getState().sendToBack(sel);
+        } else if (e.key === "[") {
+          useAnnotations.getState().sendBackward(sel);
+        }
+        return;
+      }
+      // Esc clears selection
+      if (e.key === "Escape") {
+        useAnnotations.getState().clearSelection();
       }
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  const crumbs = useMemo(() => {
+    const c: { label: string; to?: string }[] = [{ label: "Projects", to: "/projects" }];
+    if (projectQ.data) c.push({ label: projectQ.data.name, to: `/projects/${projectId}` });
+    if (assetQ.data) c.push({ label: assetQ.data.asset.original_name });
+    return c;
+  }, [projectQ.data, assetQ.data, projectId]);
+
   if (assetQ.isLoading || classesQ.isLoading) {
-    return <p>Loading…</p>;
+    return (
+      <div className="grid h-screen place-items-center">
+        <div className="flex items-center gap-2 text-[color:var(--text-tertiary)] text-[13px]">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading…
+        </div>
+      </div>
+    );
   }
   if (assetQ.error || !assetQ.data) {
-    return <p style={{ color: "tomato" }}>Failed to load asset.</p>;
+    return (
+      <div className="grid h-screen place-items-center">
+        <p className="text-[color:var(--danger)] text-[14px]">Failed to load asset.</p>
+      </div>
+    );
   }
 
   const asset = assetQ.data.asset;
   const url = assetQ.data.url;
   const w = asset.width ?? 1024;
   const h = asset.height ?? 768;
+  const isVideo = asset.kind === "video" && (asset.frames ?? 0) > 1;
+  const hasError = saveMutation.isError;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <header
-        style={{
-          display: "flex",
-          gap: 12,
-          alignItems: "center",
-          padding: "8px 16px",
-          borderBottom: "1px solid rgba(255,255,255,0.1)",
-          fontSize: 13,
-        }}
-      >
-        <span style={{ opacity: 0.8 }}>{asset.original_name}</span>
-        <span style={{ flex: 1 }} />
-        <span style={{ opacity: 0.6 }}>
-          {saveMutation.isPending
-            ? "Saving…"
-            : dirtyCount > 0
-              ? `${dirtyCount} unsaved`
-              : "Saved"}
-        </span>
-        <button onClick={saveNow}>Save now</button>
-      </header>
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <Toolbar />
-        <div style={{ flex: 1, display: "grid", placeItems: "center", padding: 12, overflow: "auto" }}>
-          <AnnotationCanvas
+    <TooltipProvider delayDuration={250}>
+    <div className="flex h-screen flex-col bg-[var(--bg-app)] overflow-hidden">
+      <TopBar crumbs={crumbs} />
+
+      <div className="flex flex-1 min-h-0">
+        <LeftNav />
+
+        <div className="flex flex-1 min-w-0 flex-col">
+          <EditorToolbar
+            projectId={projectId}
+            assetId={assetId}
+            onSave={saveNow}
+            isSaving={saveMutation.isPending}
+            hasError={hasError}
+            dirtyCount={dirtyCount}
+            zoomPct={zoomPct}
+            onZoomIn={() => setZoomPct((z) => Math.min(800, z + 25))}
+            onZoomOut={() => setZoomPct((z) => Math.max(10, z - 25))}
+            onZoomTo={(p) => {
+              if (p === 0) {
+                window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
+              } else {
+                setZoomPct(p);
+              }
+            }}
+            onFitToScreen={() => {
+              window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
+            }}
+            onUndo={() => useAnnotations.getState().undo()}
+            onRedo={() => useAnnotations.getState().redo()}
+            onAfterYoloPredict={() => {
+              qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+            }}
+            onToggleVisibility={() => setAnnotationsVisible((v) => !v)}
+            visibilityOn={annotationsVisible}
+          />
+
+          <ThumbnailStripGate
+            taskId={taskId}
+            projectId={projectId}
+            activeAssetId={assetId}
+          />
+
+
+          <div className="flex flex-1 min-h-0">
+            <main
+              className={cn(
+                "relative flex-1 min-w-0 bg-[var(--bg-canvas)]",
+                !annotationsVisible && "[&_.canvas-checker_*]:hidden",
+              )}
+            >
+              <AnnotationCanvas
+                width={w}
+                height={h}
+                imageUrl={url}
+                frameId={frameId}
+                assetId={assetId}
+                onZoomChange={setZoomPct}
+              />
+              <div className="absolute top-2 right-2 z-20">
+                <KeyboardCheatSheet />
+              </div>
+            </main>
+
+            <aside
+              role="complementary"
+              aria-label="Classes"
+              className="w-[220px] shrink-0 border-l border-[var(--border-subtle)] bg-[var(--bg-app)] flex flex-col"
+            >
+              <Tabs.Root defaultValue="classes" className="flex flex-col h-full">
+                <Tabs.List
+                  aria-label="Side panel"
+                  className="flex shrink-0 border-b border-[var(--border-subtle)] px-2 pt-2 gap-1"
+                >
+                  <Tabs.Trigger
+                    value="classes"
+                    className={cn(
+                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-t-[var(--radius-sm)]",
+                      "text-[color:var(--text-tertiary)] border-b-2 border-transparent",
+                      "hover:text-[color:var(--text-primary)]",
+                      "data-[state=active]:text-[color:var(--text-primary)] data-[state=active]:border-[var(--accent)]",
+                      "transition-colors",
+                    )}
+                  >
+                    Classes
+                  </Tabs.Trigger>
+                  <Tabs.Trigger
+                    value="objects"
+                    className={cn(
+                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-t-[var(--radius-sm)]",
+                      "text-[color:var(--text-tertiary)] border-b-2 border-transparent",
+                      "hover:text-[color:var(--text-primary)]",
+                      "data-[state=active]:text-[color:var(--text-primary)] data-[state=active]:border-[var(--accent)]",
+                      "transition-colors",
+                    )}
+                  >
+                    Objects
+                  </Tabs.Trigger>
+                </Tabs.List>
+                <Tabs.Content
+                  value="classes"
+                  className="flex-1 min-h-0 overflow-hidden focus-visible:outline-none"
+                >
+                  <ClassesPanel classes={classesQ.data ?? []} />
+                </Tabs.Content>
+                <Tabs.Content
+                  value="objects"
+                  className="flex-1 overflow-y-auto p-3 focus-visible:outline-none"
+                >
+                  <ObjectsPanel frameId={frameId} />
+                </Tabs.Content>
+              </Tabs.Root>
+            </aside>
+          </div>
+
+          {isVideo && (
+            <FrameTimeline
+              totalFrames={asset.frames}
+              currentIdx={currentFrameIdx}
+              onChange={setCurrentFrameIdx}
+            />
+          )}
+
+          <BottomBar
+            thumbnailUrl={url}
+            filename={asset.original_name}
             width={w}
             height={h}
-            imageUrl={url}
-            frameId={frameId}
-            assetId={assetId}
+            zoomPct={zoomPct}
           />
         </div>
-        <aside
-          style={{
-            width: 280,
-            borderLeft: "1px solid rgba(255,255,255,0.1)",
-            padding: 12,
-            display: "grid",
-            gap: 16,
-            overflow: "auto",
-          }}
-        >
-          <ClassesPanel classes={classesQ.data ?? []} />
-          <ObjectsPanel frameId={frameId} />
-        </aside>
       </div>
-      {asset.kind === "video" && (asset.frames ?? 0) > 1 && (
-        <FrameTimeline
-          totalFrames={asset.frames}
-          currentIdx={currentFrameIdx}
-          onChange={setCurrentFrameIdx}
-        />
-      )}
+
       <CommandPalette classes={classesQ.data ?? []} onSaveNow={saveNow} />
     </div>
+    </TooltipProvider>
   );
 }

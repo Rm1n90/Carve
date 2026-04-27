@@ -1,4 +1,9 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
+import { Link } from "@tanstack/react-router";
+import { AlertCircle } from "lucide-react";
+import { AuthShell } from "@/components/layout/AuthShell";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { login, register } from "./api";
 
 interface Props {
@@ -11,7 +16,7 @@ export function RegisterPage({ onSuccess }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setBusy(true);
@@ -19,8 +24,10 @@ export function RegisterPage({ onSuccess }: Props) {
       await register(email, password);
       await login(email, password);
       onSuccess();
-    } catch (err: any) {
-      const code = err?.response?.data?.error ?? "unknown_error";
+    } catch (err: unknown) {
+      const code =
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        "unknown_error";
       setError(code === "email_taken" ? "That email is already registered." : code);
     } finally {
       setBusy(false);
@@ -28,30 +35,54 @@ export function RegisterPage({ onSuccess }: Props) {
   }
 
   return (
-    <form onSubmit={onSubmit} style={{ maxWidth: 360, margin: "8vh auto", display: "grid", gap: 12 }}>
-      <h1>Create account</h1>
-      <label>
-        Email
-        <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
-      </label>
-      <label>
-        Password (min 8)
-        <input
+    <AuthShell
+      cardTitle="Create your account"
+      cardDescription="It takes about ten seconds."
+      cardFooter={
+        <span>
+          Have an account?{" "}
+          <Link
+            to="/login"
+            className="text-[color:var(--accent)] hover:text-[color:var(--accent-hover)] font-medium"
+          >
+            Sign in
+          </Link>
+        </span>
+      }
+    >
+      <form onSubmit={onSubmit} className="grid gap-3" noValidate>
+        <Input
+          label="Email"
+          type="email"
+          required
+          autoComplete="email"
+          placeholder="you@studio.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <Input
+          label="Password"
           type="password"
           required
           minLength={8}
+          autoComplete="new-password"
+          placeholder="Min 8 characters"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
-      </label>
-      {error && (
-        <div role="alert" style={{ color: "tomato" }}>
-          {error}
-        </div>
-      )}
-      <button type="submit" disabled={busy}>
-        {busy ? "Creating…" : "Create account"}
-      </button>
-    </form>
+        {error && (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-[var(--radius-md)] border border-[#fecaca] bg-[var(--danger-bg)] px-3 py-2 text-[13px] text-[color:var(--danger)]"
+          >
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <span>{error}</span>
+          </div>
+        )}
+        <Button type="submit" variant="primary" size="lg" block loading={busy}>
+          {busy ? "Creating" : "Create account"}
+        </Button>
+      </form>
+    </AuthShell>
   );
 }

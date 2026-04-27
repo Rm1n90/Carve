@@ -24,13 +24,18 @@ function TaskDetail() {
 
   return (
     <RequireAuth>
-      <div style={{ display: "grid", gap: 24, maxWidth: 1100, margin: "0 auto" }}>
-        <header>
-          <h1 style={{ margin: 0 }}>
-            {projectQ.data?.name ?? "…"} · {task?.name ?? "…"}
+      <div className="mx-auto grid max-w-[1200px] gap-8">
+        <header className="grid gap-1">
+          <span className="font-mono-data text-[10px] tracking-[0.18em] uppercase text-tertiary">
+            Task
+          </span>
+          <h1 className="text-[28px] font-medium tracking-tight text-primary leading-tight">
+            <span className="text-secondary">{projectQ.data?.name ?? "…"}</span>
+            <span className="text-tertiary mx-2">/</span>
+            {task?.name ?? "…"}
           </h1>
           {task && (
-            <p style={{ opacity: 0.6, fontSize: 13 }}>{task.kind} task</p>
+            <p className="text-tertiary text-[13px]">{task.kind} task</p>
           )}
         </header>
         <AssetUploadDialog projectId={projectId} taskId={taskId} />

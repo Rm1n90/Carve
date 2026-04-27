@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     password_pepper: str = Field(alias="PASSWORD_PEPPER")
 
     minio_endpoint: str = Field(alias="MINIO_ENDPOINT", default="http://localhost:9000")
+    # Public, host-reachable endpoint used only when generating presigned URLs
+    # for the browser. When unset, falls back to `minio_endpoint` (back-compat).
+    minio_public_endpoint: str | None = Field(alias="MINIO_PUBLIC_ENDPOINT", default=None)
     minio_root_user: str = Field(alias="MINIO_ROOT_USER")
     minio_root_password: str = Field(alias="MINIO_ROOT_PASSWORD")
     minio_bucket: str = Field(alias="MINIO_BUCKET", default="carve-assets")
@@ -27,6 +30,7 @@ class Settings(BaseSettings):
 
     model_base_url: str = Field(alias="MODEL_BASE_URL", default="http://model:8100")
     model_timeout_seconds: float = Field(alias="MODEL_TIMEOUT_SECONDS", default=120.0)
+    sam_model: str = Field(alias="SAM_MODEL", default="sam2.1-tiny")
 
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
     api_env: str = Field(default="development", alias="API_ENV")

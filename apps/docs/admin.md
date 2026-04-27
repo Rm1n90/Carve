@@ -7,6 +7,59 @@ The first visit to the app triggers the **First-run admin wizard**, which create
 - Public self-registration is disabled.
 - Admins can create new accounts at `/auth/register` (admin-only route).
 - User roles: **admin** (full access) and **annotator** (project-scoped access).
+- Admins manage members via **Settings → Members** in the web UI.
+
+## API keys (v2.0)
+
+API keys let you call the Carve API from headless clients (CI scripts, custom tooling, batch import jobs). They authenticate the same way JWT tokens do — `Authorization: Bearer <token>` — and grant the same permissions as the user that owns the key.
+
+### Create a key
+
+1. Sign in to the web UI.
+2. Open **Settings → API keys**.
+3. Click **New key**, give it a descriptive name (e.g. `ci-import-2026q2`), and submit.
+4. The plaintext token is displayed **once** with a `ck_` prefix — copy it now. The server only stores an Argon2 hash; if you lose the plaintext you must create a new key.
+
+### Use a key
+
+```bash
+curl -fsS https://your-carve-host/api/projects \
+  -H "Authorization: Bearer ck_aBcDe..."
+```
+
+### Revoke a key
+
+In the web UI, click **Revoke** next to the key. Revoked keys are rejected on the next request (no JWT-style replay window since keys are validated against the database on every call).
+
+### Storage
+
+Tokens are stored as Argon2 hashes in the `api_keys` table along with a non-secret `prefix` (the first 12 chars) used as an indexed lookup. The plaintext is never logged or persisted.
+
+## Trash & restore (v2.0)
+
+Project and task deletes are **soft** by default: the row is marked with `deleted_at = now()` and hidden from the standard listing. Soft-deleting a project also soft-deletes all of its tasks at the same timestamp, so restore is symmetric.
+
+- The **/trash** page (top-level nav) lists all soft-deleted projects and tasks the user can see.
+- **Restore** clears `deleted_at` and the item reappears in its parent listing.
+- **Permanent delete** is admin-only and triggers `ON DELETE CASCADE` on assets/annotations/frames. There is no undo.
+
+## Models page (v2.0)
+
+The **Models** section under Settings provides operator-facing views into the inference stack:
+
+- **Models → SAM**: shows all five SAM variants (`sam2.1-tiny`, `sam2.1-small`, `sam2.1-base-plus`, `sam2.1-large`, `sam3`) and indicates which one is active. Switching the active variant requires editing `SAM_MODEL` in `.env` and restarting the model container — see [SAM model selection](#sam-3-toggle).
+- **Models → YOLO**: lists uploaded custom YOLO weights and lets you upload new `.pt` files. Weights are stored in MinIO and loaded lazily by the model service.
+
+## MinIO public endpoint (v2.0)
+
+The browser fetches assets via presigned URLs that point at MinIO. Inside the docker network the API reaches MinIO at `http://minio:9000`, but the browser cannot resolve `minio` — it needs a host-reachable URL.
+
+`MINIO_PUBLIC_ENDPOINT` is the env var that controls the URL embedded in presigned responses for the browser. Two-client behavior:
+
+- `MINIO_ENDPOINT` (e.g. `http://minio:9000`): used by the API/worker for server-side I/O (`put_object`, `get_object`, `head_bucket`).
+- `MINIO_PUBLIC_ENDPOINT` (e.g. `http://localhost:9000` in dev, `https://minio.example.com` in prod): used to sign the URLs the browser follows.
+
+When `MINIO_PUBLIC_ENDPOINT` is unset (or equal to `MINIO_ENDPOINT`), Carve falls back to a single shared client — no surprise change for existing deployments.
 
 ## Backups
 

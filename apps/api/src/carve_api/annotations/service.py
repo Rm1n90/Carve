@@ -39,7 +39,18 @@ class AnnotationService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create(self, *, task: Task, actor_id, frame_id, class_id, kind, geometry, track_id) -> Annotation:
+    def create(
+        self,
+        *,
+        task: Task,
+        actor_id,
+        frame_id,
+        class_id,
+        kind,
+        geometry,
+        track_id,
+        z_order: int | None = None,
+    ) -> Annotation:
         cls = self.session.get(Class, class_id)
         if cls is None or cls.project_id != task.project_id:
             raise AnnotationInvalid("class not in this project")
@@ -47,6 +58,7 @@ class AnnotationService:
         a = Annotation(
             task_id=task.id, frame_id=frame_id, class_id=class_id,
             kind=kind, geometry=geometry, track_id=track_id, created_by=actor_id,
+            z_order=int(z_order) if z_order is not None else 0,
         )
         self.session.add(a)
         self.session.flush()
@@ -56,7 +68,11 @@ class AnnotationService:
         q = select(Annotation).where(Annotation.task_id == task.id)
         if frame_id is not None:
             q = q.where(Annotation.frame_id == frame_id)
-        return list(self.session.execute(q.order_by(Annotation.created_at)).scalars())
+        return list(
+            self.session.execute(
+                q.order_by(Annotation.z_order, Annotation.created_at)
+            ).scalars()
+        )
 
     def update(self, *, task: Task, annotation_id, **patch) -> Annotation:
         a = self.session.get(Annotation, annotation_id)
@@ -73,6 +89,8 @@ class AnnotationService:
         for k in ("class_id", "track_id"):
             if patch.get(k) is not None:
                 setattr(a, k, patch[k])
+        if patch.get("z_order") is not None:
+            a.z_order = int(patch["z_order"])
         self.session.flush()
         return a
 

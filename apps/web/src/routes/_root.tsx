@@ -1,14 +1,17 @@
 import { Outlet, createRootRoute, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { AppShell } from "@/components/AppShell";
+import { AppShell, AppShellBleed } from "@/components/AppShell";
 import { useAuth } from "@/auth/store";
 import { bootstrapStatus } from "@/auth/api";
 import { FirstRunWizard } from "@/pages/FirstRunWizard";
+
+const EDITOR_PATH_RX = /^\/projects\/[^/]+\/tasks\/[^/]+\/assets\/[^/]+$/;
 
 function RootComponent() {
   const token = useAuth((s) => s.accessToken);
   const path = useRouterState({ select: (s) => s.location.pathname });
   const onAuthPage = path === "/login" || path === "/register";
+  const onEditorPage = EDITOR_PATH_RX.test(path);
 
   const bs = useQuery({
     queryKey: ["auth", "bootstrap-status"],
@@ -18,7 +21,7 @@ function RootComponent() {
   });
 
   if (bs.isLoading) {
-    return <p style={{ padding: 24, opacity: 0.7 }}>Loading…</p>;
+    return <p className="p-6 text-[color:var(--text-tertiary)] text-[13px]">Loading…</p>;
   }
   if (bs.data && !bs.data.users_exist) {
     return <FirstRunWizard onSuccess={() => bs.refetch()} />;
@@ -26,6 +29,13 @@ function RootComponent() {
 
   if (!token || onAuthPage) {
     return <Outlet />;
+  }
+  if (onEditorPage) {
+    return (
+      <AppShellBleed>
+        <Outlet />
+      </AppShellBleed>
+    );
   }
   return (
     <AppShell>

@@ -1,15 +1,307 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Carve v2.0 — Light, Flat, Productivity Tool
+   Ultralytics-style three-column annotation platform
+   ============================================================ */
+
 :root {
-  color-scheme: dark;
-  --color-bg: oklch(15% 0.01 250);
-  --color-fg: oklch(96% 0.005 250);
-  --color-accent: oklch(72% 0.15 220);
+  color-scheme: light;
+
+  /* ---- Surfaces (flat, light) ---- */
+  --bg-app: #ffffff;
+  --bg-nav: #f5f6f8;
+  --bg-canvas: #f0f1f4;
+  --bg-elev: #ffffff;
+  --bg-hover: #f0f1f4;
+  --bg-subtle: #f9fafb;
+
+  /* Aliases kept for legacy callsites */
+  --bg-base: #ffffff;
+  --bg-surface: #f9fafb;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f5f6f8;
+
+  /* ---- Borders ---- */
+  --border-subtle: #e5e7eb;
+  --border-strong: #d1d5db;
+  --border-accent: #c7d2fe;
+
+  /* ---- Text ---- */
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-tertiary: #6b7280;
+  --text-disabled: #9ca3af;
+
+  /* ---- Brand accent — indigo ---- */
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-active: #4338ca;
+  --accent-fg: #ffffff;
+  --accent-bg: #eef2ff;
+  --accent-bg-hover: #e0e7ff;
+
+  /* ---- Action — green ---- */
+  --success: #16a34a;
+  --success-hover: #15803d;
+  --success-bg: #dcfce7;
+  --success-fg: #ffffff;
+
+  /* ---- Semantic ---- */
+  --warning: #f59e0b;
+  --warning-bg: #fef3c7;
+  --danger: #dc2626;
+  --danger-bg: #fee2e2;
+  --info: var(--accent);
+
+  /* ---- Class swatch palette (12 distinct hues) ---- */
+  --swatch-0: #eab308;
+  --swatch-1: #f97316;
+  --swatch-2: #ef4444;
+  --swatch-3: #ec4899;
+  --swatch-4: #a855f7;
+  --swatch-5: #6366f1;
+  --swatch-6: #3b82f6;
+  --swatch-7: #06b6d4;
+  --swatch-8: #10b981;
+  --swatch-9: #84cc16;
+  --swatch-10: #14b8a6;
+  --swatch-11: #6b7280;
+
+  /* ---- Radii ---- */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* ---- Elevations — VERY subtle ---- */
+  --shadow-elev-1: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-elev-2: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-elev-3: 0 8px 24px rgba(15, 23, 42, 0.12);
+  /* Aliases */
+  --shadow-1: var(--shadow-elev-1);
+  --shadow-2: var(--shadow-elev-2);
+  --shadow-popover: var(--shadow-elev-3);
+  --shadow-glow: 0 0 0 2px rgba(99, 102, 241, 0.18);
+
+  /* ---- Motion ---- */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 300ms;
+
+  /* ---- Type ---- */
+  --font-display: "Geist Variable", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  --font-serif: var(--font-display);
+
+  /* Tailwind v4 expects these */
+  --color-bg: var(--bg-app);
+  --color-fg: var(--text-primary);
+  --color-accent: var(--accent);
 }
-html, body, #root { height: 100%; }
+
+/* ---- Dark theme (kept for future opt-in via data-theme="dark"; no toggle exposed) ---- */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-app: #0d0f12;
+  --bg-nav: #14161a;
+  --bg-canvas: #0a0c0f;
+  --bg-elev: #1a1c20;
+  --bg-hover: #1f2227;
+  --bg-subtle: #16181c;
+  --bg-base: #0d0f12;
+  --bg-surface: #1a1c20;
+  --bg-raised: #1f2227;
+  --bg-sunken: #0a0c0f;
+  --border-subtle: #25282d;
+  --border-strong: #3a3e45;
+  --border-accent: #4338ca;
+  --text-primary: #f4f5f7;
+  --text-secondary: #b0b3b8;
+  --text-tertiary: #84878d;
+  --text-disabled: #54575c;
+}
+
+/* ============================================================
+   Tailwind v4 @theme — wires tokens into utility classes
+   ============================================================ */
+@theme inline {
+  --color-app: var(--bg-app);
+  --color-nav: var(--bg-nav);
+  --color-canvas: var(--bg-canvas);
+  --color-elev: var(--bg-elev);
+  --color-hover: var(--bg-hover);
+
+  --color-base: var(--bg-base);
+  --color-surface: var(--bg-surface);
+  --color-raised: var(--bg-raised);
+  --color-sunken: var(--bg-sunken);
+
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary: var(--text-tertiary);
+  --color-disabled: var(--text-disabled);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-bg: var(--accent-bg);
+  --color-accent-bg-hover: var(--accent-bg-hover);
+
+  --color-success: var(--success);
+  --color-success-hover: var(--success-hover);
+  --color-success-bg: var(--success-bg);
+  --color-success-fg: var(--success-fg);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-border-accent: var(--border-accent);
+
+  --font-sans: var(--font-display);
+  --font-mono: var(--font-mono);
+
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --shadow-elev-1: var(--shadow-elev-1);
+  --shadow-elev-2: var(--shadow-elev-2);
+  --shadow-elev-3: var(--shadow-elev-3);
+
+  --ease-out-expo: var(--ease-out-expo);
+  --ease-in-out: var(--ease-in-out);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
 body {
   margin: 0;
-  background: var(--color-bg);
-  color: var(--color-fg);
-  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-feature-settings: "ss01", "cv01", "cv02";
+  letter-spacing: -0.005em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+::selection {
+  background: rgba(99, 102, 241, 0.18);
+  color: var(--text-primary);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* Scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+  background-clip: padding-box;
+}
+
+/* Form element baseline reset — only inherit font, not color, so utility
+   classes like `text-white` win over the body color. */
+input,
+textarea,
+select,
+button {
+  font: inherit;
+}
+
+input:where([type="number"])::-webkit-outer-spin-button,
+input:where([type="number"])::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.font-mono-data {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum", "ss01";
+}
+
+/* ============================================================
+   Saving indicator pulse
+   ============================================================ */
+@keyframes saving-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(99, 102, 241, 0);
+  }
+}
+
+.is-saving {
+  animation: saving-pulse 1.4s var(--ease-in-out) infinite;
+}
+
+/* ============================================================
+   Canvas checker pattern background
+   ============================================================ */
+.canvas-checker {
+  background-color: var(--bg-canvas);
+  background-image:
+    linear-gradient(45deg, #e5e7eb 25%, transparent 25%),
+    linear-gradient(-45deg, #e5e7eb 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e5e7eb 75%),
+    linear-gradient(-45deg, transparent 75%, #e5e7eb 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  opacity: 1;
 }

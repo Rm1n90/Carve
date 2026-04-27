@@ -32,3 +32,34 @@ def test_minio_client_from_settings_constructs() -> None:
     from carve_api.storage.client import MinioClient
     client = MinioClient.from_settings()
     assert client.bucket  # attribute exists
+
+
+def test_minio_client_falls_back_when_public_endpoint_missing() -> None:
+    # When public_endpoint is None (or equal to internal), both clients are
+    # the same instance (back-compat).
+    from carve_api.storage.client import MinioClient
+    client = MinioClient(
+        endpoint="http://internal:9000",
+        access_key="k",
+        secret_key="s",
+        bucket="b",
+        public_endpoint=None,
+    )
+    assert client._s3 is client._s3_public
+
+
+def test_minio_client_uses_separate_clients_for_public_endpoint() -> None:
+    # When public_endpoint differs, presigned URLs go through a distinct
+    # client whose endpoint is the host-reachable one.
+    from carve_api.storage.client import MinioClient
+    client = MinioClient(
+        endpoint="http://internal:9000",
+        access_key="k",
+        secret_key="s",
+        bucket="b",
+        public_endpoint="http://localhost:9000",
+    )
+    assert client._s3 is not client._s3_public
+    url = client.presigned_get("a/b.png", expires_seconds=60)
+    assert url.startswith("http://localhost:9000/")
+    assert "/b/a/b.png" in url

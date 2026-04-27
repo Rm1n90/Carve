@@ -1,45 +1,62 @@
-import type { ReactNode } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { useAuth } from "@/auth/store";
-import { logout } from "@/auth/api";
+import { type ReactNode } from "react";
+import { TooltipProvider } from "@radix-ui/react-tooltip";
+import { useRouterState } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { TopBar } from "@/components/nav/TopBar";
+import { LeftNav } from "@/components/nav/LeftNav";
+import { projectsApi } from "@/api/projects";
 
+/**
+ * Productivity-tool shell — TopBar (48px) + LeftNav (220px) + main content area.
+ * Editor pages opt out of the LeftNav via the `EditorShell` variant below.
+ */
 export function AppShell({ children }: { children: ReactNode }) {
-  const user = useAuth((s) => s.user);
-  const nav = useNavigate();
+  const path = useRouterState({ select: (s) => s.location.pathname });
+  const projectMatch = /^\/projects\/([^/]+)/.exec(path);
+  const projectId = projectMatch?.[1];
+
+  const projectQ = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => (projectId ? projectsApi.get(projectId) : Promise.resolve(null)),
+    enabled: !!projectId,
+    staleTime: 30_000,
+  });
+
+  // Build breadcrumb crumbs from the current path.
+  const crumbs: { label: string; to?: string }[] = [];
+  if (path.startsWith("/projects")) {
+    crumbs.push({ label: "Projects", to: "/projects" });
+    if (projectQ.data) {
+      crumbs.push({
+        label: projectQ.data.name,
+        to: `/projects/${projectQ.data.id}`,
+      });
+    }
+  }
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}>
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "12px 24px",
-          borderBottom: "1px solid rgba(255,255,255,0.1)",
-        }}
-      >
-        <Link to="/" style={{ fontWeight: 700, textDecoration: "none", color: "inherit" }}>
-          Carve
-        </Link>
-        <nav style={{ display: "flex", gap: 16, alignItems: "center" }}>
-          <Link to="/projects">Projects</Link>
-          {user && (
-            <>
-              <span style={{ opacity: 0.7, fontSize: 13 }}>
-                {user.email} ({user.role})
-              </span>
-              <button
-                onClick={() => {
-                  logout();
-                  nav({ to: "/login" });
-                }}
-              >
-                Sign out
-              </button>
-            </>
-          )}
-        </nav>
-      </header>
-      <main style={{ flex: 1, padding: 24 }}>{children}</main>
-    </div>
+    <TooltipProvider delayDuration={250}>
+      <div className="flex h-screen flex-col bg-[var(--bg-app)] text-[color:var(--text-primary)]">
+        <TopBar crumbs={crumbs.length > 0 ? crumbs : undefined} />
+        <div className="flex flex-1 min-h-0">
+          <LeftNav />
+          <main className="flex-1 min-w-0 overflow-y-auto bg-[var(--bg-app)]">
+            <div className="px-6 py-6">{children}</div>
+          </main>
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+/**
+ * Edge-to-edge variant for the annotation editor — no padding, no scroll.
+ * The editor manages its own layout grid.
+ */
+export function AppShellBleed({ children }: { children: ReactNode }) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-app)]">{children}</div>
+    </TooltipProvider>
   );
 }

@@ -9,6 +9,7 @@ interface AnnotationOut {
   kind: AnnotationKind;
   geometry: Record<string, unknown>;
   track_id: string | null;
+  z_order?: number;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -26,6 +27,7 @@ interface AnnotationIn {
   kind: AnnotationKind;
   geometry: Record<string, unknown>;
   track_id: string | null;
+  z_order?: number;
 }
 
 interface BatchUpdateIn {
@@ -33,6 +35,7 @@ interface BatchUpdateIn {
   geometry?: Record<string, unknown>;
   class_id?: string;
   track_id?: string;
+  z_order?: number;
 }
 
 export interface BatchPayload {
@@ -50,6 +53,7 @@ export function toDraft(server: AnnotationOut): AnnotationDraft {
     frameId: server.frame_id,
     serverId: server.id,
     dirty: false,
+    zOrder: typeof server.z_order === "number" ? server.z_order : 0,
   };
 }
 

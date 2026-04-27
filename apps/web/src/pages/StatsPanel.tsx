@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Bar,
@@ -27,25 +27,17 @@ interface Props {
   taskId: string;
 }
 
-const cardStyle: CSSProperties = {
-  background: "rgba(255,255,255,0.03)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: 10,
-  padding: 16,
-  display: "flex",
-  flexDirection: "column",
-  gap: 8,
-  minHeight: 240,
-};
-
-const headingStyle: CSSProperties = { margin: 0, fontSize: 14, opacity: 0.85 };
-const placeholderStyle: CSSProperties = { fontSize: 13, opacity: 0.6 };
-const errorStyle: CSSProperties = { fontSize: 13, color: "tomato" };
+const cardClass =
+  "flex flex-col gap-3 min-h-[240px] rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5";
+const headingClass =
+  "text-[12px] uppercase tracking-[0.10em] text-tertiary font-medium";
+const placeholderClass = "text-[13px] text-tertiary";
+const errorClass = "text-[13px] text-[color:var(--danger)]";
 
 const SIZE_COLORS: Record<keyof SizeDistribution, string> = {
-  small: "rgb(120, 200, 255)",
-  medium: "rgb(180, 160, 255)",
-  large: "rgb(255, 180, 120)",
+  small: "oklch(0.78 0.16 215)",
+  medium: "oklch(0.66 0.20 285)",
+  large: "oklch(0.74 0.17 60)",
 };
 
 const ASPECT_BUCKETS: AspectRatioBucket[] = [
@@ -74,14 +66,14 @@ function ClassFrequencyCard({ taskId }: { taskId: string }) {
     [q.data],
   );
   return (
-    <div style={cardStyle}>
-      <h3 style={headingStyle}>Class frequency</h3>
-      {q.isLoading && <p style={placeholderStyle}>Loading…</p>}
-      {q.isError && <p style={errorStyle}>Failed to load.</p>}
+    <div className={cardClass}>
+      <h3 className={headingClass}>Class frequency</h3>
+      {q.isLoading && <p className={placeholderClass}>Loading…</p>}
+      {q.isError && <p className={errorClass}>Failed to load.</p>}
       {q.data && total === 0 && (
         <>
-          <p style={placeholderStyle}>No annotations yet</p>
-          <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, opacity: 0.7 }}>
+          <p className={placeholderClass}>No annotations yet</p>
+          <ul className="m-0 pl-4 text-[12px] opacity-70 list-disc">
             {q.data.map((r) => (
               <li key={r.class_id} style={{ color: r.class_color }}>
                 {r.class_name}: 0 (0%)
@@ -104,7 +96,7 @@ function ClassFrequencyCard({ taskId }: { taskId: string }) {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-          <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12 }}>
+          <ul className="m-0 pl-4 text-[12px] list-disc">
             {q.data.map((r) => {
               const pct = total > 0 ? Math.round((r.count / total) * 100) : 0;
               return (
@@ -126,12 +118,12 @@ function ProgressCard({ taskId }: { taskId: string }) {
     queryFn: () => statsApi.progress(taskId),
   });
   return (
-    <div style={cardStyle}>
-      <h3 style={headingStyle}>Task progress</h3>
-      {q.isLoading && <p style={placeholderStyle}>Loading…</p>}
-      {q.isError && <p style={errorStyle}>Failed to load.</p>}
+    <div className={cardClass}>
+      <h3 className={headingClass}>Task progress</h3>
+      {q.isLoading && <p className={placeholderClass}>Loading…</p>}
+      {q.isError && <p className={errorClass}>Failed to load.</p>}
       {q.data && q.data.total_frames === 0 && (
-        <p style={placeholderStyle}>No frames yet</p>
+        <p className={placeholderClass}>No frames yet</p>
       )}
       {q.data && q.data.total_frames > 0 && (
         <>
@@ -157,7 +149,7 @@ function ProgressCard({ taskId }: { taskId: string }) {
               <Tooltip />
             </PieChart>
           </ResponsiveContainer>
-          <p style={{ margin: 0, fontSize: 13, textAlign: "center" }}>
+          <p className="text-center font-mono-data text-[13px] text-secondary">
             {q.data.labeled_frames} / {q.data.total_frames} frames
           </p>
         </>
@@ -181,14 +173,14 @@ function SizeDistributionCard({ taskId }: { taskId: string }) {
   }, [q.data]);
   const total = data.reduce((acc, d) => acc + d.value, 0);
   return (
-    <div style={cardStyle}>
-      <h3 style={headingStyle}>Size distribution</h3>
-      {q.isLoading && <p style={placeholderStyle}>Loading…</p>}
-      {q.isError && <p style={errorStyle}>Failed to load.</p>}
+    <div className={cardClass}>
+      <h3 className={headingClass}>Size distribution</h3>
+      {q.isLoading && <p className={placeholderClass}>Loading…</p>}
+      {q.isError && <p className={errorClass}>Failed to load.</p>}
       {q.data && total === 0 && (
         <>
-          <p style={placeholderStyle}>No annotations yet</p>
-          <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, opacity: 0.7 }}>
+          <p className={placeholderClass}>No annotations yet</p>
+          <ul className="m-0 pl-4 text-[12px] opacity-70 list-disc">
             {data.map((d) => (
               <li key={d.name} style={{ color: d.fill }}>
                 {d.name}: 0
@@ -210,7 +202,7 @@ function SizeDistributionCard({ taskId }: { taskId: string }) {
               <Tooltip />
             </PieChart>
           </ResponsiveContainer>
-          <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12 }}>
+          <ul className="m-0 pl-4 text-[12px] list-disc">
             {data.map((d) => (
               <li key={d.name} style={{ color: d.fill }}>
                 {d.name}: {d.value}
@@ -233,10 +225,10 @@ function HeatmapCard({ taskId }: { taskId: string }) {
     [q.data],
   );
   return (
-    <div style={cardStyle}>
-      <h3 style={headingStyle}>Spatial heatmap</h3>
-      {q.isLoading && <p style={placeholderStyle}>Loading…</p>}
-      {q.isError && <p style={errorStyle}>Failed to load.</p>}
+    <div className={cardClass}>
+      <h3 className={headingClass}>Spatial heatmap</h3>
+      {q.isLoading && <p className={placeholderClass}>Loading…</p>}
+      {q.isError && <p className={errorClass}>Failed to load.</p>}
       {q.data && (
         <div
           style={{
@@ -277,10 +269,10 @@ function AspectRatioCard({ taskId }: { taskId: string }) {
     return ASPECT_BUCKETS.map((b) => ({ name: b, value: q.data![b] }));
   }, [q.data]);
   return (
-    <div style={cardStyle}>
-      <h3 style={headingStyle}>Aspect ratio</h3>
-      {q.isLoading && <p style={placeholderStyle}>Loading…</p>}
-      {q.isError && <p style={errorStyle}>Failed to load.</p>}
+    <div className={cardClass}>
+      <h3 className={headingClass}>Aspect ratio</h3>
+      {q.isLoading && <p className={placeholderClass}>Loading…</p>}
+      {q.isError && <p className={errorClass}>Failed to load.</p>}
       {q.data && (
         <ResponsiveContainer width="100%" height={180}>
           <BarChart data={data} margin={{ left: 8, right: 8, top: 8, bottom: 8 }}>
@@ -301,27 +293,22 @@ function TimeOnTaskCard({ taskId }: { taskId: string }) {
     queryFn: () => statsApi.timeOnTask(taskId),
   });
   return (
-    <div style={cardStyle}>
-      <h3 style={headingStyle}>Time on task</h3>
-      {q.isLoading && <p style={placeholderStyle}>Loading…</p>}
-      {q.isError && <p style={errorStyle}>Failed to load.</p>}
+    <div className={cardClass}>
+      <h3 className={headingClass}>Time on task</h3>
+      {q.isLoading && <p className={placeholderClass}>Loading…</p>}
+      {q.isError && <p className={errorClass}>Failed to load.</p>}
       {q.data && q.data.length === 0 && (
-        <p style={placeholderStyle}>No annotators yet</p>
+        <p className={placeholderClass}>No annotators yet</p>
       )}
       {q.data && q.data.length > 0 && (
-        <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: 13 }}>
+        <ul className="m-0 p-0 list-none text-[13px]">
           {q.data.map((row) => (
             <li
               key={row.user_id}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                padding: "4px 0",
-                borderBottom: "1px solid rgba(255,255,255,0.05)",
-              }}
+              className="flex justify-between py-1 border-b border-[var(--border-subtle)]"
             >
-              <span>{row.email}</span>
-              <span style={{ opacity: 0.7 }}>{formatSeconds(row.seconds)}</span>
+              <span className="text-secondary tracking-tight">{row.email}</span>
+              <span className="font-mono-data text-tertiary">{formatSeconds(row.seconds)}</span>
             </li>
           ))}
         </ul>
@@ -332,27 +319,15 @@ function TimeOnTaskCard({ taskId }: { taskId: string }) {
 
 export function StatsPanel({ taskId }: Props) {
   return (
-    <section style={{ display: "grid", gap: 16 }}>
-      <h2 style={{ margin: 0 }}>Stats</h2>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-          gap: 16,
-        }}
-      >
+    <section className="grid gap-4">
+      <h2 className="text-[18px] font-medium tracking-tight text-primary">Stats</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <ClassFrequencyCard taskId={taskId} />
         <ProgressCard taskId={taskId} />
         <SizeDistributionCard taskId={taskId} />
         <HeatmapCard taskId={taskId} />
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-          gap: 16,
-        }}
-      >
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <AspectRatioCard taskId={taskId} />
         <TimeOnTaskCard taskId={taskId} />
       </div>

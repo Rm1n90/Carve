@@ -31,11 +31,13 @@ def create_project(
 
 @router.get("", response_model=list[ProjectOut])
 def list_projects(
+    include_deleted: bool = False,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[ProjectOut]:
     return [
-        ProjectOut.from_orm_project(p) for p in ProjectService(db).list_visible(actor=user)
+        ProjectOut.from_orm_project(p)
+        for p in ProjectService(db).list_visible(actor=user, include_deleted=include_deleted)
     ]
 
 

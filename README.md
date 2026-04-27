@@ -2,7 +2,26 @@
 
 On-prem, web-based annotation editor for computer-vision datasets — detection, segmentation, classification — with multi-user auth, custom YOLO auto-annotation, SAM 2 / SAM 3 interactive smart annotation, and full image + video object tracking. Exports are first-class YOLO and COCO with class remap and train/val/test split.
 
-**v1.1** adds a SAM model selector (`sam2.1-tiny`, `sam2.1-small`, `sam2.1-base-plus`, `sam2.1-large`, `sam3`), bf16 autocast, optional `torch.compile`, idle GPU eviction, and full SAM 3 integration (text-prompted image segmentation and concept-based video tracking).
+**v2.0** is a full UI redesign: a light, flat, three-column productivity editor matching the Ultralytics annotation platform aesthetic, plus a complete Settings family (profile, members, API keys, workspace, models), soft-delete with a Trash page, API-key auth for headless/CI use, and editor parity (class search, smart-mode picker, YOLO predict, crosshair, multi-select, z-order, cheat sheet).
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Login](docs/screenshots/v2-1-login.png) | ![Projects](docs/screenshots/v2-2-projects.png) |
+| _Sign in_ | _Projects with left navigation_ |
+| ![Editor](docs/screenshots/v2-6-editor.png) | ![Cheat sheet](docs/screenshots/v2-12-cheatsheet.png) |
+| _Three-column annotation editor_ | _Keyboard cheat sheet (`?`)_ |
+
+More: see `docs/screenshots/` for the complete set (class panel, API keys, models, trash, save indicator, etc.).
+
+## What's new in v2.0
+
+- **Light, flat, three-column productivity editor** matching the Ultralytics annotation platform.
+- **Settings family**: profile, members, API keys, workspace, models — all behind a real left nav.
+- **Soft-delete + Trash page** with restore (admins can permanent-delete).
+- **API key authentication** (`Bearer ck_<token>`) for headless and CI use; tokens are Argon2-hashed at rest, revocable, and shown to the user once on creation.
+- **Editor parity**: class search, smart-mode picker, YOLO predict, auto-apply, visibility dropdown, fit + zoom %, undo/redo, crosshair with pixel coords, multi-select (Shift+click), class hotkeys (1-9), z-order with `Cmd+Shift+]`/`[`, save-state indicator pill, keyboard cheat sheet (`?`).
 
 ## Status
 
@@ -17,7 +36,9 @@ On-prem, web-based annotation editor for computer-vision datasets — detection,
 | v0.7.0 | Per-task and per-project analytics | `v0.7.0-analytics` |
 | v1.0.0 | TLS, first-run wizard, rate limits, polish | `v1.0.0` |
 | v1.1.0 | SAM model selector, bf16, compile, eviction, SAM 3 | `v1.1.0` |
-| v1.3.0 | SAM 3 click-prompt routing fix (Sam3TrackerModel + Sam3TrackerVideoModel) | (current branch) |
+| v1.3.0 | SAM 3 click-prompt routing fix (Sam3TrackerModel + Sam3TrackerVideoModel) | `v1.3.0` |
+| v1.4.0 | Multi-object video tracking with per-object propagation | `v1.4.0` |
+| v2.0.0 | Web UI redesign + settings/members/api-keys/models/trash + Ultralytics-style editor parity | `v2.0.0` |
 
 Tag history: <https://github.com/your-org/Carve/tags> (replace with your fork).
 
