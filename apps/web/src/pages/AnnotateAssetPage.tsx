@@ -1,11 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as Tabs from "@radix-ui/react-tabs";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
-import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import {
+  AlertCircle,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
 
-import { AnnotationCanvas } from "@/components/annotation/AnnotationCanvas";
+import { AnnotationCanvas, type ImageLoadStatus } from "@/components/annotation/AnnotationCanvas";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
 import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
@@ -19,7 +25,7 @@ import { BottomBar } from "@/components/nav/BottomBar";
 import { IconButton } from "@/components/ui/IconButton";
 import { annotationsApi, type BatchPayload } from "@/api/annotations";
 import { assetsApi } from "@/api/assets";
-import { classesApi } from "@/api/classes";
+import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
 import { useAnnotations } from "@/state/annotations";
 import { useTool } from "@/state/tool";
@@ -31,7 +37,7 @@ interface Props {
   assetId: string;
 }
 
-const AUTOSAVE_DEBOUNCE_MS = 2000;
+const AUTOSAVE_DEBOUNCE_MS = 1500;
 
 function ThumbnailStripGate({
   taskId,
@@ -59,6 +65,22 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
   const [zoomPct, setZoomPct] = useState(100);
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
+  // Image load lifecycle. Phase A core 1 — without this, image load failures
+  // were invisible and the user just saw an empty canvas.
+  const [imageStatus, setImageStatus] = useState<ImageLoadStatus>("loading");
+  const [imageError, setImageError] = useState<string | null>(null);
+  // Bumping this triggers AnnotationCanvas to retry the image load.
+  const [imageReloadKey, setImageReloadKey] = useState(0);
+  const handleImageStatusChange = useCallback(
+    (status: ImageLoadStatus, errorMessage?: string) => {
+      setImageStatus(status);
+      setImageError(status === "error" ? (errorMessage ?? "unknown error") : null);
+    },
+    [],
+  );
+  const handleImageRetry = useCallback(() => {
+    setImageReloadKey((k) => k + 1);
+  }, []);
 
   const projectQ = useQuery({
     queryKey: ["project", projectId],
@@ -153,6 +175,23 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const pendingDeletes = useAnnotations((s) => s.pendingDeletes);
   const dirtyCount =
     Object.values(byId).filter((d) => d.dirty).length + pendingDeletes.length;
+
+  // Inline class management mutations — exposed via ClassesPanel callbacks
+  // so the user can add/edit/delete classes without leaving the editor.
+  // Phase A core 4.
+  const classCreate = useMutation({
+    mutationFn: (input: ClassIn) => classesApi.create(projectId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+  });
+  const classUpdate = useMutation({
+    mutationFn: ({ cid, patch }: { cid: string; patch: Partial<ClassIn> }) =>
+      classesApi.update(projectId, cid, patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+  });
+  const classRemove = useMutation({
+    mutationFn: (cid: string) => classesApi.delete(projectId, cid),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+  });
 
   const saveMutation = useMutation({
     mutationFn: (payload: BatchPayload) => annotationsApi.batch(taskId, payload),
@@ -372,33 +411,18 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       <TopBar
         crumbs={crumbs}
         rightAction={
-          taskAssets.length > 1 ? (
-            <div
-              data-testid="asset-nav-buttons"
-              className="flex items-center gap-1 mr-2"
-            >
-              <IconButton
-                aria-label="Previous asset"
-                size="sm"
-                disabled={!prevAsset}
-                onClick={() => prevAsset && goToAsset(prevAsset.id)}
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </IconButton>
-              <span className="font-mono text-[11px] tabular-nums text-[color:var(--text-tertiary)] px-1">
-                {currentAssetIdx >= 0 ? currentAssetIdx + 1 : "?"}
-                <span className="opacity-60"> / {taskAssets.length}</span>
-              </span>
-              <IconButton
-                aria-label="Next asset"
-                size="sm"
-                disabled={!nextAsset}
-                onClick={() => nextAsset && goToAsset(nextAsset.id)}
-              >
-                <ChevronRight className="h-4 w-4" />
-              </IconButton>
-            </div>
-          ) : null
+          <div className="flex items-center gap-2">
+            <ImageStatusBadge status={imageStatus} />
+            {taskAssets.length > 1 ? (
+              <AssetNavControls
+                taskAssets={taskAssets}
+                currentAssetIdx={currentAssetIdx}
+                prevAsset={prevAsset}
+                nextAsset={nextAsset}
+                onGoTo={goToAsset}
+              />
+            ) : null}
+          </div>
         }
       />
 
@@ -456,9 +480,50 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 frameId={frameId}
                 assetId={assetId}
                 onZoomChange={setZoomPct}
+                onImageStatusChange={handleImageStatusChange}
+                reloadKey={imageReloadKey}
                 classColorMap={classColorMap}
                 classNameMap={classNameMap}
               />
+              {imageStatus === "error" && (
+                <div
+                  data-testid="canvas-image-error-overlay"
+                  className={cn(
+                    "absolute inset-0 z-30 flex items-center justify-center",
+                    "bg-[rgba(15,23,42,0.32)] backdrop-blur-[2px]",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "max-w-[420px] rounded-[var(--radius-md)] border border-[var(--border-strong)]",
+                      "bg-[var(--bg-elev)] shadow-[var(--shadow-elev-2)] p-4 grid gap-2.5",
+                    )}
+                  >
+                    <div className="flex items-center gap-2 text-[color:var(--danger)]">
+                      <AlertCircle className="h-4 w-4" />
+                      <span className="text-[13px] font-medium tracking-tight">
+                        Failed to load image
+                      </span>
+                    </div>
+                    <p className="text-[12px] text-[color:var(--text-secondary)] leading-snug">
+                      {imageError ?? "The image could not be fetched."}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleImageRetry}
+                      data-testid="canvas-image-retry"
+                      className={cn(
+                        "inline-flex w-fit items-center gap-1.5 h-8 px-3 rounded-[var(--radius-sm)]",
+                        "bg-[var(--accent)] text-white text-[12.5px] font-medium",
+                        "hover:bg-[var(--accent-hover)] transition-colors",
+                      )}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Retry
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="absolute top-2 right-2 z-20">
                 <KeyboardCheatSheet />
               </div>
@@ -503,7 +568,29 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   value="classes"
                   className="flex-1 min-h-0 overflow-hidden focus-visible:outline-none"
                 >
-                  <ClassesPanel classes={classesQ.data ?? []} />
+                  <ClassesPanel
+                    classes={classesQ.data ?? []}
+                    onCreateClass={(name, color) => {
+                      const list = classesQ.data ?? [];
+                      const nextIdx = list.reduce(
+                        (m, c) => Math.max(m, c.idx + 1),
+                        0,
+                      );
+                      classCreate.mutate({ idx: nextIdx, name, color });
+                    }}
+                    onUpdateColor={(cid, color) =>
+                      classUpdate.mutate({ cid, patch: { color } })
+                    }
+                    onEditClass={(cid) => {
+                      const cls = (classesQ.data ?? []).find((c) => c.id === cid);
+                      if (!cls) return;
+                      const next = window.prompt("Rename class", cls.name);
+                      if (next && next.trim() && next !== cls.name) {
+                        classUpdate.mutate({ cid, patch: { name: next.trim() } });
+                      }
+                    }}
+                    onDeleteClass={(cid) => classRemove.mutate(cid)}
+                  />
                 </Tabs.Content>
                 <Tabs.Content
                   value="objects"
@@ -536,5 +623,153 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       <CommandPalette classes={classesQ.data ?? []} onSaveNow={saveNow} />
     </div>
     </TooltipProvider>
+  );
+}
+
+/**
+ * Tiny status pill rendered in the editor top bar showing the current
+ * image's load lifecycle. Phase A core 1. Three discrete states only:
+ * loading (amber), loaded (green), error (red). Color follows the existing
+ * design tokens — no new colors introduced.
+ */
+function ImageStatusBadge({ status }: { status: ImageLoadStatus }) {
+  const map: Record<ImageLoadStatus, { dot: string; label: string; fg: string; bg: string }> = {
+    loading: {
+      dot: "bg-[#D97706] animate-pulse",
+      label: "Loading…",
+      fg: "text-[#92400E]",
+      bg: "bg-[#FEF3C7]",
+    },
+    loaded: {
+      dot: "bg-[var(--success)]",
+      label: "Image",
+      fg: "text-[color:var(--text-secondary)]",
+      bg: "bg-[var(--bg-subtle)]",
+    },
+    error: {
+      dot: "bg-[var(--danger)]",
+      label: "Image error",
+      fg: "text-[color:var(--danger)]",
+      bg: "bg-[var(--danger-bg)]",
+    },
+  };
+  const { dot, label, fg, bg } = map[status];
+  return (
+    <span
+      data-testid="image-status-badge"
+      data-status={status}
+      className={cn(
+        "inline-flex items-center gap-1.5 px-2 h-6 rounded-full",
+        "text-[11px] font-medium tracking-tight",
+        bg,
+        fg,
+      )}
+    >
+      <span className={cn("h-1.5 w-1.5 rounded-full", dot)} />
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Prev/Next asset controls with a clickable "N / total" indicator that
+ * opens a popover for jumping to a specific image number. Phase A core 6.
+ */
+function AssetNavControls({
+  taskAssets,
+  currentAssetIdx,
+  prevAsset,
+  nextAsset,
+  onGoTo,
+}: {
+  taskAssets: { id: string }[];
+  currentAssetIdx: number;
+  prevAsset: { id: string } | null;
+  nextAsset: { id: string } | null;
+  onGoTo: (id: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function commit() {
+    const n = parseInt(draft, 10);
+    if (Number.isInteger(n) && n >= 1 && n <= taskAssets.length) {
+      const target = taskAssets[n - 1];
+      if (target) onGoTo(target.id);
+    }
+    setEditing(false);
+    setDraft("");
+  }
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  return (
+    <div data-testid="asset-nav-buttons" className="flex items-center gap-1 mr-2">
+      <IconButton
+        aria-label="Previous asset"
+        size="sm"
+        disabled={!prevAsset}
+        onClick={() => prevAsset && onGoTo(prevAsset.id)}
+      >
+        <ChevronLeft className="h-4 w-4" />
+      </IconButton>
+      {editing ? (
+        <input
+          ref={inputRef}
+          type="number"
+          min={1}
+          max={taskAssets.length}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            else if (e.key === "Escape") {
+              setEditing(false);
+              setDraft("");
+            }
+          }}
+          aria-label="Go to image number"
+          data-testid="asset-nav-input"
+          className={cn(
+            "w-12 h-6 px-1 text-[11px] tabular-nums text-center font-mono",
+            "rounded-[var(--radius-xs)] border border-[var(--accent)]",
+            "bg-[var(--bg-elev)] focus:outline-none",
+          )}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            setEditing(true);
+            setDraft(String(currentAssetIdx >= 0 ? currentAssetIdx + 1 : 1));
+          }}
+          aria-label="Go to image number"
+          data-testid="asset-nav-counter"
+          className={cn(
+            "font-mono text-[11px] tabular-nums px-1 h-6 rounded-[var(--radius-xs)]",
+            "text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)]",
+            "hover:text-[color:var(--text-primary)] transition-colors",
+          )}
+        >
+          {currentAssetIdx >= 0 ? currentAssetIdx + 1 : "?"}
+          <span className="opacity-60"> / {taskAssets.length}</span>
+        </button>
+      )}
+      <IconButton
+        aria-label="Next asset"
+        size="sm"
+        disabled={!nextAsset}
+        onClick={() => nextAsset && onGoTo(nextAsset.id)}
+      >
+        <ChevronRight className="h-4 w-4" />
+      </IconButton>
+    </div>
   );
 }

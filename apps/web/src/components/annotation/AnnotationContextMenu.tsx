@@ -5,8 +5,10 @@ import {
   ChevronDown,
   ChevronsDown,
   Trash2,
+  Minus,
 } from "lucide-react";
 import { useAnnotations } from "@/state/annotations";
+import { applyVertexDelete, POLY_MIN_VERTICES } from "@/canvas/polygonEdit";
 import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/lib/cn";
 
@@ -54,6 +56,15 @@ interface Props {
   hostRef: React.RefObject<HTMLElement | null>;
   /** Hit-testing function provided by parent canvas. */
   hitTest: (clientX: number, clientY: number) => string | null;
+  /**
+   * Optional secondary hit-test that returns the polygon vertex (annId +
+   * vertex index) under the pointer. When present and matched, the menu
+   * renders an extra "Delete vertex" entry. Phase A core 3.
+   */
+  vertexHitTest?: (
+    clientX: number,
+    clientY: number,
+  ) => { annId: string; vertexIndex: number } | null;
 }
 
 /**
@@ -61,8 +72,17 @@ interface Props {
  * floating menu. Avoids wrapping the host so the host remains the outer
  * element returned by tests / parent components.
  */
-export function AnnotationContextMenu({ hostRef, hitTest }: Props) {
-  const [state, setState] = useState<{ x: number; y: number; annId: string } | null>(null);
+export function AnnotationContextMenu({ hostRef, hitTest, vertexHitTest }: Props) {
+  const [state, setState] = useState<
+    | {
+        x: number;
+        y: number;
+        annId: string;
+        /** Set when the right-click landed on a polygon vertex. */
+        vertexIndex?: number;
+      }
+    | null
+  >(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -70,6 +90,19 @@ export function AnnotationContextMenu({ hostRef, hitTest }: Props) {
     if (!host) return;
     function onContextMenu(e: Event) {
       const me = e as MouseEvent;
+      // Prefer a vertex hit (more specific) over a body hit.
+      const vh = vertexHitTest?.(me.clientX, me.clientY);
+      if (vh) {
+        me.preventDefault();
+        useAnnotations.getState().select(vh.annId);
+        setState({
+          x: me.clientX,
+          y: me.clientY,
+          annId: vh.annId,
+          vertexIndex: vh.vertexIndex,
+        });
+        return;
+      }
       const annId = hitTest(me.clientX, me.clientY);
       if (!annId) return;
       me.preventDefault();
@@ -78,7 +111,7 @@ export function AnnotationContextMenu({ hostRef, hitTest }: Props) {
     }
     host.addEventListener("contextmenu", onContextMenu);
     return () => host.removeEventListener("contextmenu", onContextMenu);
-  }, [hostRef, hitTest]);
+  }, [hostRef, hitTest, vertexHitTest]);
 
   useEffect(() => {
     if (!state) return;
@@ -128,6 +161,47 @@ export function AnnotationContextMenu({ hostRef, hitTest }: Props) {
           {it.hotkey && <Kbd>{it.hotkey}</Kbd>}
         </button>
       ))}
+      {state.vertexIndex !== undefined && (() => {
+        // Only enable the entry when removing the vertex still leaves >= 3
+        // vertices — applyVertexDelete is the source of truth for that rule.
+        const draft = useAnnotations.getState().byId[state.annId];
+        const canDelete =
+          draft &&
+          draft.geometry.kind === "polygon" &&
+          draft.geometry.points.length > POLY_MIN_VERTICES;
+        return (
+          <>
+            <div className="my-1 h-px bg-[var(--border-subtle)]" />
+            <button
+              type="button"
+              data-testid="ctx-delete-vertex"
+              disabled={!canDelete}
+              onClick={() => {
+                if (!canDelete) return;
+                const cur = useAnnotations.getState().byId[state.annId];
+                if (cur && cur.geometry.kind === "polygon") {
+                  const next = applyVertexDelete(
+                    cur.geometry,
+                    state.vertexIndex!,
+                  );
+                  useAnnotations
+                    .getState()
+                    .update(state.annId, { geometry: next });
+                }
+                setState(null);
+              }}
+              className={cn(
+                "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left",
+                "hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed",
+                "disabled:hover:bg-transparent",
+              )}
+            >
+              <Minus className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+              <span className="flex-1">Delete vertex</span>
+            </button>
+          </>
+        );
+      })()}
       <div className="my-1 h-px bg-[var(--border-subtle)]" />
       <button
         type="button"

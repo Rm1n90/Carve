@@ -106,7 +106,16 @@ export function renderBbox(
   }
 }
 
-export function renderPolygon(g: Graphics, p: Poly, color: number, selected: boolean): void {
+export function renderPolygon(
+  g: Graphics,
+  p: Poly,
+  color: number,
+  selected: boolean,
+  /** When true AND ``selected`` is true, draw the vertex edit handles.
+   * Callers pass true only when the cursor tool is active — otherwise the
+   * vertex handles would visually compete with the polygon-tool's preview. */
+  showHandles = false,
+): void {
   if (p.points.length === 0) return;
   g.clear();
   g.moveTo(p.points[0][0], p.points[0][1]);
@@ -116,4 +125,12 @@ export function renderPolygon(g: Graphics, p: Poly, color: number, selected: boo
   g.lineTo(p.points[0][0], p.points[0][1]);
   g.stroke({ color, width: selected ? 3 : 2, alpha: 1 });
   g.fill({ color, alpha: selected ? 0.18 : 0.08 });
+
+  if (!selected || !showHandles) return;
+  const half = BBOX_HANDLE_SIZE_PX / 2;
+  for (const [vx, vy] of p.points) {
+    g.rect(vx - half, vy - half, BBOX_HANDLE_SIZE_PX, BBOX_HANDLE_SIZE_PX);
+    g.fill({ color: HANDLE_FILL, alpha: 1 });
+    g.stroke({ color: HANDLE_INDIGO, width: 1, alpha: 1 });
+  }
 }
