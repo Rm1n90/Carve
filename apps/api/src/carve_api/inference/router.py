@@ -59,6 +59,7 @@ def auto_annotate(
     asset_id: uuid.UUID,
     weight_id: uuid.UUID,
     overwrite: bool = False,
+    min_confidence: float = 0.0,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[AnnotationOut]:
@@ -69,6 +70,9 @@ def auto_annotate(
     weight = db.get(Weight, weight_id)
     if weight is None:
         raise HTTPException(status_code=404, detail="weight_not_found")
+    # Clamp incoming `min_confidence` so a misbehaving client can't bypass
+    # the bounds. The slider in the UI is 0..1; anything else is a bug.
+    min_confidence = max(0.0, min(1.0, float(min_confidence)))
     try:
         body = fetch_asset_bytes(asset)
         url = presigned_url_for_weight(weight)
@@ -81,6 +85,7 @@ def auto_annotate(
             overwrite=overwrite,
             presigned_url_for_weight=url,
             image_bytes=body,
+            min_confidence=min_confidence,
         )
     except AppError as exc:
         raise _http(exc) from exc

@@ -2,6 +2,7 @@ import json
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -112,3 +113,37 @@ def delete_weight(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
+
+
+class WeightPatch(BaseModel):
+    """Body of `PATCH /weights/{weight_id}`. Only `name` is mutable; the
+    file body, `task_kind`, and `class_names` are decided at upload time."""
+
+    name: str = Field(min_length=1, max_length=200)
+
+
+@router.patch(
+    "/weights/{weight_id}",
+    response_model=WeightOut,
+)
+def update_weight(
+    weight_id: uuid.UUID,
+    payload: WeightPatch,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WeightOut:
+    svc = WeightService(db)
+    try:
+        w = svc.get(weight_id=weight_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    project = ProjectService(db).get(actor=user, project_id=w.project_id)
+    # Reuse the project-modify check used by `delete` to guard the rename.
+    from carve_api.projects.service import _can_modify
+
+    if not _can_modify(user, project):
+        raise HTTPException(status_code=403, detail="weight_forbidden")
+    w.name = payload.name.strip()
+    db.flush()
+    db.commit()
+    return WeightOut.from_orm_weight(w)

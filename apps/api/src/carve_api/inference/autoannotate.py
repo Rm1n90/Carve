@@ -59,6 +59,7 @@ def auto_annotate_asset(
     overwrite: bool,
     presigned_url_for_weight: str,
     image_bytes: bytes,
+    min_confidence: float = 0.0,
 ) -> list[Annotation]:
     if weight.project_id != task.project_id:
         raise AutoAnnotateMismatch("weight does not belong to this project")
@@ -98,6 +99,11 @@ def auto_annotate_asset(
         cls_id = classes_by_name.get(str(det.get("class_name", "")).lower())
         if cls_id is None:
             continue
+        # Confidence filter — skip low-score detections. Defaults to 0.0
+        # (no filter) so legacy callers keep their existing behavior.
+        score = float(det.get("score", 1.0))
+        if score < min_confidence:
+            continue
         b = det["bbox"]
         ann = Annotation(
             task_id=task.id,
@@ -114,6 +120,9 @@ def auto_annotate_asset(
     for poly in result.get("polygons", []):
         cls_id = classes_by_name.get(str(poly.get("class_name", "")).lower())
         if cls_id is None:
+            continue
+        score = float(poly.get("score", 1.0))
+        if score < min_confidence:
             continue
         pts = [[float(p[0]), float(p[1])] for p in poly.get("points", [])]
         if len(pts) < 3:

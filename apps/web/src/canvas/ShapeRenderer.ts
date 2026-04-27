@@ -90,11 +90,18 @@ export function renderBbox(
    * Callers pass true only when the cursor tool is active — otherwise
    * handles would visually compete with the bbox tool's drag preview. */
   showHandles = false,
+  /**
+   * Fill alpha when ``selected`` is false. Defaults to 0.08 (legacy).
+   * Wired from `useEditorSettings.opacity` so the user can dial it.
+   */
+  fillAlpha = 0.08,
+  /** Fill alpha when ``selected`` is true. Defaults to 0.18 (legacy). */
+  selectedFillAlpha = 0.18,
 ): void {
   g.clear();
   g.rect(b.x, b.y, b.w, b.h);
   g.stroke({ color, width: selected ? 3 : 2, alpha: 1 });
-  g.fill({ color, alpha: selected ? 0.18 : 0.08 });
+  g.fill({ color, alpha: selected ? selectedFillAlpha : fillAlpha });
 
   if (!selected || !showHandles) return;
 
@@ -115,6 +122,8 @@ export function renderPolygon(
    * Callers pass true only when the cursor tool is active — otherwise the
    * vertex handles would visually compete with the polygon-tool's preview. */
   showHandles = false,
+  fillAlpha = 0.08,
+  selectedFillAlpha = 0.18,
 ): void {
   if (p.points.length === 0) return;
   g.clear();
@@ -124,7 +133,7 @@ export function renderPolygon(
   }
   g.lineTo(p.points[0][0], p.points[0][1]);
   g.stroke({ color, width: selected ? 3 : 2, alpha: 1 });
-  g.fill({ color, alpha: selected ? 0.18 : 0.08 });
+  g.fill({ color, alpha: selected ? selectedFillAlpha : fillAlpha });
 
   if (!selected || !showHandles) return;
   const half = BBOX_HANDLE_SIZE_PX / 2;

@@ -1,3 +1,4 @@
+import httpx
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
@@ -23,6 +24,24 @@ _AVAILABLE_SAM_VARIANTS: tuple[str, ...] = (
 class SamActiveOut(BaseModel):
     active: str
     available: list[str]
+    # `reachable` is true only when the model service is actually
+    # responding to a quick health probe. The v2 frontend uses this to
+    # render the SAM-unavailable banner without a separate request.
+    reachable: bool = False
+
+
+def _probe_model_service() -> bool:
+    """Return whether the model service is responding to a quick health
+    probe. Short timeout — we don't want this endpoint to stall the UI
+    if the service is hung."""
+    settings = get_settings()
+    base = settings.model_base_url.rstrip("/")
+    try:
+        with httpx.Client(timeout=1.5) as c:
+            r = c.get(f"{base}/healthz")
+            return r.status_code == 200
+    except Exception:
+        return False
 
 
 @router.get("/sam-active", response_model=SamActiveOut)
@@ -33,4 +52,5 @@ def sam_active(
     return SamActiveOut(
         active=settings.sam_model,
         available=list(_AVAILABLE_SAM_VARIANTS),
+        reachable=_probe_model_service(),
     )

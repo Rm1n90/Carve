@@ -77,7 +77,13 @@ def test_upload_rejects_non_pt(db_session, monkeypatch) -> None:
     assert r.json()["error"] == "weight_invalid"
 
 
-def test_upload_rejects_empty_class_names(db_session, monkeypatch) -> None:
+def test_upload_accepts_empty_class_names(db_session, monkeypatch) -> None:
+    """Phase B / v2.3: empty `class_names` is allowed.
+
+    The frontend dialog submits `[]` and lets users manage class mapping
+    via project classes — the model file's own `names` dict is read at
+    inference time. See `WeightService.upload`.
+    """
     client = _client(db_session)
     token, pid = _setup(client, monkeypatch)
     r = client.post(
@@ -90,7 +96,8 @@ def test_upload_rejects_empty_class_names(db_session, monkeypatch) -> None:
         files={"file": ("y.pt", io.BytesIO(b"PK\x03\x04" + b"x" * 32), "application/octet-stream")},
         headers=_hdr(token),
     )
-    assert r.status_code == 400
+    assert r.status_code == 201
+    assert r.json()["class_names"] == []
 
 
 def test_upload_rejects_bad_json_class_names(db_session, monkeypatch) -> None:
@@ -138,3 +145,63 @@ def test_delete_only_owner_or_admin(db_session, monkeypatch) -> None:
     # owner deletes successfully
     r = client.delete(f"/weights/{wid}", headers=_hdr(token))
     assert r.status_code == 204
+
+
+def test_patch_renames_weight(db_session, monkeypatch) -> None:
+    """PATCH /weights/{id} with `{name}` updates the weight name only."""
+    client = _client(db_session)
+    token, pid = _setup(client, monkeypatch)
+    fake_pt = b"PK\x03\x04" + b"x" * 64
+    r = client.post(
+        f"/projects/{pid}/weights",
+        data={
+            "name": "old-name",
+            "task_kind": "detect",
+            "class_names": '["car"]',
+        },
+        files={"file": ("y.pt", io.BytesIO(fake_pt), "application/octet-stream")},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 201, r.text
+    wid = r.json()["id"]
+    p = client.patch(
+        f"/weights/{wid}",
+        json={"name": "new-name"},
+        headers=_hdr(token),
+    )
+    assert p.status_code == 200, p.text
+    assert p.json()["name"] == "new-name"
+    # task_kind & class_names unchanged
+    assert p.json()["task_kind"] == "detect"
+    assert p.json()["class_names"] == ["car"]
+
+
+def test_patch_forbidden_to_other_user(db_session, monkeypatch) -> None:
+    client = _client(db_session)
+    token, pid = _setup(client, monkeypatch)
+    fake_pt = b"PK\x03\x04" + b"x" * 64
+    r = client.post(
+        f"/projects/{pid}/weights",
+        data={
+            "name": "owners-weight",
+            "task_kind": "detect",
+            "class_names": '["car"]',
+        },
+        files={"file": ("y.pt", io.BytesIO(fake_pt), "application/octet-stream")},
+        headers=_hdr(token),
+    )
+    wid = r.json()["id"]
+    client.post(
+        "/auth/register",
+        json={"email": "thief@x.com", "password": "hunter22"},
+        headers=_hdr(token),
+    )
+    other = client.post(
+        "/auth/login", json={"email": "thief@x.com", "password": "hunter22"}
+    ).json()["access_token"]
+    p = client.patch(
+        f"/weights/{wid}",
+        json={"name": "stolen"},
+        headers=_hdr(other),
+    )
+    assert p.status_code == 403
