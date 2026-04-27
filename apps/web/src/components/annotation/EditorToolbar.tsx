@@ -20,7 +20,9 @@ import {
   Check,
   Loader2,
   AlertTriangle,
+  Settings,
 } from "lucide-react";
+import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { useTool, type ToolName, type VisibilityFlags } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -28,7 +30,23 @@ import { Kbd } from "@/components/ui/Kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/Popover";
 import { SaveIndicator } from "@/components/annotation/SaveIndicator";
 import { modelsApi, weightsApi, inferenceApi, type Weight } from "@/api/phase2";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+
+const PREDICT_CONF_KEY = "carve.predict.minConfidence";
+const DEFAULT_PREDICT_CONFIDENCE = 0.4;
+
+function loadStoredConfidence(): number {
+  try {
+    const raw = window.localStorage.getItem(PREDICT_CONF_KEY);
+    if (!raw) return DEFAULT_PREDICT_CONFIDENCE;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return DEFAULT_PREDICT_CONFIDENCE;
+    return Math.max(0, Math.min(1, n));
+  } catch {
+    return DEFAULT_PREDICT_CONFIDENCE;
+  }
+}
 
 interface ToolDef {
   name: ToolName;
@@ -117,9 +135,14 @@ function SamModelPicker() {
   const active = q.data?.active ?? "sam2.1-base+";
   const available = q.data?.available ?? [];
   // The picker has no runtime mutation — switching SAM_MODEL requires a
-  // service restart. We treat a query error / empty available list as
-  // "model service is not reachable" and show a banner. (audit bug 8b)
-  const unreachable = !!q.error || (q.isFetched && available.length === 0);
+  // service restart. We treat any of: query error, empty available list,
+  // or explicit reachable=false as "model service is not reachable" and
+  // show a banner. (audit bug 8b; v2.3 phase B refines with the explicit
+  // `reachable` field returned by the API.)
+  const unreachable =
+    !!q.error ||
+    (q.isFetched && available.length === 0) ||
+    (q.isFetched && q.data?.reachable === false);
 
   return (
     <Popover>
@@ -222,6 +245,17 @@ function YoloPredictButton({
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
+  const [confidence, setConfidence] = useState<number>(() => loadStoredConfidence());
+
+  // Persist confidence so the user's preferred threshold sticks across
+  // sessions. Plain string-encoded float 0..1.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PREDICT_CONF_KEY, String(confidence));
+    } catch {
+      /* localStorage may be unavailable in some browsers (private mode) */
+    }
+  }, [confidence]);
 
   const wq = useQuery<Weight[]>({
     queryKey: ["weights", projectId],
@@ -232,13 +266,59 @@ function YoloPredictButton({
   const m = useMutation({
     mutationFn: (weightId: string) =>
       assetId
-        ? inferenceApi.predictYolo(assetId, weightId, overwrite)
+        ? inferenceApi.predictYolo(assetId, weightId, overwrite, confidence)
         : Promise.reject(new Error("no asset")),
-    onSuccess: () => {
+    onSuccess: (res) => {
+      const created = res?.count ?? 0;
+      if (created === 0) {
+        showToast(
+          `No detections at confidence ${(confidence * 100).toFixed(0)}%`,
+          { variant: "warning" },
+        );
+      } else {
+        showToast(`Created ${created} annotations from predictions`, {
+          variant: "success",
+        });
+      }
       setOpen(false);
       onAfter?.();
     },
+    onError: (err: unknown) => {
+      const errObj = err as {
+        response?: { status?: number; data?: { detail?: string; error?: string } };
+      };
+      const status = errObj?.response?.status;
+      const detail = errObj?.response?.data?.detail ?? errObj?.response?.data?.error;
+      if (status === 503 || detail === "model_service_unreachable") {
+        showToast("Model service is not running.", {
+          variant: "error",
+          duration: 5000,
+        });
+        setOpen(false);
+      } else if (status === 404 && detail === "weight_not_found") {
+        showToast("Select a weight first.", { variant: "error" });
+      } else if (status === 502 || detail === "model_service_failed") {
+        showToast("Model service rejected the request.", {
+          variant: "error",
+          duration: 5000,
+        });
+      } else {
+        showToast("Predict failed — please try again.", { variant: "error" });
+      }
+    },
   });
+
+  function handlePredict() {
+    if (!selected) {
+      showToast("Select a weight first.", { variant: "error" });
+      return;
+    }
+    if (!assetId) {
+      showToast("No asset open.", { variant: "error" });
+      return;
+    }
+    m.mutate(selected);
+  }
 
   const weights = wq.data ?? [];
   const disabled = !projectId || !assetId;
@@ -251,7 +331,7 @@ function YoloPredictButton({
           data-testid="yolo-predict-trigger"
           aria-label="Open YOLO predict"
           title="Predict with YOLO weight"
-          disabled={disabled}
+          disabled={disabled || m.isPending}
           className={cn(
             "inline-flex h-8 items-center gap-1.5 px-3 rounded-full",
             "bg-[var(--success)] text-white text-[12.5px] font-medium tracking-tight",
@@ -259,15 +339,19 @@ function YoloPredictButton({
             "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
           )}
         >
-          <Sparkles className="h-3.5 w-3.5" />
-          Predict
+          {m.isPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="h-3.5 w-3.5" />
+          )}
+          {m.isPending ? "Predicting…" : "Predict"}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="min-w-[300px] p-2">
+      <PopoverContent align="end" className="min-w-[320px] p-2">
         <p className="px-1 py-1 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
           YOLO weight
         </p>
-        <div className="grid gap-1 max-h-[260px] overflow-y-auto pr-1">
+        <div className="grid gap-1 max-h-[200px] overflow-y-auto pr-1">
           {wq.isLoading && (
             <p className="px-2 py-2 text-[12px] text-[color:var(--text-tertiary)] italic">
               Loading weights…
@@ -302,6 +386,32 @@ function YoloPredictButton({
             </button>
           ))}
         </div>
+        <div className="px-2 pt-3 pb-2 grid gap-1.5 border-t border-[var(--border-subtle)] mt-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[11.5px] text-[color:var(--text-secondary)] font-medium tracking-tight">
+              Min confidence
+            </span>
+            <span
+              data-testid="yolo-confidence-value"
+              className="text-[11.5px] font-mono tabular-nums text-[color:var(--text-primary)]"
+            >
+              {(confidence * 100).toFixed(0)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={Math.round(confidence * 100)}
+            onChange={(e) =>
+              setConfidence(Math.max(0, Math.min(1, Number(e.target.value) / 100)))
+            }
+            data-testid="yolo-confidence-slider"
+            aria-label="Minimum confidence"
+            className="w-full accent-[var(--accent)]"
+          />
+        </div>
         <label className="flex items-center gap-2 px-2 py-2 text-[12px] text-[color:var(--text-secondary)]">
           <input
             type="checkbox"
@@ -327,7 +437,7 @@ function YoloPredictButton({
           <button
             type="button"
             disabled={!selected || m.isPending}
-            onClick={() => selected && m.mutate(selected)}
+            onClick={handlePredict}
             data-testid="yolo-predict-go"
             className={cn(
               "inline-flex items-center gap-1.5 h-7 px-3 rounded-full",
@@ -341,7 +451,7 @@ function YoloPredictButton({
             ) : (
               <Sparkles className="h-3 w-3" />
             )}
-            Predict
+            {m.isPending ? "Predicting…" : "Predict"}
           </button>
         </div>
       </PopoverContent>
@@ -412,6 +522,59 @@ function VisibilityDropdown() {
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  );
+}
+
+function MaskBrushSizeControl() {
+  const active = useTool((s) => s.active);
+  const radius = useTool((s) => s.maskBrushRadius);
+  const setRadius = useTool((s) => s.setMaskBrushRadius);
+  const presets = [5, 10, 25, 50, 100];
+  if (active !== "mask") return null;
+  return (
+    <div
+      className="inline-flex items-center gap-1.5 h-8 px-2 rounded-[var(--radius-sm)] bg-[var(--bg-subtle)]"
+      data-testid="mask-brush-size-control"
+    >
+      <span className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
+        Brush
+      </span>
+      <input
+        type="range"
+        min={1}
+        max={100}
+        step={1}
+        value={Math.min(100, Math.max(1, radius))}
+        onChange={(e) => setRadius(Number(e.target.value))}
+        aria-label="Brush radius"
+        data-testid="mask-brush-size-slider"
+        className="w-24 accent-[var(--accent)]"
+      />
+      <span
+        className="font-mono tabular-nums text-[11.5px] text-[color:var(--text-primary)] w-8 text-right"
+        data-testid="mask-brush-size-value"
+      >
+        {radius}px
+      </span>
+      <span className="hidden sm:inline-flex items-center gap-1 ml-1">
+        {presets.map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => setRadius(p)}
+            data-testid={`mask-brush-preset-${p}`}
+            className={cn(
+              "h-6 px-1.5 rounded-[var(--radius-xs)] text-[10.5px] font-mono",
+              radius === p
+                ? "bg-[var(--accent)] text-white"
+                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            {p}
+          </button>
+        ))}
+      </span>
+    </div>
   );
 }
 
@@ -599,6 +762,7 @@ export function EditorToolbar({
   const active = useTool((s) => s.active);
   const setActive = useTool((s) => s.setActive);
   const toggleAutoApply = useTool((s) => s.toggleAutoApply);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Single-letter hotkeys (V/B/P/M/T/S/A/F) trigger tool selection.
   useEffect(() => {
@@ -653,6 +817,7 @@ export function EditorToolbar({
 
       <SamModelPicker />
       <AutoApplyToggle />
+      <MaskBrushSizeControl />
 
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--border-subtle)]" />
 
@@ -699,6 +864,19 @@ export function EditorToolbar({
         assetId={assetId}
         onAfter={onAfterYoloPredict}
       />
+
+      <Tooltip content="Editor settings">
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          aria-label="Editor settings"
+          data-testid="editor-settings-trigger"
+          className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+        >
+          <Settings className="h-[16px] w-[16px]" />
+        </button>
+      </Tooltip>
+      <EditorSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
 
       <Tooltip
         content={

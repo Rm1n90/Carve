@@ -16,12 +16,17 @@ interface ToolState {
   autoApply: boolean;
   visibility: VisibilityFlags;
   hoveredAnnotationId: string | null;
+  /** Brush radius for the mask tool (px in image space). 5/10/25/50/100 px
+   * presets in the toolbar. The MaskBrushTool reads this on construction
+   * and via a live store subscription. */
+  maskBrushRadius: number;
   setActive: (t: ToolName) => void;
   setActiveClassId: (id: string | null) => void;
   setAutoApply: (v: boolean) => void;
   toggleAutoApply: () => void;
   setVisibility: (key: keyof VisibilityFlags, value: boolean) => void;
   setHoveredAnnotationId: (id: string | null) => void;
+  setMaskBrushRadius: (r: number) => void;
 }
 
 const DEFAULT_VISIBILITY: VisibilityFlags = {
@@ -40,6 +45,7 @@ export const useTool = create<ToolState>((set) => ({
   autoApply: false,
   visibility: DEFAULT_VISIBILITY,
   hoveredAnnotationId: null,
+  maskBrushRadius: 25,
   setActive: (t) => set({ active: t }),
   setActiveClassId: (id) => set({ activeClassId: id }),
   setAutoApply: (v) => set({ autoApply: v }),
@@ -47,4 +53,6 @@ export const useTool = create<ToolState>((set) => ({
   setVisibility: (key, value) =>
     set((s) => ({ visibility: { ...s.visibility, [key]: value } })),
   setHoveredAnnotationId: (id) => set({ hoveredAnnotationId: id }),
+  setMaskBrushRadius: (r) =>
+    set({ maskBrushRadius: Math.max(1, Math.min(200, Math.round(r))) }),
 }));

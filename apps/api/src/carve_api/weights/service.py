@@ -56,8 +56,13 @@ class WeightService:
             raise WeightTooLarge("weight exceeds 2 GiB")
         if not original_name.lower().endswith(".pt"):
             raise WeightInvalid("only .pt files are accepted")
-        if not class_names or any(not isinstance(n, str) or not n for n in class_names):
-            raise WeightInvalid("class_names must be a non-empty list of strings")
+        # `class_names` is allowed to be empty — the model itself ships its
+        # `names` dict and the auto-annotate path reads `det.class_name`
+        # to map back to project classes by name. The frontend dialog
+        # therefore submits `[]` and lets the user manage class mapping
+        # via project classes. Non-empty lists must still be all-strings.
+        if any(not isinstance(n, str) or not n for n in class_names):
+            raise WeightInvalid("class_names must be a list of non-empty strings")
         # Lightweight pickle sanity check: a real .pt file is a zip archive (PK\x03\x04)
         # or a legacy pickle (\x80\x02-style). Bytes shorter than ~16 bytes can't be valid.
         if len(body) < 16:

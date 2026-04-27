@@ -32,19 +32,44 @@ describe("MaskBrushTool", () => {
     expect(Object.keys(useAnnotations.getState().byId)).toHaveLength(0);
   });
 
-  it("eraser sets pixels to zero", () => {
+  it("eraser clears painted pixels and an empty commit is rejected", () => {
     let n = 0;
     const tool = new MaskBrushTool(
       () => "c-1", () => null, () => ({ w: 8, h: 8 }), 2, () => `t-${++n}`,
     );
     tool.onPointerDown({ x: 4, y: 4 });
     tool.setEraser(true);
+    // Erase the painted region by laying a large eraser circle over it.
     tool.onPointerDown({ x: 4, y: 4 });
-    tool.onKeyDown("Enter");
-    // Whole mask should now be all zeros — RLE encodes it as a single run = h*w
-    const g = Object.values(useAnnotations.getState().byId)[0].geometry as any;
-    // For uniform-zero, counts is "64" (one run of zeros)
-    const total = g.counts.split(",").map((s: string) => parseInt(s, 10)).reduce((a: number, b: number) => a + b, 0);
-    expect(total).toBe(64);
+    const r = tool.onKeyDown("Enter");
+    // Mask is empty after eraser → nothing committed (no useful mask).
+    expect(r.committed).toBe(false);
+    expect(Object.keys(useAnnotations.getState().byId)).toHaveLength(0);
+  });
+
+  it("[ and ] adjust the brush radius by 5px", () => {
+    const tool = new MaskBrushTool(
+      () => "c-1", () => null, () => ({ w: 16, h: 16 }), 25,
+    );
+    expect(tool.getRadius()).toBe(25);
+    tool.onKeyDown("]");
+    expect(tool.getRadius()).toBe(30);
+    tool.onKeyDown("[");
+    tool.onKeyDown("[");
+    expect(tool.getRadius()).toBe(20);
+  });
+
+  it("right-mouse button paints an eraser stroke", () => {
+    const tool = new MaskBrushTool(
+      () => "c-1", () => null, () => ({ w: 16, h: 16 }), 4,
+    );
+    // First paint with left button to seed pixels.
+    tool.onPointerDown({ x: 8, y: 8 }, 0);
+    tool.onPointerUp({ x: 8, y: 8 });
+    expect(tool.getRasterizer()?.hasAnyPixel()).toBe(true);
+    // Then right-click drag to erase.
+    tool.onPointerDown({ x: 8, y: 8 }, 2);
+    tool.onPointerUp({ x: 8, y: 8 });
+    expect(tool.getRasterizer()?.hasAnyPixel()).toBe(false);
   });
 });

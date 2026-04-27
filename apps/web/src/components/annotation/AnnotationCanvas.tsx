@@ -7,6 +7,7 @@ import { MaskBrushTool } from "@/canvas/tools/MaskBrushTool";
 import { TagTool } from "@/canvas/tools/TagTool";
 import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
+import { useEditorSettings } from "@/state/editorSettings";
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
 import {
   renderBbox,
@@ -96,6 +97,24 @@ export function hexFromColor(color: string | undefined): number {
 }
 
 /**
+ * Deterministic 0xRRGGBB from a string (used by Settings.colorBy = "instance"
+ * mode so each annotation gets a stable, distinct color even when its class
+ * is shared with siblings).
+ */
+function colorFromString(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  }
+  // Quantize to a hue bucket and pick a vivid color via a small palette.
+  const palette = [
+    0x6366f1, 0x14b8a6, 0xf97316, 0xec4899, 0x22c55e, 0xa855f7,
+    0xeab308, 0x3b82f6, 0xef4444, 0x06b6d4, 0x84cc16, 0xd946ef,
+  ];
+  return palette[h % palette.length];
+}
+
+/**
  * Mounts a Pixi canvas, loads the image, scales it to fit the host, routes
  * pointer/keyboard events to the active tool, and renders annotations from
  * the store onto the shape layer. Live drag preview lives on the overlay
@@ -134,6 +153,14 @@ export function AnnotationCanvas({
   const offsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const previewGfxRef = useRef<unknown | null>(null);
   const shapeGfxByIdRef = useRef<Map<string, unknown>>(new Map());
+  // Per-annotation mask sprites (for `geometry.kind === "mask_rle"`).
+  // Stored separately from `shapeGfxByIdRef` so the bbox/polygon path
+  // can `clear()` its Graphics without affecting masks. Each entry holds
+  // the Pixi Sprite plus the source canvas/texture so we can dispose
+  // cleanly when the draft goes away.
+  const maskSpriteByIdRef = useRef<
+    Map<string, { sprite: unknown; canvas: HTMLCanvasElement; texture: unknown }>
+  >(new Map());
   // Active bbox-edit drag state. Lives in a ref so updates don't re-trigger
   // the tool-routing useEffect (which would recreate every pointer handler).
   const dragRef = useRef<
@@ -150,6 +177,11 @@ export function AnnotationCanvas({
   // Live ref for the in-flight polygon preview graphics. Mirrors previewGfxRef
   // (used for bbox) but rendered as separate vertex/edge/rubber-band primitives.
   const polygonPreviewGfxRef = useRef<unknown | null>(null);
+  // Live ref for the in-flight mask brush preview sprite. The sprite's
+  // texture is built from the MaskRasterizer's OffscreenCanvas; on each
+  // pointer-move we tell pixi to refresh the texture.
+  const maskPreviewSpriteRef = useRef<unknown | null>(null);
+  const maskPreviewTextureRef = useRef<unknown | null>(null);
   // Per-annotation label tag (a Pixi Container holding a fill rect + Text).
   // Rendered above each bbox when the `labels` visibility flag is on.
   // Audit bug O.
@@ -350,11 +382,36 @@ export function AnnotationCanvas({
         if (!visAnn || hidden || hiddenByPixels) {
           (g as { clear?: () => void }).clear?.();
           (g as { visible?: boolean }).visible = false;
+          // Also hide an existing mask sprite when hidden by visibility.
+          const ms = maskSpriteByIdRef.current.get(id);
+          if (ms) {
+            try {
+              (ms.sprite as { visible?: boolean }).visible = false;
+            } catch {
+              /* ignore */
+            }
+          }
           seen.add(id);
           continue;
         }
         (g as { visible?: boolean }).visible = true;
-        const color = hexFromColor(classMap[draft.classId]);
+        const settings = useEditorSettings.getState();
+        // colorBy: "label" → class color (legacy); "instance" → hash of
+        // annotation tempId; "group" → amber placeholder (no group support
+        // in v1).
+        let color: number;
+        if (settings.colorBy === "instance") {
+          color = colorFromString(id);
+        } else if (settings.colorBy === "group") {
+          color = DEFAULT_AMBER;
+        } else {
+          color = hexFromColor(classMap[draft.classId]);
+        }
+        const fillAlpha = Math.max(0, Math.min(1, settings.opacity / 100));
+        const selectedFillAlpha = Math.max(
+          0,
+          Math.min(1, settings.selectedOpacity / 100),
+        );
         const isSelected =
           state.selectedId === id || state.selectedIds.includes(id);
         const isHovered = hovered === id;
@@ -365,6 +422,8 @@ export function AnnotationCanvas({
             color,
             isSelected || isHovered,
             showHandles && isSelected,
+            fillAlpha,
+            selectedFillAlpha,
           );
           // Class-name tag floating above the bbox top-left when the
           // `labels` flag is on. Skipped when the label flag is off OR no
@@ -392,6 +451,7 @@ export function AnnotationCanvas({
                   pixiText,
                   pixiContainer,
                   Graphics,
+                  settings.labelFontSize,
                 );
                 seenLabels.add(id);
               }
@@ -404,6 +464,21 @@ export function AnnotationCanvas({
             color,
             isSelected || isHovered,
             showHandles && isSelected,
+            fillAlpha,
+            selectedFillAlpha,
+          );
+        } else if (draft.geometry.kind === "mask_rle") {
+          // Render committed mask annotations as a tinted sprite.
+          // The Graphics layer is unused for masks; ensure any prior
+          // bbox/polygon graphics in the same gfx slot are cleared.
+          (g as { clear?: () => void }).clear?.();
+          await renderMaskRleSprite(
+            app.shapeLayer as unknown as { addChild: (c: never) => unknown; removeChild?: (c: never) => void },
+            maskSpriteByIdRef.current,
+            id,
+            draft.geometry,
+            color,
+            isSelected ? selectedFillAlpha : fillAlpha,
           );
         }
         seen.add(id);
@@ -435,6 +510,37 @@ export function AnnotationCanvas({
           gfxMap.delete(id);
         }
       }
+      // Remove mask sprites whose drafts are gone or no longer
+      // mask_rle. Walked separately because masks live in their own map.
+      const maskMap = maskSpriteByIdRef.current;
+      for (const id of Array.from(maskMap.keys())) {
+        const draft = state.byId[id];
+        if (!seen.has(id) || !draft || draft.geometry.kind !== "mask_rle") {
+          const entry = maskMap.get(id);
+          if (entry) {
+            try {
+              (app.shapeLayer as { removeChild?: (c: never) => void }).removeChild?.(
+                entry.sprite as never,
+              );
+            } catch {
+              /* ignore */
+            }
+            try {
+              (entry.sprite as { destroy?: (opts?: unknown) => void }).destroy?.({
+                texture: false,
+              });
+            } catch {
+              /* ignore */
+            }
+            try {
+              (entry.texture as { destroy?: () => void }).destroy?.();
+            } catch {
+              /* ignore */
+            }
+          }
+          maskMap.delete(id);
+        }
+      }
     }
 
     void reconcile(useAnnotations.getState());
@@ -444,10 +550,16 @@ export function AnnotationCanvas({
     const unsubT = useTool.subscribe(() => {
       void reconcile(useAnnotations.getState());
     });
+    // Re-render when editor settings change (opacity, colorBy, font size,
+    // smoothImage, canvasBgColor — see Settings dialog).
+    const unsubS = useEditorSettings.subscribe(() => {
+      void reconcile(useAnnotations.getState());
+    });
     return () => {
       mounted = false;
       unsubA();
       unsubT();
+      unsubS();
     };
   }, [frameId, classMap, classNames, imageSize]);
 
@@ -545,6 +657,97 @@ export function AnnotationCanvas({
     if (g && typeof g.clear === "function") g.clear();
   }
 
+  /**
+   * Build (or refresh) the live mask-brush preview sprite. Reads the
+   * rasterizer's backing OffscreenCanvas / <canvas> element, wraps it in
+   * a Pixi Texture, and blits it onto the overlay layer with a
+   * class-color tint at 0.4 alpha so the user can see what they're
+   * painting while the stroke is in progress.
+   */
+  async function drawMaskPreview(
+    rasterizerCanvas: unknown,
+    color: number,
+    alpha: number,
+  ) {
+    const app = appRef.current;
+    if (!app) return;
+    let pixi: typeof import("pixi.js") | undefined;
+    try {
+      pixi = await import("pixi.js");
+    } catch {
+      return;
+    }
+    if (!pixi) return;
+    let sprite = maskPreviewSpriteRef.current as
+      | InstanceType<typeof pixi.Sprite>
+      | null;
+    let texture = maskPreviewTextureRef.current as
+      | InstanceType<typeof pixi.Texture>
+      | null;
+    if (!sprite || !texture) {
+      try {
+        // Pixi v8: build a CanvasSource directly so we control its
+        // dirty-flag invalidation (the `Texture.from(canvas)` cache
+        // path can return a stale texture if the source's bitmap
+        // mutates after first import).
+        const sourceCtor = (pixi as unknown as { CanvasSource?: new (opts: object) => unknown }).CanvasSource;
+        let texSource: unknown = null;
+        if (sourceCtor) {
+          texSource = new sourceCtor({ resource: rasterizerCanvas });
+          texture = new pixi.Texture({ source: texSource as never });
+        } else {
+          texture = pixi.Texture.from(rasterizerCanvas as TexImageSource);
+        }
+        sprite = new pixi.Sprite(texture);
+        app.overlayLayer.addChild(sprite as never);
+        maskPreviewSpriteRef.current = sprite;
+        maskPreviewTextureRef.current = texture;
+      } catch {
+        return;
+      }
+    }
+    // Apply tint + alpha; refresh the texture so the latest pixels appear.
+    try {
+      (sprite as { tint?: number }).tint = color;
+      (sprite as { alpha?: number }).alpha = alpha;
+      // Mark the underlying CanvasSource dirty so the GPU texture
+      // pulls the latest bitmap on next render.
+      const source = (texture as { source?: { update?: () => void } }).source;
+      source?.update?.();
+    } catch {
+      /* ignore — preview is best-effort */
+    }
+  }
+
+  function clearMaskPreview() {
+    const app = appRef.current;
+    const sprite = maskPreviewSpriteRef.current as
+      | { destroy?: (opts?: unknown) => void }
+      | null;
+    if (app && sprite) {
+      try {
+        app.overlayLayer.removeChild(sprite as never);
+      } catch {
+        /* ignore */
+      }
+      try {
+        sprite.destroy?.({ texture: false });
+      } catch {
+        /* ignore */
+      }
+    }
+    maskPreviewSpriteRef.current = null;
+    const tex = maskPreviewTextureRef.current as
+      | { destroy?: () => void }
+      | null;
+    try {
+      tex?.destroy?.();
+    } catch {
+      /* ignore */
+    }
+    maskPreviewTextureRef.current = null;
+  }
+
   // ----- Tool routing — recreate per render-relevant change.
   useEffect(() => {
     const host = hostRef.current;
@@ -556,7 +759,20 @@ export function AnnotationCanvas({
 
     const bbox = new BboxTool(getClass, getFrame, idGen);
     const polygon = new PolygonTool(getClass, getFrame, idGen);
-    const mask = new MaskBrushTool(getClass, getFrame, getSize, 12, idGen);
+    // Initial brush radius pulls from the store; live changes from the
+    // brush-size slider keep the tool in sync via the subscribe below.
+    const mask = new MaskBrushTool(
+      getClass,
+      getFrame,
+      getSize,
+      useTool.getState().maskBrushRadius,
+      idGen,
+    );
+    const unsubMaskRadius = useTool.subscribe((s, prev) => {
+      if (s.maskBrushRadius !== prev.maskBrushRadius) {
+        mask.setRadius(s.maskBrushRadius);
+      }
+    });
     const tag = new TagTool(getClass, getFrame, idGen);
 
     if (tool === "sam") {
@@ -725,7 +941,15 @@ export function AnnotationCanvas({
           }
         }
       }
-      else if (tool === "mask") mask.onPointerDown(p);
+      else if (tool === "mask") {
+        mask.onPointerDown(p, e.button);
+        const r = mask.getRasterizer();
+        if (r) {
+          const cls = useTool.getState().activeClassId;
+          const color = hexFromColor(cls ? classMap[cls] : undefined);
+          void drawMaskPreview(r.getCanvas(), color, 0.4);
+        }
+      }
       else if (tool === "sam") {
         e.preventDefault();
         void samTool.addClick(p, { pointer: e.button });
@@ -744,6 +968,12 @@ export function AnnotationCanvas({
         }
       } else if (tool === "mask") {
         mask.onPointerMove(p);
+        const r = mask.getRasterizer();
+        if (r) {
+          const cls = useTool.getState().activeClassId;
+          const color = hexFromColor(cls ? classMap[cls] : undefined);
+          void drawMaskPreview(r.getCanvas(), color, 0.4);
+        }
       } else if (tool === "cursor") {
         const drag = dragRef.current;
         if (drag) {
@@ -853,7 +1083,15 @@ export function AnnotationCanvas({
         const r = polygon.onKeyDown(e.key);
         if (r.committed || r.cancelled) clearPolygonPreview();
       }
-      else if (tool === "mask") mask.onKeyDown(e.key);
+      else if (tool === "mask") {
+        const r = mask.onKeyDown(e.key);
+        if (e.key === "[" || e.key === "]") {
+          // Mirror the new radius back to the store so the toolbar
+          // slider reflects keyboard adjustments.
+          useTool.getState().setMaskBrushRadius(mask.getRadius());
+        }
+        if (r.committed || r.cancelled) clearMaskPreview();
+      }
       else if (tool === "tag" && e.key.toLowerCase() === "t") tag.apply();
       else if (tool === "sam") {
         if (e.key === "Enter") samTool.commit();
@@ -879,8 +1117,12 @@ export function AnnotationCanvas({
       // unmounts so the preview doesn't linger.
       polygon.cancel();
       clearPolygonPreview();
+      // Likewise for in-flight mask brush strokes.
+      mask.cancel();
+      clearMaskPreview();
+      unsubMaskRadius();
     };
-  }, [tool, activeClassId, frameId, imageSize, samTool]);
+  }, [tool, activeClassId, frameId, imageSize, samTool, classMap]);
 
   const crosshairsOn = useTool((s) => s.visibility.crosshairs);
   const showCrosshair =
@@ -959,6 +1201,10 @@ export function AnnotationCanvas({
     [toImageXY, frameId],
   );
 
+  // Subscribe to canvas bg color so changes from Settings → Player apply
+  // immediately. Selecting from the store ensures a re-render on change.
+  const canvasBg = useEditorSettings((s) => s.canvasBgColor);
+
   return (
     <div
       ref={hostRef}
@@ -971,6 +1217,7 @@ export function AnnotationCanvas({
         cursor: dragCursor ?? toolCursor(tool),
         overflow: "hidden",
         touchAction: "none",
+        backgroundColor: canvasBg,
       }}
     >
       <CrosshairOverlay
@@ -1014,6 +1261,7 @@ function renderLabel(
   TextCtor: typeof import("pixi.js").Text,
   ContainerCtor: typeof import("pixi.js").Container,
   GraphicsCtor: typeof import("pixi.js").Graphics,
+  fontSize = 11,
 ): void {
   let entry = labelMap.get(id);
   if (!entry) {
@@ -1023,7 +1271,7 @@ function renderLabel(
       text: className,
       style: {
         fontFamily: "Inter, system-ui, sans-serif",
-        fontSize: 11,
+        fontSize: fontSize,
         fill: 0xffffff,
         fontWeight: "500",
       },
@@ -1035,8 +1283,21 @@ function renderLabel(
     labelMap.set(id, entry);
   }
   // Update text content if changed.
-  const text = entry.text as { text: string; width: number; height: number };
+  const text = entry.text as {
+    text: string;
+    width: number;
+    height: number;
+    style: { fontSize: number };
+  };
   if (text.text !== className) text.text = className;
+  // Update font size if it diverged (Settings → labelFontSize).
+  try {
+    if (text.style && text.style.fontSize !== fontSize) {
+      text.style.fontSize = fontSize;
+    }
+  } catch {
+    /* style may be readonly in some pixi versions; ignore */
+  }
   // Lay out: tag height ~14px, padding ~3px h / 2px v.
   const padX = 4;
   const padY = 2;
@@ -1058,6 +1319,81 @@ function renderLabel(
   // Position text inside the bg.
   const tpos = (entry.text as { position: { set: (x: number, y: number) => void } }).position;
   tpos.set(padX, padY);
+}
+
+/**
+ * Render a committed `mask_rle` annotation as a tinted sprite. We decode
+ * the RLE into a binary mask once, draw it onto an HTMLCanvas (white
+ * pixels where 1, transparent elsewhere), then wrap that canvas in a
+ * Pixi Texture + Sprite. Tint applies the class color; alpha is the
+ * caller's fill opacity (selected vs idle).
+ */
+async function renderMaskRleSprite(
+  layer: { addChild: (c: never) => unknown; removeChild?: (c: never) => void },
+  spriteMap: Map<string, { sprite: unknown; canvas: HTMLCanvasElement; texture: unknown }>,
+  id: string,
+  geometry: { kind: "mask_rle"; size: [number, number]; counts: string },
+  color: number,
+  alpha: number,
+): Promise<void> {
+  let pixi: typeof import("pixi.js") | undefined;
+  try {
+    pixi = await import("pixi.js");
+  } catch {
+    return;
+  }
+  if (!pixi) return;
+  let entry = spriteMap.get(id);
+  const [h, w] = geometry.size;
+  if (!entry) {
+    // Build a fresh canvas + sprite for this annotation. Decoding a mask
+    // is expensive; we cache the canvas per-annotation. The `geometry`
+    // is immutable per annotation in v1 (mask edits commit a new one),
+    // so we don't need to invalidate when the draft updates.
+    const cv = document.createElement("canvas");
+    cv.width = w;
+    cv.height = h;
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    try {
+      const { decodeRLE } = await import("@/canvas/maskio");
+      const mask = decodeRLE(geometry.counts, h, w);
+      const img = ctx.createImageData(w, h);
+      const data = img.data;
+      for (let row = 0; row < h; row += 1) {
+        for (let col = 0; col < w; col += 1) {
+          const i = (row * w + col) * 4;
+          if (mask[row * w + col]) {
+            data[i] = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+            data[i + 3] = 255;
+          }
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+    } catch {
+      return;
+    }
+    let texture: InstanceType<typeof pixi.Texture>;
+    try {
+      texture = pixi.Texture.from(cv);
+    } catch {
+      return;
+    }
+    const sprite = new pixi.Sprite(texture);
+    layer.addChild(sprite as never);
+    entry = { sprite, canvas: cv, texture };
+    spriteMap.set(id, entry);
+  }
+  // Apply tint + alpha.
+  try {
+    (entry.sprite as { tint?: number; alpha?: number; visible?: boolean }).tint = color;
+    (entry.sprite as { tint?: number; alpha?: number; visible?: boolean }).alpha = alpha;
+    (entry.sprite as { tint?: number; alpha?: number; visible?: boolean }).visible = true;
+  } catch {
+    /* ignore — sprite tint/alpha are best-effort */
+  }
 }
 
 function toolCursor(t: ToolName): string {

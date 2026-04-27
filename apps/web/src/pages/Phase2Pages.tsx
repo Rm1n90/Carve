@@ -1,10 +1,26 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cpu, Layers, RotateCcw, Sparkles, Trash2, Upload } from "lucide-react";
+import {
+  Cpu,
+  Layers,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  Upload,
+  Pencil,
+  Check,
+  X,
+} from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import { trashApi, modelsApi, weightsApi, type TrashItem } from "@/api/phase2";
+import {
+  trashApi,
+  modelsApi,
+  weightsApi,
+  type TrashItem,
+  type Weight,
+} from "@/api/phase2";
 import { useAuth } from "@/auth/store";
 import { showToast } from "@/lib/toast";
 import { UploadWeightDialog } from "@/pages/UploadWeightDialog";
@@ -13,6 +29,111 @@ import { UploadWeightDialog } from "@/pages/UploadWeightDialog";
 
 function bytesToMb(n: number): string {
   return (n / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+interface InlineNameProps {
+  weight: Weight;
+  canEdit: boolean;
+  busy: boolean;
+  onSubmit: (name: string) => void;
+}
+
+/**
+ * Per-row inline rename for `Weight.name`. Pencil icon → input + check / X.
+ * Enter commits, Esc cancels. Disabled when the user lacks edit permission
+ * (only admin / project owner — same gate as delete).
+ */
+function InlineName({ weight, canEdit, busy, onSubmit }: InlineNameProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(weight.name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editing) {
+      // Sync from latest weight if upstream changed while not editing.
+      setDraft(weight.name);
+      const t = setTimeout(() => inputRef.current?.focus(), 0);
+      return () => clearTimeout(t);
+    }
+  }, [editing, weight.name]);
+
+  function commit() {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === weight.name) {
+      setEditing(false);
+      setDraft(weight.name);
+      return;
+    }
+    onSubmit(trimmed);
+    setEditing(false);
+  }
+
+  function cancel() {
+    setEditing(false);
+    setDraft(weight.name);
+  }
+
+  if (!editing) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span className="font-medium tracking-tight" data-testid={`weight-name-${weight.id}`}>
+          {weight.name}
+        </span>
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            disabled={busy}
+            data-testid={`weight-rename-${weight.id}`}
+            aria-label={`Rename ${weight.name}`}
+            className="grid h-6 w-6 place-items-center rounded text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-40"
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+        )}
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        aria-label={`New name for ${weight.name}`}
+        data-testid={`weight-rename-input-${weight.id}`}
+        className="h-7 px-2 rounded-[var(--radius-xs)] border border-[var(--border-strong)] bg-[var(--bg-elev)] text-[13px] tracking-tight outline-none focus:border-[var(--accent)] min-w-[140px]"
+      />
+      <button
+        type="button"
+        onClick={commit}
+        disabled={busy}
+        aria-label="Save name"
+        data-testid={`weight-rename-save-${weight.id}`}
+        className="grid h-6 w-6 place-items-center rounded text-[color:var(--success)] hover:bg-[var(--bg-hover)] disabled:opacity-40"
+      >
+        <Check className="h-3 w-3" />
+      </button>
+      <button
+        type="button"
+        onClick={cancel}
+        aria-label="Cancel rename"
+        className="grid h-6 w-6 place-items-center rounded text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)]"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </span>
+  );
 }
 
 export function ModelsYoloPage() {
@@ -34,6 +155,19 @@ export function ModelsYoloPage() {
     },
     onError: (err: Error) => {
       showToast(err?.message ?? "Delete failed", { variant: "error" });
+    },
+  });
+
+  const renameM = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      weightsApi.update(id, { name }),
+    onSuccess: () => {
+      showToast("Weight renamed", { variant: "success" });
+      qc.invalidateQueries({ queryKey: ["weights"] });
+      qc.invalidateQueries({ queryKey: ["weights", "workspace"] });
+    },
+    onError: (err: Error) => {
+      showToast(err?.message ?? "Rename failed", { variant: "error" });
     },
   });
 
@@ -98,8 +232,13 @@ export function ModelsYoloPage() {
                   key={w.id}
                   className="border-t border-[var(--border-subtle)] hover:bg-[var(--bg-hover)]"
                 >
-                  <td className="px-4 py-2.5 font-medium tracking-tight">
-                    {w.name}
+                  <td className="px-4 py-2.5">
+                    <InlineName
+                      weight={w}
+                      canEdit={canDelete}
+                      busy={renameM.isPending && renameM.variables?.id === w.id}
+                      onSubmit={(name) => renameM.mutate({ id: w.id, name })}
+                    />
                   </td>
                   <td className="px-4 py-2.5">
                     <Badge variant="accent">{w.task_kind}</Badge>

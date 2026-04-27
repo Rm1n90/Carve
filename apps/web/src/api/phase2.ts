@@ -30,6 +30,10 @@ export const trashApi = {
 export interface SamActive {
   active: string;
   available: string[];
+  /** True only when the model service is actually responding (health
+   * probe from the API). When `reachable: false`, the UI shows the
+   * SAM-unavailable banner regardless of `available.length`. */
+  reachable?: boolean;
 }
 
 export const modelsApi = {
@@ -74,6 +78,13 @@ export const weightsApi = {
       headers: { "Content-Type": "multipart/form-data" },
     })).data;
   },
+  /**
+   * Update mutable fields on an existing weight. Currently only `name`
+   * (per backend `PATCH /weights/{id}` schema). The on-disk file and
+   * `task_kind` are immutable to avoid surprising inference behavior.
+   */
+  update: async (weightId: string, patch: { name: string }): Promise<Weight> =>
+    (await api.patch<Weight>(`/weights/${weightId}`, patch)).data,
   delete: async (weightId: string): Promise<void> => {
     await api.delete(`/weights/${weightId}`);
   },
@@ -92,10 +103,14 @@ export const inferenceApi = {
     assetId: string,
     weightId: string,
     overwrite = false,
+    minConfidence = 0.0,
   ): Promise<YoloPredictResult> => {
-    const url = `/assets/${assetId}/auto-annotate?weight_id=${encodeURIComponent(
-      weightId,
-    )}&overwrite=${overwrite ? "true" : "false"}`;
+    const params = new URLSearchParams({
+      weight_id: weightId,
+      overwrite: overwrite ? "true" : "false",
+      min_confidence: String(minConfidence),
+    });
+    const url = `/assets/${assetId}/auto-annotate?${params.toString()}`;
     const r = await api.post<unknown[]>(url);
     return { count: Array.isArray(r.data) ? r.data.length : 0 };
   },

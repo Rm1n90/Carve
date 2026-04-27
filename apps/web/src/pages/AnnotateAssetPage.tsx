@@ -19,6 +19,7 @@ import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip";
+import { SamUnavailableBanner } from "@/components/annotation/SamUnavailableBanner";
 import { TopBar } from "@/components/nav/TopBar";
 import { LeftNav } from "@/components/nav/LeftNav";
 import { BottomBar } from "@/components/nav/BottomBar";
@@ -29,6 +30,7 @@ import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
 import { useAnnotations } from "@/state/annotations";
 import { useTool } from "@/state/tool";
+import { useEditorSettings } from "@/state/editorSettings";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -37,7 +39,11 @@ interface Props {
   assetId: string;
 }
 
-const AUTOSAVE_DEBOUNCE_MS = 1500;
+// Default debounce when no user-set value is present. The actual value
+// is read live from `useEditorSettings.autoSaveIntervalSeconds` (see the
+// effect below) so changes from the settings dialog take effect on the
+// next save event.
+const DEFAULT_AUTOSAVE_DEBOUNCE_MS = 1500;
 
 function ThumbnailStripGate({
   taskId,
@@ -273,7 +279,10 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const saveNowRef = useRef(saveNow);
   saveNowRef.current = saveNow;
 
-  // Debounced autosave on store changes
+  // Debounced autosave on store changes. Debounce duration is read from
+  // `useEditorSettings.autoSaveIntervalSeconds` at the moment the timer
+  // is scheduled, so changes from the settings dialog take effect on the
+  // next user edit without a remount.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const unsub = useAnnotations.subscribe((s, prev) => {
@@ -281,9 +290,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       if (debounceRef.current !== null) {
         clearTimeout(debounceRef.current);
       }
+      const seconds = useEditorSettings.getState().autoSaveIntervalSeconds;
+      const ms = Number.isFinite(seconds) && seconds > 0
+        ? Math.round(seconds * 1000)
+        : DEFAULT_AUTOSAVE_DEBOUNCE_MS;
       debounceRef.current = setTimeout(() => {
         saveNowRef.current();
-      }, AUTOSAVE_DEBOUNCE_MS);
+      }, ms);
     });
     return () => {
       unsub();
@@ -458,6 +471,8 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             onToggleVisibility={() => setAnnotationsVisible((v) => !v)}
             visibilityOn={annotationsVisible}
           />
+
+          <SamUnavailableBanner />
 
           <ThumbnailStripGate
             taskId={taskId}

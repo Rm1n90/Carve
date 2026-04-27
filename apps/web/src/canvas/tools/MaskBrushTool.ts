@@ -1,39 +1,111 @@
 import { useAnnotations } from "@/state/annotations";
 import type { Point } from "./BboxTool";
-import { encodeRLE } from "@/canvas/maskio";
+import { MaskRasterizer } from "@/canvas/MaskRasterizer";
 
-const DEFAULT_RADIUS = 12;
+const DEFAULT_RADIUS = 25;
+const RADIUS_STEP_PX = 5;
+const MIN_RADIUS = 1;
+const MAX_RADIUS = 200;
 
+/**
+ * Mask brush tool — drives a `MaskRasterizer` for live painting and
+ * commits the painted region as a `mask_rle` annotation on Enter.
+ *
+ * Pointer model: `onPointerDown(p, button)` starts a stroke
+ * (left/0 = draw, right/2 = erase). `onPointerMove` extends it.
+ * `onPointerUp` ends it. `[` / `]` keys decrement / increment the
+ * radius by 5px.
+ *
+ * This class survived several iterations — early versions painted
+ * directly into a `Uint8Array`, which made live preview impossible.
+ * The current version delegates to `MaskRasterizer`'s OffscreenCanvas
+ * so the canvas can be rendered as a Pixi sprite during drag.
+ */
 export class MaskBrushTool {
-  private mask: Uint8Array | null = null;
+  private rasterizer: MaskRasterizer | null = null;
   private painting = false;
   private erasing = false;
+  private strokePoints: Array<[number, number]> = [];
+  private radius: number;
 
   constructor(
     private getActiveClassId: () => string | null,
     private getFrameId: () => string | null,
     private getImageSize: () => { w: number; h: number },
-    private radius: number = DEFAULT_RADIUS,
+    initialRadius: number = DEFAULT_RADIUS,
     private generateTempId: () => string = () => `t-${Math.random().toString(36).slice(2)}`,
-  ) {}
+  ) {
+    this.radius = clampRadius(initialRadius);
+  }
 
-  setEraser(on: boolean): void { this.erasing = on; }
+  setEraser(on: boolean): void {
+    this.erasing = on;
+  }
 
-  onPointerDown(p: Point): void {
-    if (!this.mask) {
+  isErasing(): boolean {
+    return this.erasing;
+  }
+
+  getRadius(): number {
+    return this.radius;
+  }
+
+  setRadius(r: number): void {
+    this.radius = clampRadius(r);
+  }
+
+  /** Increment radius by `delta` px and return the new value. */
+  bumpRadius(delta: number): number {
+    this.radius = clampRadius(this.radius + delta);
+    return this.radius;
+  }
+
+  /** The active rasterizer (lazily created). Used by AnnotationCanvas to
+   *  render a live preview sprite. May be `null` until first paint. */
+  getRasterizer(): MaskRasterizer | null {
+    return this.rasterizer;
+  }
+
+  /** Whether the current pointer state is mid-stroke (drag in progress). */
+  isPainting(): boolean {
+    return this.painting;
+  }
+
+  private ensureRasterizer(): MaskRasterizer {
+    if (!this.rasterizer) {
       const { w, h } = this.getImageSize();
-      this.mask = new Uint8Array(w * h);
+      this.rasterizer = new MaskRasterizer(w, h);
     }
+    return this.rasterizer;
+  }
+
+  onPointerDown(p: Point, button = 0): void {
+    const r = this.ensureRasterizer();
     this.painting = true;
-    this.paintAt(p);
+    // Right-mouse drag erases. Mouse left/no-button paints (or erases when
+    // the explicit eraser toggle is on).
+    const eraseOnDrag = button === 2 || this.erasing;
+    this.strokePoints = [[p.x, p.y]];
+    r.paintBrush(p.x, p.y, this.radius, eraseOnDrag ? "erase" : "draw");
   }
 
   onPointerMove(p: Point): void {
-    if (this.painting) this.paintAt(p);
+    if (!this.painting || !this.rasterizer) return;
+    const last = this.strokePoints[this.strokePoints.length - 1];
+    if (last && last[0] === p.x && last[1] === p.y) return;
+    this.strokePoints.push([p.x, p.y]);
+    // Repaint just the new segment as a thick line for smoothness.
+    if (this.strokePoints.length >= 2) {
+      const a = this.strokePoints[this.strokePoints.length - 2];
+      const b = this.strokePoints[this.strokePoints.length - 1];
+      const mode = this.erasing ? "erase" : "draw";
+      this.rasterizer.paintStroke([a, b], this.radius, mode);
+    }
   }
 
   onPointerUp(_p: Point): void {
     this.painting = false;
+    this.strokePoints = [];
   }
 
   onKeyDown(key: string): { committed: boolean; cancelled: boolean } {
@@ -45,54 +117,53 @@ export class MaskBrushTool {
       this.cancel();
       return { committed: false, cancelled: true };
     }
+    if (key === "[") {
+      this.bumpRadius(-RADIUS_STEP_PX);
+      return { committed: false, cancelled: false };
+    }
+    if (key === "]") {
+      this.bumpRadius(RADIUS_STEP_PX);
+      return { committed: false, cancelled: false };
+    }
     return { committed: false, cancelled: false };
   }
 
   cancel(): void {
-    this.mask = null;
+    this.rasterizer?.clear();
+    this.rasterizer = null;
     this.painting = false;
-  }
-
-  private paintAt(p: Point): void {
-    if (!this.mask) return;
-    const { w, h } = this.getImageSize();
-    const r = this.radius;
-    const r2 = r * r;
-    const x0 = Math.max(0, Math.floor(p.x - r));
-    const y0 = Math.max(0, Math.floor(p.y - r));
-    const x1 = Math.min(w - 1, Math.floor(p.x + r));
-    const y1 = Math.min(h - 1, Math.floor(p.y + r));
-    const v = this.erasing ? 0 : 1;
-    for (let y = y0; y <= y1; y += 1) {
-      for (let x = x0; x <= x1; x += 1) {
-        const dx = x - p.x;
-        const dy = y - p.y;
-        if (dx * dx + dy * dy <= r2) {
-          this.mask[y * w + x] = v;
-        }
-      }
-    }
+    this.strokePoints = [];
   }
 
   private commit(): boolean {
-    if (!this.mask) return false;
+    if (!this.rasterizer) return false;
     const classId = this.getActiveClassId();
     if (!classId) {
       this.cancel();
       return false;
     }
-    const { w, h } = this.getImageSize();
-    const counts = encodeRLE(this.mask, h, w);
+    if (!this.rasterizer.hasAnyPixel()) {
+      this.cancel();
+      return false;
+    }
+    const { counts, size } = this.rasterizer.encodeRLE();
     useAnnotations.getState().add({
       tempId: this.generateTempId(),
       classId,
       kind: "mask",
-      geometry: { kind: "mask_rle", size: [h, w], counts },
+      geometry: { kind: "mask_rle", size, counts },
       frameId: this.getFrameId(),
       serverId: null,
       dirty: true,
     });
-    this.mask = null;
+    this.rasterizer = null;
+    this.painting = false;
+    this.strokePoints = [];
     return true;
   }
+}
+
+function clampRadius(r: number): number {
+  if (!Number.isFinite(r)) return DEFAULT_RADIUS;
+  return Math.max(MIN_RADIUS, Math.min(MAX_RADIUS, Math.round(r)));
 }
