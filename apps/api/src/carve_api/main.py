@@ -30,8 +30,20 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router)
 
+    from carve_api.api_keys.router import router as api_keys_router
+    app.include_router(api_keys_router)
+
+    from carve_api.members.router import router as members_router
+    app.include_router(members_router)
+
     from carve_api.projects.router import router as projects_router
     app.include_router(projects_router)
+
+    from carve_api.trash.router import router as trash_router
+    app.include_router(trash_router)
+
+    from carve_api.models_info.router import router as models_info_router
+    app.include_router(models_info_router)
 
     from carve_api.assets.router import asset_router, router as task_assets_router
     app.include_router(task_assets_router)

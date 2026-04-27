@@ -1,11 +1,16 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { LogOut, ChevronRight } from "lucide-react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import {
+  ChevronDown,
+  ChevronRight,
+  LogOut,
+  Settings as SettingsIcon,
+  User as UserIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { useAuth } from "@/auth/store";
 import { logout } from "@/auth/api";
 import { CarveMark } from "./CarveMark";
-import { Tooltip } from "@/components/ui/Tooltip";
-import { IconButton } from "@/components/ui/IconButton";
 import { cn } from "@/lib/cn";
 
 interface BreadcrumbCrumb {
@@ -71,28 +76,71 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
       {rightAction}
 
       {user && (
-        <div className="flex items-center gap-2">
-          <Tooltip content={user.email}>
-            <span
-              className="grid h-7 w-7 place-items-center rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)] text-[12px] font-medium tracking-tight"
-              aria-label={`User ${user.email}`}
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <button
+              type="button"
+              data-testid="topbar-user-menu"
+              className={cn(
+                "flex items-center gap-1.5 px-1.5 h-8 rounded-[var(--radius-sm)]",
+                "hover:bg-[var(--bg-hover)] transition-colors",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+              )}
+              aria-label={`Account menu for ${user.email}`}
             >
-              {userInitial}
-            </span>
-          </Tooltip>
-          <Tooltip content="Sign out">
-            <IconButton
-              size="sm"
-              aria-label="Sign out"
-              onClick={() => {
-                logout();
-                nav({ to: "/login" });
-              }}
+              <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)] text-[12px] font-medium tracking-tight">
+                {userInitial}
+              </span>
+              <ChevronDown className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={6}
+              className={cn(
+                "min-w-[220px] rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
+                "shadow-[var(--shadow-elev-2)] p-1 z-50",
+              )}
             >
-              <LogOut className="h-4 w-4" />
-            </IconButton>
-          </Tooltip>
-        </div>
+              <div className="px-2 py-2 grid gap-0.5">
+                <p className="text-[12.5px] tracking-tight text-[color:var(--text-primary)] truncate">
+                  {user.email}
+                </p>
+                <p className="text-[10.5px] uppercase tracking-wider text-[color:var(--text-tertiary)]">
+                  {user.role}
+                </p>
+              </div>
+              <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
+              <DropdownMenu.Item asChild>
+                <Link
+                  to="/settings/profile"
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px] hover:bg-[var(--bg-hover)] cursor-pointer outline-none"
+                >
+                  <UserIcon className="h-3.5 w-3.5" /> Profile
+                </Link>
+              </DropdownMenu.Item>
+              <DropdownMenu.Item asChild>
+                <Link
+                  to="/settings/profile"
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px] hover:bg-[var(--bg-hover)] cursor-pointer outline-none"
+                >
+                  <SettingsIcon className="h-3.5 w-3.5" /> Settings
+                </Link>
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
+              <DropdownMenu.Item
+                onSelect={() => {
+                  logout();
+                  nav({ to: "/login" });
+                }}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px] text-[color:var(--danger)] hover:bg-[var(--danger-bg)] cursor-pointer outline-none"
+              >
+                <LogOut className="h-3.5 w-3.5" /> Sign out
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
       )}
     </header>
   );

@@ -49,6 +49,7 @@ def engine():
     import carve_api.annotations.models  # noqa: F401
     import carve_api.weights.models  # noqa: F401
     import carve_api.exports.models  # noqa: F401
+    import carve_api.api_keys.models  # noqa: F401
 
     url = (
         f"postgresql+psycopg://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}"

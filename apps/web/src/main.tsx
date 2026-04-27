@@ -13,6 +13,16 @@ import { projectsRoute } from "./routes/projects";
 import { projectDetailRoute } from "./routes/projects.$projectId";
 import { taskDetailRoute } from "./routes/projects.$projectId.tasks.$taskId";
 import { annotateAssetRoute } from "./routes/projects.$projectId.tasks.$taskId.assets.$assetId";
+import {
+  modelsSamRoute,
+  modelsYoloRoute,
+  settingsApiKeysRoute,
+  settingsIndexRoute,
+  settingsMembersRoute,
+  settingsProfileRoute,
+  settingsWorkspaceRoute,
+  trashRoute,
+} from "./routes/phase2";
 import "./styles/global.css";
 
 const routeTree = rootRoute.addChildren([
@@ -23,6 +33,14 @@ const routeTree = rootRoute.addChildren([
   projectDetailRoute,
   taskDetailRoute,
   annotateAssetRoute,
+  settingsIndexRoute,
+  settingsProfileRoute,
+  settingsApiKeysRoute,
+  settingsMembersRoute,
+  settingsWorkspaceRoute,
+  modelsYoloRoute,
+  modelsSamRoute,
+  trashRoute,
 ]);
 const router = createRouter({ routeTree });
 

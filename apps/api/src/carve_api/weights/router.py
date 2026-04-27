@@ -2,6 +2,7 @@ import json
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from carve_api.auth.models import User
@@ -9,12 +10,28 @@ from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.projects.service import ProjectService
 from carve_api.ratelimit import limiter
-from carve_api.weights.models import WeightTaskKind
+from carve_api.weights.models import Weight, WeightTaskKind
 from carve_api.weights.schemas import WeightOut
 from carve_api.weights.service import WeightInvalid, WeightService
 
 router = APIRouter(tags=["weights"])
 project_weights_router = APIRouter(prefix="/projects", tags=["weights"])
+
+
+@router.get("/weights", response_model=list[WeightOut])
+def list_workspace_weights(
+    user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
+    db: Session = Depends(get_db),
+) -> list[WeightOut]:
+    """List every YOLO custom weight uploaded to this workspace.
+
+    v1 simplification: a single workspace, so no per-workspace filter is
+    applied. Returned in newest-first order for display in /models/yolo.
+    """
+    rows = list(
+        db.execute(select(Weight).order_by(Weight.created_at.desc())).scalars()
+    )
+    return [WeightOut.from_orm_weight(w) for w in rows]
 
 
 def _http(err: AppError) -> HTTPException:

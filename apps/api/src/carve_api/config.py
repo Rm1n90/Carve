@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     model_base_url: str = Field(alias="MODEL_BASE_URL", default="http://model:8100")
     model_timeout_seconds: float = Field(alias="MODEL_TIMEOUT_SECONDS", default=120.0)
+    sam_model: str = Field(alias="SAM_MODEL", default="sam2.1-tiny")
 
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
     api_env: str = Field(default="development", alias="API_ENV")
