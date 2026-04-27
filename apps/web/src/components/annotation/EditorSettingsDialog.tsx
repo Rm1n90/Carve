@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { RotateCcw } from "lucide-react";
+import { Info, RotateCcw } from "lucide-react";
 
 import {
   Dialog,
@@ -9,14 +9,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/Dialog";
+import { Tooltip, TooltipProvider } from "@/components/ui/Tooltip";
 import {
   useEditorSettings,
+  type CanvasPattern,
   type ColorBy,
   type LabelPosition,
   type LabelTextFlags,
   type PlayerSpeed,
 } from "@/state/editorSettings";
 import { cn } from "@/lib/cn";
+
+const DEFERRED_TOOLTIP = "Not yet implemented in Carve.";
 
 interface Props {
   open: boolean;
@@ -43,6 +47,12 @@ const COLOR_BYS: { value: ColorBy; label: string }[] = [
   { value: "label", label: "Label" },
   { value: "instance", label: "Instance" },
   { value: "group", label: "Group" },
+];
+
+const CANVAS_PATTERNS: { value: CanvasPattern; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "subtle", label: "Subtle" },
+  { value: "visible", label: "Visible" },
 ];
 
 const LABEL_TEXT_KEYS: { key: keyof LabelTextFlags; label: string }[] = [
@@ -209,6 +219,46 @@ function Checkbox({
   );
 }
 
+/**
+ * Read-only checkbox with an explanatory tooltip. Used for CVAT-derived
+ * settings whose underlying engine (interpolation, polygon helpers, AAM)
+ * isn't implemented in Carve yet. The user can still see the option exists
+ * and learn why it's disabled instead of silently doing nothing.
+ */
+function DeferredCheckbox({
+  checked,
+  label,
+  testId,
+  reason = DEFERRED_TOOLTIP,
+}: {
+  checked: boolean;
+  label: string;
+  testId?: string;
+  reason?: string;
+}) {
+  return (
+    <Tooltip content={reason} side="right" align="center">
+      <label
+        className="inline-flex items-center gap-2 text-[12.5px] text-[color:var(--text-tertiary)] cursor-not-allowed opacity-60"
+        data-deferred="true"
+        data-testid={testId ? `${testId}-row` : undefined}
+      >
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled
+          readOnly
+          aria-disabled="true"
+          className="h-3.5 w-3.5 accent-[var(--accent)]"
+          data-testid={testId}
+        />
+        <span>{label}</span>
+        <Info aria-hidden className="h-3 w-3 opacity-70" />
+      </label>
+    </Tooltip>
+  );
+}
+
 export function EditorSettingsDialog({ open, onOpenChange }: Props) {
   const s = useEditorSettings();
   const [activeTab, setActiveTab] = useState<"player" | "workspace">("player");
@@ -218,6 +268,7 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[min(92vw,560px)]">
+        <TooltipProvider delayDuration={250}>
         <DialogHeader>
           <DialogTitle>Editor settings</DialogTitle>
           <DialogDescription>
@@ -299,7 +350,41 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
               testId="setting-smoothImage"
             />
 
-            <Field label="Canvas background color">
+            <Field
+              label="Canvas backdrop"
+              hint="Optional pattern for spotting transparency. Default is solid."
+            >
+              <div
+                className="flex gap-2"
+                role="radiogroup"
+                aria-label="Canvas backdrop"
+              >
+                {CANVAS_PATTERNS.map((p) => (
+                  <label
+                    key={p.value}
+                    className={cn(
+                      "px-2.5 h-8 inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border text-[12.5px] cursor-pointer",
+                      s.canvasPattern === p.value
+                        ? "border-[var(--accent)] bg-[var(--accent-bg)] text-[color:var(--accent)]"
+                        : "border-[var(--border-subtle)] text-[color:var(--text-secondary)] hover:border-[var(--border-strong)]",
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="canvasPattern"
+                      value={p.value}
+                      checked={s.canvasPattern === p.value}
+                      onChange={() => s.set("canvasPattern", p.value)}
+                      className="sr-only"
+                      data-testid={`setting-canvasPattern-${p.value}`}
+                    />
+                    {p.label}
+                  </label>
+                ))}
+              </div>
+            </Field>
+
+            <Field label="Backdrop color">
               <div className="flex items-center gap-2">
                 <input
                   type="color"
@@ -361,6 +446,15 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
                   </label>
                 ))}
               </div>
+              {s.colorBy === "group" && (
+                <p
+                  className="text-[11px] text-[color:var(--text-tertiary)] mt-1"
+                  data-testid="setting-colorBy-group-note"
+                >
+                  Groups aren't supported yet — annotations fall back to the
+                  class color.
+                </p>
+              )}
             </Field>
 
             <SliderRow
@@ -433,6 +527,56 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
               onChange={(v) => s.set("polygonApproxPoints", v)}
               testId="setting-polygonApproxPoints"
             />
+            <p className="text-[11px] text-[color:var(--text-tertiary)] -mt-1">
+              Affects mask → polygon conversion fidelity (used by SAM
+              commits). 0 = raw pixel boundary, 100 = aggressively smoothed.
+            </p>
+
+            <Field
+              label="Control point size"
+              hint="Pixel size of the vertex/handle squares on selected polygons and bboxes."
+            >
+              <NumberInput
+                value={s.controlPointsSize}
+                min={4}
+                max={12}
+                step={1}
+                onChange={(v) => s.set("controlPointsSize", v)}
+                testId="setting-controlPointsSize"
+              />
+            </Field>
+
+            <Field label="Advanced (CVAT parity, deferred)">
+              <div
+                className="flex flex-wrap gap-3 pt-1"
+                data-testid="settings-deferred-group"
+              >
+                <DeferredCheckbox
+                  checked={s.showAllInterpolationTracks}
+                  label="Show all interpolation tracks"
+                  testId="setting-showAllInterpolationTracks"
+                  reason="Interpolation tracks are not yet implemented in Carve."
+                />
+                <DeferredCheckbox
+                  checked={s.automaticBordering}
+                  label="Automatic bordering"
+                  testId="setting-automaticBordering"
+                  reason="Polygon auto-bordering helper is not yet implemented in Carve."
+                />
+                <DeferredCheckbox
+                  checked={s.intelligentPolygonCropping}
+                  label="Intelligent polygon cropping"
+                  testId="setting-intelligentPolygonCropping"
+                  reason="Intelligent polygon cropping is not yet implemented in Carve."
+                />
+                <DeferredCheckbox
+                  checked={s.aamZoomMargin > 0}
+                  label="AAM zoom margin"
+                  testId="setting-aamZoomMargin"
+                  reason="Attribute-Annotation Mode is not yet implemented in Carve."
+                />
+              </div>
+            </Field>
           </Tabs.Content>
         </Tabs.Root>
 
@@ -449,11 +593,12 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="inline-flex items-center h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]"
+            className="inline-flex items-center h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium bg-[var(--accent)] text-[color:var(--accent-fg)] hover:bg-[var(--accent-hover)]"
           >
             Done
           </button>
         </div>
+        </TooltipProvider>
       </DialogContent>
     </Dialog>
   );

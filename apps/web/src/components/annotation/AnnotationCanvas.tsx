@@ -99,9 +99,10 @@ export function hexFromColor(color: string | undefined): number {
 /**
  * Deterministic 0xRRGGBB from a string (used by Settings.colorBy = "instance"
  * mode so each annotation gets a stable, distinct color even when its class
- * is shared with siblings).
+ * is shared with siblings). Exported so callers (and tests) can rely on the
+ * exact same hashing logic the renderer uses.
  */
-function colorFromString(s: string): number {
+export function colorFromString(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i += 1) {
     h = (h * 31 + s.charCodeAt(i)) >>> 0;
@@ -240,6 +241,20 @@ export function AnnotationCanvas({
         const tex = await Assets.load(imageUrl);
         if (cancelled) return;
         const sprite = new Sprite(tex);
+        // Apply the user's "Smooth image" preference. Pixi v8 stores the
+        // sampling mode on `texture.source.scaleMode` ("linear" | "nearest").
+        // Older texture shapes expose `tex.baseTexture.scaleMode`; we set
+        // both so the preference applies regardless of which path is hit.
+        try {
+          const smooth = useEditorSettings.getState().smoothImage;
+          const mode = smooth ? "linear" : "nearest";
+          const source = (tex as { source?: { scaleMode?: string } }).source;
+          if (source) source.scaleMode = mode;
+          const baseTex = (tex as { baseTexture?: { scaleMode?: string } }).baseTexture;
+          if (baseTex) baseTex.scaleMode = mode;
+        } catch {
+          /* best-effort — sprite will just render with the default mode */
+        }
         app.imageLayer.addChild(sprite);
         const realW = sprite.width || 1;
         const realH = sprite.height || 1;
@@ -266,6 +281,38 @@ export function AnnotationCanvas({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageUrl, reloadKey]);
+
+  // ----- Live-apply the user's "Smooth image" preference. The sampling
+  // mode is stamped onto the texture at load time (see the sprite-load
+  // block above); this subscription handles the case where the user
+  // toggles the setting *after* the image is already loaded so the new
+  // mode shows up immediately on the next render.
+  useEffect(() => {
+    function apply(mode: "linear" | "nearest"): void {
+      const app = appRef.current;
+      if (!app) return;
+      try {
+        const layer = app.imageLayer as { children?: unknown[] };
+        const sprite = layer.children?.[0] as
+          | { texture?: { source?: { scaleMode?: string }; baseTexture?: { scaleMode?: string } } }
+          | undefined;
+        if (!sprite || !sprite.texture) return;
+        if (sprite.texture.source) sprite.texture.source.scaleMode = mode;
+        if (sprite.texture.baseTexture) sprite.texture.baseTexture.scaleMode = mode;
+      } catch {
+        /* best-effort */
+      }
+    }
+    // Initial apply (covers the case where this effect runs after mount
+    // but before settings change).
+    apply(useEditorSettings.getState().smoothImage ? "linear" : "nearest");
+    const unsub = useEditorSettings.subscribe((s, prev) => {
+      if (s.smoothImage !== prev.smoothImage) {
+        apply(s.smoothImage ? "linear" : "nearest");
+      }
+    });
+    return () => unsub();
+  }, [imageSize]);
 
   // ----- Track host element size (for fit-to-host scaling).
   useEffect(() => {
@@ -424,13 +471,15 @@ export function AnnotationCanvas({
             showHandles && isSelected,
             fillAlpha,
             selectedFillAlpha,
+            settings.controlPointsSize,
           );
           // Class-name tag floating above the bbox top-left when the
           // `labels` flag is on. Skipped when the label flag is off OR no
           // name is known for the class (defensive).
           if (visLabels) {
             const className = classNames[draft.classId];
-            if (className) {
+            const labelText = composeLabelText(draft, className, settings.showLabelText);
+            if (labelText) {
               if (!pixiText || !pixiContainer) {
                 try {
                   const pixi = await import("pixi.js");
@@ -446,12 +495,13 @@ export function AnnotationCanvas({
                   labelMap,
                   id,
                   draft.geometry,
-                  className,
+                  labelText,
                   color,
                   pixiText,
                   pixiContainer,
                   Graphics,
                   settings.labelFontSize,
+                  settings.labelPosition,
                 );
                 seenLabels.add(id);
               }
@@ -466,6 +516,7 @@ export function AnnotationCanvas({
             showHandles && isSelected,
             fillAlpha,
             selectedFillAlpha,
+            settings.controlPointsSize,
           );
         } else if (draft.geometry.kind === "mask_rle") {
           // Render committed mask annotations as a tinted sprite.
@@ -1201,9 +1252,10 @@ export function AnnotationCanvas({
     [toImageXY, frameId],
   );
 
-  // Subscribe to canvas bg color so changes from Settings → Player apply
-  // immediately. Selecting from the store ensures a re-render on change.
+  // Subscribe to canvas bg color + pattern so changes from Settings → Player
+  // apply immediately. Selecting from the store ensures a re-render on change.
   const canvasBg = useEditorSettings((s) => s.canvasBgColor);
+  const canvasPattern = useEditorSettings((s) => s.canvasPattern);
 
   return (
     <div
@@ -1211,6 +1263,7 @@ export function AnnotationCanvas({
       role="region"
       aria-label={`Annotation canvas (${tool})`}
       className="canvas-checker"
+      data-pattern={canvasPattern === "none" ? undefined : canvasPattern}
       style={{
         position: "absolute",
         inset: 0,
@@ -1256,24 +1309,28 @@ function renderLabel(
   labelMap: Map<string, { container: unknown; text: unknown; bg: unknown }>,
   id: string,
   bbox: { x: number; y: number; w: number; h: number },
-  className: string,
+  labelText: string,
   color: number,
   TextCtor: typeof import("pixi.js").Text,
   ContainerCtor: typeof import("pixi.js").Container,
   GraphicsCtor: typeof import("pixi.js").Graphics,
   fontSize = 11,
+  position: "auto" | "above" | "below" | "left" | "right" = "auto",
 ): void {
   let entry = labelMap.get(id);
   if (!entry) {
     const container = new ContainerCtor();
     const bg = new GraphicsCtor();
     const text = new TextCtor({
-      text: className,
+      text: labelText,
       style: {
         fontFamily: "Inter, system-ui, sans-serif",
         fontSize: fontSize,
         fill: 0xffffff,
         fontWeight: "500",
+        // Multi-line label content (id + label) needs explicit alignment;
+        // pixi defaults to left, which is what we want here.
+        align: "left",
       },
     });
     (container as unknown as AddChildSink).addChild(bg as never);
@@ -1289,7 +1346,7 @@ function renderLabel(
     height: number;
     style: { fontSize: number };
   };
-  if (text.text !== className) text.text = className;
+  if (text.text !== labelText) text.text = labelText;
   // Update font size if it diverged (Settings → labelFontSize).
   try {
     if (text.style && text.style.fontSize !== fontSize) {
@@ -1298,15 +1355,38 @@ function renderLabel(
   } catch {
     /* style may be readonly in some pixi versions; ignore */
   }
-  // Lay out: tag height ~14px, padding ~3px h / 2px v.
+  // Lay out: tag dimensions follow the (possibly multi-line) text.
   const padX = 4;
   const padY = 2;
   const tw = text.width + padX * 2;
   const th = text.height + padY * 2;
-  // Position the container above the bbox so the tag's bottom-left aligns
-  // with the bbox top-left corner. Small 2px gap.
+  // Position the container relative to the bbox per the user's preference.
+  // `auto` matches the legacy behaviour (above the top-left corner).
+  const gap = 4;
+  let cx: number;
+  let cy: number;
+  switch (position) {
+    case "below":
+      cx = bbox.x;
+      cy = bbox.y + bbox.h + gap;
+      break;
+    case "left":
+      cx = bbox.x - tw - gap;
+      cy = bbox.y;
+      break;
+    case "right":
+      cx = bbox.x + bbox.w + gap;
+      cy = bbox.y;
+      break;
+    case "above":
+    case "auto":
+    default:
+      cx = bbox.x;
+      cy = bbox.y - th - gap;
+      break;
+  }
   const container = entry.container as { position: { set: (x: number, y: number) => void } };
-  container.position.set(bbox.x, bbox.y - th - 2);
+  container.position.set(cx, cy);
   // Re-paint the bg rect with the class color.
   const bg = entry.bg as {
     clear: () => void;
@@ -1319,6 +1399,38 @@ function renderLabel(
   // Position text inside the bg.
   const tpos = (entry.text as { position: { set: (x: number, y: number) => void } }).position;
   tpos.set(padX, padY);
+}
+
+/**
+ * Compose the label text shown above each annotation based on the
+ * Settings → "Label text" checkboxes. Returns ``""`` when no field
+ * applies; the caller skips rendering in that case.
+ *
+ * - Label: class name (legacy default)
+ * - ID: short uuid prefix (8 chars) of the annotation tempId
+ * - Source: "manual" placeholder for v1 (annotations have no provenance
+ *   field yet)
+ * - Attributes / Descriptions: stub strings until the data model gains
+ *   first-class fields. Visible so the user can see the option works.
+ */
+function composeLabelText(
+  draft: AnnotationDraft,
+  className: string | undefined,
+  flags: {
+    id: boolean;
+    source: boolean;
+    label: boolean;
+    attributes: boolean;
+    descriptions: boolean;
+  },
+): string {
+  const parts: string[] = [];
+  if (flags.label && className) parts.push(className);
+  if (flags.id) parts.push(`#${draft.tempId.slice(0, 8)}`);
+  if (flags.source) parts.push("manual");
+  if (flags.attributes) parts.push("(no attrs)");
+  if (flags.descriptions) parts.push("(no desc)");
+  return parts.join("\n");
 }
 
 /**
@@ -1396,13 +1508,24 @@ async function renderMaskRleSprite(
   }
 }
 
+/**
+ * Map the active tool to a CSS cursor. Each tool gets a distinct cursor
+ * so the active tool is always visible without looking at the toolbar.
+ *
+ * - cursor (V): default
+ * - bbox (B), polygon (P), mask (M), tag (T): crosshair
+ * - sam (S): cell — emphasises the click-to-segment intent
+ * - rectangle move (R, future): move
+ */
 function toolCursor(t: ToolName): string {
   switch (t) {
     case "bbox":
     case "polygon":
     case "mask":
-    case "sam":
+    case "tag":
       return "crosshair";
+    case "sam":
+      return "cell";
     default:
       return "default";
   }

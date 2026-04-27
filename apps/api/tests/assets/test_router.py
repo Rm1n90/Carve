@@ -55,7 +55,9 @@ def test_list_assets_for_task(db_session, monkeypatch) -> None:
     )
     r = client.get(f"/tasks/{tid}/assets", headers=_hdr(token))
     assert r.status_code == 200
-    assert len(r.json()) == 1
+    body = r.json()
+    assert body["total"] == 1
+    assert len(body["items"]) == 1
 
 
 def test_duplicate_asset_returns_409(db_session, monkeypatch) -> None:

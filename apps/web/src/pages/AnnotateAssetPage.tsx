@@ -70,6 +70,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const navigate = useNavigate();
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
   const [zoomPct, setZoomPct] = useState(100);
+  // When the user enables Settings → Player → "Reset zoom on frame change",
+  // navigating between frames fits the canvas back to 100%. Without this
+  // a zoomed-in view would silently follow the user across frames, which
+  // is rarely what they want. (Settings.resetZoomOnFrameChange wiring.)
+  useEffect(() => {
+    if (useEditorSettings.getState().resetZoomOnFrameChange) {
+      window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
+    }
+  }, [currentFrameIdx]);
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
   // Image load lifecycle. Phase A core 1 — without this, image load failures
   // were invisible and the user just saw an empty canvas.
@@ -529,7 +538,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                       data-testid="canvas-image-retry"
                       className={cn(
                         "inline-flex w-fit items-center gap-1.5 h-8 px-3 rounded-[var(--radius-sm)]",
-                        "bg-[var(--accent)] text-white text-[12.5px] font-medium",
+                        "bg-[var(--accent)] text-[color:var(--accent-fg)] text-[12.5px] font-medium",
                         "hover:bg-[var(--accent-hover)] transition-colors",
                       )}
                     >

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/cn";
+import { useEditorSettings, type PlayerSpeed } from "@/state/editorSettings";
 
 interface Props {
   totalFrames: number;
@@ -7,26 +8,49 @@ interface Props {
   onChange: (idx: number) => void;
 }
 
+/** Map the user's "Player speed" preference to a per-frame interval in ms.
+ * Used by the spacebar play loop. */
+function speedToIntervalMs(speed: PlayerSpeed): number {
+  switch (speed) {
+    case "slowest":
+      return 2000;
+    case "slow":
+      return 1500;
+    case "fast":
+      return 500;
+    case "fastest":
+      return 250;
+    case "usual":
+    default:
+      return 1000;
+  }
+}
+
 export function FrameTimeline({ totalFrames, currentIdx, onChange }: Props) {
   const playingRef = useRef<number | null>(null);
-
+  // playerStep / playerSpeed are personal preferences — read directly from
+  // the store inside the keydown handler so changes apply on the very next
+  // keypress without re-binding.
   useEffect(() => {
     function handler(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const settings = useEditorSettings.getState();
+      const step = Math.max(1, Math.round(settings.playerStep));
       if (e.key === "[") {
-        onChange(Math.max(0, currentIdx - 1));
+        onChange(Math.max(0, currentIdx - step));
       } else if (e.key === "]") {
-        onChange(Math.min(totalFrames - 1, currentIdx + 1));
+        onChange(Math.min(totalFrames - 1, currentIdx + step));
       } else if (e.key === " ") {
         e.preventDefault();
         if (playingRef.current !== null) {
           window.clearInterval(playingRef.current);
           playingRef.current = null;
         } else {
+          const interval = speedToIntervalMs(settings.playerSpeed);
           playingRef.current = window.setInterval(() => {
-            onChange(Math.min(totalFrames - 1, currentIdx + 1));
-          }, 1000);
+            onChange(Math.min(totalFrames - 1, currentIdx + step));
+          }, interval);
         }
       }
     }

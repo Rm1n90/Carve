@@ -97,6 +97,12 @@ export function renderBbox(
   fillAlpha = 0.08,
   /** Fill alpha when ``selected`` is true. Defaults to 0.18 (legacy). */
   selectedFillAlpha = 0.18,
+  /**
+   * Pixel size of each handle square. Wired from
+   * `useEditorSettings.controlPointsSize`; defaults to the legacy constant
+   * so callers that don't pass it keep their existing rendering.
+   */
+  handleSize = BBOX_HANDLE_SIZE_PX,
 ): void {
   g.clear();
   g.rect(b.x, b.y, b.w, b.h);
@@ -105,9 +111,9 @@ export function renderBbox(
 
   if (!selected || !showHandles) return;
 
-  const half = BBOX_HANDLE_SIZE_PX / 2;
+  const half = handleSize / 2;
   for (const spec of getBboxHandlePositions(b)) {
-    g.rect(spec.cx - half, spec.cy - half, BBOX_HANDLE_SIZE_PX, BBOX_HANDLE_SIZE_PX);
+    g.rect(spec.cx - half, spec.cy - half, handleSize, handleSize);
     g.fill({ color: HANDLE_FILL, alpha: 1 });
     g.stroke({ color: HANDLE_INDIGO, width: 1, alpha: 1 });
   }
@@ -124,6 +130,11 @@ export function renderPolygon(
   showHandles = false,
   fillAlpha = 0.08,
   selectedFillAlpha = 0.18,
+  /**
+   * Pixel size of each vertex handle square. Wired from
+   * `useEditorSettings.controlPointsSize`.
+   */
+  handleSize = BBOX_HANDLE_SIZE_PX,
 ): void {
   if (p.points.length === 0) return;
   g.clear();
@@ -136,9 +147,9 @@ export function renderPolygon(
   g.fill({ color, alpha: selected ? selectedFillAlpha : fillAlpha });
 
   if (!selected || !showHandles) return;
-  const half = BBOX_HANDLE_SIZE_PX / 2;
+  const half = handleSize / 2;
   for (const [vx, vy] of p.points) {
-    g.rect(vx - half, vy - half, BBOX_HANDLE_SIZE_PX, BBOX_HANDLE_SIZE_PX);
+    g.rect(vx - half, vy - half, handleSize, handleSize);
     g.fill({ color: HANDLE_FILL, alpha: 1 });
     g.stroke({ color: HANDLE_INDIGO, width: 1, alpha: 1 });
   }

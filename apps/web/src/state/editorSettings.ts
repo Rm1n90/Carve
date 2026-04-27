@@ -18,6 +18,12 @@ import { create } from "zustand";
 export type ColorBy = "label" | "instance" | "group";
 export type LabelPosition = "auto" | "above" | "below" | "left" | "right";
 export type PlayerSpeed = "slowest" | "slow" | "usual" | "fast" | "fastest";
+/**
+ * Canvas backdrop pattern. ``"none"`` is the default — best for opaque
+ * images and transparent images alike. ``"subtle"`` and ``"visible"`` are
+ * opt-in. See ``.canvas-checker`` in ``global.css`` for the rendering.
+ */
+export type CanvasPattern = "none" | "subtle" | "visible";
 
 export interface LabelTextFlags {
   id: boolean;
@@ -34,6 +40,7 @@ export interface EditorSettings {
   resetZoomOnFrameChange: boolean;
   smoothImage: boolean;
   canvasBgColor: string;
+  canvasPattern: CanvasPattern;
 
   // Workspace tab
   autoSaveIntervalSeconds: number;
@@ -45,6 +52,17 @@ export interface EditorSettings {
   labelFontSize: number;
   showTagsOnFrame: boolean;
   polygonApproxPoints: number; // 0-100
+  /** Pixel size of polygon vertex handles. 4–12. */
+  controlPointsSize: number;
+
+  // CVAT-feature parity (deferred — UI shows them disabled with a tooltip
+  // explaining the dependency). Storing the values on the settings object
+  // means future implementations can pick the user's preference up without
+  // a localStorage migration.
+  showAllInterpolationTracks: boolean;
+  automaticBordering: boolean;
+  intelligentPolygonCropping: boolean;
+  aamZoomMargin: number;
 }
 
 const STORAGE_KEY = "carve.settings.v1";
@@ -56,11 +74,12 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   resetZoomOnFrameChange: false,
   smoothImage: true,
   canvasBgColor: "#0F0F12",
+  canvasPattern: "none",
 
   // Workspace
   autoSaveIntervalSeconds: 1.5,
   colorBy: "label",
-  opacity: 30,
+  opacity: 25,
   selectedOpacity: 50,
   showLabelText: {
     id: false,
@@ -73,6 +92,13 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   labelFontSize: 12,
   showTagsOnFrame: true,
   polygonApproxPoints: 50,
+  controlPointsSize: 6,
+
+  // Deferred CVAT parity — value preserved but UI is disabled.
+  showAllInterpolationTracks: false,
+  automaticBordering: false,
+  intelligentPolygonCropping: false,
+  aamZoomMargin: 100,
 };
 
 function isValidPartial(input: unknown): input is Partial<EditorSettings> {

@@ -89,14 +89,31 @@ describe("StatsPanel", () => {
     await findByText(/large/i);
   });
 
-  it("renders heatmap grid as 32x32", async () => {
+  it("renders heatmap grid as 32x32 when data is non-empty", async () => {
+    // grid with at least one non-zero value so the chart actually renders
+    // (zero-everywhere now triggers the empty state instead).
+    const grid = Array(1024).fill(0);
+    grid[42] = 7;
+    (statsApi.heatmap as any).mockResolvedValue({ bins: 32, grid });
+    const { getAllByTestId } = render(wrap(<StatsPanel taskId="t1" />));
+    await waitFor(() => {
+      expect(getAllByTestId("heatmap-cell").length).toBe(1024);
+    });
+  });
+
+  it("shows heatmap empty state when grid has no data", async () => {
     (statsApi.heatmap as any).mockResolvedValue({
       bins: 32,
       grid: Array(1024).fill(0),
     });
-    const { getAllByTestId } = render(wrap(<StatsPanel taskId="t1" />));
+    const { findByTestId, queryAllByTestId } = render(
+      wrap(<StatsPanel taskId="t1" />),
+    );
+    const card = await findByTestId("stats-card-heatmap");
+    expect(card).toBeTruthy();
+    // No cells rendered when empty
     await waitFor(() => {
-      expect(getAllByTestId("heatmap-cell").length).toBe(1024);
+      expect(queryAllByTestId("heatmap-cell").length).toBe(0);
     });
   });
 

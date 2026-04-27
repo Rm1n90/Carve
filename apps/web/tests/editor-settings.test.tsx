@@ -66,7 +66,9 @@ describe("EditorSettingsDialog", () => {
     const ws = await screen.findByTestId("tab-workspace");
     fireEvent.click(ws);
     const slider = (await screen.findByTestId("setting-opacity")) as HTMLInputElement;
-    expect(slider.value).toBe("30");
+    // Default opacity is sourced from DEFAULT_SETTINGS so the test tracks
+    // changes (Phase B v2.4 lowered the default fill alpha to be subtler).
+    expect(slider.value).toBe(String(DEFAULT_SETTINGS.opacity));
     fireEvent.change(slider, { target: { value: "80" } });
     expect(useEditorSettings.getState().opacity).toBe(80);
     const stored = JSON.parse(
