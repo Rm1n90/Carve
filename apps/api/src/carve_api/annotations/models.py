@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +32,9 @@ class Annotation(Base):
     kind: Mapped[AnnotationKind] = mapped_column(Enum(AnnotationKind, name="annotation_kind"), nullable=False)
     geometry: Mapped[dict] = mapped_column(JSONB, nullable=False)
     track_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    z_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0, index=True
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

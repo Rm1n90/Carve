@@ -130,3 +130,89 @@ def test_list_filter_by_frame_id(db_session, monkeypatch) -> None:
     r = client.get(f"/tasks/{tid}/annotations", headers=_hdr(token))
     assert r.status_code == 200
     assert len(r.json()) == 1
+
+
+def test_z_order_defaults_to_zero_on_create(db_session, monkeypatch) -> None:
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    r = client.post(
+        f"/tasks/{tid}/annotations",
+        json={"class_id": cid, "kind": "bbox",
+              "geometry": {"kind": "bbox", "x": 0, "y": 0, "w": 5, "h": 5}},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert "z_order" in body
+    assert body["z_order"] == 0
+
+
+def test_z_order_round_trip_via_patch(db_session, monkeypatch) -> None:
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    r = client.post(
+        f"/tasks/{tid}/annotations",
+        json={"class_id": cid, "kind": "bbox",
+              "geometry": {"kind": "bbox", "x": 0, "y": 0, "w": 5, "h": 5}},
+        headers=_hdr(token),
+    )
+    aid_ann = r.json()["id"]
+    rp = client.patch(
+        f"/annotations/{aid_ann}",
+        json={"z_order": 7},
+        headers=_hdr(token),
+    )
+    assert rp.status_code == 200, rp.text
+    assert rp.json()["z_order"] == 7
+    rg = client.get(f"/tasks/{tid}/annotations", headers=_hdr(token))
+    assert rg.status_code == 200
+    rows = rg.json()
+    assert any(a["id"] == aid_ann and a["z_order"] == 7 for a in rows)
+
+
+def test_z_order_via_batch_create_and_update(db_session, monkeypatch) -> None:
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    payload = {
+        "create": [
+            {"class_id": cid, "kind": "bbox",
+             "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 5, "h": 5},
+             "z_order": 10},
+            {"class_id": cid, "kind": "bbox",
+             "geometry": {"kind": "bbox", "x": 2, "y": 2, "w": 5, "h": 5},
+             "z_order": 5},
+        ],
+        "update": [],
+        "delete": [],
+    }
+    rb = client.post(f"/tasks/{tid}/annotations:batch", json=payload, headers=_hdr(token))
+    assert rb.status_code == 200, rb.text
+    rg = client.get(f"/tasks/{tid}/annotations", headers=_hdr(token))
+    rows = rg.json()
+    assert rows[0]["z_order"] == 5
+    assert rows[1]["z_order"] == 10
+    update_payload = {
+        "create": [],
+        "update": [{"id": rows[0]["id"], "z_order": 99}],
+        "delete": [],
+    }
+    ru = client.post(f"/tasks/{tid}/annotations:batch", json=update_payload, headers=_hdr(token))
+    assert ru.status_code == 200, ru.text
+    assert ru.json()["updated"][0]["z_order"] == 99
+
+
+def test_z_order_unspecified_remains_default(db_session, monkeypatch) -> None:
+    """Tests that omitted z_order keeps default; matches existing-test expectation."""
+    client = _client(db_session)
+    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    payload = {
+        "create": [
+            {"class_id": cid, "kind": "bbox",
+             "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 5, "h": 5}},
+        ],
+        "update": [],
+        "delete": [],
+    }
+    rb = client.post(f"/tasks/{tid}/annotations:batch", json=payload, headers=_hdr(token))
+    assert rb.status_code == 200, rb.text
+    assert rb.json()["created"][0]["z_order"] == 0

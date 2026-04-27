@@ -45,6 +45,7 @@ def create_annotation(
             class_id=uuid.UUID(payload.class_id),
             kind=payload.kind, geometry=payload.geometry,
             track_id=uuid.UUID(payload.track_id) if payload.track_id else None,
+            z_order=payload.z_order,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -81,6 +82,7 @@ def batch(
                 class_id=uuid.UUID(c.class_id),
                 kind=c.kind, geometry=c.geometry,
                 track_id=uuid.UUID(c.track_id) if c.track_id else None,
+                z_order=c.z_order,
             )
             for c in payload.create
         ]
@@ -91,6 +93,7 @@ def batch(
                 geometry=u.geometry,
                 class_id=uuid.UUID(u.class_id) if u.class_id else None,
                 track_id=uuid.UUID(u.track_id) if u.track_id else None,
+                z_order=u.z_order,
             )
             updated.append(a)
         deleted: list[str] = []
@@ -137,6 +140,7 @@ def patch_annotation(
             geometry=payload.geometry,
             class_id=uuid.UUID(payload.class_id) if payload.class_id else None,
             track_id=uuid.UUID(payload.track_id) if payload.track_id else None,
+            z_order=payload.z_order,
         )
     except AppError as exc:
         raise _http(exc) from exc

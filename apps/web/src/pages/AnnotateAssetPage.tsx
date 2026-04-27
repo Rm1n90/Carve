@@ -10,6 +10,8 @@ import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
+import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
+import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip";
 import { TopBar } from "@/components/nav/TopBar";
 import { LeftNav } from "@/components/nav/LeftNav";
 import { BottomBar } from "@/components/nav/BottomBar";
@@ -18,6 +20,7 @@ import { assetsApi } from "@/api/assets";
 import { classesApi } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
 import { useAnnotations } from "@/state/annotations";
+import { useTool } from "@/state/tool";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -27,6 +30,26 @@ interface Props {
 }
 
 const AUTOSAVE_DEBOUNCE_MS = 2000;
+
+function ThumbnailStripGate({
+  taskId,
+  projectId,
+  activeAssetId,
+}: {
+  taskId: string;
+  projectId: string;
+  activeAssetId: string;
+}) {
+  const enabled = useTool((s) => s.visibility.thumbnails);
+  if (!enabled) return null;
+  return (
+    <AssetThumbnailStrip
+      taskId={taskId}
+      projectId={projectId}
+      activeAssetId={activeAssetId}
+    />
+  );
+}
 
 export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const qc = useQueryClient();
@@ -160,12 +183,64 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     };
   }, []);
 
-  // Manual Cmd+S
+  // Manual Cmd+S, Cmd+Z, Cmd+Shift+Z, Cmd+A, Backspace, z-order shortcuts
   useEffect(() => {
     function handler(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
+        return;
+      }
+      const k = e.key.toLowerCase();
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && k === "s") {
         e.preventDefault();
         saveNowRef.current();
+        return;
+      }
+      if (meta && k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        useAnnotations.getState().undo();
+        return;
+      }
+      if (meta && k === "z" && e.shiftKey) {
+        e.preventDefault();
+        useAnnotations.getState().redo();
+        return;
+      }
+      if (meta && k === "a") {
+        e.preventDefault();
+        useAnnotations.getState().selectAll(null);
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const ids = useAnnotations.getState().selectedIds;
+        if (ids.length > 0) {
+          e.preventDefault();
+          for (const id of ids) {
+            useAnnotations.getState().remove(id);
+          }
+        }
+        return;
+      }
+      // Z-order: Cmd+Shift+] / Cmd+] / Cmd+[ / Cmd+Shift+[
+      if (meta && (e.key === "]" || e.key === "[")) {
+        const sel = useAnnotations.getState().selectedId;
+        if (!sel) return;
+        e.preventDefault();
+        if (e.key === "]" && e.shiftKey) {
+          useAnnotations.getState().bringToFront(sel);
+        } else if (e.key === "]") {
+          useAnnotations.getState().bringForward(sel);
+        } else if (e.key === "[" && e.shiftKey) {
+          useAnnotations.getState().sendToBack(sel);
+        } else if (e.key === "[") {
+          useAnnotations.getState().sendBackward(sel);
+        }
+        return;
+      }
+      // Esc clears selection
+      if (e.key === "Escape") {
+        useAnnotations.getState().clearSelection();
       }
     }
     window.addEventListener("keydown", handler);
@@ -214,13 +289,40 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
 
         <div className="flex flex-1 min-w-0 flex-col">
           <EditorToolbar
+            projectId={projectId}
+            assetId={assetId}
             onSave={saveNow}
             isSaving={saveMutation.isPending}
             hasError={hasError}
             dirtyCount={dirtyCount}
+            zoomPct={zoomPct}
+            onZoomIn={() => setZoomPct((z) => Math.min(800, z + 25))}
+            onZoomOut={() => setZoomPct((z) => Math.max(10, z - 25))}
+            onZoomTo={(p) => {
+              if (p === 0) {
+                window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
+              } else {
+                setZoomPct(p);
+              }
+            }}
+            onFitToScreen={() => {
+              window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
+            }}
+            onUndo={() => useAnnotations.getState().undo()}
+            onRedo={() => useAnnotations.getState().redo()}
+            onAfterYoloPredict={() => {
+              qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+            }}
             onToggleVisibility={() => setAnnotationsVisible((v) => !v)}
             visibilityOn={annotationsVisible}
           />
+
+          <ThumbnailStripGate
+            taskId={taskId}
+            projectId={projectId}
+            activeAssetId={assetId}
+          />
+
 
           <div className="flex flex-1 min-h-0">
             <main
@@ -237,6 +339,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 assetId={assetId}
                 onZoomChange={setZoomPct}
               />
+              <div className="absolute top-2 right-2 z-20">
+                <KeyboardCheatSheet />
+              </div>
             </main>
 
             <aside

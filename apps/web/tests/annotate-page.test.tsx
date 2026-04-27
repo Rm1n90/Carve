@@ -58,6 +58,28 @@ vi.mock("@/api/projects", () => ({
   },
 }));
 
+vi.mock("@/api/phase2", () => ({
+  modelsApi: {
+    samActive: vi.fn().mockResolvedValue({ active: "sam2.1-base+", available: ["sam2.1-base+"] }),
+  },
+  weightsApi: {
+    listForProject: vi.fn().mockResolvedValue([]),
+    listWorkspace: vi.fn().mockResolvedValue([]),
+  },
+  inferenceApi: {
+    predictYolo: vi.fn().mockResolvedValue({ count: 0 }),
+  },
+  trashApi: { list: vi.fn(), restore: vi.fn(), hardDelete: vi.fn() },
+}));
+
+vi.mock("@/components/annotation/AssetThumbnailStrip", () => ({
+  AssetThumbnailStrip: () => <div data-testid="asset-thumbnail-strip" />,
+}));
+
+vi.mock("@/components/annotation/KeyboardCheatSheet", () => ({
+  KeyboardCheatSheet: () => <div data-testid="cheat-sheet" />,
+}));
+
 import { AnnotateAssetPage } from "@/pages/AnnotateAssetPage";
 import { useAnnotations } from "@/state/annotations";
 import { annotationsApi } from "@/api/annotations";

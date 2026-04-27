@@ -75,3 +75,81 @@ describe("annotation store", () => {
     expect(s.pendingDeletes).toEqual([]);
   });
 });
+
+describe("annotation store — multi-select & z-order", () => {
+  beforeEach(() => {
+    useAnnotations.getState().reset([]);
+    useAnnotations.getState().add({
+      tempId: "t-1", classId: "c-1", kind: "bbox",
+      geometry: { kind: "bbox", x: 0, y: 0, w: 5, h: 5 },
+      frameId: null, serverId: "s-1", dirty: false,
+    });
+    useAnnotations.getState().add({
+      tempId: "t-2", classId: "c-1", kind: "bbox",
+      geometry: { kind: "bbox", x: 10, y: 10, w: 5, h: 5 },
+      frameId: null, serverId: "s-2", dirty: false,
+    });
+    useAnnotations.getState().add({
+      tempId: "t-3", classId: "c-2", kind: "bbox",
+      geometry: { kind: "bbox", x: 20, y: 20, w: 5, h: 5 },
+      frameId: null, serverId: "s-3", dirty: false,
+    });
+  });
+
+  it("toggleSelect adds a second id then removes it", () => {
+    useAnnotations.getState().clearSelection();
+    useAnnotations.getState().toggleSelect("t-1");
+    useAnnotations.getState().toggleSelect("t-2");
+    expect(useAnnotations.getState().selectedIds).toEqual(["t-1", "t-2"]);
+    useAnnotations.getState().toggleSelect("t-1");
+    expect(useAnnotations.getState().selectedIds).toEqual(["t-2"]);
+  });
+
+  it("selectMany replaces selection with given ids", () => {
+    useAnnotations.getState().selectMany(["t-1", "t-3"]);
+    expect(useAnnotations.getState().selectedIds).toEqual(["t-1", "t-3"]);
+  });
+
+  it("selectAll grabs every id with the same frameId", () => {
+    useAnnotations.getState().selectAll(null);
+    const ids = [...useAnnotations.getState().selectedIds].sort();
+    expect(ids).toEqual(["t-1", "t-2", "t-3"]);
+  });
+
+  it("bringToFront raises zOrder above all peers", () => {
+    useAnnotations.getState().bringToFront("t-1");
+    const z1 = useAnnotations.getState().byId["t-1"].zOrder ?? 0;
+    const z2 = useAnnotations.getState().byId["t-2"].zOrder ?? 0;
+    expect(z1).toBeGreaterThan(z2);
+  });
+
+  it("sendToBack lowers zOrder below all peers", () => {
+    useAnnotations.getState().sendToBack("t-2");
+    const z1 = useAnnotations.getState().byId["t-1"].zOrder ?? 0;
+    const z2 = useAnnotations.getState().byId["t-2"].zOrder ?? 0;
+    expect(z2).toBeLessThan(z1);
+  });
+
+  it("bringForward bumps zOrder by 1", () => {
+    const before = useAnnotations.getState().byId["t-1"].zOrder ?? 0;
+    useAnnotations.getState().bringForward("t-1");
+    const after = useAnnotations.getState().byId["t-1"].zOrder ?? 0;
+    expect(after).toBe(before + 1);
+  });
+
+  it("sendBackward decreases zOrder by 1", () => {
+    const before = useAnnotations.getState().byId["t-1"].zOrder ?? 0;
+    useAnnotations.getState().sendBackward("t-1");
+    const after = useAnnotations.getState().byId["t-1"].zOrder ?? 0;
+    expect(after).toBe(before - 1);
+  });
+
+  it("undo restores prior state and redo replays it", () => {
+    useAnnotations.getState().bringToFront("t-1");
+    const promoted = useAnnotations.getState().byId["t-1"].zOrder ?? 0;
+    useAnnotations.getState().undo();
+    expect(useAnnotations.getState().byId["t-1"].zOrder ?? 0).not.toBe(promoted);
+    useAnnotations.getState().redo();
+    expect(useAnnotations.getState().byId["t-1"].zOrder ?? 0).toBe(promoted);
+  });
+});

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CanvasApp } from "@/canvas/App";
 import { BboxTool, type Point } from "@/canvas/tools/BboxTool";
@@ -9,6 +9,8 @@ import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
 import { useAnnotations, type AnnotationDraft } from "@/state/annotations";
 import { renderBbox, renderPolygon } from "@/canvas/ShapeRenderer";
+import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
+import { AnnotationContextMenu } from "@/components/annotation/AnnotationContextMenu";
 
 interface Props {
   /** Intrinsic image width (px). Optional now — kept for compat with existing call sites. */
@@ -173,6 +175,9 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
     async function reconcile(state: {
       byId: Record<string, AnnotationDraft>;
       selectedId: string | null;
+      selectedIds: string[];
+      hiddenClassIds: string[];
+      hiddenAnnotationIds: string[];
     }) {
       const app = appRef.current;
       if (!app || !mounted) return;
@@ -186,20 +191,37 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
       if (!Graphics || !mounted) return;
       const gfxMap = shapeGfxByIdRef.current;
       const seen = new Set<string>();
-      for (const [id, draft] of Object.entries(state.byId)) {
-        if (draft.frameId !== frameId) continue;
+      const hovered = useTool.getState().hoveredAnnotationId;
+      const visAnn = useTool.getState().visibility.annotations;
+      const sortedDrafts = Object.values(state.byId)
+        .filter((d) => d.frameId === frameId)
+        .sort((a, b) => (a.zOrder ?? 0) - (b.zOrder ?? 0));
+      for (const draft of sortedDrafts) {
+        const id = draft.tempId;
+        const hidden =
+          state.hiddenAnnotationIds.includes(id) ||
+          state.hiddenClassIds.includes(draft.classId);
         const g =
           (gfxMap.get(id) as InstanceType<typeof Graphics> | undefined) ?? new Graphics();
         if (!gfxMap.has(id)) {
           gfxMap.set(id, g);
           app.shapeLayer.addChild(g);
         }
+        if (!visAnn || hidden) {
+          (g as { clear?: () => void }).clear?.();
+          (g as { visible?: boolean }).visible = false;
+          seen.add(id);
+          continue;
+        }
+        (g as { visible?: boolean }).visible = true;
         const color = hexFromColor(classMap[draft.classId]);
-        const isSelected = state.selectedId === id;
+        const isSelected =
+          state.selectedId === id || state.selectedIds.includes(id);
+        const isHovered = hovered === id;
         if (draft.geometry.kind === "bbox") {
-          renderBbox(g, draft.geometry, color, isSelected);
+          renderBbox(g, draft.geometry, color, isSelected || isHovered);
         } else if (draft.geometry.kind === "polygon") {
-          renderPolygon(g, draft.geometry, color, isSelected);
+          renderPolygon(g, draft.geometry, color, isSelected || isHovered);
         }
         seen.add(id);
       }
@@ -219,12 +241,16 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
     }
 
     void reconcile(useAnnotations.getState());
-    const unsub = useAnnotations.subscribe((state) => {
+    const unsubA = useAnnotations.subscribe((state) => {
       void reconcile(state);
+    });
+    const unsubT = useTool.subscribe(() => {
+      void reconcile(useAnnotations.getState());
     });
     return () => {
       mounted = false;
-      unsub();
+      unsubA();
+      unsubT();
     };
   }, [frameId, classMap, imageSize]);
 
@@ -286,8 +312,55 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
       return { x: (cx - off.x) / s, y: (cy - off.y) / s };
     }
 
+    function hitTest(p: Point): string | null {
+      const drafts = Object.values(useAnnotations.getState().byId).filter(
+        (d) => d.frameId === frameId,
+      );
+      const hidden = useAnnotations.getState().hiddenAnnotationIds;
+      const hClass = useAnnotations.getState().hiddenClassIds;
+      // Top-most (highest zOrder) wins.
+      const sorted = drafts
+        .filter((d) => !hidden.includes(d.tempId) && !hClass.includes(d.classId))
+        .sort((a, b) => (b.zOrder ?? 0) - (a.zOrder ?? 0));
+      for (const d of sorted) {
+        if (d.geometry.kind === "bbox") {
+          const { x, y, w, h } = d.geometry;
+          if (p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h) {
+            return d.tempId;
+          }
+        } else if (d.geometry.kind === "polygon") {
+          const pts = d.geometry.points;
+          // Ray-casting test.
+          let inside = false;
+          for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+            const xi = pts[i][0], yi = pts[i][1];
+            const xj = pts[j][0], yj = pts[j][1];
+            const intersect =
+              yi > p.y !== yj > p.y &&
+              p.x < ((xj - xi) * (p.y - yi)) / (yj - yi + Number.EPSILON) + xi;
+            if (intersect) inside = !inside;
+          }
+          if (inside) return d.tempId;
+        }
+      }
+      return null;
+    }
+
     function onDown(e: PointerEvent) {
       const p = pointerXY(e);
+      if (tool === "cursor") {
+        const hit = hitTest(p);
+        if (hit) {
+          if (e.shiftKey) {
+            useAnnotations.getState().toggleSelect(hit);
+          } else {
+            useAnnotations.getState().select(hit);
+          }
+        } else if (!e.shiftKey) {
+          useAnnotations.getState().clearSelection();
+        }
+        return;
+      }
       if (tool === "bbox") bbox.onPointerDown(p);
       else if (tool === "polygon") polygon.onPointerDown(p);
       else if (tool === "mask") mask.onPointerDown(p);
@@ -304,6 +377,10 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
         if (r) void drawPreviewRect(r.preview);
       } else if (tool === "mask") {
         mask.onPointerMove(p);
+      } else if (tool === "cursor") {
+        const hit = hitTest(p);
+        const cur = useTool.getState().hoveredAnnotationId;
+        if (hit !== cur) useTool.getState().setHoveredAnnotationId(hit);
       }
     }
 
@@ -347,6 +424,60 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
     };
   }, [tool, activeClassId, frameId, imageSize, samTool]);
 
+  const crosshairsOn = useTool((s) => s.visibility.crosshairs);
+  const showCrosshair =
+    crosshairsOn && (tool === "bbox" || tool === "polygon" || tool === "mask" || tool === "sam");
+
+  const toImageXY = useCallback(
+    (clientX: number, clientY: number) => {
+      const host = hostRef.current;
+      if (!host) return { x: 0, y: 0 };
+      const rect = host.getBoundingClientRect();
+      const cx = clientX - rect.left;
+      const cy = clientY - rect.top;
+      const s = scaleRef.current || 1;
+      const off = offsetRef.current;
+      return { x: (cx - off.x) / s, y: (cy - off.y) / s };
+    },
+    [],
+  );
+
+  const hitTestClient = useCallback(
+    (clientX: number, clientY: number): string | null => {
+      const p = toImageXY(clientX, clientY);
+      const drafts = Object.values(useAnnotations.getState().byId).filter(
+        (d) => d.frameId === frameId,
+      );
+      const hidden = useAnnotations.getState().hiddenAnnotationIds;
+      const hClass = useAnnotations.getState().hiddenClassIds;
+      const sorted = drafts
+        .filter((d) => !hidden.includes(d.tempId) && !hClass.includes(d.classId))
+        .sort((a, b) => (b.zOrder ?? 0) - (a.zOrder ?? 0));
+      for (const d of sorted) {
+        if (d.geometry.kind === "bbox") {
+          const { x, y, w, h } = d.geometry;
+          if (p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h) {
+            return d.tempId;
+          }
+        } else if (d.geometry.kind === "polygon") {
+          const pts = d.geometry.points;
+          let inside = false;
+          for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+            const xi = pts[i][0], yi = pts[i][1];
+            const xj = pts[j][0], yj = pts[j][1];
+            const intersect =
+              yi > p.y !== yj > p.y &&
+              p.x < ((xj - xi) * (p.y - yi)) / (yj - yi + Number.EPSILON) + xi;
+            if (intersect) inside = !inside;
+          }
+          if (inside) return d.tempId;
+        }
+      }
+      return null;
+    },
+    [toImageXY, frameId],
+  );
+
   return (
     <div
       ref={hostRef}
@@ -360,7 +491,14 @@ export function AnnotationCanvas({ imageUrl, frameId, assetId, onZoomChange }: P
         overflow: "hidden",
         touchAction: "none",
       }}
-    />
+    >
+      <CrosshairOverlay
+        hostRef={hostRef}
+        toImageXY={toImageXY}
+        enabled={showCrosshair}
+      />
+      <AnnotationContextMenu hostRef={hostRef} hitTest={hitTestClient} />
+    </div>
   );
 }
 

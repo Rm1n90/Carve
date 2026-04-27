@@ -54,4 +54,28 @@ export interface Weight {
 export const weightsApi = {
   listWorkspace: async (): Promise<Weight[]> =>
     (await api.get<Weight[]>("/weights")).data,
+  listForProject: async (projectId: string): Promise<Weight[]> =>
+    (await api.get<Weight[]>(`/projects/${projectId}/weights`)).data,
+};
+
+// --------------------------- /assets/{aid}/auto-annotate ---------------------------
+
+export interface YoloPredictResult {
+  // Returns the array of created annotations (already persisted).
+  // We re-fetch annotations after a predict to keep state consistent.
+  count: number;
+}
+
+export const inferenceApi = {
+  predictYolo: async (
+    assetId: string,
+    weightId: string,
+    overwrite = false,
+  ): Promise<YoloPredictResult> => {
+    const url = `/assets/${assetId}/auto-annotate?weight_id=${encodeURIComponent(
+      weightId,
+    )}&overwrite=${overwrite ? "true" : "false"}`;
+    const r = await api.post<unknown[]>(url);
+    return { count: Array.isArray(r.data) ? r.data.length : 0 };
+  },
 };

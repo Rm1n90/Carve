@@ -12,12 +12,14 @@ class AnnotationIn(BaseModel):
     kind: AnnotationKind
     geometry: dict[str, Any]
     track_id: str | None = None
+    z_order: int | None = None
 
 
 class AnnotationPatch(BaseModel):
     geometry: dict[str, Any] | None = None
     class_id: str | None = None
     track_id: str | None = None
+    z_order: int | None = None
 
 
 class AnnotationOut(BaseModel):
@@ -28,6 +30,7 @@ class AnnotationOut(BaseModel):
     kind: AnnotationKind
     geometry: dict
     track_id: str | None
+    z_order: int = 0
     created_by: str | None
     created_at: datetime
     updated_at: datetime
@@ -39,6 +42,7 @@ class AnnotationOut(BaseModel):
             frame_id=str(a.frame_id) if a.frame_id else None,
             class_id=str(a.class_id), kind=a.kind, geometry=a.geometry,
             track_id=str(a.track_id) if a.track_id else None,
+            z_order=int(getattr(a, "z_order", 0) or 0),
             created_by=str(a.created_by) if a.created_by else None,
             created_at=a.created_at, updated_at=a.updated_at,
         )
@@ -49,6 +53,7 @@ class BatchUpdate(BaseModel):
     geometry: dict[str, Any] | None = None
     class_id: str | None = None
     track_id: str | None = None
+    z_order: int | None = None
 
 
 class BatchIn(BaseModel):
