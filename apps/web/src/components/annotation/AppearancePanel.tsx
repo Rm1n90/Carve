@@ -240,7 +240,7 @@ export function AppearancePanel() {
                       "h-7 px-1.5 inline-flex items-center justify-center rounded-[var(--radius-sm)] border text-[11.5px]",
                       active
                         ? "border-[var(--accent)] bg-[var(--accent-bg)] text-[color:var(--accent)]"
-                        : "border-[var(--border-subtle)] bg-[var(--bg-elev)] text-[color:var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[color:var(--text-primary)]",
+                        : "border-[var(--glass-border)] bg-transparent text-[color:var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[color:var(--text-primary)]",
                     )}
                   >
                     {opt.label}

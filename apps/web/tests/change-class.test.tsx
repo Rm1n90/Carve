@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 import { useAnnotations } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
 import type { ClassRow } from "@/api/classes";
@@ -58,7 +59,11 @@ describe("ObjectsPanel — change class via inline dropdown", () => {
       [CLASS_A.id]: CLASS_A,
       [CLASS_B.id]: CLASS_B,
     };
-    return render(<ObjectsPanel frameId={FRAME_ID} classes={classes} />);
+    return render(
+      <ConfirmProvider>
+        <ObjectsPanel frameId={FRAME_ID} classes={classes} />
+      </ConfirmProvider>,
+    );
   }
 
   it("renders a class trigger that shows the current class name", () => {
@@ -125,10 +130,12 @@ describe("ObjectsPanel — change class via inline dropdown", () => {
       },
     ]);
     render(
-      <ObjectsPanel
-        frameId={FRAME_ID}
-        classes={{ [CLASS_A.id]: CLASS_A, [CLASS_B.id]: CLASS_B }}
-      />,
+      <ConfirmProvider>
+        <ObjectsPanel
+          frameId={FRAME_ID}
+          classes={{ [CLASS_A.id]: CLASS_A, [CLASS_B.id]: CLASS_B }}
+        />
+      </ConfirmProvider>,
     );
     const trigger = screen.getByTestId("object-class-trigger-ann-2");
     expect(trigger.textContent ?? "").toContain("Unassigned");

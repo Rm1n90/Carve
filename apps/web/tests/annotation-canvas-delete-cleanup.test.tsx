@@ -94,6 +94,7 @@ import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
 import { AnnotationCanvas } from "@/components/annotation/AnnotationCanvas";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 async function flushAsync(): Promise<void> {
   await act(async () => {
@@ -194,12 +195,15 @@ describe("Item 2 - delete cleans up canvas graphics", () => {
   });
 });
 
-describe("Item 2 - ObjectsPanel delete is non-blocking (no window.confirm)", () => {
+describe("Item 2 - ObjectsPanel delete uses in-app confirm (no window.confirm)", () => {
   beforeEach(() => {
     useAnnotations.getState().reset([]);
   });
 
-  it("clicking the delete X removes the annotation without calling window.confirm", () => {
+  it("clicking the delete X opens the in-app confirm and only removes after Confirm", async () => {
+    // v2.9 P1-11 — the X button must NOT use the native window.confirm
+    // and must NOT delete instantly. It opens the in-app ConfirmDialog
+    // and only removes the annotation after the user confirms.
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     useAnnotations.getState().add({
       tempId: "t-rm-1",
@@ -211,24 +215,36 @@ describe("Item 2 - ObjectsPanel delete is non-blocking (no window.confirm)", () 
       dirty: true,
     });
     render(
-      <ObjectsPanel
-        frameId={null}
-        classes={{
-          "c-1": {
-            id: "c-1",
-            project_id: "p-1",
-            idx: 0,
-            name: "car",
-            color: "#ff0000",
-            attributes: {},
-            created_at: "",
-          },
-        }}
-      />,
+      <ConfirmProvider>
+        <ObjectsPanel
+          frameId={null}
+          classes={{
+            "c-1": {
+              id: "c-1",
+              project_id: "p-1",
+              idx: 0,
+              name: "car",
+              color: "#ff0000",
+              attributes: {},
+              created_at: "",
+            },
+          }}
+        />
+      </ConfirmProvider>,
     );
     const deleteBtn = screen.getByLabelText(/delete bbox/i);
     fireEvent.click(deleteBtn);
+    // The native confirm must remain unused.
     expect(confirmSpy).not.toHaveBeenCalled();
+    // The in-app dialog has opened — annotation must NOT yet be deleted.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toBeInTheDocument();
+    expect(useAnnotations.getState().byId["t-rm-1"]).toBeDefined();
+    // Confirming the dialog removes the annotation.
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(useAnnotations.getState().byId["t-rm-1"]).toBeUndefined();
     confirmSpy.mockRestore();
   });

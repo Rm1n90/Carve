@@ -28,6 +28,13 @@ import { TopBar } from "@/components/nav/TopBar";
 import { LeftNav } from "@/components/nav/LeftNav";
 import { BottomBar } from "@/components/nav/BottomBar";
 import { IconButton } from "@/components/ui/IconButton";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/Dialog";
 import { annotationsApi, type BatchPayload } from "@/api/annotations";
 import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
@@ -37,6 +44,7 @@ import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import { useResizableRightPanel } from "@/hooks/useResizableRightPanel";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -80,15 +88,27 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // navigating between frames fits the canvas back to 100%. Without this
   // a zoomed-in view would silently follow the user across frames, which
   // is rarely what they want. (Settings.resetZoomOnFrameChange wiring.)
+  // v2.9 P2 E5 — subscribe to the setting so toggling it takes effect
+  // without requiring a frame change.
+  const resetZoomOnFrameChange = useEditorSettings((s) => s.resetZoomOnFrameChange);
   useEffect(() => {
-    if (useEditorSettings.getState().resetZoomOnFrameChange) {
+    if (resetZoomOnFrameChange) {
       window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
     }
-  }, [currentFrameIdx]);
-  const [annotationsVisible, setAnnotationsVisible] = useState(true);
+  }, [currentFrameIdx, resetZoomOnFrameChange]);
+  // v2.9 P0-3: was `useState(true)` paired with dead `visibilityOn` /
+  // `onToggleVisibility` props on EditorToolbar. The visibility menu in
+  // the toolbar already drives `useTool.visibility.annotations`, so we
+  // read that here instead of holding a parallel flag.
+  const annotationsVisible = useTool((s) => s.visibility.annotations);
   // v2.6 — Info dialog (CVAT-style task overview + per-class stats).
   // Aggregates from the in-memory annotations store; no extra API calls.
   const [infoOpen, setInfoOpen] = useState(false);
+  // v2.9 P0-4: replaces the previous `window.prompt("Rename class", …)`
+  // with an in-app Radix Dialog. Local state is plenty — only one site
+  // uses this flow.
+  const [renameClass, setRenameClass] = useState<{ id: string; name: string } | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   // Image load lifecycle. Phase A core 1 — without this, image load failures
   // were invisible and the user just saw an empty canvas.
   const [imageStatus, setImageStatus] = useState<ImageLoadStatus>("loading");
@@ -186,32 +206,35 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     };
   }, [assetQ.data?.asset?.original_name]);
 
-  // Class colors flow into the canvas as a prop (formerly a CustomEvent —
-  // see audit bug H for the timing race that motivated this change).
-  const classColorMap = useMemo<Record<string, string>>(() => {
-    if (!classesQ.data) return {};
-    const m: Record<string, string> = {};
-    for (const c of classesQ.data) m[c.id] = c.color;
-    return m;
+  // v2.9 P2 F4 — single pass over classesQ.data builds all three maps so
+  // we don't loop the same array three times every time it changes.
+  // - `colors` flows into the canvas as a prop (formerly a CustomEvent;
+  //   see audit bug H for the timing race that motivated this change).
+  // - `names` is consumed by the canvas's floating bbox label tags when
+  //   the `labels` visibility flag is on (audit bug O).
+  // - `byId` is consumed by ObjectsPanel so the CVAT-style filter
+  //   evaluator can resolve `label` rules (v2.6).
+  const classMaps = useMemo(() => {
+    type ClassRow = NonNullable<typeof classesQ.data>[number];
+    const empty: {
+      colors: Record<string, string>;
+      names: Record<string, string>;
+      byId: Record<string, ClassRow>;
+    } = { colors: {}, names: {}, byId: {} };
+    if (!classesQ.data) return empty;
+    const colors: Record<string, string> = {};
+    const names: Record<string, string> = {};
+    const byId: Record<string, ClassRow> = {};
+    for (const c of classesQ.data) {
+      colors[c.id] = c.color;
+      names[c.id] = c.name;
+      byId[c.id] = c;
+    }
+    return { colors, names, byId };
   }, [classesQ.data]);
-
-  // Class names — used by the canvas's floating bbox label tags when the
-  // `labels` visibility flag is on. See audit bug O.
-  const classNameMap = useMemo<Record<string, string>>(() => {
-    if (!classesQ.data) return {};
-    const m: Record<string, string> = {};
-    for (const c of classesQ.data) m[c.id] = c.name;
-    return m;
-  }, [classesQ.data]);
-
-  // Full ClassRow lookup keyed by id — passed to ObjectsPanel so the
-  // CVAT-style filter evaluator can resolve `label` rules. v2.6.
-  const classByIdMap = useMemo(() => {
-    if (!classesQ.data) return {};
-    const m: Record<string, (typeof classesQ.data)[number]> = {};
-    for (const c of classesQ.data) m[c.id] = c;
-    return m;
-  }, [classesQ.data]);
+  const classColorMap = classMaps.colors;
+  const classNameMap = classMaps.names;
+  const classByIdMap = classMaps.byId;
 
   // Prev/next asset navigation — wraps both the ArrowLeft/ArrowRight handler
   // below and the IconButtons in the editor top bar.
@@ -308,16 +331,31 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
           if (server) useAnnotations.getState().markPersisted(draft.tempId, server.id);
         });
       }
-      res.updated.forEach((u) => {
+      // v2.9 P2 F1 — collapse n setState calls into one pass.
+      const updates = res.updated;
+      if (updates.length > 0) {
         useAnnotations.setState((s) => ({
-          byId: {
-            ...s.byId,
-            [u.id]: s.byId[u.id] ? { ...s.byId[u.id], dirty: false } : s.byId[u.id],
-          },
+          byId: updates.reduce(
+            (acc, u) => ({
+              ...acc,
+              [u.id]: acc[u.id] ? { ...acc[u.id], dirty: false } : acc[u.id],
+            }),
+            s.byId,
+          ),
         }));
-      });
+      }
       useAnnotations.getState().clearPendingDeletes();
       qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+    },
+    onError: () => {
+      // v2.9 P1-15 — surface save failures via the toast bus in addition
+      // to the SaveIndicator pill so the user notices when the editor
+      // can't reach the server. Retry logic is unchanged: annotations
+      // stay marked `dirty` and the debounced retry loop continues.
+      showToast(
+        "Save failed — we'll keep trying. Check your connection or refresh.",
+        { variant: "error" },
+      );
     },
   });
 
@@ -483,6 +521,57 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     return c;
   }, [projectQ.data, assetQ.data, projectId]);
 
+  // v2.9 P1-13 — memoize zoom callbacks. Inline arrows changed identity
+  // every render, which forced EditorToolbar's keydown useEffect to
+  // re-bind on every parent render (the effect lists these as deps).
+  // Empty deps are correct because each callback only dispatches a
+  // window CustomEvent — no closure state.
+  // Hooks must run unconditionally, so these stay above the loading /
+  // error early returns below.
+  const handleZoomIn = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("carve:zoom-in"));
+  }, []);
+  const handleZoomOut = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("carve:zoom-out"));
+  }, []);
+  const handleZoomTo = useCallback((p: number) => {
+    if (p === 0) {
+      window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
+    } else {
+      window.dispatchEvent(
+        new CustomEvent("carve:zoom-to", { detail: { pct: p } }),
+      );
+    }
+  }, []);
+  const handleZoomActual = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("carve:zoom-actual"));
+  }, []);
+  const handleFitToScreen = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
+  }, []);
+
+  // v2.9 P2 G3 — memoize TopBar.rightAction so it doesn't allocate a new
+  // element on every render (which would force TopBar's children to reconcile
+  // even when nothing relevant changed). Hooks must run unconditionally,
+  // so this stays above the loading / error early returns.
+  const rightAction = useMemo(
+    () => (
+      <div className="flex items-center gap-2">
+        <ImageStatusBadge status={imageStatus} />
+        {taskAssets.length > 1 ? (
+          <AssetNavControls
+            taskAssets={taskAssets}
+            currentAssetIdx={currentAssetIdx}
+            prevAsset={prevAsset}
+            nextAsset={nextAsset}
+            onGoTo={goToAsset}
+          />
+        ) : null}
+      </div>
+    ),
+    [imageStatus, taskAssets, currentAssetIdx, prevAsset, nextAsset],
+  );
+
   // Only show the full-page loading screen on initial mount (no data yet).
   // During asset navigation, `assetQ.data` still holds the previous asset
   // thanks to `placeholderData`, so we render the full editor and let the
@@ -515,23 +604,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   return (
     <TooltipProvider delayDuration={250}>
     <div className="flex h-screen flex-col bg-[var(--bg-app)] overflow-hidden">
-      <TopBar
-        crumbs={crumbs}
-        rightAction={
-          <div className="flex items-center gap-2">
-            <ImageStatusBadge status={imageStatus} />
-            {taskAssets.length > 1 ? (
-              <AssetNavControls
-                taskAssets={taskAssets}
-                currentAssetIdx={currentAssetIdx}
-                prevAsset={prevAsset}
-                nextAsset={nextAsset}
-                onGoTo={goToAsset}
-              />
-            ) : null}
-          </div>
-        }
-      />
+      <TopBar crumbs={crumbs} rightAction={rightAction} />
 
       <div className="flex flex-1 min-h-0">
         <LeftNav />
@@ -545,34 +618,16 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             hasError={hasError}
             dirtyCount={dirtyCount}
             zoomPct={zoomPct}
-            onZoomIn={() => {
-              window.dispatchEvent(new CustomEvent("carve:zoom-in"));
-            }}
-            onZoomOut={() => {
-              window.dispatchEvent(new CustomEvent("carve:zoom-out"));
-            }}
-            onZoomTo={(p) => {
-              if (p === 0) {
-                window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
-              } else {
-                window.dispatchEvent(
-                  new CustomEvent("carve:zoom-to", { detail: { pct: p } }),
-                );
-              }
-            }}
-            onZoomActual={() => {
-              window.dispatchEvent(new CustomEvent("carve:zoom-actual"));
-            }}
-            onFitToScreen={() => {
-              window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
-            }}
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onZoomTo={handleZoomTo}
+            onZoomActual={handleZoomActual}
+            onFitToScreen={handleFitToScreen}
             onUndo={() => useAnnotations.getState().undo()}
             onRedo={() => useAnnotations.getState().redo()}
             onAfterYoloPredict={() => {
               qc.invalidateQueries({ queryKey: ["annotations", taskId] });
             }}
-            onToggleVisibility={() => setAnnotationsVisible((v) => !v)}
-            visibilityOn={annotationsVisible}
           />
 
           <SamUnavailableBanner />
@@ -610,7 +665,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   data-testid="canvas-image-error-overlay"
                   className={cn(
                     "absolute inset-0 z-30 flex items-center justify-center",
-                    "bg-[rgba(15,23,42,0.32)] backdrop-blur-[2px]",
+                    "bg-[oklch(0_0_0/0.40)] backdrop-blur-[2px]",
                   )}
                 >
                   <div
@@ -757,10 +812,8 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                     onEditClass={(cid) => {
                       const cls = (classesQ.data ?? []).find((c) => c.id === cid);
                       if (!cls) return;
-                      const next = window.prompt("Rename class", cls.name);
-                      if (next && next.trim() && next !== cls.name) {
-                        classUpdate.mutate({ cid, patch: { name: next.trim() } });
-                      }
+                      setRenameClass({ id: cls.id, name: cls.name });
+                      setRenameDraft(cls.name);
                     }}
                     onDeleteClass={(cid) => classRemove.mutate(cid)}
                   />
@@ -804,6 +857,74 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         classes={classesQ.data ?? []}
         assigneeEmail={useAuth.getState().user?.email ?? null}
       />
+
+      <Dialog
+        open={renameClass !== null}
+        onOpenChange={(o) => {
+          if (!o) {
+            setRenameClass(null);
+            setRenameDraft("");
+          }
+        }}
+      >
+        <DialogContent className="w-[min(92vw,420px)]">
+          <DialogHeader>
+            <DialogTitle>Rename class</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!renameClass) return;
+              const next = renameDraft.trim();
+              if (next && next !== renameClass.name) {
+                classUpdate.mutate({ cid: renameClass.id, patch: { name: next } });
+              }
+              setRenameClass(null);
+              setRenameDraft("");
+            }}
+          >
+            <input
+              type="text"
+              autoFocus
+              data-testid="rename-class-input"
+              aria-label="Class name"
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              className={cn(
+                "w-full h-9 px-2.5 rounded-[var(--radius-sm)]",
+                "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
+                "border border-[var(--border-subtle)]",
+                "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
+                "text-[13px]",
+              )}
+            />
+            <DialogFooter>
+              <button
+                type="button"
+                onClick={() => {
+                  setRenameClass(null);
+                  setRenameDraft("");
+                }}
+                data-testid="rename-class-cancel"
+                className="h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                data-testid="rename-class-save"
+                className={cn(
+                  "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium",
+                  "bg-[var(--accent)] text-[color:var(--accent-fg)]",
+                  "hover:opacity-90",
+                )}
+              >
+                Save
+              </button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
     </TooltipProvider>
   );
@@ -818,10 +939,10 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
 function ImageStatusBadge({ status }: { status: ImageLoadStatus }) {
   const map: Record<ImageLoadStatus, { dot: string; label: string; fg: string; bg: string }> = {
     loading: {
-      dot: "bg-[#D97706] animate-pulse",
+      dot: "bg-[var(--warning)] animate-pulse",
       label: "Loading…",
-      fg: "text-[#92400E]",
-      bg: "bg-[#FEF3C7]",
+      fg: "text-[var(--warning)]",
+      bg: "bg-[var(--warning-bg)]",
     },
     loaded: {
       dot: "bg-[var(--success)]",
@@ -897,6 +1018,7 @@ function AssetNavControls({
       <IconButton
         aria-label="Previous asset"
         size="sm"
+        variant="glass"
         disabled={!prevAsset}
         onClick={() => prevAsset && onGoTo(prevAsset.id)}
       >
@@ -948,6 +1070,7 @@ function AssetNavControls({
       <IconButton
         aria-label="Next asset"
         size="sm"
+        variant="glass"
         disabled={!nextAsset}
         onClick={() => nextAsset && onGoTo(nextAsset.id)}
       >

@@ -92,9 +92,6 @@ interface EditorToolbarProps {
   /** Only present when an asset is open. */
   projectId?: string;
   assetId?: string;
-  /** Optional: legacy prop, single-on toggle of all annotations. */
-  visibilityOn?: boolean;
-  onToggleVisibility?: () => void;
   /** Called when YOLO predict completes; lets the page reload annotations. */
   onAfterYoloPredict?: () => void;
 }
@@ -254,12 +251,17 @@ function YoloPredictButton({
 
   // Persist confidence so the user's preferred threshold sticks across
   // sessions. Plain string-encoded float 0..1.
+  // v2.9 P2 E12 — debounce by ~200ms so dragging the slider doesn't write
+  // localStorage on every step.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(PREDICT_CONF_KEY, String(confidence));
-    } catch {
-      /* localStorage may be unavailable in some browsers (private mode) */
-    }
+    const t = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(PREDICT_CONF_KEY, String(confidence));
+      } catch {
+        /* localStorage may be unavailable in some browsers (private mode) */
+      }
+    }, 200);
+    return () => window.clearTimeout(t);
   }, [confidence]);
 
   const wq = useQuery<Weight[]>({
@@ -606,7 +608,7 @@ function AutoApplyToggle() {
         className={cn(
           "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors border",
           auto
-            ? "bg-[#DCFCE7] border-[var(--success)] text-[var(--success)]"
+            ? "bg-[var(--success-bg)] border-[var(--success)] text-[var(--success)]"
             : "border-transparent text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
         )}
       >

@@ -52,13 +52,17 @@ vi.mock("@/components/theme/ThemeProvider", () => ({
 }));
 
 import { TopBar } from "@/components/nav/TopBar";
+import { FrameTimeline } from "@/components/annotation/FrameTimeline";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 describe("v2.8 Wave 3 — Liquid Glass aesthetic", () => {
   it("TopBar applies the glass-surface-strong utility to the nav strip", () => {
     render(
-      <TooltipProvider>
-        <TopBar />
-      </TooltipProvider>,
+      <ConfirmProvider>
+        <TooltipProvider>
+          <TopBar />
+        </TooltipProvider>
+      </ConfirmProvider>,
     );
 
     const bar = screen.getByTestId("top-bar");
@@ -68,9 +72,11 @@ describe("v2.8 Wave 3 — Liquid Glass aesthetic", () => {
 
   it("TopBar user-menu trigger opts into glass-chip styling", () => {
     render(
-      <TooltipProvider>
-        <TopBar />
-      </TooltipProvider>,
+      <ConfirmProvider>
+        <TooltipProvider>
+          <TopBar />
+        </TooltipProvider>
+      </ConfirmProvider>,
     );
 
     const trigger = screen.getByTestId("topbar-user-menu");
@@ -96,6 +102,16 @@ describe("v2.8 Wave 3 — Liquid Glass aesthetic", () => {
     // Look in a 600-char window after the testid for the glass utility.
     const window = src.slice(idx, idx + 600);
     expect(window).toMatch(/glass-surface-strong/);
+  });
+
+  it("FrameTimeline container references the corrected --glass-bg-strong token", () => {
+    const { container } = render(
+      <FrameTimeline totalFrames={3} currentIdx={0} onChange={() => {}} />,
+    );
+    const slider = container.querySelector('[role="slider"]') as HTMLElement | null;
+    expect(slider).not.toBeNull();
+    expect(slider!.className).toMatch(/var\(--glass-bg-strong\)/);
+    expect(slider!.className).not.toMatch(/var\(--bg-glass-strong\)/);
   });
 
   it("StatsPanel cardClass uses the glass-surface utility (rounded-2xl)", async () => {

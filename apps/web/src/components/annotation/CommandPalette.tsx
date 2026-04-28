@@ -71,7 +71,7 @@ export function CommandPalette({ classes, onSaveNow }: Props) {
               "fixed left-1/2 top-[12vh] z-[901] -translate-x-1/2",
               "w-[min(92vw,560px)]",
               "rounded-[var(--radius-lg)] border border-[var(--border-subtle)]",
-              "bg-[var(--bg-glass-strong)] backdrop-blur-2xl",
+              "bg-[var(--glass-bg-strong)] backdrop-blur-2xl",
               "shadow-[var(--shadow-elev-3)]",
               "overflow-hidden",
             )}

@@ -227,7 +227,7 @@ function RuleRow({ rule, path, onChange, onRemove }: RuleRowProps) {
           const nextValue = wasNumeric === isNowNumeric ? rule.value : "";
           onChange(path, { ...rule, field: nextField, value: nextValue });
         }}
-        className="h-7 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-2 text-[12px] text-[color:var(--text-primary)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+        className="h-7 rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] px-2 text-[12px] text-[color:var(--text-primary)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
       >
         {FIELD_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>
@@ -243,7 +243,7 @@ function RuleRow({ rule, path, onChange, onRemove }: RuleRowProps) {
         onChange={(e) =>
           onChange(path, { ...rule, op: e.target.value as FilterOp })
         }
-        className="h-7 w-[60px] rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-2 text-[12px] text-[color:var(--text-primary)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+        className="h-7 w-[60px] rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] px-2 text-[12px] text-[color:var(--text-primary)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
       >
         {OP_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>
@@ -311,7 +311,7 @@ function GroupSection({
       className={cn(
         "grid gap-2 rounded-[var(--radius-md)] border p-2",
         isRoot
-          ? "border-[var(--border-subtle)] bg-[var(--bg-elev)]"
+          ? "border-[var(--glass-border)] bg-[var(--glass-bg-subtle)]"
           : "border-[var(--border-strong)] bg-[var(--bg-app)] ml-2",
       )}
     >
@@ -503,7 +503,7 @@ export function FilterBuilderDialog({
                   <button
                     type="button"
                     data-testid="filter-recent-trigger"
-                    className="inline-flex h-7 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-2.5 text-[12px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+                    className="inline-flex h-7 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] px-2.5 text-[12px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
                   >
                     {recentLabel}
                     <ChevronDown className="h-3 w-3" />
@@ -513,7 +513,7 @@ export function FilterBuilderDialog({
                   <DropdownMenu.Content
                     align="start"
                     sideOffset={4}
-                    className="z-[902] min-w-[260px] max-w-[400px] rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-1 shadow-[var(--shadow-elev-2)]"
+                    className="z-[902] min-w-[260px] max-w-[400px] rounded-[var(--radius-md)] glass-surface-strong p-1"
                   >
                     {recent.map((preset, i) => (
                       <DropdownMenu.Item

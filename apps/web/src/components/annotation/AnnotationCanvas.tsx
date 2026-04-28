@@ -301,11 +301,13 @@ export function AnnotationCanvas({
     // user complaint: navigating between assets used to inherit the
     // previous asset's zoom level (because wheel/+/− zooms set
     // autoFitRef to false, and only an explicit Fit click flipped it
-    // back). Setting this synchronously on every imageUrl-change render
-    // — before any awaits — guarantees the host/image-size effect at
-    // line ~528 picks the fit-frame branch when the new texture's
-    // intrinsic dimensions land via setImageSize. Wave 2 v2.8.
-    autoFitRef.current = true;
+    // back). v2.9 P0-2: previously this flag was set synchronously
+    // BEFORE the await Assets.load — but a host-resize between flag-set
+    // and texture-load could trigger fit-to-host using the *previous*
+    // imageSize. We now flip the flag AFTER setImageSize in the success
+    // branch, and we capture the prior value so the catch (error) path
+    // can restore it instead of leaving a stale `true`. (P1-12.)
+    const priorAutoFit = autoFitRef.current;
 
     (async () => {
       try {
@@ -369,9 +371,16 @@ export function AnnotationCanvas({
           (imageSpriteRef.current as { height?: number } | null)?.height ??
           1;
         setImageSize({ w: realW || 1, h: realH || 1 });
+        // P0-2: only re-arm auto-fit AFTER the new dimensions are pushed
+        // into state. A host-resize between the imageUrl change and the
+        // texture-load can no longer fit to the previous imageSize.
+        autoFitRef.current = true;
         onImageStatusChange?.("loaded");
       } catch (e) {
         if (cancelled) return;
+        // P1-12: restore the prior auto-fit value on error so a failed
+        // load doesn't strand `autoFitRef` in an unexpected state.
+        autoFitRef.current = priorAutoFit;
         const message = e instanceof Error ? e.message : "image failed to load";
         onImageStatusChange?.("error", message);
       }
@@ -1694,7 +1703,7 @@ function renderLabel(
     const text = new TextCtor({
       text: labelText,
       style: {
-        fontFamily: "Inter, system-ui, sans-serif",
+        fontFamily: "Geist Variable, ui-sans-serif, system-ui, sans-serif",
         fontSize: fontSize,
         fill: 0xffffff,
         fontWeight: "500",

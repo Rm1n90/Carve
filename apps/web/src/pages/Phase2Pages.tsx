@@ -177,9 +177,15 @@ export function ModelsYoloPage() {
 
   return (
     <div className="grid gap-6 max-w-[1100px]">
-      <header className="flex items-baseline justify-between">
-        <div>
-          <h1 className="text-[22px] font-medium tracking-tight">YOLO weights</h1>
+      {/* v2.9 P1-16 — editorial header pattern. */}
+      <header className="flex items-baseline justify-between gap-4 flex-wrap">
+        <div className="grid gap-1">
+          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+            Models
+          </span>
+          <h1 className="font-editorial text-[36px] leading-[0.95] text-[color:var(--text-primary)]">
+            YOLO weights
+          </h1>
           <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
             Custom YOLOv8 weights uploaded to this workspace. Pre-trained model
             zoo weights are managed by the model service.
@@ -310,8 +316,14 @@ export function ModelsSamPage() {
 
   return (
     <div className="grid gap-6 max-w-[1100px]">
-      <header>
-        <h1 className="text-[22px] font-medium tracking-tight">SAM models</h1>
+      {/* v2.9 P1-16 — editorial header pattern. */}
+      <header className="grid gap-1">
+        <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+          Models
+        </span>
+        <h1 className="font-editorial text-[36px] leading-[0.95] text-[color:var(--text-primary)]">
+          SAM models
+        </h1>
         <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
           Segment Anything variants used by the auto-annotation pipeline.
         </p>
@@ -406,8 +418,14 @@ export function TrashPage() {
 
   return (
     <div className="grid gap-6 max-w-[1100px]">
-      <header>
-        <h1 className="text-[22px] font-medium tracking-tight">Trash</h1>
+      {/* v2.9 P1-16 — editorial header pattern. */}
+      <header className="grid gap-1">
+        <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+          Account
+        </span>
+        <h1 className="font-editorial text-[36px] leading-[0.95] text-[color:var(--text-primary)]">
+          Trash
+        </h1>
         <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
           Soft-deleted projects and tasks. Restore to bring them back, or
           permanently delete (admin only).

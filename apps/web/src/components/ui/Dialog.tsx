@@ -51,9 +51,8 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
             className={cn(
               "fixed left-1/2 top-1/2 z-[901] -translate-x-1/2 -translate-y-1/2",
               "w-[min(92vw,520px)] max-h-[88vh] overflow-auto",
-              "rounded-[var(--radius-lg)] border border-[var(--border-subtle)]",
-              "bg-[var(--bg-elev)]",
-              "shadow-[var(--shadow-elev-3)]",
+              "rounded-[var(--radius-lg)]",
+              "glass-surface-strong glass-specular",
               "p-6",
               className,
             )}

@@ -153,7 +153,7 @@ function NumberInput({
         onChange(Math.max(min, Math.min(max, n)));
       }}
       data-testid={testId}
-      className="h-8 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] text-[13px] focus:outline-none focus:border-[var(--accent)]"
+      className="h-8 px-2 rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] text-[13px] focus:outline-none focus:border-[var(--accent)]"
     />
   );
 }
@@ -183,7 +183,7 @@ function Select<T extends string>({
       value={value}
       onChange={(e) => onChange(e.target.value as T)}
       data-testid={testId}
-      className="h-8 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] text-[13px] focus:outline-none focus:border-[var(--accent)]"
+      className="h-8 px-2 rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] text-[13px] focus:outline-none focus:border-[var(--accent)]"
     >
       {opts.map((o) => (
         <option key={o.value} value={o.value}>
@@ -392,7 +392,7 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
                   onChange={(e) => s.set("canvasBgColor", e.target.value)}
                   data-testid="setting-canvasBgColor"
                   aria-label="Canvas background color"
-                  className="h-8 w-12 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]"
+                  className="h-8 w-12 rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)]"
                 />
                 <span className="text-[12px] font-mono text-[color:var(--text-secondary)]">
                   {s.canvasBgColor}

@@ -7,6 +7,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/Popover";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import type { ClassRow } from "@/api/classes";
 import { cn } from "@/lib/cn";
 
@@ -55,8 +56,8 @@ function ClassPickerPopover({
           onClick={(e) => e.stopPropagation()}
           className={cn(
             "ml-auto inline-flex items-center gap-1 max-w-[110px] h-6 px-1.5",
-            "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-            "bg-[var(--bg-elev)] text-[11px] tracking-tight text-[color:var(--text-secondary)]",
+            "rounded-[var(--radius-sm)] border border-[var(--glass-border)]",
+            "bg-transparent text-[11px] tracking-tight text-[color:var(--text-secondary)]",
             "hover:border-[var(--border-strong)] hover:text-[color:var(--text-primary)]",
           )}
         >
@@ -119,6 +120,7 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
   const remove = useAnnotations((s) => s.remove);
   const filter = useFilter((s) => s.filter);
   const clearFilter = useFilter((s) => s.clearFilter);
+  const confirm = useConfirm();
 
   const allOnFrame = Object.values(byId)
     .filter((a) => a.frameId === frameId)
@@ -178,12 +180,24 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
           const isSelected = a.tempId === selectedId;
           const cur = classes ? classes[a.classId] : undefined;
           return (
+            // v2.9 P1-18 — non-interactive <li> + click was unreachable
+            // by keyboard. role="button" + tabIndex + Enter/Space handler
+            // mirrors a real button without disturbing the list visual.
             <li
               key={a.tempId}
+              role="button"
+              tabIndex={0}
               data-testid={`object-row-${a.tempId}`}
               onClick={() => select(a.tempId)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  select(a.tempId);
+                }
+              }}
               className={cn(
                 "group flex items-center gap-2 rounded-[var(--radius-sm)] border px-2 py-1.5 cursor-pointer transition-colors",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
                 isSelected
                   ? "bg-[var(--accent-bg)] border-[var(--border-accent)] text-primary"
                   : "bg-transparent border-transparent text-secondary hover:bg-[var(--bg-surface)] hover:text-primary",
@@ -202,15 +216,18 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
                 type="button"
                 aria-label={`Delete ${a.kind}`}
                 title={`Delete ${a.kind} (Cmd+Z to undo)`}
-                onClick={(e) => {
-                  // Non-blocking delete — relies on Cmd+Z undo (the
-                  // store pushes history on every remove, see
-                  // annotations.ts pushPast). v2.7 wave2 item 2 — the
-                  // previous window.confirm prompt could be silently
-                  // suppressed by browsers / extensions, leading the
-                  // user to think delete didn't work.
+                onClick={async (e) => {
+                  // v2.9 P1-11 — replace the prior no-confirm flow with
+                  // an in-app confirm dialog. Cmd+Z still undoes.
                   e.stopPropagation();
-                  remove(a.tempId);
+                  const ok = await confirm({
+                    title: "Delete annotation?",
+                    description:
+                      "Press Cmd+Z to undo, or click Delete to remove.",
+                    confirmLabel: "Delete",
+                    variant: "danger",
+                  });
+                  if (ok) remove(a.tempId);
                 }}
                 className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] text-tertiary opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[oklch(0.70_0.20_25_/_0.10)] hover:text-[color:var(--danger)]"
               >

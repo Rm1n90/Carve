@@ -159,9 +159,9 @@ export function AnnotationContextMenu({
       aria-label="Annotation context menu"
       data-testid="annotation-context-menu"
       className={cn(
-        "fixed z-[1100] min-w-[220px] p-1",
-        "rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
-        "bg-[var(--bg-elev)] shadow-[var(--shadow-elev-2)]",
+        "fixed z-[1100] min-w-[220px]",
+        "rounded-[var(--radius-md)]",
+        "glass-surface-strong p-1",
       )}
       style={{ top: state.y, left: state.x }}
     >
@@ -244,9 +244,9 @@ export function AnnotationContextMenu({
                 aria-label="Change class submenu"
                 data-testid="ctx-change-class-submenu"
                 className={cn(
-                  "absolute left-full top-0 ml-1 min-w-[180px] max-h-[260px] overflow-y-auto p-1",
-                  "rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
-                  "bg-[var(--bg-elev)] shadow-[var(--shadow-elev-2)]",
+                  "absolute left-full top-0 ml-1 min-w-[180px] max-h-[260px] overflow-y-auto",
+                  "rounded-[var(--radius-md)]",
+                  "glass-surface-strong p-1",
                 )}
               >
                 {classes.map((c) => {

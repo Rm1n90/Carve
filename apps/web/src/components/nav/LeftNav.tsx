@@ -2,14 +2,12 @@ import { useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
-  Boxes,
   ChevronDown,
   Cpu,
   KeyRound,
   LogOut,
   Pencil,
   Rocket,
-  Search,
   Settings,
   Sparkles,
   Trash2,
@@ -18,6 +16,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/auth/store";
 import { logout } from "@/auth/api";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 
 interface SectionProps {
@@ -139,12 +138,28 @@ function isActive(path: string, target: string, exact = true): boolean {
 }
 
 export function LeftNav() {
-  const [query, setQuery] = useState("");
+  // v2.9 P1-14 — search input removed. The local `query` state had no
+  // consumer (no nav search wired) and the aria-label="Search" was
+  // misleading to AT users. Remove until a real search lands.
   const path = useRouterState({ select: (s) => s.location.pathname });
   const user = useAuth((s) => s.user);
   const nav = useNavigate();
+  const confirm = useConfirm();
 
   const userInitial = user?.email?.[0]?.toUpperCase() ?? "?";
+
+  async function handleSignOut() {
+    const ok = await confirm({
+      title: "Sign out?",
+      description: "Any unsaved annotation work in the editor will be lost.",
+      confirmLabel: "Sign out",
+      variant: "danger",
+    });
+    if (ok) {
+      logout();
+      nav({ to: "/login" });
+    }
+  }
 
   return (
     <aside
@@ -160,31 +175,8 @@ export function LeftNav() {
         "border-r border-[var(--glass-border)]",
       )}
     >
-      {/* Search */}
-      <div className="relative z-10 px-3 pt-3 pb-2">
-        <div className="relative">
-          <Search
-            aria-hidden
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[color:var(--text-tertiary)] pointer-events-none"
-          />
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search…"
-            aria-label="Search"
-            className={cn(
-              "w-full h-8 pl-8 pr-2 rounded-[var(--radius-sm)]",
-              "glass-surface-subtle text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
-              "text-[12.5px]",
-              "focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[rgba(99,102,241,0.16)]",
-            )}
-          />
-        </div>
-      </div>
-
       {/* Workspace label + active pill */}
-      <div className="relative z-10 px-3 pt-2 pb-2 grid gap-1.5">
+      <div className="relative z-10 px-3 pt-3 pb-2 grid gap-1.5">
         <p className="text-[10px] tracking-[0.08em] uppercase text-[color:var(--text-tertiary)] font-medium">
           Workspace
         </p>
@@ -208,16 +200,13 @@ export function LeftNav() {
       {/* Sections */}
       <nav className="relative z-10 flex-1 min-h-0 overflow-y-auto px-2 pb-2 grid gap-2 content-start">
         <Section label="Annotate" icon={<Pencil className="h-3.5 w-3.5" />} initiallyOpen>
-          <NavItem
-            label="Datasets"
-            to="/projects"
-            active={isActive(path, "/projects", false)}
-            icon={<Boxes className="h-3.5 w-3.5" />}
-          />
+          {/* v2.9 P1-19 — "Datasets" was a duplicate route to /projects.
+              Removed pending a dedicated Datasets surface (TODO: restore
+              when datasets gain their own collection page). */}
           <NavItem
             label="All projects"
             to="/projects"
-            active={path === "/projects"}
+            active={isActive(path, "/projects", false)}
           />
         </Section>
 
@@ -315,14 +304,8 @@ export function LeftNav() {
                   "glass-surface-strong p-1 z-50",
                 )}
               >
-                <DropdownMenu.Item asChild>
-                  <Link
-                    to="/settings/profile"
-                    className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px] hover:bg-[var(--bg-hover)] cursor-pointer outline-none"
-                  >
-                    <UserIcon className="h-3.5 w-3.5" /> Profile
-                  </Link>
-                </DropdownMenu.Item>
+                {/* v2.9 P1-19 — dedupe: Profile + Settings both routed to
+                    /settings/profile. Keep Settings. */}
                 <DropdownMenu.Item asChild>
                   <Link
                     to="/settings/profile"
@@ -333,9 +316,11 @@ export function LeftNav() {
                 </DropdownMenu.Item>
                 <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
                 <DropdownMenu.Item
-                  onSelect={() => {
-                    logout();
-                    nav({ to: "/login" });
+                  onSelect={(event) => {
+                    // Defer the confirm call so Radix can finish dismissing
+                    // the dropdown before opening the AlertDialog.
+                    event.preventDefault();
+                    void handleSignOut();
                   }}
                   className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px] text-[color:var(--danger)] hover:bg-[var(--danger-bg)] cursor-pointer outline-none"
                 >

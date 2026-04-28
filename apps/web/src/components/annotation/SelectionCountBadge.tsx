@@ -21,8 +21,8 @@ export function SelectionCountBadge() {
       className={cn(
         "pointer-events-none absolute top-2 left-2 z-20",
         "inline-flex items-center gap-2 px-2.5 h-7 rounded-full",
-        "bg-[var(--bg-elev)] border border-[var(--border-subtle)] shadow-[var(--shadow-elev-1)]",
-        "text-[11.5px] font-medium tracking-tight tabular-nums",
+        "glass-tooltip",
+        "text-[11.5px] font-medium tracking-tight tabular-tight",
         "text-[color:var(--text-secondary)]",
       )}
     >

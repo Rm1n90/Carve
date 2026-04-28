@@ -12,13 +12,13 @@ const VARIANT_ICON: Record<ToastVariant, typeof Info> = {
 };
 
 const VARIANT_CLASSES: Record<ToastVariant, string> = {
-  info: "border-[var(--border-strong)] bg-[var(--bg-elev)] text-[color:var(--text-primary)]",
+  info: "glass-surface-strong border-l-[var(--border-strong)] text-[color:var(--text-primary)]",
   success:
-    "border-[var(--success,#16a34a)] bg-[var(--bg-elev)] text-[color:var(--text-primary)]",
+    "glass-surface-strong border-l-[var(--success,#16a34a)] text-[color:var(--text-primary)]",
   warning:
-    "border-[var(--warning,#f59e0b)] bg-[var(--bg-elev)] text-[color:var(--text-primary)]",
+    "glass-surface-strong border-l-[var(--warning,#f59e0b)] text-[color:var(--text-primary)]",
   error:
-    "border-[var(--danger,#dc2626)] bg-[var(--bg-elev)] text-[color:var(--text-primary)]",
+    "glass-surface-strong border-l-[var(--danger,#dc2626)] text-[color:var(--text-primary)]",
 };
 
 const VARIANT_ICON_COLOR: Record<ToastVariant, string> = {

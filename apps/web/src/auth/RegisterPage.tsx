@@ -36,6 +36,7 @@ export function RegisterPage({ onSuccess }: Props) {
 
   return (
     <AuthShell
+      eyebrow="Register"
       cardTitle="Create your account"
       cardDescription="It takes about ten seconds."
       cardFooter={

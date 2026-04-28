@@ -284,4 +284,29 @@ describe("AnnotationCanvas — autoFit on asset change (v2.8 wave 2)", () => {
     // the intended diff: with the fix, a fresh frame is applied for B.
     void frameAfterA;
   });
+
+  it("v2.9 P0-2 — error path surfaces 'error' status (catch branch ran, restoring autoFitRef)", async () => {
+    // When Assets.load rejects, the swap-effect's catch branch must:
+    //  1) not strand autoFitRef in an unexpected state (P1-12 restore).
+    //  2) surface "error" via onImageStatusChange so the parent can show
+    //     the retry UI.
+    // The externally-observable signal in jsdom is (2) — proving the
+    // catch branch ran end-to-end, which is where the restore lives.
+    assetsLoadMock.mockImplementationOnce(async () => {
+      throw new Error("fake network failure");
+    });
+    const onStatus = vi.fn();
+    render(
+      <AnnotationCanvas
+        imageUrl="https://fake/broken.png"
+        frameId={null}
+        assetId="a-broken"
+        onImageStatusChange={onStatus}
+      />,
+    );
+    await flushAsync();
+    const errorCall = onStatus.mock.calls.find((c) => c[0] === "error");
+    expect(errorCall).toBeDefined();
+    expect(errorCall?.[1]).toMatch(/fake network failure/);
+  });
 });

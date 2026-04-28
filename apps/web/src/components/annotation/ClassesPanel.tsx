@@ -50,6 +50,11 @@ const KIND_ICON = {
   tag: Tag,
 } as const;
 
+// v2.9 P2 G1 — shared empty array sentinel so the `?? EMPTY_ARR` fallback
+// doesn't allocate a new `[]` every render (and thus break referential
+// equality in downstream memoised consumers).
+const EMPTY_ARR: { tempId: string; kind: keyof typeof KIND_ICON }[] = [];
+
 // PALETTE is now imported from lib/swatch.ts as PALETTE_HEX so all color
 // surfaces share the same deterministic order. See bug F in the v2.1 audit.
 
@@ -117,9 +122,13 @@ function AnnotationRow({
   const select = useAnnotations((s) => s.select);
   const remove = useAnnotations((s) => s.remove);
   const setHiddenAnn = useAnnotations((s) => s.setHiddenForAnnotation);
+  const confirm = useConfirm();
 
   return (
+    // v2.9 P1-18 — keyboard parity with mouse-click selection.
     <li
+      role="button"
+      tabIndex={0}
       data-testid={`annotation-row-${ann.tempId}`}
       data-hovered={hovered ? "true" : undefined}
       data-selected={selected ? "true" : undefined}
@@ -129,9 +138,17 @@ function AnnotationRow({
         e.stopPropagation();
         select(ann.tempId);
       }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          select(ann.tempId);
+        }
+      }}
       className={cn(
         "group flex items-center gap-2 pl-7 pr-2 py-1 cursor-pointer",
         "text-[12px] tracking-tight",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]",
         selected
           ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
           : hovered
@@ -157,9 +174,16 @@ function AnnotationRow({
       <button
         type="button"
         aria-label="Delete annotation"
-        onClick={(e) => {
+        onClick={async (e) => {
+          // v2.9 P1-11 — confirm before destroying.
           e.stopPropagation();
-          remove(ann.tempId);
+          const ok = await confirm({
+            title: "Delete annotation?",
+            description: "Press Cmd+Z to undo, or click Delete to remove.",
+            confirmLabel: "Delete",
+            variant: "danger",
+          });
+          if (ok) remove(ann.tempId);
         }}
         className="grid h-5 w-5 place-items-center text-[color:var(--text-tertiary)] hover:text-[color:var(--danger)] opacity-0 group-hover:opacity-100"
       >
@@ -218,14 +242,25 @@ function ClassRowItem({
 
   return (
     <li ref={rowRef} data-testid={`class-row-${cls.id}`}>
+      {/* v2.9 P1-18 — class header was a <div> with onClick; expose it
+          as a button to AT and route Enter/Space to setActiveClassId. */}
       <div
+        role="button"
+        tabIndex={0}
         className={cn(
           "group relative flex items-center gap-2 px-2.5 py-2 h-9 cursor-pointer",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]",
           isActive
             ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
             : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
         )}
         onClick={() => setActiveClassId(cls.id)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setActiveClassId(cls.id);
+          }
+        }}
         data-active={isActive ? "true" : undefined}
       >
         {isActive && (
@@ -397,8 +432,8 @@ function AddClassInline({
           aria-label="New class name"
           className={cn(
             "flex-1 h-7 px-2 text-[12.5px]",
-            "bg-[var(--bg-elev)] text-[color:var(--text-primary)]",
-            "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+            "bg-transparent text-[color:var(--text-primary)]",
+            "rounded-[var(--radius-sm)] border border-[var(--glass-border)]",
             "focus:outline-none focus:border-[var(--accent)]",
           )}
           onKeyDown={(e) => {
@@ -617,7 +652,7 @@ export function ClassesPanel({
           </li>
         )}
         {filtered.map((c, i) => {
-          const cAnns = annotationsByClass[c.id] ?? [];
+          const cAnns = annotationsByClass[c.id] ?? EMPTY_ARR;
           return (
             <ClassRowItem
               key={c.id}

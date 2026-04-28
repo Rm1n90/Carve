@@ -9,12 +9,12 @@ import {
   Moon,
   Settings as SettingsIcon,
   Sun,
-  User as UserIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAuth } from "@/auth/store";
 import { logout } from "@/auth/api";
 import { useTheme, type ThemePreference } from "@/components/theme/ThemeProvider";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { CarveMark } from "./CarveMark";
 import { cn } from "@/lib/cn";
 
@@ -48,8 +48,22 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
   const user = useAuth((s) => s.user);
   const nav = useNavigate();
   const { theme, setTheme } = useTheme();
+  const confirm = useConfirm();
 
   const userInitial = user?.email ? user.email[0]?.toUpperCase() : "?";
+
+  async function handleSignOut() {
+    const ok = await confirm({
+      title: "Sign out?",
+      description: "Any unsaved annotation work in the editor will be lost.",
+      confirmLabel: "Sign out",
+      variant: "danger",
+    });
+    if (ok) {
+      logout();
+      nav({ to: "/login" });
+    }
+  }
 
   return (
     <header
@@ -144,14 +158,9 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
                 </p>
               </div>
               <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
-              <DropdownMenu.Item asChild>
-                <Link
-                  to="/settings/profile"
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px] hover:bg-[var(--bg-hover)] cursor-pointer outline-none"
-                >
-                  <UserIcon className="h-3.5 w-3.5" /> Profile
-                </Link>
-              </DropdownMenu.Item>
+              {/* v2.9 P1-19 — dedupe: Profile + Settings both pointed to
+                  /settings/profile. Keep Settings (covers the wider
+                  settings surface, not just profile). */}
               <DropdownMenu.Item asChild>
                 <Link
                   to="/settings/profile"
@@ -196,9 +205,11 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
               </div>
               <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
               <DropdownMenu.Item
-                onSelect={() => {
-                  logout();
-                  nav({ to: "/login" });
+                onSelect={(event) => {
+                  // Defer the confirm call so Radix can finish dismissing
+                  // the dropdown before opening the AlertDialog.
+                  event.preventDefault();
+                  void handleSignOut();
                 }}
                 className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px] text-[color:var(--danger)] hover:bg-[var(--danger-bg)] cursor-pointer outline-none"
               >

@@ -47,6 +47,9 @@ vi.mock("@/api/classes", () => ({
       { id: "c-1", project_id: "p-1", idx: 0, name: "car", color: "#ff0000",
         attributes: {}, created_at: "" },
     ]),
+    create: vi.fn().mockResolvedValue({}),
+    update: vi.fn().mockResolvedValue({}),
+    delete: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -108,6 +111,7 @@ vi.mock("@/components/annotation/KeyboardCheatSheet", () => ({
 import { AnnotateAssetPage } from "@/pages/AnnotateAssetPage";
 import { useAnnotations } from "@/state/annotations";
 import { annotationsApi } from "@/api/annotations";
+import { classesApi } from "@/api/classes";
 import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 function wrap(node: React.ReactNode) {
@@ -248,5 +252,35 @@ describe("AnnotateAssetPage", () => {
       expect(draft?.serverId).toBe("S-ALPHA");
     });
     expect(useAnnotations.getState().byId["draft-beta"]?.serverId).toBe("S-BETA");
+  });
+
+  it("v2.9 P0-4 — class rename uses an in-app Dialog (not window.prompt) and submits the new name", async () => {
+    const promptSpy = vi.spyOn(window, "prompt");
+    render(wrap(<AnnotateAssetPage projectId="p-1" taskId="t-1" assetId="a-1" />));
+    await screen.findByText("a.png");
+
+    // Step 2: click the rename pencil — ClassesPanel labels it
+    // `Edit class ${cls.name}`. The "car" class is seeded in the
+    // classesApi.listForProject mock above.
+    const editBtn = await screen.findByRole("button", { name: /edit class car/i });
+    fireEvent.click(editBtn);
+
+    // Step 3: dialog opens with current name pre-filled.
+    const input = (await screen.findByTestId(
+      "rename-class-input",
+    )) as HTMLInputElement;
+    expect(input.value).toBe("car");
+
+    // Step 4: type a new name + click Save.
+    fireEvent.change(input, { target: { value: "truck" } });
+    fireEvent.click(screen.getByTestId("rename-class-save"));
+
+    await waitFor(() => {
+      expect(classesApi.update).toHaveBeenCalledWith("p-1", "c-1", { name: "truck" });
+    });
+
+    // Step 5: window.prompt was NOT called.
+    expect(promptSpy).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
   });
 });

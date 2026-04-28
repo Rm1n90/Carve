@@ -40,4 +40,17 @@ describe("Dialog primitive (audit bug A)", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getByText("Open dialog")).toBeInTheDocument();
   });
+
+  it("uses glass-surface-strong (v2.9 audit P1-1)", () => {
+    render(
+      <Dialog open={true} onOpenChange={() => undefined}>
+        <DialogContent>
+          <DialogTitle>Glass dialog</DialogTitle>
+        </DialogContent>
+      </Dialog>,
+    );
+    const content = screen.getByRole("dialog");
+    expect(content.className).toContain("glass-surface-strong");
+    expect(content.className).toContain("glass-specular");
+  });
 });
