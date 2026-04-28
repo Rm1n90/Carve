@@ -59,6 +59,24 @@ describe("polygon applyVertexTranslate", () => {
     expect(applyVertexTranslate(original, -1, { x: 5, y: 5 })).toBe(original);
     expect(applyVertexTranslate(original, 99, { x: 5, y: 5 })).toBe(original);
   });
+
+  // v2.5.2 — vertex coordinates must never escape the image.
+  it("clamps the moved vertex to image bounds when bounds are provided", () => {
+    const original = poly([0, 0], [10, 0], [10, 10], [0, 10]);
+    const next = applyVertexTranslate(original, 0, { x: -100, y: 200 }, { w: 100, h: 80 });
+    // (-100, 200) → (0, 80) on a 100x80 image.
+    expect(next.points[0]).toEqual([0, 80]);
+    // Other vertices unchanged.
+    expect(next.points[1]).toEqual([10, 0]);
+    expect(next.points[2]).toEqual([10, 10]);
+    expect(next.points[3]).toEqual([0, 10]);
+  });
+
+  it("leaves vertex coords untouched when bounds is null", () => {
+    const original = poly([0, 0], [10, 0], [10, 10]);
+    const next = applyVertexTranslate(original, 0, { x: -100, y: 200 });
+    expect(next.points[0]).toEqual([-100, 200]);
+  });
 });
 
 describe("polygon applyVertexDelete", () => {

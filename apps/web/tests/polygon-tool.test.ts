@@ -96,4 +96,51 @@ describe("PolygonTool", () => {
     expect(events).toHaveLength(1);
     expect(events[0].variant).toBe("warning");
   });
+
+  // v2.5.2 — vertices must never escape the image.
+  describe("image-bounds clamping (v2.5.2)", () => {
+    it("clamps a click outside the image to the nearest image-edge vertex", () => {
+      let n = 0;
+      // 100x100 image; click at (-50, 200) → clamps to (0, 100).
+      const tool = new PolygonTool(
+        () => "c-1",
+        () => null,
+        () => `t-${++n}`,
+        () => ({ w: 100, h: 100 }),
+      );
+      tool.onPointerDown({ x: -50, y: 200 });
+      tool.onPointerDown({ x: 50, y: 50 });
+      tool.onPointerDown({ x: 80, y: 80 });
+      tool.onKeyDown("Enter");
+      const g = Object.values(useAnnotations.getState().byId)[0].geometry as any;
+      // First vertex was clamped from (-50, 200) → (0, 100).
+      expect(g.points[0]).toEqual([0, 100]);
+      expect(g.points[1]).toEqual([50, 50]);
+      expect(g.points[2]).toEqual([80, 80]);
+    });
+
+    it("clamps the rubber-band cursor preview", () => {
+      const tool = new PolygonTool(
+        () => "c-1",
+        () => null,
+        () => "t-1",
+        () => ({ w: 100, h: 80 }),
+      );
+      tool.onPointerDown({ x: 10, y: 10 });
+      const r = tool.onPointerMove({ x: 1000, y: -50 });
+      expect(r).not.toBeNull();
+      expect(r?.cursor).toEqual({ x: 100, y: 0 });
+    });
+
+    it("falls back to bound-agnostic behaviour when imageSize is null", () => {
+      let n = 0;
+      const tool = new PolygonTool(() => "c-1", () => null, () => `t-${++n}`);
+      tool.onPointerDown({ x: -50, y: -50 });
+      tool.onPointerDown({ x: 10, y: 0 });
+      tool.onPointerDown({ x: 10, y: 10 });
+      tool.onKeyDown("Enter");
+      const g = Object.values(useAnnotations.getState().byId)[0].geometry as any;
+      expect(g.points[0]).toEqual([-50, -50]);
+    });
+  });
 });

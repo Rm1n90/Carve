@@ -187,3 +187,73 @@ describe("keyboard nudge through the store", () => {
     expect(g.x).toBe(110);
   });
 });
+
+// v2.5.2 — coordinates must never escape the image. Translate clamps the
+// resulting top-left so the bbox never sticks out past the image edge.
+// Resize clamps the cursor before computing edges.
+describe("image-bounds clamping (v2.5.2)", () => {
+  it("translate: bbox at (90,50,w=20,h=20) on 100x100 + dx=+50 sticks at (80,50)", () => {
+    // Bbox fully inside the 100x100 image. Drag attempts to move x to 140
+    // but the right-edge constraint (max x = imageW - w = 80) holds the
+    // bbox at x=80. y is unchanged since it's already in range.
+    const before = makeBbox(90, 50, 20, 20);
+    const next = applyTranslate(before, 140, 50, { w: 100, h: 100 });
+    expect(next.x).toBe(80);
+    expect(next.y).toBe(50);
+    expect(next.w).toBe(20);
+    expect(next.h).toBe(20);
+  });
+
+  it("translate: bbox at (10,10,w=20,h=20) + dx=-100 sticks at (0,10)", () => {
+    const before = makeBbox(10, 10, 20, 20);
+    const next = applyTranslate(before, -90, 10, { w: 100, h: 100 });
+    expect(next.x).toBe(0);
+    expect(next.y).toBe(10);
+  });
+
+  it("translate without bounds keeps legacy bound-agnostic behaviour", () => {
+    const before = makeBbox(90, 90, 20, 20);
+    const next = applyTranslate(before, 200, 200);
+    expect(next.x).toBe(200);
+    expect(next.y).toBe(200);
+  });
+
+  it("resize SE: cursor far past image edge clamps bbox to fit inside", () => {
+    const before = makeBbox(50, 50, 20, 20);
+    // Cursor (250, 250) clamps to (100, 100); SE handle anchors NW (50,50).
+    const next = applyResize(before, "se", { x: 250, y: 250 }, { w: 100, h: 100 });
+    expect(next.x).toBe(50);
+    expect(next.y).toBe(50);
+    expect(next.w).toBe(50);
+    expect(next.h).toBe(50);
+  });
+
+  it("resize NW: cursor past SE corner respects min-size + bounds clamp", () => {
+    // Bbox at (50, 50, w=20, h=20). NW handle dragged to (200, 200) → first
+    // clamped to image (100, 100), then min-size kicks in: NW must stay
+    // <= SE - MIN_BBOX_SIZE = (70 - 4, 70 - 4) = (66, 66). Final: x=66, y=66.
+    const before = makeBbox(50, 50, 20, 20);
+    const next = applyResize(before, "nw", { x: 200, y: 200 }, { w: 100, h: 100 });
+    expect(next.x).toBe(66);
+    expect(next.y).toBe(66);
+    expect(next.w).toBe(4);
+    expect(next.h).toBe(4);
+  });
+
+  it("resize NW: cursor past top-left clamps NW to (0,0)", () => {
+    const before = makeBbox(50, 50, 20, 20);
+    // Cursor (-50, -50) clamps to (0, 0); SE corner stays at (70, 70).
+    const next = applyResize(before, "nw", { x: -50, y: -50 }, { w: 100, h: 100 });
+    expect(next.x).toBe(0);
+    expect(next.y).toBe(0);
+    expect(next.w).toBe(70);
+    expect(next.h).toBe(70);
+  });
+
+  it("resize without bounds keeps legacy behaviour", () => {
+    const before = makeBbox(50, 50, 20, 20);
+    const next = applyResize(before, "se", { x: 250, y: 250 });
+    expect(next.w).toBe(200);
+    expect(next.h).toBe(200);
+  });
+});
