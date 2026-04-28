@@ -35,14 +35,14 @@ function StatTile({
     <div
       data-testid={testId}
       className={cn(
-        "grid gap-1 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
-        "px-4 py-3 min-w-[120px]",
+        "grid gap-0.5 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
+        "px-3 py-2 min-w-[96px]",
       )}
     >
-      <span className="font-mono text-[22px] leading-none text-[color:var(--text-primary)] tracking-tight tabular-nums">
+      <span className="font-mono text-[18px] leading-none text-[color:var(--text-primary)] tracking-tight tabular-nums">
         {value}
       </span>
-      <span className="text-[11px] uppercase tracking-[0.06em] text-[color:var(--text-tertiary)] font-medium">
+      <span className="text-[10.5px] uppercase tracking-[0.06em] text-[color:var(--text-tertiary)] font-medium">
         {label}
       </span>
     </div>
@@ -102,12 +102,12 @@ function ProjectStatsStrip({ stats }: { stats: ProjectStats }) {
       {by_class.length > 0 && (
         <ul
           data-testid="project-stats-by-class"
-          className="flex flex-wrap gap-1.5"
+          className="flex flex-nowrap gap-1.5 overflow-x-auto scrollbar-thin"
         >
           {by_class.slice(0, 8).map((c) => (
-            <li key={c.class_id}>
+            <li key={c.class_id} className="shrink-0">
               <Badge variant="ghost">
-                <span className="truncate max-w-[140px]">{c.name}</span>
+                <span className="truncate max-w-[120px]">{c.name}</span>
                 <span className="font-mono text-[10px] tabular-nums text-[color:var(--text-tertiary)]">
                   {c.count}
                 </span>
@@ -394,14 +394,26 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
             </section>
           )}
 
-          {/* Two-column layout */}
-          <div className="grid gap-5 grid-cols-1 lg:grid-cols-[2fr_1fr]">
-            <section className="grid gap-3">
-              <header className="flex items-center justify-between">
+          {/* Two-column layout — items-start so each column takes its natural
+              content height. v2.6 work on ClassesEditor (max-h on its inner
+              shell) is preserved; we simply stop forcing the Tasks column to
+              match the Classes column height. */}
+          <div
+            data-testid="project-detail-overview-grid"
+            className="grid gap-5 items-start grid-cols-1 lg:grid-cols-[2fr_1fr]"
+          >
+            <section
+              data-testid="project-detail-tasks-section"
+              className="grid gap-3"
+            >
+              <header className="flex items-center gap-2">
                 <h2 className="text-[14px] font-medium tracking-tight text-[color:var(--text-primary)]">
                   Tasks
                 </h2>
-                <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
+                <span
+                  data-testid="project-detail-tasks-total"
+                  className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]"
+                >
                   {tasksQ.data?.length ?? 0} total
                 </span>
               </header>
@@ -420,16 +432,17 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                     <Link
                       to="/projects/$projectId/tasks/$taskId"
                       params={{ projectId, taskId: t.id }}
-                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--bg-hover)] transition-colors group"
+                      data-testid={`project-detail-task-row-${t.id}`}
+                      className="flex items-center gap-3 px-3 py-2 hover:bg-[var(--bg-hover)] transition-colors group"
                     >
-                      <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)]">
+                      <span className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)]">
                         {t.kind === "video" ? (
-                          <Video className="h-3.5 w-3.5" />
+                          <Video className="h-3 w-3" />
                         ) : (
-                          <ImageIcon className="h-3.5 w-3.5" />
+                          <ImageIcon className="h-3 w-3" />
                         )}
                       </span>
-                      <span className="flex-1 text-[13px] tracking-tight text-[color:var(--text-primary)] truncate">
+                      <span className="flex-1 text-[12.5px] tracking-tight text-[color:var(--text-primary)] truncate">
                         {t.name}
                       </span>
                       <Badge variant="ghost">{t.kind}</Badge>

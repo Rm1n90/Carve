@@ -36,9 +36,24 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    await create.mutateAsync({ idx: nextIdx, name, color });
-    setName("");
-    setColor(nextHexForIdx(classCount + 1));
+    // Guard against rapid double-submits that v2.6's relaxed rate limits
+    // exposed: the button can fire twice before the previous mutation
+    // resolves, which we want the React-Query state to short-circuit.
+    if (create.isPending) return;
+    // CRITICAL: catch the rejection here. `mutateAsync` re-throws on
+    // failure (e.g. 429, 500, network), and a bare `await` inside an
+    // `async` form handler turns that into an unhandled promise rejection
+    // that React surfaces as a tree-level crash ("Add class breaks the
+    // UI"). The mutation's `onError` is the right place for telemetry;
+    // here we just need to keep the form alive so the user can retry.
+    try {
+      await create.mutateAsync({ idx: nextIdx, name, color });
+      setName("");
+      setColor(nextHexForIdx(classCount + 1));
+    } catch {
+      // React-Query keeps the rejected error on `create.error`; the form
+      // stays open with the user's input intact so they can retry.
+    }
   }
 
   return (
