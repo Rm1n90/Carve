@@ -29,6 +29,14 @@ const iconButtonStyles = cva(
           "bg-[var(--bg-elev)] text-[color:var(--text-secondary)] border-[var(--border-subtle)]",
           "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] hover:border-[var(--border-strong)]",
         ],
+        // v2.9 audit P1-6 — for IconButtons sitting inside glass surfaces
+        // (e.g. AssetNavControls chevrons inside the glass TopBar). Reuses
+        // the .glass-chip utility so the button reads as a translucent
+        // pill rather than an opaque island.
+        glass: [
+          "glass-chip text-[color:var(--text-secondary)] border-transparent",
+          "hover:text-[color:var(--text-primary)]",
+        ],
       },
       size: {
         xs: "h-6 w-6 rounded-[var(--radius-sm)]",

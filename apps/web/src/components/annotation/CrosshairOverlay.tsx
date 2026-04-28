@@ -59,7 +59,7 @@ export function CrosshairOverlay({ hostRef, toImageXY, enabled }: Props) {
       <span
         className={cn(
           "absolute px-1.5 py-0.5 rounded-[var(--radius-xs)]",
-          "bg-[var(--bg-elev)] border border-[var(--border-subtle)] shadow-[var(--shadow-elev-1)]",
+          "glass-tooltip",
           "text-[11px] tabular-nums font-mono text-[color:var(--text-primary)]",
         )}
         style={{

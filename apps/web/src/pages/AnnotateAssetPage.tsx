@@ -624,7 +624,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   data-testid="canvas-image-error-overlay"
                   className={cn(
                     "absolute inset-0 z-30 flex items-center justify-center",
-                    "bg-[rgba(15,23,42,0.32)] backdrop-blur-[2px]",
+                    "bg-[oklch(0_0_0/0.40)] backdrop-blur-[2px]",
                   )}
                 >
                   <div
@@ -977,6 +977,7 @@ function AssetNavControls({
       <IconButton
         aria-label="Previous asset"
         size="sm"
+        variant="glass"
         disabled={!prevAsset}
         onClick={() => prevAsset && onGoTo(prevAsset.id)}
       >
@@ -1028,6 +1029,7 @@ function AssetNavControls({
       <IconButton
         aria-label="Next asset"
         size="sm"
+        variant="glass"
         disabled={!nextAsset}
         onClick={() => nextAsset && onGoTo(nextAsset.id)}
       >
