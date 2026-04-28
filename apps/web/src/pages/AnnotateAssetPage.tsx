@@ -189,6 +189,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     return m;
   }, [classesQ.data]);
 
+  // Full ClassRow lookup keyed by id — passed to ObjectsPanel so the
+  // CVAT-style filter evaluator can resolve `label` rules. v2.6.
+  const classByIdMap = useMemo(() => {
+    if (!classesQ.data) return {};
+    const m: Record<string, (typeof classesQ.data)[number]> = {};
+    for (const c of classesQ.data) m[c.id] = c;
+    return m;
+  }, [classesQ.data]);
+
   // Prev/next asset navigation — wraps both the ArrowLeft/ArrowRight handler
   // below and the IconButtons in the editor top bar.
   const taskAssets = taskAssetsQ.data ?? [];
@@ -690,7 +699,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   value="objects"
                   className="flex-1 overflow-y-auto p-3 focus-visible:outline-none"
                 >
-                  <ObjectsPanel frameId={frameId} />
+                  <ObjectsPanel frameId={frameId} classes={classByIdMap} />
                 </Tabs.Content>
               </Tabs.Root>
             </aside>
