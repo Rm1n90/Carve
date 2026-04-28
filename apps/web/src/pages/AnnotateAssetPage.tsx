@@ -18,6 +18,7 @@ import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
 import { InfoDialog } from "@/components/annotation/InfoDialog";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
+import { AppearancePanel } from "@/components/annotation/AppearancePanel";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip";
@@ -582,6 +583,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 reloadKey={imageReloadKey}
                 classColorMap={classColorMap}
                 classNameMap={classNameMap}
+                classes={classesQ.data ?? []}
               />
               {imageStatus === "error" && (
                 <div
@@ -646,7 +648,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
               aria-label="Classes"
               className="w-[220px] shrink-0 border-l border-[var(--border-subtle)] bg-[var(--bg-app)] flex flex-col"
             >
-              <Tabs.Root defaultValue="classes" className="flex flex-col h-full">
+              <Tabs.Root defaultValue="classes" className="flex-1 min-h-0 flex flex-col">
                 <Tabs.List
                   aria-label="Side panel"
                   className="flex shrink-0 border-b border-[var(--border-subtle)] px-2 pt-2 gap-1"
@@ -711,6 +713,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   <ObjectsPanel frameId={frameId} classes={classByIdMap} />
                 </Tabs.Content>
               </Tabs.Root>
+              <AppearancePanel />
             </aside>
           </div>
 

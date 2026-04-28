@@ -103,11 +103,23 @@ export function renderBbox(
    * so callers that don't pass it keep their existing rendering.
    */
   handleSize = BBOX_HANDLE_SIZE_PX,
+  /**
+   * When defined, draws an extra 1px border at this color on top of the
+   * shape's class-color stroke. Wired from
+   * `useEditorSettings.outlinedBorders` / `outlinedBorderColor`.
+   * Pass ``undefined`` (default) to skip the overlay entirely.
+   */
+  outlineBorderColor?: number,
 ): void {
   g.clear();
   g.rect(b.x, b.y, b.w, b.h);
   g.stroke({ color, width: selected ? 3 : 2, alpha: 1 });
   g.fill({ color, alpha: selected ? selectedFillAlpha : fillAlpha });
+
+  if (outlineBorderColor !== undefined) {
+    g.rect(b.x, b.y, b.w, b.h);
+    g.stroke({ color: outlineBorderColor, width: 1, alpha: 1 });
+  }
 
   if (!selected || !showHandles) return;
 
@@ -135,6 +147,12 @@ export function renderPolygon(
    * `useEditorSettings.controlPointsSize`.
    */
   handleSize = BBOX_HANDLE_SIZE_PX,
+  /**
+   * When defined, draws an extra 1px border around the polygon at this
+   * color. Wired from `useEditorSettings.outlinedBorders` /
+   * `outlinedBorderColor`. Pass ``undefined`` (default) to skip.
+   */
+  outlineBorderColor?: number,
 ): void {
   if (p.points.length === 0) return;
   g.clear();
@@ -145,6 +163,15 @@ export function renderPolygon(
   g.lineTo(p.points[0][0], p.points[0][1]);
   g.stroke({ color, width: selected ? 3 : 2, alpha: 1 });
   g.fill({ color, alpha: selected ? selectedFillAlpha : fillAlpha });
+
+  if (outlineBorderColor !== undefined) {
+    g.moveTo(p.points[0][0], p.points[0][1]);
+    for (let i = 1; i < p.points.length; i += 1) {
+      g.lineTo(p.points[i][0], p.points[i][1]);
+    }
+    g.lineTo(p.points[0][0], p.points[0][1]);
+    g.stroke({ color: outlineBorderColor, width: 1, alpha: 1 });
+  }
 
   if (!selected || !showHandles) return;
   const half = handleSize / 2;

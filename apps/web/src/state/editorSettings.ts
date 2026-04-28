@@ -55,6 +55,26 @@ export interface EditorSettings {
   /** Pixel size of polygon vertex handles. 4–12. */
   controlPointsSize: number;
 
+  // Appearance panel (right-panel) — v2.6.
+  /**
+   * When true, the canvas draws a 1px border at ``outlinedBorderColor``
+   * around every shape on top of its class-color stroke. Mirrors CVAT's
+   * "Outlined borders" toggle. Default off.
+   */
+  outlinedBorders: boolean;
+  /**
+   * Color used by the outlined-borders overlay. Stored as a CSS hex string
+   * so it round-trips to/from the color picker without conversion.
+   */
+  outlinedBorderColor: string;
+  /**
+   * Renders projection axes for skeleton/keypoint annotations. Stored on
+   * the settings object so the user's preference survives the v3 upgrade,
+   * but the UI is currently disabled because no projection-capable tool
+   * exists yet.
+   */
+  showProjections: boolean;
+
   // CVAT-feature parity (deferred — UI shows them disabled with a tooltip
   // explaining the dependency). Storing the values on the settings object
   // means future implementations can pick the user's preference up without
@@ -93,6 +113,11 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   showTagsOnFrame: true,
   polygonApproxPoints: 50,
   controlPointsSize: 6,
+
+  // Appearance panel defaults.
+  outlinedBorders: false,
+  outlinedBorderColor: "#FFFFFF",
+  showProjections: false,
 
   // Deferred CVAT parity — value preserved but UI is disabled.
   showAllInterpolationTracks: false,

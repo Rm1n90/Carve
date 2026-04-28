@@ -84,6 +84,13 @@ interface Props {
    * bug O. Falls back to "?" if a class is missing from the map.
    */
   classNameMap?: Record<string, string>;
+  /**
+   * Project classes — when provided, the right-click context menu shows
+   * a "Change class" submenu listing each class with a color chip.
+   * Selecting a class calls ``useAnnotations.update``. Defaults to
+   * ``undefined`` (entry hidden so legacy tests / hosts unaffected).
+   */
+  classes?: ClassRow[];
 }
 
 const DEFAULT_AMBER = 0xeab308;
@@ -147,6 +154,7 @@ export function AnnotationCanvas({
   reloadKey,
   classColorMap,
   classNameMap,
+  classes: classesProp,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<CanvasApp | null>(null);
@@ -741,6 +749,9 @@ export function AnnotationCanvas({
           0,
           Math.min(1, settings.selectedOpacity / 100),
         );
+        const outlineColor = settings.outlinedBorders
+          ? hexFromColor(settings.outlinedBorderColor)
+          : undefined;
         const isSelected =
           state.selectedId === id || state.selectedIds.includes(id);
         const isHovered = hovered === id;
@@ -754,6 +765,7 @@ export function AnnotationCanvas({
             fillAlpha,
             selectedFillAlpha,
             settings.controlPointsSize,
+            outlineColor,
           );
           // Class-name tag floating above the bbox top-left when the
           // `labels` flag is on. Skipped when the label flag is off OR no
@@ -799,6 +811,7 @@ export function AnnotationCanvas({
             fillAlpha,
             selectedFillAlpha,
             settings.controlPointsSize,
+            outlineColor,
           );
         } else if (draft.geometry.kind === "mask_rle") {
           // Render committed mask annotations as a tinted sprite.
@@ -1588,6 +1601,7 @@ export function AnnotationCanvas({
         hostRef={hostRef}
         hitTest={hitTestClient}
         vertexHitTest={vertexHitTestClient}
+        classes={classesProp}
       />
     </div>
   );
