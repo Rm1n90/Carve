@@ -6,7 +6,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from carve_api.assets.models import AssetKind
-from carve_api.assets.schemas import AssetCount, AssetListPage, AssetOut
+from carve_api.assets.schemas import AssetCount, AssetListPage, AssetOut, AssetWithUrl
 from carve_api.assets.service import AssetService
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
@@ -168,12 +168,21 @@ def asset_thumbnail(
     return RedirectResponse(url=url, status_code=302)
 
 
-@asset_router.get("/{asset_id}")
+@asset_router.get("/{asset_id}", response_model=AssetWithUrl)
 def get_asset(
     asset_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> dict:
+) -> AssetWithUrl:
+    """Return the asset row, a presigned URL to fetch its bytes, and (for
+    image assets) the id of its single Frame row.
+
+    The frontend uses ``frame_id`` to scope annotations PER ASSET. Without
+    it, every annotation drawn in the editor was saved with
+    ``frame_id=null`` and the per-task annotations query returned ALL
+    annotations across the task — making them appear on every image.
+    See v2.5.1 fix.
+    """
     from carve_api.assets.models import Asset
     a = db.get(Asset, asset_id)
     if a is None:
@@ -181,12 +190,11 @@ def get_asset(
     _require_visible_task(db, user, a.task_id)
     svc = AssetService(db)
     ext = a.original_name.rsplit(".", 1)[-1] if "." in a.original_name else "bin"
-    return {
-        "asset": AssetOut.from_orm_asset(a, thumbnail_url=svc.thumbnail_url_for(a)).model_dump(
-            mode="json"
-        ),
-        "url": svc.storage.presigned_get(f"assets/{a.xxh3_128}/original.{ext}"),
-    }
+    return AssetWithUrl(
+        asset=AssetOut.from_orm_asset(a, thumbnail_url=svc.thumbnail_url_for(a)),
+        url=svc.storage.presigned_get(f"assets/{a.xxh3_128}/original.{ext}"),
+        frame_id=svc.primary_frame_id_for(a),
+    )
 
 
 @asset_router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)

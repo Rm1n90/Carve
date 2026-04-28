@@ -30,6 +30,9 @@ vi.mock("@/api/assets", () => ({
           thumbnail_url: `https://fake/${id}.thumb.png`,
         },
         url: `https://fake/${id}.png`,
+        // v2.5.1 — frame_id is now part of AssetWithUrl. A unique value
+        // per asset id keeps annotation queries scoped per-asset.
+        frame_id: `f-${id}`,
       }),
     ),
     listForTask: vi.fn().mockResolvedValue([

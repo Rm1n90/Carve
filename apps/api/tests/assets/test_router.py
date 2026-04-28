@@ -79,6 +79,73 @@ def test_duplicate_asset_returns_409(db_session, monkeypatch) -> None:
     assert r.status_code == 409
 
 
+def test_get_asset_image_returns_frame_id(db_session, monkeypatch) -> None:
+    """v2.5.1 — GET /assets/{id} for an image asset must return the
+    primary frame_id so the editor can scope annotations per asset."""
+    from carve_api.assets import service as svc_mod
+    monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
+
+    client = _client(db_session)
+    token, _pid, tid = _setup(client)
+    r = client.post(
+        f"/tasks/{tid}/assets",
+        files={"file": ("a.png", io.BytesIO(_tiny_png()), "image/png")},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 201, r.text
+    aid = r.json()["id"]
+
+    r = client.get(f"/assets/{aid}", headers=_hdr(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "frame_id" in body, "response missing frame_id"
+    frame_id = body["frame_id"]
+    assert isinstance(frame_id, str) and frame_id, (
+        "image asset frame_id must be a non-empty UUID string"
+    )
+
+    # Verify it matches the single Frame row created on upload.
+    from carve_api.assets.models import Asset, Frame
+    asset = db_session.get(Asset, aid)
+    assert asset is not None
+    frames = db_session.query(Frame).filter(Frame.asset_id == asset.id).all()
+    assert len(frames) == 1
+    assert frame_id == str(frames[0].id)
+
+
+def test_get_asset_video_frame_id_null(db_session, monkeypatch) -> None:
+    """v2.5.1 — GET /assets/{id} for a video asset must return frame_id
+    null. Video frames are enumerated via the dedicated frames endpoint;
+    a single primary frame_id doesn't make sense for video."""
+    from carve_api.assets import service as svc_mod
+    monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
+
+    client = _client(db_session)
+    client.post("/auth/register", json={"email": "v@x.com", "password": "hunter22"})
+    token = client.post(
+        "/auth/login", json={"email": "v@x.com", "password": "hunter22"}
+    ).json()["access_token"]
+    pid = client.post("/projects", json={"name": "PV"}, headers=_hdr(token)).json()["id"]
+    tid = client.post(
+        f"/projects/{pid}/tasks",
+        json={"name": "TV", "kind": "video"},
+        headers=_hdr(token),
+    ).json()["id"]
+    r = client.post(
+        f"/tasks/{tid}/assets",
+        files={"file": ("v.mp4", io.BytesIO(b"\x00\x00\x00\x18ftypmp42"), "video/mp4")},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 201, r.text
+    aid = r.json()["id"]
+
+    r = client.get(f"/assets/{aid}", headers=_hdr(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "frame_id" in body
+    assert body["frame_id"] is None, "video asset frame_id must be null"
+
+
 def test_mime_mismatch_returns_400(db_session, monkeypatch) -> None:
     from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
