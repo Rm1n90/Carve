@@ -33,8 +33,12 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="grid gap-6 max-w-[1100px]">
-      <header>
-        <h1 className="text-[22px] font-medium tracking-tight text-[color:var(--text-primary)]">
+      {/* v2.9 P1-16 — adopt the v2.8 editorial header pattern. */}
+      <header className="grid gap-1">
+        <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+          Settings
+        </span>
+        <h1 className="font-editorial text-[36px] leading-[0.95] text-[color:var(--text-primary)]">
           Settings
         </h1>
         <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
