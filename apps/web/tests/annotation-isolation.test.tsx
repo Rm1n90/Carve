@@ -177,13 +177,18 @@ vi.mock("@/components/annotation/KeyboardCheatSheet", () => ({
 import { AnnotateAssetPage } from "@/pages/AnnotateAssetPage";
 import { useAnnotations } from "@/state/annotations";
 import { annotationsApi } from "@/api/annotations";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 function makeQc() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
 }
 
 function wrap(qc: QueryClient, node: React.ReactNode) {
-  return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <ConfirmProvider>{node}</ConfirmProvider>
+    </QueryClientProvider>
+  );
 }
 
 describe("annotation isolation per asset (v2.5.1)", () => {

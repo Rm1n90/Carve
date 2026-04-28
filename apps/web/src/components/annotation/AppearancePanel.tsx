@@ -188,7 +188,7 @@ export function AppearancePanel() {
     <section
       data-testid="appearance-panel"
       aria-label="Appearance"
-      className="border-t border-[var(--border-subtle)] bg-[var(--bg-app)]"
+      className="border-t border-[var(--glass-border)] bg-transparent"
     >
       <button
         type="button"
@@ -197,17 +197,18 @@ export function AppearancePanel() {
         onClick={() => setOpen((v) => !v)}
         data-testid="appearance-panel-toggle"
         className={cn(
-          "w-full flex items-center gap-1.5 px-2.5 py-2",
-          "text-[11px] uppercase tracking-[0.10em] font-medium",
-          "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]",
+          "w-full flex items-baseline gap-2 px-2.5 py-2.5",
+          "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] transition-colors",
         )}
       >
         {open ? (
-          <ChevronDown className="h-3 w-3" />
+          <ChevronDown className="h-3.5 w-3.5 self-center" />
         ) : (
-          <ChevronRight className="h-3 w-3" />
+          <ChevronRight className="h-3.5 w-3.5 self-center" />
         )}
-        <span className="flex-1 text-left">Appearance</span>
+        <span className="flex-1 text-left font-editorial text-[18px] leading-none">
+          Appearance
+        </span>
       </button>
       {open && (
         <div

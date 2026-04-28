@@ -1,8 +1,14 @@
+import React from "react";
 import { describe, expect, it, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
+
+function renderPanel(node: React.ReactElement) {
+  return render(<ConfirmProvider>{node}</ConfirmProvider>);
+}
 
 const fixture = [
   { id: "c-1", project_id: "p", idx: 0, name: "car", color: "#ff0000", attributes: {}, created_at: "" },
@@ -19,13 +25,13 @@ describe("ClassesPanel", () => {
   beforeEach(() => useTool.getState().setActiveClassId(null));
 
   it("clicking a class sets it active", () => {
-    render(<ClassesPanel classes={fixture as any} />);
+    renderPanel(<ClassesPanel classes={fixture as any} />);
     fireEvent.click(screen.getByText("car"));
     expect(useTool.getState().activeClassId).toBe("c-1");
   });
 
   it("hotkey '2' selects the second class", () => {
-    render(<ClassesPanel classes={fixture as any} />);
+    renderPanel(<ClassesPanel classes={fixture as any} />);
     fireEvent.keyDown(window, { key: "2" });
     expect(useTool.getState().activeClassId).toBe("c-2");
   });
@@ -39,7 +45,7 @@ describe("ClassesPanel — search/sort/expand/hover", () => {
   });
 
   it("search input filters list as you type", () => {
-    render(<ClassesPanel classes={triFixture as any} />);
+    renderPanel(<ClassesPanel classes={triFixture as any} />);
     const input = screen.getByTestId("classes-search-input") as HTMLInputElement;
     expect(screen.getByText("alpha")).toBeInTheDocument();
     fireEvent.change(input, { target: { value: "gam" } });
@@ -60,7 +66,7 @@ describe("ClassesPanel — search/sort/expand/hover", () => {
         frameId: null, serverId: "s-a-2", dirty: false,
       },
     ]);
-    render(<ClassesPanel classes={triFixture as any} />);
+    renderPanel(<ClassesPanel classes={triFixture as any} />);
     const cnt = screen.getByTestId("class-count-c-1");
     expect(cnt.textContent).toBe("2");
   });
@@ -73,7 +79,7 @@ describe("ClassesPanel — search/sort/expand/hover", () => {
         frameId: null, serverId: "s-a-x", dirty: false,
       },
     ]);
-    render(<ClassesPanel classes={triFixture as any} />);
+    renderPanel(<ClassesPanel classes={triFixture as any} />);
     expect(screen.queryByTestId("class-annotations-c-2")).toBeNull();
     fireEvent.click(screen.getByTestId("class-expand-c-2"));
     expect(screen.getByTestId("class-annotations-c-2")).toBeInTheDocument();
@@ -88,7 +94,7 @@ describe("ClassesPanel — search/sort/expand/hover", () => {
         frameId: null, serverId: "s-a-y", dirty: false,
       },
     ]);
-    render(<ClassesPanel classes={triFixture as any} />);
+    renderPanel(<ClassesPanel classes={triFixture as any} />);
     fireEvent.click(screen.getByTestId("class-expand-c-3"));
     fireEvent.mouseEnter(screen.getByTestId("annotation-row-a-y"));
     expect(useTool.getState().hoveredAnnotationId).toBe("a-y");
@@ -97,7 +103,7 @@ describe("ClassesPanel — search/sort/expand/hover", () => {
   });
 
   it("renders the sort trigger and default-ordered list", () => {
-    render(<ClassesPanel classes={triFixture as any} />);
+    renderPanel(<ClassesPanel classes={triFixture as any} />);
     expect(screen.getByTestId("classes-sort-trigger")).toBeInTheDocument();
     const items = screen.getAllByTestId(/^class-row-/);
     expect(items[0].getAttribute("data-testid")).toBe("class-row-c-1");
@@ -105,7 +111,7 @@ describe("ClassesPanel — search/sort/expand/hover", () => {
   });
 
   it("clicking the sticky add button shows the inline add form when onCreateClass provided", () => {
-    render(
+    renderPanel(
       <ClassesPanel
         classes={triFixture as any}
         onCreateClass={() => {}}

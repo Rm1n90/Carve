@@ -53,17 +53,25 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
 
   return (
     <header
+      data-testid="top-bar"
       className={cn(
-        "h-12 shrink-0 flex items-center gap-3 px-4",
-        "border-b border-[var(--border-subtle)] bg-[var(--bg-app)]",
+        "relative h-12 shrink-0 flex items-center gap-3 px-4",
+        "glass-surface-strong glass-specular",
+        // glass-surface already paints a hairline border; keep the layout
+        // border-bottom as a fallback so non-supporting browsers still get
+        // a visible separator.
+        "border-b border-[var(--glass-border)]",
       )}
     >
-      <Link to="/" aria-label="Carve home" className="shrink-0">
+      <Link to="/" aria-label="Carve home" className="shrink-0 relative z-10">
         <CarveMark />
       </Link>
 
       {crumbs && crumbs.length > 0 && (
-        <nav aria-label="Breadcrumb" className="flex items-center gap-1 min-w-0">
+        <nav
+          aria-label="Breadcrumb"
+          className="relative z-10 flex items-center gap-1 min-w-0"
+        >
           {crumbs.map((c, i) => (
             <span key={i} className="flex items-center gap-1 min-w-0">
               <ChevronRight
@@ -73,12 +81,18 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
               {c.to ? (
                 <Link
                   to={c.to}
-                  className="text-[13px] tracking-tight text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] truncate"
+                  className="text-[13px] tracking-tight text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] truncate transition-colors"
                 >
                   {c.label}
                 </Link>
               ) : (
-                <span className="text-[13px] tracking-tight text-[color:var(--text-primary)] truncate">
+                <span
+                  className={cn(
+                    "inline-flex items-center h-7 px-2 rounded-full",
+                    "glass-chip text-[12.5px] tracking-tight font-medium",
+                    "text-[color:var(--text-primary)] truncate",
+                  )}
+                >
                   {c.label}
                 </span>
               )}
@@ -89,7 +103,9 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
 
       <div className="flex-1" />
 
-      {rightAction}
+      <span className="relative z-10 inline-flex items-center gap-2">
+        {rightAction}
+      </span>
 
       {user && (
         <DropdownMenu.Root>
@@ -98,13 +114,13 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
               type="button"
               data-testid="topbar-user-menu"
               className={cn(
-                "flex items-center gap-1.5 px-1.5 h-8 rounded-[var(--radius-sm)]",
-                "hover:bg-[var(--bg-hover)] transition-colors",
+                "relative z-10 flex items-center gap-1.5 px-1.5 h-8 rounded-full",
+                "glass-chip",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
               )}
               aria-label={`Account menu for ${user.email}`}
             >
-              <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)] text-[12px] font-medium tracking-tight">
+              <span className="grid h-6 w-6 place-items-center rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)] text-[12px] font-medium tracking-tight">
                 {userInitial}
               </span>
               <ChevronDown className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
@@ -115,8 +131,8 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
               align="end"
               sideOffset={6}
               className={cn(
-                "min-w-[220px] rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
-                "shadow-[var(--shadow-elev-2)] p-1 z-50",
+                "min-w-[220px] rounded-[var(--radius-md)]",
+                "glass-surface-strong p-1 z-50",
               )}
             >
               <div className="px-2 py-2 grid gap-0.5">

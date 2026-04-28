@@ -108,10 +108,15 @@ vi.mock("@/components/annotation/KeyboardCheatSheet", () => ({
 import { AnnotateAssetPage } from "@/pages/AnnotateAssetPage";
 import { useAnnotations } from "@/state/annotations";
 import { annotationsApi } from "@/api/annotations";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 function wrap(node: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <ConfirmProvider>{node}</ConfirmProvider>
+    </QueryClientProvider>
+  );
 }
 
 describe("AnnotateAssetPage", () => {

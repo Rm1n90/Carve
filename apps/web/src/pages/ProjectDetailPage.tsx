@@ -35,14 +35,15 @@ function StatTile({
     <div
       data-testid={testId}
       className={cn(
-        "grid gap-0.5 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
-        "px-3 py-2 min-w-[96px]",
+        "relative grid gap-2 rounded-2xl",
+        "glass-surface glass-specular",
+        "px-5 py-4 min-w-[140px]",
       )}
     >
-      <span className="font-mono text-[18px] leading-none text-[color:var(--text-primary)] tracking-tight tabular-nums">
+      <span className="relative z-10 font-mono text-[36px] leading-none text-[color:var(--text-primary)] font-semibold tabular-tight">
         {value}
       </span>
-      <span className="text-[10.5px] uppercase tracking-[0.06em] text-[color:var(--text-tertiary)] font-medium">
+      <span className="relative z-10 font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)] font-medium">
         {label}
       </span>
     </div>
@@ -67,7 +68,7 @@ function ProjectStatsStrip({ stats }: { stats: ProjectStats }) {
     return (
       <section
         data-testid="project-stats-empty"
-        className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-4"
+        className="relative flex items-center gap-3 rounded-2xl glass-surface p-4"
       >
         <span className="grid h-8 w-8 place-items-center rounded-full bg-[var(--bg-subtle)] text-[color:var(--text-tertiary)]">
           <Sparkles className="h-4 w-4" />
@@ -320,12 +321,15 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     <div className="mx-auto grid max-w-[1100px] gap-5">
       {/* ---- Header ---- */}
       <header className="flex items-baseline justify-between gap-4 flex-wrap">
-        <div className="grid gap-0.5">
-          <h1 className="text-[20px] font-medium tracking-tight text-[color:var(--text-primary)]">
+        <div className="grid gap-1">
+          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+            Project
+          </span>
+          <h1 className="font-editorial text-[36px] leading-[0.95] text-[color:var(--text-primary)]">
             {project.name}
           </h1>
           {project.description && (
-            <p className="text-[12.5px] text-[color:var(--text-tertiary)]">
+            <p className="text-[12.5px] text-[color:var(--text-tertiary)] mt-0.5">
               {project.description}
             </p>
           )}

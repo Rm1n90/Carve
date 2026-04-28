@@ -46,17 +46,41 @@ vi.mock("@tanstack/react-router", () => ({
   Link: ({
     children,
     to,
-    params: _params,
+    params,
     ...rest
   }: React.AnchorHTMLAttributes<HTMLAnchorElement> & {
     to?: string;
     params?: Record<string, unknown>;
-  }) => (
-    <a href={typeof to === "string" ? to : "#"} {...rest}>
-      {children}
-    </a>
-  ),
+  }) => {
+    // Resolve TanStack Router style $projectId placeholders so tests can
+    // assert on the final href the user would actually navigate to.
+    let href = typeof to === "string" ? to : "#";
+    if (params && typeof href === "string") {
+      for (const [k, v] of Object.entries(params)) {
+        href = href.replace(`$${k}`, String(v));
+      }
+    }
+    return (
+      <a href={href} {...rest}>
+        {children}
+      </a>
+    );
+  },
   useNavigate: () => vi.fn(),
+  useParams: () => ({ projectId: "p1" }),
+  createRoute: (config: unknown) => config,
+}));
+
+// Mock ./_root so importing the route file doesn't pull in AppShell,
+// auth bootstrap, or first-run wizard plumbing under jsdom.
+vi.mock("@/routes/_root", () => ({
+  rootRoute: {},
+}));
+
+// RequireAuth bypasses auth guard so the route component renders its
+// children regardless of the auth store.
+vi.mock("@/auth/RequireAuth", () => ({
+  RequireAuth: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 // recharts ResponsiveContainer needs a size, jsdom doesn't compute layout.
@@ -76,12 +100,18 @@ import { tasksApi } from "@/api/tasks";
 import { classesApi } from "@/api/classes";
 import { StatsPanel } from "@/pages/StatsPanel";
 import { ProjectDetailPage } from "@/pages/ProjectDetailPage";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
+import { projectStatsRoute } from "@/routes/projects.$projectId.stats";
 
 function wrap(node: React.ReactNode) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <ConfirmProvider>{node}</ConfirmProvider>
+    </QueryClientProvider>
+  );
 }
 
 // Radix Tabs.Trigger needs a full pointer event sequence under jsdom.
@@ -252,5 +282,63 @@ describe("ProjectDetailPage tabs", () => {
     );
     const link = await findByTestId("project-detail-view-stats-link");
     expect(link.textContent).toMatch(/View stats/i);
+  });
+});
+
+// ProjectStatsRoute is the page rendered when the user clicks the
+// "View stats" button. v2.8 Wave 2 added a back link + editorial header;
+// these tests cover both. The route's component is reachable as
+// projectStatsRoute.component because the mocked createRoute returns
+// the config object as-is.
+describe("ProjectStatsRoute (v2.8 wave 2 — back link + editorial header)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    defaultProjectMocks();
+    emptyTaskStats();
+  });
+
+  function renderRoute() {
+    const RouteComponent = (
+      projectStatsRoute as unknown as {
+        component: React.ComponentType;
+      }
+    ).component;
+    return render(wrap(<RouteComponent />));
+  }
+
+  it("renders a back-link with text containing 'Back'", async () => {
+    const { findByTestId } = renderRoute();
+    const back = await findByTestId("stats-back-link");
+    expect(back.textContent).toMatch(/Back/i);
+  });
+
+  it("the back-link's href resolves to the parent project page", async () => {
+    const { findByTestId } = renderRoute();
+    const back = await findByTestId("stats-back-link");
+    // useParams in the test mock always returns { projectId: "p1" }; the
+    // mocked Link substitutes $projectId so the href becomes the
+    // concrete /projects/p1 path.
+    expect(back.getAttribute("href")).toBe("/projects/p1");
+  });
+
+  it("renders the page title as a level-1 heading with the project name", async () => {
+    const { findByRole } = renderRoute();
+    // Project name "Alpha" comes from defaultProjectMocks().
+    const heading = await findByRole("heading", { level: 1 });
+    expect(heading.textContent).toMatch(/Alpha/);
+  });
+
+  it("the page title uses the editorial display utility", async () => {
+    const { findByTestId } = renderRoute();
+    const title = await findByTestId("stats-page-title");
+    expect(title.tagName.toLowerCase()).toBe("h1");
+    expect(title.className).toContain("font-editorial");
+  });
+
+  it("keeps the small uppercase 'Stats' eyebrow above the title", async () => {
+    const { findByText } = renderRoute();
+    // The eyebrow is a plain span — assert it exists.
+    const eyebrow = await findByText("Stats");
+    expect(eyebrow).toBeTruthy();
   });
 });

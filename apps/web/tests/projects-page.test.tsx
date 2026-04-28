@@ -17,10 +17,15 @@ vi.mock("@tanstack/react-router", () => ({
 
 import { projectsApi } from "@/api/projects";
 import { ProjectsPage } from "@/pages/ProjectsPage";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 function wrap(node: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <ConfirmProvider>{node}</ConfirmProvider>
+    </QueryClientProvider>
+  );
 }
 
 describe("ProjectsPage", () => {

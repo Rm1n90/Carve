@@ -4,11 +4,13 @@ import { Trash2, Plus } from "lucide-react";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 import { nextHexForIdx } from "@/lib/swatch";
 
 export function ClassesEditor({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const q = useQuery({
     queryKey: ["classes", projectId],
     queryFn: () => classesApi.listForProject(projectId),
@@ -122,8 +124,22 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
                 </span>
                 <button
                   type="button"
-                  onClick={() => {
-                    if (confirm(`Delete class "${c.name}"?`)) remove.mutate(c.id);
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Delete class?",
+                      description: (
+                        <>
+                          Remove the class{" "}
+                          <span className="font-medium text-[color:var(--text-primary)]">
+                            {c.name}
+                          </span>
+                          ? Annotations referencing it will become unclassified.
+                        </>
+                      ),
+                      variant: "danger",
+                      confirmLabel: "Delete",
+                    });
+                    if (ok) remove.mutate(c.id);
                   }}
                   aria-label={`Delete class ${c.name}`}
                   className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] transition-colors hover:bg-[var(--danger-bg)] hover:text-[color:var(--danger)]"

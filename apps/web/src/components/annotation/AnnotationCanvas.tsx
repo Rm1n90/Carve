@@ -297,6 +297,16 @@ export function AnnotationCanvas({
     let cancelled = false;
     onImageStatusChange?.("loading");
 
+    // Reset auto-fit so each new asset arrives centred + fit-to-host. The
+    // user complaint: navigating between assets used to inherit the
+    // previous asset's zoom level (because wheel/+/− zooms set
+    // autoFitRef to false, and only an explicit Fit click flipped it
+    // back). Setting this synchronously on every imageUrl-change render
+    // — before any awaits — guarantees the host/image-size effect at
+    // line ~528 picks the fit-frame branch when the new texture's
+    // intrinsic dimensions land via setImageSize. Wave 2 v2.8.
+    autoFitRef.current = true;
+
     (async () => {
       try {
         const { Assets, Sprite } = await import("pixi.js");

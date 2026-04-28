@@ -117,6 +117,27 @@
   --color-bg: var(--bg-app);
   --color-fg: var(--text-primary);
   --color-accent: var(--accent);
+
+  /* ---- v2.8 — Apple Liquid Glass tokens (dark) ---- */
+  --glass-bg: oklch(0.18 0.012 240 / 0.55);
+  --glass-bg-strong: oklch(0.18 0.012 240 / 0.78);
+  --glass-bg-subtle: oklch(0.18 0.012 240 / 0.35);
+  --glass-border: oklch(0.98 0 0 / 0.08);
+  --glass-border-strong: oklch(0.98 0 0 / 0.14);
+  --glass-highlight: oklch(0.98 0 0 / 0.10); /* inset top 1px */
+  --glass-shadow:
+    0 1px 0 oklch(0.98 0 0 / 0.06) inset,
+    0 0 0 0.5px oklch(0.98 0 0 / 0.10) inset,
+    0 8px 24px oklch(0 0 0 / 0.45),
+    0 24px 64px oklch(0 0 0 / 0.35);
+  --glass-shadow-lifted:
+    0 1px 0 oklch(0.98 0 0 / 0.10) inset,
+    0 0 0 0.5px oklch(0.98 0 0 / 0.14) inset,
+    0 16px 48px oklch(0 0 0 / 0.55),
+    0 48px 96px oklch(0 0 0 / 0.40);
+  --glass-blur: 24px;
+  --glass-blur-strong: 40px;
+  --glass-saturate: 180%;
 }
 
 /* ---- Light theme — opt-in via [data-theme="light"] ---- */
@@ -174,6 +195,27 @@
 
   /* Light-theme checker color — barely visible on the light canvas. */
   --canvas-checker-color: oklch(0.92 0 0);
+
+  /* ---- v2.8 — Apple Liquid Glass tokens (light) ---- */
+  --glass-bg: oklch(0.99 0.002 240 / 0.62);
+  --glass-bg-strong: oklch(0.99 0.002 240 / 0.85);
+  --glass-bg-subtle: oklch(0.99 0.002 240 / 0.40);
+  --glass-border: oklch(0.20 0 0 / 0.06);
+  --glass-border-strong: oklch(0.20 0 0 / 0.12);
+  --glass-highlight: oklch(1 0 0 / 0.65);
+  --glass-shadow:
+    0 1px 0 oklch(1 0 0 / 0.85) inset,
+    0 0 0 0.5px oklch(0.20 0 0 / 0.05) inset,
+    0 8px 24px oklch(0 0 0 / 0.08),
+    0 24px 48px oklch(0 0 0 / 0.06);
+  --glass-shadow-lifted:
+    0 1px 0 oklch(1 0 0 / 0.95) inset,
+    0 0 0 0.5px oklch(0.20 0 0 / 0.08) inset,
+    0 16px 40px oklch(0 0 0 / 0.12),
+    0 48px 80px oklch(0 0 0 / 0.10);
+  --glass-blur: 22px;
+  --glass-blur-strong: 36px;
+  --glass-saturate: 160%;
 }
 
 /* ============================================================
@@ -215,6 +257,13 @@
   --color-border-strong: var(--border-strong);
   --color-border-accent: var(--border-accent);
 
+  /* v2.8 glass — exposes `bg-glass`, `bg-glass-strong`, `border-glass-border` etc. */
+  --color-glass: var(--glass-bg);
+  --color-glass-strong: var(--glass-bg-strong);
+  --color-glass-subtle: var(--glass-bg-subtle);
+  --color-glass-border: var(--glass-border);
+  --color-glass-border-strong: var(--glass-border-strong);
+
   --font-sans: var(--font-display);
   --font-mono: var(--font-mono);
 
@@ -230,6 +279,179 @@
 
   --ease-out-expo: var(--ease-out-expo);
   --ease-in-out: var(--ease-in-out);
+
+  /* v2.8 confirm-dialog motion. Tailwind v4 turns each `--animate-*`
+     entry into a corresponding `animate-*` utility class. */
+  --animate-confirm-in: confirm-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-confirm-out: confirm-out 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-confirm-fade-in: confirm-fade-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-confirm-fade-out: confirm-fade-out 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes confirm-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes confirm-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.97);
+  }
+}
+
+@keyframes confirm-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes confirm-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* ============================================================
+   v2.8 — Apple Liquid Glass utilities
+
+   `.glass-surface` is the standard panel: 24px blur, semi-translucent
+   background, hairline border, and a layered shadow that grounds the
+   panel above the page. `.glass-surface-strong` lifts higher (used for
+   modal/alert panels) and `.glass-surface-subtle` is for ambient
+   surfaces that should not pull attention.
+
+   Pair with `.glass-specular` on a `position:relative` element to
+   render the 1px specular highlight that catches simulated light at
+   the top edge — Apple's signature liquid sheen.
+   ============================================================ */
+.glass-surface {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow);
+}
+
+.glass-surface-strong {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow-lifted);
+}
+
+.glass-surface-subtle {
+  background: var(--glass-bg-subtle);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(calc(var(--glass-blur) * 0.6)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 0.6)) saturate(var(--glass-saturate));
+}
+
+/* Specular highlight — a 1px gradient top-edge that catches light. */
+.glass-specular::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    var(--glass-highlight) 0%,
+    transparent 30%
+  );
+  mix-blend-mode: screen;
+  opacity: 0.6;
+}
+
+/* Tooltip-tuned glass — same liquid surface, but a tighter shadow so the
+   tooltip reads as "close to the cursor" rather than "lifted modal". */
+.glass-tooltip {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow:
+    0 1px 0 oklch(0.98 0 0 / 0.06) inset,
+    0 0 0 0.5px oklch(0.98 0 0 / 0.10) inset,
+    0 4px 16px oklch(0 0 0 / 0.40);
+}
+
+[data-theme="light"] .glass-tooltip {
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.85) inset,
+    0 0 0 0.5px oklch(0.20 0 0 / 0.05) inset,
+    0 4px 16px oklch(0 0 0 / 0.10);
+}
+
+/* Glass chip — small interactive pill (theme toggle, status badge, etc.).
+   Keeps the liquid surface, but with a tighter blur and zero shadow so it
+   doesn't compete with surrounding chrome. Pair with hover-lift transitions
+   inline to get the subtle translate + brighter highlight on hover. */
+.glass-chip {
+  background: var(--glass-bg-subtle);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(calc(var(--glass-blur) * 0.5)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 0.5)) saturate(var(--glass-saturate));
+  transition:
+    background-color var(--duration-fast) var(--ease-out-expo),
+    border-color var(--duration-fast) var(--ease-out-expo),
+    transform var(--duration-fast) var(--ease-out-expo);
+}
+
+.glass-chip:hover {
+  background: var(--glass-bg);
+  border-color: var(--glass-border-strong);
+  transform: translateY(-1px);
+}
+
+/* Active-tool ring — soft cyan glow used on the editor toolbar's active
+   tool button so the selected mode is unambiguously highlighted on top of
+   the glass chrome. */
+.glass-active-ring {
+  background: var(--accent-bg);
+  color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--border-accent),
+    0 0 16px oklch(0.78 0.14 220 / 0.25);
+}
+
+[data-theme="light"] .glass-active-ring {
+  box-shadow:
+    0 0 0 1px var(--border-accent),
+    0 0 14px oklch(0.62 0.18 220 / 0.18);
+}
+
+/* Editorial display utility for Instrument Serif moments —
+   dialog titles, page headers, hero numbers. */
+.font-editorial {
+  font-family: "Instrument Serif", "Times New Roman", serif;
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* Tabular numerals utility — keeps stat tile numbers aligned across rows. */
+.tabular-tight {
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
 }
 
 /* ============================================================

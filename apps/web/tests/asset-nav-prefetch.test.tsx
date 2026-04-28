@@ -167,9 +167,14 @@ vi.mock("@/components/annotation/KeyboardCheatSheet", () => ({
 import { AnnotateAssetPage } from "@/pages/AnnotateAssetPage";
 import { useAnnotations } from "@/state/annotations";
 import { assetsApi } from "@/api/assets";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 function wrap(node: React.ReactNode, qc: QueryClient) {
-  return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <ConfirmProvider>{node}</ConfirmProvider>
+    </QueryClientProvider>
+  );
 }
 
 describe("AnnotateAssetPage — prev/next prefetch (v2.5 perf fix)", () => {

@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { Trash2 } from "lucide-react";
 import type { Project } from "@/api/projects";
 import { cn } from "@/lib/cn";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 
 interface ProjectCardProps {
   project: Project;
@@ -20,6 +21,7 @@ interface ProjectCardProps {
  * gap between the name and the Delete button.
  */
 export function ProjectCard({ project, onDelete }: ProjectCardProps) {
+  const confirm = useConfirm();
   return (
     <article
       className={cn(
@@ -48,10 +50,24 @@ export function ProjectCard({ project, onDelete }: ProjectCardProps) {
       </Link>
       <button
         type="button"
-        onClick={(e) => {
+        onClick={async (e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (confirm(`Delete project "${project.name}"?`)) onDelete();
+          const ok = await confirm({
+            title: "Delete project?",
+            description: (
+              <>
+                Are you sure you want to delete{" "}
+                <span className="font-medium text-[color:var(--text-primary)]">
+                  {project.name}
+                </span>
+                ? This moves it to Trash.
+              </>
+            ),
+            variant: "danger",
+            confirmLabel: "Delete",
+          });
+          if (ok) onDelete();
         }}
         className={cn(
           "shrink-0 mr-3 inline-flex h-7 items-center gap-1 px-2",

@@ -44,11 +44,15 @@ export interface StatsPanelProps {
 
 // ---------------------------------------------------------------------------
 // Shared styling
+//
+// v2.8 Wave 3 — cards become glass-surface rounded-2xl with a specular
+// highlight, but we KEEP `p-3` and `min-h-[200px]` to satisfy the
+// existing widget-density test expectations (see stats-widget-density.test.tsx).
 // ---------------------------------------------------------------------------
 const cardClass =
-  "flex flex-col gap-2 min-h-[200px] rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-3";
+  "relative flex flex-col gap-2 min-h-[200px] rounded-2xl glass-surface glass-specular p-3";
 const headingClass =
-  "text-[11px] uppercase tracking-[0.08em] text-[color:var(--text-tertiary)] font-medium flex items-center gap-1.5 leading-none";
+  "relative z-10 font-mono text-[10px] uppercase tracking-[0.18em] text-[color:var(--text-tertiary)] font-medium flex items-center gap-1.5 leading-none";
 const placeholderClass = "text-[13px] text-[color:var(--text-tertiary)]";
 const errorClass = "text-[13px] text-[color:var(--danger)]";
 
@@ -465,7 +469,7 @@ function ProjectStatsPanel({ projectId }: { projectId: string }) {
   if (tasks.length === 0) {
     return (
       <div
-        className="rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-8"
+        className="relative rounded-2xl glass-surface p-8"
         data-testid="stats-no-tasks"
       >
         <EmptyState
@@ -509,7 +513,7 @@ export function StatsPanel({ taskId, projectId }: StatsPanelProps) {
   if (taskId) {
     return (
       <section className="grid gap-4" data-testid="stats-panel-task">
-        <h2 className="text-[16px] font-medium tracking-tight text-[color:var(--text-primary)]">
+        <h2 className="font-editorial text-[24px] leading-none text-[color:var(--text-primary)]">
           Stats
         </h2>
         <StatsGrid taskId={taskId} />

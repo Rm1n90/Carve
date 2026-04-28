@@ -14,6 +14,7 @@ import {
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import {
   trashApi,
   modelsApi,
@@ -139,6 +140,7 @@ function InlineName({ weight, canEdit, busy, onSubmit }: InlineNameProps) {
 export function ModelsYoloPage() {
   const me = useAuth((s) => s.user);
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const wsQ = useQuery({
     queryKey: ["weights", "workspace"],
     queryFn: weightsApi.listWorkspace,
@@ -260,14 +262,22 @@ export function ModelsYoloPage() {
                         leftIcon={<Trash2 className="h-3.5 w-3.5" />}
                         disabled={!canDelete || deleteM.isPending}
                         data-testid={`weight-delete-${w.id}`}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Delete weight "${w.name}"? This cannot be undone.`,
-                            )
-                          ) {
-                            deleteM.mutate(w.id);
-                          }
+                        onClick={async () => {
+                          const ok = await confirm({
+                            title: "Delete weight?",
+                            description: (
+                              <>
+                                Permanently remove the weight{" "}
+                                <span className="font-medium text-[color:var(--text-primary)]">
+                                  {w.name}
+                                </span>
+                                . This cannot be undone.
+                              </>
+                            ),
+                            variant: "danger",
+                            confirmLabel: "Delete",
+                          });
+                          if (ok) deleteM.mutate(w.id);
                         }}
                       >
                         Delete
@@ -377,6 +387,7 @@ export function ModelsSamPage() {
 export function TrashPage() {
   const me = useAuth((s) => s.user);
   const qc = useQueryClient();
+  const confirm = useConfirm();
 
   const trashQ = useQuery({ queryKey: ["trash"], queryFn: trashApi.list });
   const restoreM = useMutation({
@@ -458,14 +469,22 @@ export function TrashPage() {
                         variant="danger"
                         leftIcon={<Trash2 className="h-3.5 w-3.5" />}
                         disabled={me?.role !== "admin"}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Permanently delete ${item.kind} "${item.name}"? This cannot be undone.`,
-                            )
-                          ) {
-                            hardDeleteM.mutate(item);
-                          }
+                        onClick={async () => {
+                          const ok = await confirm({
+                            title: `Permanently delete ${item.kind}?`,
+                            description: (
+                              <>
+                                This will permanently remove{" "}
+                                <span className="font-medium text-[color:var(--text-primary)]">
+                                  {item.name}
+                                </span>{" "}
+                                and cannot be undone.
+                              </>
+                            ),
+                            variant: "danger",
+                            confirmLabel: "Delete forever",
+                          });
+                          if (ok) hardDeleteM.mutate(item);
                         }}
                       >
                         Delete
