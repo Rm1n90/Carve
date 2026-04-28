@@ -85,7 +85,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
     }
   }, [currentFrameIdx]);
-  const [annotationsVisible, setAnnotationsVisible] = useState(true);
+  // v2.9 P0-3: was `useState(true)` paired with dead `visibilityOn` /
+  // `onToggleVisibility` props on EditorToolbar. The visibility menu in
+  // the toolbar already drives `useTool.visibility.annotations`, so we
+  // read that here instead of holding a parallel flag.
+  const annotationsVisible = useTool((s) => s.visibility.annotations);
   // v2.6 — Info dialog (CVAT-style task overview + per-class stats).
   // Aggregates from the in-memory annotations store; no extra API calls.
   const [infoOpen, setInfoOpen] = useState(false);
@@ -571,8 +575,6 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             onAfterYoloPredict={() => {
               qc.invalidateQueries({ queryKey: ["annotations", taskId] });
             }}
-            onToggleVisibility={() => setAnnotationsVisible((v) => !v)}
-            visibilityOn={annotationsVisible}
           />
 
           <SamUnavailableBanner />

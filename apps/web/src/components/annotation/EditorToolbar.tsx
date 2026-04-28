@@ -92,9 +92,6 @@ interface EditorToolbarProps {
   /** Only present when an asset is open. */
   projectId?: string;
   assetId?: string;
-  /** Optional: legacy prop, single-on toggle of all annotations. */
-  visibilityOn?: boolean;
-  onToggleVisibility?: () => void;
   /** Called when YOLO predict completes; lets the page reload annotations. */
   onAfterYoloPredict?: () => void;
 }
