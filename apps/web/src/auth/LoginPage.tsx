@@ -35,6 +35,7 @@ export function LoginPage({ onSuccess }: Props) {
 
   return (
     <AuthShell
+      eyebrow="Sign in"
       cardTitle="Sign in to Carve"
       cardDescription="Welcome back."
       cardFooter={
