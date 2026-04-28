@@ -21,6 +21,7 @@ import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
 import { AppearancePanel } from "@/components/annotation/AppearancePanel";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
+import { SelectionCountBadge } from "@/components/annotation/SelectionCountBadge";
 import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip";
 import { SamUnavailableBanner } from "@/components/annotation/SamUnavailableBanner";
 import { TopBar } from "@/components/nav/TopBar";
@@ -137,6 +138,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // the per-task list query returned ALL annotations across the task,
   // making bboxes drawn on one image appear on every other image.
   const frameId: string | null = assetQ.data?.frame_id ?? null;
+  // Live ref that the (memoised) keydown handler reads at call-time.
+  // Without this Cmd+A captures whatever ``frameId`` was on the first
+  // render — which is ``null`` until ``assetQ`` resolves, so video
+  // assets see selectAll(null) and the user gets nothing selected.
+  // v2.7 wave 2 item 4.
+  const frameIdRef = useRef<string | null>(frameId);
+  frameIdRef.current = frameId;
 
   const annotationsQ = useQuery({
     queryKey: ["annotations", taskId, frameId],
@@ -401,7 +409,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       }
       if (meta && k === "a") {
         e.preventDefault();
-        useAnnotations.getState().selectAll(null);
+        // Read the live frameId so Cmd+A picks up the current asset's
+        // frame, not the value captured when this useEffect first ran
+        // (frameId can flip from null -> non-null when assetQ resolves;
+        // the useEffect deps are [projectId, taskId] for stability so
+        // we use a ref instead). v2.7 wave 2 item 4.
+        useAnnotations.getState().selectAll(frameIdRef.current);
         return;
       }
       if (e.key === "Backspace" || e.key === "Delete") {
@@ -585,6 +598,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 classNameMap={classNameMap}
                 classes={classesQ.data ?? []}
               />
+              <SelectionCountBadge />
               {imageStatus === "error" && (
                 <div
                   data-testid="canvas-image-error-overlay"
