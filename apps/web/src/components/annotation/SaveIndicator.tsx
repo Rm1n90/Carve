@@ -71,7 +71,7 @@ export function SaveIndicator({ isSaving, hasError, dirtyCount, onRetry }: SaveI
       data-state="saved"
       className={cn(
         "inline-flex items-center gap-1.5 px-2.5 h-7 rounded-full",
-        "bg-[var(--bg-subtle)] text-[color:var(--text-tertiary)]",
+        "glass-chip text-[color:var(--text-tertiary)]",
         "text-[11.5px] font-medium tracking-tight",
       )}
     >

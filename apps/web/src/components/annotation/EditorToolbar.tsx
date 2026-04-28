@@ -120,11 +120,11 @@ function ToolButton({
       aria-pressed={active}
       title={`${label} — ${hotkey}`}
       className={cn(
-        "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors",
+        "grid h-8 w-8 place-items-center rounded-[var(--radius-md)] transition-all duration-150",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
         active
-          ? "bg-[var(--accent-bg)] text-[color:var(--accent)]"
-          : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+          ? "glass-active-ring"
+          : "text-[color:var(--text-secondary)] hover:bg-[var(--glass-bg-subtle)] hover:text-[color:var(--text-primary)] hover:shadow-[inset_0_1px_0_var(--glass-highlight)]",
       )}
     >
       {children}
@@ -500,7 +500,7 @@ function VisibilityDropdown() {
         <DropdownMenu.Content
           align="end"
           sideOffset={6}
-          className="z-[1000] min-w-[220px] rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] shadow-[var(--shadow-elev-2)] p-1"
+          className="z-[1000] min-w-[220px] rounded-[var(--radius-md)] glass-surface-strong p-1"
         >
           {items.map((i) => (
             <DropdownMenu.CheckboxItem
@@ -964,14 +964,15 @@ export function EditorToolbar({
     <div
       role="toolbar"
       aria-label="Annotation tools"
+      data-testid="editor-toolbar"
       className={cn(
-        "h-10 shrink-0 flex items-center gap-1 px-2",
-        "border-b border-[var(--border-subtle)] bg-[var(--bg-app)]",
+        "relative h-11 shrink-0 mx-2 mt-2 flex items-center gap-1 px-2.5 rounded-2xl",
+        "glass-surface-strong glass-specular",
       )}
     >
       <UndoRedoControls onUndo={onUndo} onRedo={onRedo} />
 
-      <span aria-hidden className="mx-1 h-5 w-px bg-[var(--border-subtle)]" />
+      <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
       {TOOLS.map((t) => (
         <ToolButton
@@ -985,13 +986,13 @@ export function EditorToolbar({
         </ToolButton>
       ))}
 
-      <span aria-hidden className="mx-1 h-5 w-px bg-[var(--border-subtle)]" />
+      <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
       <SamModelPicker />
       <AutoApplyToggle />
       <MaskBrushSizeControl />
 
-      <span aria-hidden className="mx-1 h-5 w-px bg-[var(--border-subtle)]" />
+      <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
       <VisibilityDropdown />
 
@@ -1023,7 +1024,7 @@ export function EditorToolbar({
         onZoomActual={onZoomActual}
       />
 
-      <span aria-hidden className="mx-1 h-5 w-px bg-[var(--border-subtle)]" />
+      <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
       <SaveIndicator
         isSaving={isSaving}

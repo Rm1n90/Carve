@@ -92,21 +92,33 @@ function NavItem({ label, to, active, icon }: NavItemProps) {
   const inner = (
     <span
       className={cn(
-        "relative flex items-center gap-2 pl-5 pr-2 py-1.5",
-        "text-[13px] tracking-tight",
+        "relative flex items-center gap-2 pl-5 pr-2 py-1.5 mx-1 rounded-[var(--radius-sm)]",
+        "text-[13px] tracking-tight transition-colors duration-150",
         active
-          ? "bg-[var(--bg-hover)] text-[color:var(--text-primary)]"
-          : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+          ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
+          : "text-[color:var(--text-secondary)] hover:bg-[var(--accent-bg)]/60 hover:text-[color:var(--text-primary)]",
       )}
     >
       {active && (
-        <span
-          aria-hidden
-          className="absolute left-0 top-1 bottom-1 w-[2px] bg-[var(--accent)] rounded-r-[2px]"
-        />
+        <>
+          <span
+            aria-hidden
+            className={cn(
+              "absolute left-0 top-1 bottom-1 w-[2px] rounded-r-[2px]",
+              "bg-[var(--accent)]",
+              "shadow-[0_0_10px_oklch(0.78_0.14_220_/_0.45)]",
+            )}
+          />
+          {/* Subtle inner glow that hugs the row left edge — accentuates
+              the active rail without pulling the eye off the label. */}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 rounded-[var(--radius-sm)] bg-gradient-to-r from-[var(--accent-bg)] to-transparent opacity-60"
+          />
+        </>
       )}
-      {icon && <span className="text-[color:var(--text-tertiary)]">{icon}</span>}
-      <span className="flex-1 truncate">{label}</span>
+      {icon && <span className="relative z-10 text-[color:var(--text-tertiary)]">{icon}</span>}
+      <span className="relative z-10 flex-1 truncate">{label}</span>
     </span>
   );
   if (to) {
@@ -137,13 +149,19 @@ export function LeftNav() {
   return (
     <aside
       aria-label="Primary navigation"
+      data-testid="left-nav"
       className={cn(
-        "w-[220px] shrink-0 h-full flex flex-col",
-        "border-r border-[var(--border-subtle)] bg-[var(--bg-nav)] nav-atmosphere",
+        "relative w-[220px] shrink-0 h-full flex flex-col",
+        // glass-surface paints background + hairline border + backdrop
+        // blur. We layer the existing atmospheric cyan radial on top so
+        // the nav still feels alive at the crown.
+        "glass-surface nav-atmosphere",
+        // Keep an explicit right border as a non-blur fallback.
+        "border-r border-[var(--glass-border)]",
       )}
     >
       {/* Search */}
-      <div className="px-3 pt-3 pb-2">
+      <div className="relative z-10 px-3 pt-3 pb-2">
         <div className="relative">
           <Search
             aria-hidden
@@ -157,8 +175,8 @@ export function LeftNav() {
             aria-label="Search"
             className={cn(
               "w-full h-8 pl-8 pr-2 rounded-[var(--radius-sm)]",
-              "bg-[var(--bg-app)] text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
-              "border border-[var(--border-subtle)] text-[12.5px]",
+              "glass-surface-subtle text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
+              "text-[12.5px]",
               "focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[rgba(99,102,241,0.16)]",
             )}
           />
@@ -166,20 +184,29 @@ export function LeftNav() {
       </div>
 
       {/* Workspace label + active pill */}
-      <div className="px-3 pt-2 pb-2 grid gap-1.5">
+      <div className="relative z-10 px-3 pt-2 pb-2 grid gap-1.5">
         <p className="text-[10px] tracking-[0.08em] uppercase text-[color:var(--text-tertiary)] font-medium">
           Workspace
         </p>
-        <div className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)]">
-          <span className="grid h-5 w-5 place-items-center rounded-[3px] bg-[var(--accent)] text-[color:var(--accent-fg)] text-[10px] font-medium">
+        <div
+          className={cn(
+            "flex items-center gap-2 px-2 py-1.5 rounded-full",
+            "glass-chip",
+          )}
+        >
+          <span className="grid h-5 w-5 place-items-center rounded-full bg-[var(--accent)] text-[color:var(--accent-fg)] text-[10px] font-semibold">
             C
           </span>
           <span className="text-[13px] tracking-tight font-medium">Carve</span>
+          <span
+            aria-hidden
+            className="ml-auto h-1.5 w-1.5 rounded-full bg-[var(--accent)] shadow-[0_0_6px_oklch(0.78_0.14_220_/_0.6)]"
+          />
         </div>
       </div>
 
       {/* Sections */}
-      <nav className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 grid gap-2 content-start">
+      <nav className="relative z-10 flex-1 min-h-0 overflow-y-auto px-2 pb-2 grid gap-2 content-start">
         <Section label="Annotate" icon={<Pencil className="h-3.5 w-3.5" />} initiallyOpen>
           <NavItem
             label="Datasets"
@@ -252,7 +279,7 @@ export function LeftNav() {
 
       {/* Footer: user dropdown */}
       {user && (
-        <div className="border-t border-[var(--border-subtle)] px-2 py-2">
+        <div className="relative z-10 border-t border-[var(--glass-border)] px-2 py-2">
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button
@@ -284,8 +311,8 @@ export function LeftNav() {
                 align="start"
                 sideOffset={6}
                 className={cn(
-                  "min-w-[180px] rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
-                  "shadow-[var(--shadow-elev-2)] p-1 z-50",
+                  "min-w-[180px] rounded-[var(--radius-md)]",
+                  "glass-surface-strong p-1 z-50",
                 )}
               >
                 <DropdownMenu.Item asChild>

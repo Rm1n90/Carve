@@ -534,9 +534,15 @@ export function ClassesPanel({
     <section
       role="complementary"
       aria-label="Classes"
-      className="h-full flex flex-col bg-[var(--bg-app)]"
+      className="h-full flex flex-col bg-transparent"
     >
-      <div className="px-2.5 pt-3 pb-2 border-b border-[var(--border-subtle)] grid gap-2">
+      <div className="px-2.5 pt-3 pb-2 border-b border-[var(--glass-border)] grid gap-2">
+        <h3
+          aria-hidden
+          className="font-editorial text-[18px] leading-none text-[color:var(--text-primary)] px-0.5"
+        >
+          Classes
+        </h3>
         <div className="flex items-center gap-1.5">
           <div className="relative flex-1">
             <Search
@@ -552,8 +558,8 @@ export function ClassesPanel({
               data-testid="classes-search-input"
               className={cn(
                 "w-full h-8 pl-8 pr-2 rounded-[var(--radius-sm)]",
-                "bg-[var(--bg-elev)] text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
-                "border border-[var(--border-subtle)] text-[12.5px]",
+                "glass-surface-subtle text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
+                "text-[12.5px]",
                 "focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[rgba(99,102,241,0.16)]",
               )}
             />
@@ -566,8 +572,7 @@ export function ClassesPanel({
                 data-testid="classes-sort-trigger"
                 className={cn(
                   "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
-                  "text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-                  "border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
+                  "glass-chip text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]",
                 )}
               >
                 {(() => {
@@ -580,7 +585,7 @@ export function ClassesPanel({
               <DropdownMenu.Content
                 align="end"
                 sideOffset={6}
-                className="z-[1000] min-w-[180px] rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] shadow-[var(--shadow-elev-2)] p-1"
+                className="z-[1000] min-w-[180px] rounded-[var(--radius-md)] glass-surface-strong p-1"
               >
                 {(["idx", "name-asc", "name-desc", "count-asc", "count-desc"] as SortMode[]).map(
                   (key) => {

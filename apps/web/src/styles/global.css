@@ -380,6 +380,64 @@
   opacity: 0.6;
 }
 
+/* Tooltip-tuned glass — same liquid surface, but a tighter shadow so the
+   tooltip reads as "close to the cursor" rather than "lifted modal". */
+.glass-tooltip {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border-strong);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow:
+    0 1px 0 oklch(0.98 0 0 / 0.06) inset,
+    0 0 0 0.5px oklch(0.98 0 0 / 0.10) inset,
+    0 4px 16px oklch(0 0 0 / 0.40);
+}
+
+[data-theme="light"] .glass-tooltip {
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.85) inset,
+    0 0 0 0.5px oklch(0.20 0 0 / 0.05) inset,
+    0 4px 16px oklch(0 0 0 / 0.10);
+}
+
+/* Glass chip — small interactive pill (theme toggle, status badge, etc.).
+   Keeps the liquid surface, but with a tighter blur and zero shadow so it
+   doesn't compete with surrounding chrome. Pair with hover-lift transitions
+   inline to get the subtle translate + brighter highlight on hover. */
+.glass-chip {
+  background: var(--glass-bg-subtle);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(calc(var(--glass-blur) * 0.5)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 0.5)) saturate(var(--glass-saturate));
+  transition:
+    background-color var(--duration-fast) var(--ease-out-expo),
+    border-color var(--duration-fast) var(--ease-out-expo),
+    transform var(--duration-fast) var(--ease-out-expo);
+}
+
+.glass-chip:hover {
+  background: var(--glass-bg);
+  border-color: var(--glass-border-strong);
+  transform: translateY(-1px);
+}
+
+/* Active-tool ring — soft cyan glow used on the editor toolbar's active
+   tool button so the selected mode is unambiguously highlighted on top of
+   the glass chrome. */
+.glass-active-ring {
+  background: var(--accent-bg);
+  color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--border-accent),
+    0 0 16px oklch(0.78 0.14 220 / 0.25);
+}
+
+[data-theme="light"] .glass-active-ring {
+  box-shadow:
+    0 0 0 1px var(--border-accent),
+    0 0 14px oklch(0.62 0.18 220 / 0.18);
+}
+
 /* Editorial display utility for Instrument Serif moments —
    dialog titles, page headers, hero numbers. */
 .font-editorial {
@@ -387,6 +445,13 @@
   font-style: italic;
   font-weight: 400;
   letter-spacing: -0.01em;
+}
+
+/* Tabular numerals utility — keeps stat tile numbers aligned across rows. */
+.tabular-tight {
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
 }
 
 /* ============================================================

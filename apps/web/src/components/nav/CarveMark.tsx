@@ -1,21 +1,32 @@
 import { cn } from "@/lib/cn";
 
 /**
- * Carve wordmark — flat indigo "C" tile + "Carve" text. Used in TopBar.
- * Replaces the previous inline SVG mark in AppShell.tsx.
+ * Carve wordmark — editorial Instrument Serif italic "Carve" with a
+ * cyan accent dot. Used in TopBar.
+ *
+ * v2.8 Wave 3 — replaces the prior solid-tile + Geist "Carve" treatment.
+ * The serif italic is the editorial signature of the v2.8 visual system,
+ * paired with the cyan dot that signals "Carve is online" without
+ * needing a logo asset.
  */
 export function CarveMark({ className }: { className?: string }) {
   return (
-    <span className={cn("inline-flex items-center gap-2", className)}>
+    <span className={cn("inline-flex items-baseline gap-1.5", className)}>
       <span
-        aria-hidden
-        className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-[color:var(--accent-fg)] text-[13px] font-semibold tracking-tight"
+        className={cn(
+          "font-editorial text-[22px] leading-none",
+          "text-[color:var(--text-primary)]",
+        )}
       >
-        C
-      </span>
-      <span className="text-[14px] font-semibold tracking-tight text-[color:var(--text-primary)]">
         Carve
       </span>
+      <span
+        aria-hidden
+        className={cn(
+          "h-1.5 w-1.5 self-center rounded-full bg-[var(--accent)]",
+          "shadow-[0_0_8px_oklch(0.78_0.14_220_/_0.55)]",
+        )}
+      />
     </span>
   );
 }

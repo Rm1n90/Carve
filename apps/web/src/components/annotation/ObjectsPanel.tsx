@@ -137,11 +137,13 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
 
   return (
     <section aria-label="Objects on this frame" className="grid gap-2">
-      <header className="flex items-center justify-between">
-        <h3 className="text-[11px] uppercase tracking-[0.10em] text-tertiary font-medium">
+      <header className="flex items-baseline justify-between">
+        <h3 className="font-editorial text-[18px] leading-none text-[color:var(--text-primary)]">
           Objects
         </h3>
-        <span className="font-mono-data text-[10px] text-tertiary">{items.length}</span>
+        <span className="font-mono-data text-[10px] text-tertiary tabular-tight">
+          {items.length}
+        </span>
       </header>
       {filterActive && (
         <div

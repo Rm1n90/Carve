@@ -36,11 +36,14 @@ export function ProjectsPage() {
     <div className="mx-auto grid max-w-[1100px] gap-5">
       {/* ---- Header ---- */}
       <header className="flex items-baseline justify-between gap-4 flex-wrap">
-        <div className="grid gap-0.5">
-          <h1 className="text-[20px] font-medium tracking-tight text-[color:var(--text-primary)]">
+        <div className="grid gap-1">
+          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+            Workspace
+          </span>
+          <h1 className="font-editorial text-[36px] leading-[0.95] text-[color:var(--text-primary)]">
             Projects
           </h1>
-          <p className="text-[12.5px] text-[color:var(--text-tertiary)]">
+          <p className="text-[12.5px] text-[color:var(--text-tertiary)] mt-0.5">
             Carve datasets and annotation workspaces.
           </p>
         </div>

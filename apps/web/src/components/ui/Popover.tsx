@@ -28,8 +28,8 @@ export const PopoverContent = forwardRef<HTMLDivElement, PopoverContentProps>(
           side={side}
           sideOffset={sideOffset}
           className={cn(
-            "z-[1000] min-w-[200px] rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
-            "bg-[var(--bg-elev)] shadow-[var(--shadow-elev-2)] p-1.5",
+            "z-[1000] min-w-[200px] rounded-[var(--radius-md)]",
+            "glass-surface-strong p-1.5",
             "text-[color:var(--text-primary)]",
             "outline-none",
             className,

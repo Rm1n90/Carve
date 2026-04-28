@@ -615,8 +615,8 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 >
                   <div
                     className={cn(
-                      "max-w-[420px] rounded-[var(--radius-md)] border border-[var(--border-strong)]",
-                      "bg-[var(--bg-elev)] shadow-[var(--shadow-elev-2)] p-4 grid gap-2.5",
+                      "max-w-[420px] rounded-[var(--radius-lg)]",
+                      "glass-surface-strong p-4 grid gap-2.5",
                     )}
                   >
                     <div className="flex items-center gap-2 text-[color:var(--danger)]">
@@ -693,21 +693,31 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
               aria-label="Classes"
               data-testid="right-panel-aside"
               style={{ width: `${rightPanel.width}px` }}
-              className="shrink-0 border-l border-[var(--border-subtle)] bg-[var(--bg-app)] flex flex-col"
+              className={cn(
+                "relative shrink-0 flex flex-col",
+                // Glass-strong right panel — only the LEFT rim border is
+                // styled (a hairline that separates the panel from the
+                // canvas) so the panel reads as "emerging from the right
+                // edge" rather than a fully bordered card.
+                "glass-surface-strong",
+                "border-y-0 border-r-0 border-l border-[var(--glass-border)]",
+              )}
             >
-              <Tabs.Root defaultValue="classes" className="flex-1 min-h-0 flex flex-col">
+              <Tabs.Root defaultValue="classes" className="relative flex-1 min-h-0 flex flex-col">
                 <Tabs.List
                   aria-label="Side panel"
-                  className="flex shrink-0 border-b border-[var(--border-subtle)] px-2 pt-2 gap-1"
+                  className="flex shrink-0 border-b border-[var(--glass-border)] px-2 pt-2 gap-1 bg-transparent"
                 >
                   <Tabs.Trigger
                     value="classes"
                     className={cn(
-                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-t-[var(--radius-sm)]",
-                      "text-[color:var(--text-tertiary)] border-b-2 border-transparent",
-                      "hover:text-[color:var(--text-primary)]",
-                      "data-[state=active]:text-[color:var(--text-primary)] data-[state=active]:border-[var(--accent)]",
-                      "transition-colors",
+                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-full",
+                      "text-[color:var(--text-tertiary)]",
+                      "hover:text-[color:var(--text-primary)] hover:bg-[var(--glass-bg-subtle)]",
+                      "data-[state=active]:text-[color:var(--text-primary)]",
+                      "data-[state=active]:bg-[var(--glass-bg-subtle)]",
+                      "data-[state=active]:shadow-[inset_0_1px_0_var(--glass-highlight),0_0_0_1px_var(--glass-border)]",
+                      "transition-all duration-150",
                     )}
                   >
                     Classes
@@ -715,11 +725,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   <Tabs.Trigger
                     value="objects"
                     className={cn(
-                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-t-[var(--radius-sm)]",
-                      "text-[color:var(--text-tertiary)] border-b-2 border-transparent",
-                      "hover:text-[color:var(--text-primary)]",
-                      "data-[state=active]:text-[color:var(--text-primary)] data-[state=active]:border-[var(--accent)]",
-                      "transition-colors",
+                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-full",
+                      "text-[color:var(--text-tertiary)]",
+                      "hover:text-[color:var(--text-primary)] hover:bg-[var(--glass-bg-subtle)]",
+                      "data-[state=active]:text-[color:var(--text-primary)]",
+                      "data-[state=active]:bg-[var(--glass-bg-subtle)]",
+                      "data-[state=active]:shadow-[inset_0_1px_0_var(--glass-highlight),0_0_0_1px_var(--glass-border)]",
+                      "transition-all duration-150",
                     )}
                   >
                     Objects

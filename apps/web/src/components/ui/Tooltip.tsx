@@ -31,14 +31,18 @@ export function Tooltip({
           sideOffset={6}
           className={cn(
             "z-[1000] px-2 py-1",
-            "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-            "bg-[#111827] text-white",
-            "shadow-[var(--shadow-elev-2)]",
+            "rounded-[var(--radius-sm)]",
+            "glass-tooltip text-[color:var(--text-primary)]",
             "text-[11px] font-medium tracking-tight",
             className,
           )}
         >
           {content}
+          <TooltipPrimitive.Arrow
+            className="fill-[var(--glass-bg-strong)]"
+            width={10}
+            height={5}
+          />
         </TooltipPrimitive.Content>
       </TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>
