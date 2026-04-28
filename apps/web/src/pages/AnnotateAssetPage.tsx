@@ -7,6 +7,7 @@ import {
   AlertCircle,
   ChevronLeft,
   ChevronRight,
+  Info,
   Loader2,
   RefreshCw,
 } from "lucide-react";
@@ -15,6 +16,7 @@ import { AnnotationCanvas, type ImageLoadStatus } from "@/components/annotation/
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
 import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
+import { InfoDialog } from "@/components/annotation/InfoDialog";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
@@ -29,6 +31,7 @@ import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
 import { useAnnotations } from "@/state/annotations";
+import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import { cn } from "@/lib/cn";
@@ -80,6 +83,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     }
   }, [currentFrameIdx]);
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
+  // v2.6 — Info dialog (CVAT-style task overview + per-class stats).
+  // Aggregates from the in-memory annotations store; no extra API calls.
+  const [infoOpen, setInfoOpen] = useState(false);
   // Image load lifecycle. Phase A core 1 — without this, image load failures
   // were invisible and the user just saw an empty canvas.
   const [imageStatus, setImageStatus] = useState<ImageLoadStatus>("loading");
@@ -598,7 +604,21 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   </div>
                 </div>
               )}
-              <div className="absolute top-2 right-2 z-20">
+              <div className="absolute top-2 right-2 z-20 flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Show task info"
+                  data-testid="info-dialog-trigger"
+                  title="Task info"
+                  onClick={() => setInfoOpen(true)}
+                  className={cn(
+                    "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
+                    "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+                    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
+                  )}
+                >
+                  <Info className="h-[18px] w-[18px]" />
+                </button>
                 <KeyboardCheatSheet />
               </div>
             </main>
@@ -695,6 +715,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       </div>
 
       <CommandPalette classes={classesQ.data ?? []} onSaveNow={saveNow} />
+
+      <InfoDialog
+        open={infoOpen}
+        onOpenChange={setInfoOpen}
+        asset={assetQ.data}
+        totalAssets={taskAssets.length}
+        classes={classesQ.data ?? []}
+        assigneeEmail={useAuth.getState().user?.email ?? null}
+      />
     </div>
     </TooltipProvider>
   );
