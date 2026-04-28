@@ -24,6 +24,13 @@ asset_router = APIRouter(prefix="/assets", tags=["assets"])
 # limit=999999 in the URL.
 _MAX_PAGE_LIMIT = 500
 
+# v2.6: raised from "100/minute" so an authenticated user can drop a
+# typical batch of a few hundred images without tripping a 429 mid-loop.
+# The web client uploads sequentially, so 1000 RPM caps a sustained
+# adversary while leaving normal batches well within budget. The zip
+# upload endpoint stays at 100/minute since one zip carries many images.
+SINGLE_ASSET_UPLOAD_LIMIT = "1000/minute"
+
 
 def _enqueue_post_upload(asset) -> None:
     """Best-effort enqueue of post-upload work; swallow Redis errors so HTTP returns succeed even if Redis is down."""
@@ -56,7 +63,7 @@ def _require_visible_task(db: Session, user: User, task_id: uuid.UUID) -> TaskMo
 
 
 @router.post("/{task_id}/assets", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
-@limiter.limit("100/minute")
+@limiter.limit(SINGLE_ASSET_UPLOAD_LIMIT)
 async def upload_asset(
     request: Request,
     task_id: uuid.UUID,
