@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
@@ -85,6 +85,7 @@ interface EditorToolbarProps {
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onZoomTo?: (pct: number) => void;
+  onZoomActual?: () => void;
   onUndo?: () => void;
   onRedo?: () => void;
   zoomPct?: number;
@@ -615,70 +616,184 @@ function AutoApplyToggle() {
   );
 }
 
+/**
+ * Zoom % display + presets popover. Clicking the % toggles into an
+ * inline numeric input — typing a number and pressing Enter sets the
+ * canvas zoom to that exact percentage. v2.6 zoom — replaces the
+ * previous read-only popover.
+ */
+function ZoomPercent({
+  zoomPct,
+  onZoomTo,
+}: {
+  zoomPct: number;
+  onZoomTo?: (p: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(Math.round(zoomPct)));
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Keep the draft in sync with the live zoom when not editing — so
+  // returning to display mode shows the current value rather than the
+  // last entered draft.
+  useEffect(() => {
+    if (!editing) setDraft(String(Math.round(zoomPct)));
+  }, [zoomPct, editing]);
+
+  function commit(): void {
+    const n = Number(draft);
+    if (Number.isFinite(n) && n > 0) {
+      // Clamp to the canvas' allowed range (mirrors zoom.MIN_SCALE /
+      // MAX_SCALE — kept here as raw numbers so the toolbar doesn't
+      // need to import the canvas helpers).
+      const clamped = Math.max(10, Math.min(1000, n));
+      onZoomTo?.(clamped);
+    }
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={(el) => {
+          inputRef.current = el;
+          if (el) {
+            // Auto-focus + select on enter so the user can type directly.
+            requestAnimationFrame(() => {
+              try {
+                el.focus();
+                el.select();
+              } catch {
+                /* ignore focus errors */
+              }
+            });
+          }
+        }}
+        type="number"
+        min={10}
+        max={1000}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          else if (e.key === "Escape") {
+            setDraft(String(Math.round(zoomPct)));
+            setEditing(false);
+          }
+        }}
+        data-testid="zoom-percent-input"
+        aria-label="Zoom percentage"
+        className={cn(
+          "h-8 w-16 px-1 rounded-[var(--radius-sm)] font-mono text-[11.5px] tabular-nums text-center",
+          "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
+          "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
+        )}
+      />
+    );
+  }
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-testid="zoom-percent"
+          aria-label="Zoom level"
+          title="Zoom level — click to enter exact %"
+          onDoubleClick={() => setEditing(true)}
+          className="h-8 px-2 rounded-[var(--radius-sm)] font-mono text-[11.5px] text-[color:var(--text-secondary)] tabular-nums hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
+        >
+          {Math.round(zoomPct)}%
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="center" className="min-w-[180px] p-1">
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          data-testid="zoom-enter-exact"
+          className="w-full text-left px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] hover:bg-[var(--bg-hover)]"
+        >
+          Enter exact %…
+        </button>
+        <div className="my-1 h-px bg-[var(--border-subtle)]" aria-hidden />
+        {[25, 50, 100, 200, 400].map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => onZoomTo?.(p)}
+            className="w-full text-left px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] hover:bg-[var(--bg-hover)]"
+          >
+            {p}%
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => onZoomTo?.(0)}
+          className="w-full text-left px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] hover:bg-[var(--bg-hover)]"
+        >
+          Fit
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function ZoomControls({
   zoomPct,
   onZoomIn,
   onZoomOut,
   onZoomTo,
+  onZoomActual,
 }: {
   zoomPct?: number;
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onZoomTo?: (p: number) => void;
+  onZoomActual?: () => void;
 }) {
   const z = zoomPct ?? 100;
   return (
     <div className="flex items-center gap-0.5" data-testid="zoom-controls">
-      <Tooltip content="Zoom out">
+      <Tooltip content="Zoom out (−)">
         <button
           type="button"
           onClick={onZoomOut}
           aria-label="Zoom out"
+          data-testid="zoom-out"
           className="grid h-8 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
         >
           <Minus className="h-3.5 w-3.5" />
         </button>
       </Tooltip>
-      <Popover>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            data-testid="zoom-percent"
-            aria-label="Zoom level"
-            title="Zoom level"
-            className="h-8 px-2 rounded-[var(--radius-sm)] font-mono text-[11.5px] text-[color:var(--text-secondary)] tabular-nums hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
-          >
-            {Math.round(z)}%
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="center" className="min-w-[160px] p-1">
-          {[50, 100, 200].map((p) => (
-            <button
-              key={p}
-              type="button"
-              onClick={() => onZoomTo?.(p)}
-              className="w-full text-left px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] hover:bg-[var(--bg-hover)]"
-            >
-              {p}%
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => onZoomTo?.(0)}
-            className="w-full text-left px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] hover:bg-[var(--bg-hover)]"
-          >
-            Fit
-          </button>
-        </PopoverContent>
-      </Popover>
-      <Tooltip content="Zoom in">
+      <ZoomPercent zoomPct={z} onZoomTo={onZoomTo} />
+      <Tooltip content="Zoom in (+)">
         <button
           type="button"
           onClick={onZoomIn}
           aria-label="Zoom in"
+          data-testid="zoom-in"
           className="grid h-8 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
         >
           <Plus className="h-3.5 w-3.5" />
+        </button>
+      </Tooltip>
+      <Tooltip
+        content={
+          <span className="flex items-center gap-1.5">
+            Actual size
+            <Kbd className="bg-white/10 text-white border-white/20">1</Kbd>
+          </span>
+        }
+      >
+        <button
+          type="button"
+          onClick={onZoomActual}
+          aria-label="Zoom to 1:1"
+          data-testid="zoom-actual"
+          className="h-8 px-1.5 rounded-[var(--radius-sm)] font-mono text-[10.5px] tabular-nums text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
+        >
+          1:1
         </button>
       </Tooltip>
     </div>
@@ -756,6 +871,7 @@ export function EditorToolbar({
   onZoomIn,
   onZoomOut,
   onZoomTo,
+  onZoomActual,
   onUndo,
   onRedo,
   zoomPct,
@@ -773,12 +889,52 @@ export function EditorToolbar({
   // even when the dialog is closed.
   const filterActive = useFilter((s) => hasMeaningfulRules(s.filter));
 
-  // Single-letter hotkeys (V/B/P/M/T/S/A/F) trigger tool selection.
+  // Single-letter hotkeys (V/B/P/M/T/S/A/F) trigger tool selection,
+  // plus zoom-related keys: + / - / 0 / 1 / Cmd|Ctrl + + / -. v2.6 zoom.
   useEffect(() => {
     function handler(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      // Cmd / Ctrl + (+ / -) — match the browser default keys but route
+      // them through the canvas instead of letting the page zoom. The
+      // user expects ⌘+ to zoom the image, not the whole tab.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+        if (e.key === "+" || e.key === "=") {
+          e.preventDefault();
+          onZoomIn?.();
+          return;
+        }
+        if (e.key === "-" || e.key === "_") {
+          e.preventDefault();
+          onZoomOut?.();
+          return;
+        }
+        if (e.key === "0") {
+          e.preventDefault();
+          onFitToScreen?.();
+          return;
+        }
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // Bare zoom shortcuts. Use `e.key` directly (not toLowerCase) so
+      // shifted keys like `+` and `_` still match.
+      if (e.key === "+" || e.key === "=") {
+        onZoomIn?.();
+        return;
+      }
+      if (e.key === "-" || e.key === "_") {
+        onZoomOut?.();
+        return;
+      }
+      if (e.key === "0") {
+        onFitToScreen?.();
+        return;
+      }
+      if (e.key === "1") {
+        onZoomActual?.();
+        return;
+      }
       const k = e.key.toLowerCase();
       if (k === "a") {
         toggleAutoApply();
@@ -795,7 +951,14 @@ export function EditorToolbar({
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [setActive, toggleAutoApply, onFitToScreen]);
+  }, [
+    setActive,
+    toggleAutoApply,
+    onFitToScreen,
+    onZoomIn,
+    onZoomOut,
+    onZoomActual,
+  ]);
 
   return (
     <div
@@ -857,6 +1020,7 @@ export function EditorToolbar({
         onZoomIn={onZoomIn}
         onZoomOut={onZoomOut}
         onZoomTo={onZoomTo}
+        onZoomActual={onZoomActual}
       />
 
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--border-subtle)]" />

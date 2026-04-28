@@ -525,14 +525,23 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             hasError={hasError}
             dirtyCount={dirtyCount}
             zoomPct={zoomPct}
-            onZoomIn={() => setZoomPct((z) => Math.min(800, z + 25))}
-            onZoomOut={() => setZoomPct((z) => Math.max(10, z - 25))}
+            onZoomIn={() => {
+              window.dispatchEvent(new CustomEvent("carve:zoom-in"));
+            }}
+            onZoomOut={() => {
+              window.dispatchEvent(new CustomEvent("carve:zoom-out"));
+            }}
             onZoomTo={(p) => {
               if (p === 0) {
                 window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
               } else {
-                setZoomPct(p);
+                window.dispatchEvent(
+                  new CustomEvent("carve:zoom-to", { detail: { pct: p } }),
+                );
               }
+            }}
+            onZoomActual={() => {
+              window.dispatchEvent(new CustomEvent("carve:zoom-actual"));
             }}
             onFitToScreen={() => {
               window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
