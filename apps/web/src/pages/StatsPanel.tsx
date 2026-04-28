@@ -46,9 +46,9 @@ export interface StatsPanelProps {
 // Shared styling
 // ---------------------------------------------------------------------------
 const cardClass =
-  "flex flex-col gap-3 min-h-[260px] rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-5";
+  "flex flex-col gap-2 min-h-[200px] rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-3";
 const headingClass =
-  "text-[12px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)] font-medium flex items-center gap-1.5";
+  "text-[11px] uppercase tracking-[0.08em] text-[color:var(--text-tertiary)] font-medium flex items-center gap-1.5 leading-none";
 const placeholderClass = "text-[13px] text-[color:var(--text-tertiary)]";
 const errorClass = "text-[13px] text-[color:var(--danger)]";
 
@@ -82,26 +82,23 @@ interface EmptyStateProps {
   title: string;
   hint?: string;
 }
-function EmptyState({ icon, title, hint }: EmptyStateProps) {
+function EmptyState({ icon, title, hint: _hint }: EmptyStateProps) {
+  // Compact empty state: small icon (16px) + 1-line message. Hint dropped to
+  // keep cards tight when the dataset is empty, per v2.6 layout-density spec.
   return (
     <div
       data-testid="stats-empty-state"
-      className="flex flex-1 flex-col items-center justify-center gap-2 py-6 text-center"
+      className="flex flex-1 items-center justify-center gap-2 py-2 text-center"
     >
       <span
         aria-hidden
-        className="grid h-9 w-9 place-items-center rounded-full bg-[var(--bg-subtle)] text-[color:var(--text-tertiary)]"
+        className="grid h-4 w-4 place-items-center text-[color:var(--text-tertiary)] shrink-0"
       >
         {icon}
       </span>
-      <p className="text-[13px] text-[color:var(--text-secondary)] tracking-tight">
+      <p className="text-[12px] text-[color:var(--text-tertiary)] tracking-tight truncate">
         {title}
       </p>
-      {hint && (
-        <p className="max-w-[260px] text-[11.5px] text-[color:var(--text-tertiary)] leading-relaxed">
-          {hint}
-        </p>
-      )}
     </div>
   );
 }
@@ -134,18 +131,18 @@ function ClassFrequencyCard({ taskId }: { taskId: string }) {
       )}
       {q.data && total > 0 && (
         <>
-          <ResponsiveContainer width="100%" height={180}>
+          <ResponsiveContainer width="100%" height={140}>
             <BarChart
               data={q.data}
               layout="vertical"
-              margin={{ left: 8, right: 16 }}
+              margin={{ left: 0, right: 8, top: 0, bottom: 0 }}
             >
               <XAxis type="number" hide />
               <YAxis
                 type="category"
                 dataKey="class_name"
-                width={80}
-                tick={{ fontSize: 11 }}
+                width={70}
+                tick={{ fontSize: 10.5 }}
               />
               <Tooltip />
               <Bar dataKey="count">
@@ -155,7 +152,7 @@ function ClassFrequencyCard({ taskId }: { taskId: string }) {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-          <ul className="m-0 pl-4 text-[12px] list-disc">
+          <ul className="m-0 pl-4 text-[11.5px] list-disc leading-tight">
             {q.data.map((r) => {
               const pct = total > 0 ? Math.round((r.count / total) * 100) : 0;
               return (
@@ -195,8 +192,8 @@ function ProgressCard({ taskId }: { taskId: string }) {
       )}
       {q.data && q.data.total_frames > 0 && (
         <>
-          <ResponsiveContainer width="100%" height={160}>
-            <PieChart>
+          <ResponsiveContainer width="100%" height={130}>
+            <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
               <Pie
                 data={[
                   { name: "labeled", value: q.data.labeled_frames },
@@ -209,8 +206,8 @@ function ProgressCard({ taskId }: { taskId: string }) {
                   },
                 ]}
                 dataKey="value"
-                innerRadius={45}
-                outerRadius={70}
+                innerRadius={36}
+                outerRadius={58}
                 startAngle={90}
                 endAngle={-270}
               >
@@ -220,7 +217,7 @@ function ProgressCard({ taskId }: { taskId: string }) {
               <Tooltip />
             </PieChart>
           </ResponsiveContainer>
-          <p className="text-center font-mono text-[13px] text-[color:var(--text-secondary)] tabular-nums">
+          <p className="text-center font-mono text-[12px] text-[color:var(--text-secondary)] tabular-nums leading-tight">
             {q.data.labeled_frames} / {q.data.total_frames} frames
           </p>
         </>
@@ -264,18 +261,18 @@ function SizeDistributionCard({ taskId }: { taskId: string }) {
       )}
       {q.data && total > 0 && (
         <>
-          <ResponsiveContainer width="100%" height={160}>
-            <PieChart>
-              <Pie data={data} dataKey="value" innerRadius={45} outerRadius={70}>
+          <ResponsiveContainer width="100%" height={130}>
+            <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+              <Pie data={data} dataKey="value" innerRadius={36} outerRadius={58}>
                 {data.map((d) => (
                   <Cell key={d.name} fill={d.fill} />
                 ))}
               </Pie>
-              <Legend />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
               <Tooltip />
             </PieChart>
           </ResponsiveContainer>
-          <ul className="m-0 pl-4 text-[12px] list-disc">
+          <ul className="m-0 pl-4 text-[11.5px] list-disc leading-tight">
             {data.map((d) => (
               <li key={d.name} style={{ color: d.fill }}>
                 {d.name}: {d.value}
@@ -316,6 +313,7 @@ function HeatmapCard({ taskId }: { taskId: string }) {
       )}
       {q.data && max > 0 && (
         <div
+          className="mx-auto w-full max-w-[160px]"
           style={{
             display: "grid",
             gridTemplateColumns: `repeat(${q.data.bins}, 1fr)`,
@@ -372,10 +370,10 @@ function AspectRatioCard({ taskId }: { taskId: string }) {
         />
       )}
       {q.data && total > 0 && (
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={data} margin={{ left: 8, right: 8, top: 8, bottom: 8 }}>
-            <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-            <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+        <ResponsiveContainer width="100%" height={140}>
+          <BarChart data={data} margin={{ left: 0, right: 4, top: 4, bottom: 0 }}>
+            <XAxis dataKey="name" tick={{ fontSize: 10.5 }} />
+            <YAxis allowDecimals={false} tick={{ fontSize: 10.5 }} width={28} />
             <Tooltip />
             <Bar dataKey="value" fill="rgb(150, 200, 255)" />
           </BarChart>
@@ -408,11 +406,11 @@ function TimeOnTaskCard({ taskId }: { taskId: string }) {
         />
       )}
       {q.data && q.data.length > 0 && (
-        <ul className="m-0 p-0 list-none text-[13px]">
+        <ul className="m-0 p-0 list-none text-[12px]">
           {q.data.map((row) => (
             <li
               key={row.user_id}
-              className="flex justify-between gap-2 py-1 border-b border-[var(--border-subtle)]"
+              className="flex h-7 items-center justify-between gap-2 border-b border-[var(--border-subtle)] last:border-b-0"
             >
               <span className="text-[color:var(--text-secondary)] tracking-tight truncate">
                 {row.email}
@@ -434,7 +432,7 @@ function TimeOnTaskCard({ taskId }: { taskId: string }) {
 function StatsGrid({ taskId }: { taskId: string }) {
   return (
     <div
-      className="grid gap-4 grid-cols-1 lg:grid-cols-2"
+      className="grid gap-3 grid-cols-1 lg:grid-cols-2 auto-rows-min"
       data-testid="stats-grid"
     >
       <ClassFrequencyCard taskId={taskId} />
