@@ -48,11 +48,11 @@ export function BottomBar({
         <span className="text-[12.5px] text-[color:var(--text-primary)] tracking-tight truncate max-w-[260px]">
           {filename}
         </span>
-        <span className="font-mono text-[11px] text-[color:var(--text-tertiary)] tabular-nums whitespace-nowrap">
+        <span className="font-mono text-[11px] text-[color:var(--text-tertiary)] tabular-tight whitespace-nowrap">
           {width} × {height}
         </span>
         <span aria-hidden className="text-[color:var(--text-tertiary)]">·</span>
-        <span className="font-mono text-[11px] text-[color:var(--text-tertiary)] tabular-nums whitespace-nowrap">
+        <span className="font-mono text-[11px] text-[color:var(--text-tertiary)] tabular-tight whitespace-nowrap">
           {zoomPct.toFixed(1)}%
         </span>
       </div>

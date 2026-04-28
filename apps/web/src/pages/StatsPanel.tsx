@@ -221,7 +221,7 @@ function ProgressCard({ taskId }: { taskId: string }) {
               <Tooltip />
             </PieChart>
           </ResponsiveContainer>
-          <p className="text-center font-mono text-[12px] text-[color:var(--text-secondary)] tabular-nums leading-tight">
+          <p className="text-center font-mono text-[12px] text-[color:var(--text-secondary)] tabular-tight leading-tight">
             {q.data.labeled_frames} / {q.data.total_frames} frames
           </p>
         </>
@@ -419,7 +419,7 @@ function TimeOnTaskCard({ taskId }: { taskId: string }) {
               <span className="text-[color:var(--text-secondary)] tracking-tight truncate">
                 {row.email}
               </span>
-              <span className="font-mono text-[color:var(--text-tertiary)] tabular-nums shrink-0">
+              <span className="font-mono text-[color:var(--text-tertiary)] tabular-tight shrink-0">
                 {formatSeconds(row.seconds)}
               </span>
             </li>

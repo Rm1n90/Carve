@@ -1703,7 +1703,7 @@ function renderLabel(
     const text = new TextCtor({
       text: labelText,
       style: {
-        fontFamily: "Inter, system-ui, sans-serif",
+        fontFamily: "Geist Variable, ui-sans-serif, system-ui, sans-serif",
         fontSize: fontSize,
         fill: 0xffffff,
         fontWeight: "500",

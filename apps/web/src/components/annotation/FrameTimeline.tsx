@@ -78,7 +78,7 @@ export function FrameTimeline({ totalFrames, currentIdx, onChange }: Props) {
         "bg-[var(--glass-bg-strong)] backdrop-blur-xl",
       )}
     >
-      <span className="font-mono-data text-[10px] text-tertiary mr-3 shrink-0">
+      <span className="font-mono-data text-[10px] text-tertiary tabular-tight mr-3 shrink-0">
         {currentIdx + 1} / {totalFrames}
       </span>
       {Array.from({ length: totalFrames }).map((_, i) => (
