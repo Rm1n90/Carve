@@ -9,7 +9,6 @@ import {
   Moon,
   Settings as SettingsIcon,
   Sun,
-  User as UserIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAuth } from "@/auth/store";
@@ -159,14 +158,9 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
                 </p>
               </div>
               <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
-              <DropdownMenu.Item asChild>
-                <Link
-                  to="/settings/profile"
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px] hover:bg-[var(--bg-hover)] cursor-pointer outline-none"
-                >
-                  <UserIcon className="h-3.5 w-3.5" /> Profile
-                </Link>
-              </DropdownMenu.Item>
+              {/* v2.9 P1-19 — dedupe: Profile + Settings both pointed to
+                  /settings/profile. Keep Settings (covers the wider
+                  settings surface, not just profile). */}
               <DropdownMenu.Item asChild>
                 <Link
                   to="/settings/profile"
