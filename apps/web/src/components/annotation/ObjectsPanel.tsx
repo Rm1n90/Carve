@@ -7,6 +7,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/Popover";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import type { ClassRow } from "@/api/classes";
 import { cn } from "@/lib/cn";
 
@@ -119,6 +120,7 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
   const remove = useAnnotations((s) => s.remove);
   const filter = useFilter((s) => s.filter);
   const clearFilter = useFilter((s) => s.clearFilter);
+  const confirm = useConfirm();
 
   const allOnFrame = Object.values(byId)
     .filter((a) => a.frameId === frameId)
@@ -202,15 +204,18 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
                 type="button"
                 aria-label={`Delete ${a.kind}`}
                 title={`Delete ${a.kind} (Cmd+Z to undo)`}
-                onClick={(e) => {
-                  // Non-blocking delete — relies on Cmd+Z undo (the
-                  // store pushes history on every remove, see
-                  // annotations.ts pushPast). v2.7 wave2 item 2 — the
-                  // previous window.confirm prompt could be silently
-                  // suppressed by browsers / extensions, leading the
-                  // user to think delete didn't work.
+                onClick={async (e) => {
+                  // v2.9 P1-11 — replace the prior no-confirm flow with
+                  // an in-app confirm dialog. Cmd+Z still undoes.
                   e.stopPropagation();
-                  remove(a.tempId);
+                  const ok = await confirm({
+                    title: "Delete annotation?",
+                    description:
+                      "Press Cmd+Z to undo, or click Delete to remove.",
+                    confirmLabel: "Delete",
+                    variant: "danger",
+                  });
+                  if (ok) remove(a.tempId);
                 }}
                 className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] text-tertiary opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[oklch(0.70_0.20_25_/_0.10)] hover:text-[color:var(--danger)]"
               >

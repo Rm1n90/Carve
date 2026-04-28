@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/Dialog";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/auth/store";
 import { apiKeysApi, type ApiKey, type ApiKeyCreated } from "@/api/api_keys";
 import { membersApi, type Member, type Role } from "@/api/members";
@@ -270,6 +271,7 @@ export function SettingsApiKeysPage() {
 
 function ApiKeyRow({ k, onRevoke }: { k: ApiKey; onRevoke: () => void }) {
   const created = new Date(k.created_at).toLocaleDateString();
+  const confirm = useConfirm();
   return (
     <li className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-4 py-3 flex items-center gap-4">
       <span className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] bg-[var(--accent-bg)] text-[color:var(--accent)]">
@@ -289,7 +291,16 @@ function ApiKeyRow({ k, onRevoke }: { k: ApiKey; onRevoke: () => void }) {
           size="sm"
           variant="danger"
           leftIcon={<Trash2 className="h-3.5 w-3.5" />}
-          onClick={onRevoke}
+          onClick={async () => {
+            const ok = await confirm({
+              title: "Revoke API key?",
+              description:
+                "Clients using this key will stop working immediately. This cannot be undone.",
+              confirmLabel: "Revoke",
+              variant: "danger",
+            });
+            if (ok) onRevoke();
+          }}
         >
           Revoke
         </Button>

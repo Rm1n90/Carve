@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/auth/store";
 import { logout } from "@/auth/api";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 
 interface SectionProps {
@@ -143,8 +144,22 @@ export function LeftNav() {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const user = useAuth((s) => s.user);
   const nav = useNavigate();
+  const confirm = useConfirm();
 
   const userInitial = user?.email?.[0]?.toUpperCase() ?? "?";
+
+  async function handleSignOut() {
+    const ok = await confirm({
+      title: "Sign out?",
+      description: "Any unsaved annotation work in the editor will be lost.",
+      confirmLabel: "Sign out",
+      variant: "danger",
+    });
+    if (ok) {
+      logout();
+      nav({ to: "/login" });
+    }
+  }
 
   return (
     <aside
@@ -333,9 +348,11 @@ export function LeftNav() {
                 </DropdownMenu.Item>
                 <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
                 <DropdownMenu.Item
-                  onSelect={() => {
-                    logout();
-                    nav({ to: "/login" });
+                  onSelect={(event) => {
+                    // Defer the confirm call so Radix can finish dismissing
+                    // the dropdown before opening the AlertDialog.
+                    event.preventDefault();
+                    void handleSignOut();
                   }}
                   className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[13px] text-[color:var(--danger)] hover:bg-[var(--danger-bg)] cursor-pointer outline-none"
                 >

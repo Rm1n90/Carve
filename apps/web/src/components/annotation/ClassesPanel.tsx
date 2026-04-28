@@ -117,6 +117,7 @@ function AnnotationRow({
   const select = useAnnotations((s) => s.select);
   const remove = useAnnotations((s) => s.remove);
   const setHiddenAnn = useAnnotations((s) => s.setHiddenForAnnotation);
+  const confirm = useConfirm();
 
   return (
     <li
@@ -157,9 +158,16 @@ function AnnotationRow({
       <button
         type="button"
         aria-label="Delete annotation"
-        onClick={(e) => {
+        onClick={async (e) => {
+          // v2.9 P1-11 — confirm before destroying.
           e.stopPropagation();
-          remove(ann.tempId);
+          const ok = await confirm({
+            title: "Delete annotation?",
+            description: "Press Cmd+Z to undo, or click Delete to remove.",
+            confirmLabel: "Delete",
+            variant: "danger",
+          });
+          if (ok) remove(ann.tempId);
         }}
         className="grid h-5 w-5 place-items-center text-[color:var(--text-tertiary)] hover:text-[color:var(--danger)] opacity-0 group-hover:opacity-100"
       >

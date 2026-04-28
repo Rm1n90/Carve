@@ -44,6 +44,7 @@ import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import { useResizableRightPanel } from "@/hooks/useResizableRightPanel";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -334,6 +335,16 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       });
       useAnnotations.getState().clearPendingDeletes();
       qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+    },
+    onError: () => {
+      // v2.9 P1-15 — surface save failures via the toast bus in addition
+      // to the SaveIndicator pill so the user notices when the editor
+      // can't reach the server. Retry logic is unchanged: annotations
+      // stay marked `dirty` and the debounced retry loop continues.
+      showToast(
+        "Save failed — we'll keep trying. Check your connection or refresh.",
+        { variant: "error" },
+      );
     },
   });
 

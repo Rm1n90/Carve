@@ -53,13 +53,16 @@ vi.mock("@/components/theme/ThemeProvider", () => ({
 
 import { TopBar } from "@/components/nav/TopBar";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 describe("v2.8 Wave 3 — Liquid Glass aesthetic", () => {
   it("TopBar applies the glass-surface-strong utility to the nav strip", () => {
     render(
-      <TooltipProvider>
-        <TopBar />
-      </TooltipProvider>,
+      <ConfirmProvider>
+        <TooltipProvider>
+          <TopBar />
+        </TooltipProvider>
+      </ConfirmProvider>,
     );
 
     const bar = screen.getByTestId("top-bar");
@@ -69,9 +72,11 @@ describe("v2.8 Wave 3 — Liquid Glass aesthetic", () => {
 
   it("TopBar user-menu trigger opts into glass-chip styling", () => {
     render(
-      <TooltipProvider>
-        <TopBar />
-      </TooltipProvider>,
+      <ConfirmProvider>
+        <TooltipProvider>
+          <TopBar />
+        </TooltipProvider>
+      </ConfirmProvider>,
     );
 
     const trigger = screen.getByTestId("topbar-user-menu");
