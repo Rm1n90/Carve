@@ -147,7 +147,8 @@ describe("ProjectDetailPage — Add class flow does not crash", () => {
     });
     expect(screen.getByTestId("classes-editor-footer")).toBeInTheDocument();
 
-    resolveCreate?.({
+    const fn = resolveCreate as ((v: unknown) => void) | null;
+    fn?.({
       id: "c-2",
       project_id: "p-1",
       idx: 0,
