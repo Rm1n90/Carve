@@ -17,6 +17,21 @@ export const POLY_VERTEX_HANDLE_PX = 8;
 export const POLY_MIN_VERTICES = 3;
 
 /**
+ * Image bounds used when clamping a moved vertex. Optional — when null
+ * the helpers fall back to the legacy bound-agnostic behaviour. v2.5.2.
+ */
+export interface ImageBounds {
+  w: number;
+  h: number;
+}
+
+function clamp(value: number, lo: number, hi: number): number {
+  if (value < lo) return lo;
+  if (value > hi) return hi;
+  return value;
+}
+
+/**
  * Hit-test against a polygon's vertices. Returns the index of the matching
  * vertex (within ``POLY_VERTEX_HIT_HALO`` of the cursor) or null.
  */
@@ -36,16 +51,23 @@ export function hitTestVertex(
   return null;
 }
 
-/** Returns a new polygon with the vertex at ``index`` moved to ``cursor``.
- *  Pure: original polygon is not mutated. */
+/**
+ * Returns a new polygon with the vertex at ``index`` moved to ``cursor``.
+ * Pure: the original polygon is not mutated. When `bounds` is provided
+ * the new vertex is clamped to `[0, bounds.w] x [0, bounds.h]` so it
+ * cannot escape the image. v2.5.2.
+ */
 export function applyVertexTranslate(
   original: Polygon,
   index: number,
   cursor: { x: number; y: number },
+  bounds: ImageBounds | null = null,
 ): Polygon {
   if (index < 0 || index >= original.points.length) return original;
+  const cx = bounds ? clamp(cursor.x, 0, bounds.w) : cursor.x;
+  const cy = bounds ? clamp(cursor.y, 0, bounds.h) : cursor.y;
   const next = original.points.map((pt, i) =>
-    i === index ? ([cursor.x, cursor.y] as [number, number]) : pt,
+    i === index ? ([cx, cy] as [number, number]) : pt,
   );
   return { kind: "polygon", points: next };
 }

@@ -881,8 +881,12 @@ export function AnnotationCanvas({
     const getFrame = () => frameId;
     const getSize = () => imageSize;
 
-    const bbox = new BboxTool(getClass, getFrame, idGen);
-    const polygon = new PolygonTool(getClass, getFrame, idGen);
+    // Pass an image-size getter to the tools so they can clamp pointer
+    // coordinates to the image rectangle on every event. v2.5.2 — without
+    // this, dragging past the canvas backdrop produced bbox / polygon
+    // geometry far outside the image.
+    const bbox = new BboxTool(getClass, getFrame, idGen, getSize);
+    const polygon = new PolygonTool(getClass, getFrame, idGen, getSize);
     // Initial brush radius pulls from the store; live changes from the
     // brush-size slider keep the tool in sync via the subscribe below.
     const mask = new MaskBrushTool(
@@ -1102,20 +1106,26 @@ export function AnnotationCanvas({
         const drag = dragRef.current;
         if (drag) {
           // Active drag — translate or resize the selected bbox, or move
-          // a polygon vertex (Phase A core 3).
+          // a polygon vertex (Phase A core 3). Pass the live image size so
+          // the geometry can never escape the image (v2.5.2). When the
+          // image hasn't loaded yet (size 1×1 sentinel from initial state)
+          // we still pass it — clamping a 1×1 bound just keeps everything
+          // sane until the texture lands.
+          const bounds = imageSize.w > 1 && imageSize.h > 1 ? imageSize : null;
           if (drag.mode === "translate") {
             const next = applyTranslate(
               drag.original,
               p.x - drag.offset.x,
               p.y - drag.offset.y,
+              bounds,
             );
             useAnnotations.getState().update(drag.id, { geometry: next });
           } else if (drag.mode === "resize") {
-            const next = applyResize(drag.original, drag.handle, p);
+            const next = applyResize(drag.original, drag.handle, p, bounds);
             useAnnotations.getState().update(drag.id, { geometry: next });
           } else {
             // mode === "vertex"
-            const next = applyVertexTranslate(drag.original, drag.index, p);
+            const next = applyVertexTranslate(drag.original, drag.index, p, bounds);
             useAnnotations.getState().update(drag.id, { geometry: next });
           }
           return;
@@ -1197,7 +1207,13 @@ export function AnnotationCanvas({
             const step = e.shiftKey ? 10 : 1;
             const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
             const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
-            const next = applyTranslate(sel.bbox, sel.bbox.x + dx, sel.bbox.y + dy);
+            const bounds = imageSize.w > 1 && imageSize.h > 1 ? imageSize : null;
+            const next = applyTranslate(
+              sel.bbox,
+              sel.bbox.x + dx,
+              sel.bbox.y + dy,
+              bounds,
+            );
             useAnnotations.getState().update(sel.id, { geometry: next });
             return;
           }
