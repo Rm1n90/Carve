@@ -74,10 +74,15 @@ import {
   SettingsProfilePage,
 } from "@/pages/SettingsPages";
 import { ModelsSamPage, ModelsYoloPage, TrashPage } from "@/pages/Phase2Pages";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 function wrap(node: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <ConfirmProvider>{node}</ConfirmProvider>
+    </QueryClientProvider>
+  );
 }
 
 afterEach(() => {

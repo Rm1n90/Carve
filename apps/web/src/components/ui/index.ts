@@ -15,3 +15,10 @@ export {
   DialogDescription,
   DialogFooter,
 } from "./Dialog";
+export {
+  ConfirmDialog,
+  ConfirmProvider,
+  useConfirm,
+  type ConfirmDialogProps,
+  type ConfirmVariant,
+} from "./ConfirmDialog";

@@ -15,10 +15,15 @@ vi.mock("@/api/classes", () => ({
 import { classesApi } from "@/api/classes";
 import { ClassesEditor } from "@/pages/ClassesEditor";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 function wrap(node: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <ConfirmProvider>{node}</ConfirmProvider>
+    </QueryClientProvider>
+  );
 }
 
 function makeClasses(n: number) {
@@ -91,7 +96,11 @@ describe("ClassesEditor — bounded layout (project detail)", () => {
 describe("ClassesPanel — bounded right-side editor panel", () => {
   it("the panel fills its parent without growing the page (h-full + flex-col)", () => {
     const fixture = makeClasses(60);
-    const { container } = render(<ClassesPanel classes={fixture as any} />);
+    const { container } = render(
+      <ConfirmProvider>
+        <ClassesPanel classes={fixture as any} />
+      </ConfirmProvider>,
+    );
     const root = container.querySelector(
       "section[role='complementary']",
     ) as HTMLElement;

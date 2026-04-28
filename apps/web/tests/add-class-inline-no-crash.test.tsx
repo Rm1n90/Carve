@@ -14,8 +14,13 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
+
+function renderPanel(node: React.ReactElement) {
+  return render(<ConfirmProvider>{node}</ConfirmProvider>);
+}
 
 const fixture = [
   {
@@ -51,7 +56,7 @@ beforeEach(() => {
 describe("ClassesPanel — AddClassInline does not crash", () => {
   it("clicking '+ Add class' opens the inline form without crashing", () => {
     const onCreate = vi.fn();
-    render(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
+    renderPanel(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
     fireEvent.click(screen.getByTestId("classes-add-button"));
     expect(screen.getByTestId("add-class-inline")).toBeInTheDocument();
     expect(screen.getByLabelText(/new class name/i)).toBeInTheDocument();
@@ -59,7 +64,7 @@ describe("ClassesPanel — AddClassInline does not crash", () => {
 
   it("typing a name and pressing Enter calls onCreate and the panel survives", () => {
     const onCreate = vi.fn();
-    render(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
+    renderPanel(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
     fireEvent.click(screen.getByTestId("classes-add-button"));
 
     const input = screen.getByLabelText(/new class name/i) as HTMLInputElement;
@@ -74,7 +79,7 @@ describe("ClassesPanel — AddClassInline does not crash", () => {
 
   it("clicking the inline 'Add' button fires onCreate with name + color", () => {
     const onCreate = vi.fn();
-    render(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
+    renderPanel(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
     fireEvent.click(screen.getByTestId("classes-add-button"));
 
     fireEvent.change(screen.getByLabelText(/new class name/i), {
@@ -90,7 +95,7 @@ describe("ClassesPanel — AddClassInline does not crash", () => {
     const onCreate = vi.fn(() => {
       throw new Error("network blew up");
     });
-    render(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
+    renderPanel(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
     fireEvent.click(screen.getByTestId("classes-add-button"));
 
     fireEvent.change(screen.getByLabelText(/new class name/i), {
@@ -108,7 +113,7 @@ describe("ClassesPanel — AddClassInline does not crash", () => {
 
   it("Cancel closes the inline form and the panel returns to its idle state", () => {
     const onCreate = vi.fn();
-    render(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
+    renderPanel(<ClassesPanel classes={fixture as any} onCreateClass={onCreate} />);
     fireEvent.click(screen.getByTestId("classes-add-button"));
     expect(screen.getByTestId("add-class-inline")).toBeInTheDocument();
 

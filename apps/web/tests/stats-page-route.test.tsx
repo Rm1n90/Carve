@@ -76,12 +76,17 @@ import { tasksApi } from "@/api/tasks";
 import { classesApi } from "@/api/classes";
 import { StatsPanel } from "@/pages/StatsPanel";
 import { ProjectDetailPage } from "@/pages/ProjectDetailPage";
+import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
 
 function wrap(node: React.ReactNode) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <ConfirmProvider>{node}</ConfirmProvider>
+    </QueryClientProvider>
+  );
 }
 
 // Radix Tabs.Trigger needs a full pointer event sequence under jsdom.

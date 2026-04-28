@@ -25,6 +25,7 @@ import {
   trashRoute,
 } from "./routes/phase2";
 import { ThemeProvider } from "./components/theme/ThemeProvider";
+import { ConfirmProvider } from "./components/ui/ConfirmDialog";
 import "./styles/global.css";
 
 const routeTree = rootRoute.addChildren([
@@ -63,7 +64,9 @@ createRoot(el).render(
   <React.StrictMode>
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
+        <ConfirmProvider>
+          <RouterProvider router={router} />
+        </ConfirmProvider>
       </QueryClientProvider>
     </ThemeProvider>
   </React.StrictMode>,

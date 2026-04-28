@@ -28,6 +28,7 @@ import type { ClassRow } from "@/api/classes";
 import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
 import { Kbd } from "@/components/ui/Kbd";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 import { PALETTE_HEX, nextHexForIdx } from "@/lib/swatch";
 
@@ -202,6 +203,7 @@ function ClassRowItem({
   hiddenAnnIds: string[];
 }) {
   const setActiveClassId = useTool((s) => s.setActiveClassId);
+  const confirm = useConfirm();
   const rowRef = useRef<HTMLLIElement>(null);
 
   useEffect(() => {
@@ -301,9 +303,23 @@ function ClassRowItem({
           {onDeleteClass && (
             <button
               type="button"
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                if (confirm(`Delete class "${cls.name}"?`)) onDeleteClass(cls.id);
+                const ok = await confirm({
+                  title: "Delete class?",
+                  description: (
+                    <>
+                      Remove the class{" "}
+                      <span className="font-medium text-[color:var(--text-primary)]">
+                        {cls.name}
+                      </span>
+                      ? Annotations referencing it will become unclassified.
+                    </>
+                  ),
+                  variant: "danger",
+                  confirmLabel: "Delete",
+                });
+                if (ok) onDeleteClass(cls.id);
               }}
               aria-label={`Delete class ${cls.name}`}
               className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] hover:bg-[var(--danger-bg)] hover:text-[color:var(--danger)]"
