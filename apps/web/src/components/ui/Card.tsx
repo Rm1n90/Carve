@@ -12,7 +12,7 @@ const cardStyles = cva(["transition-colors duration-150"], {
       surface: "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
       raised:
         "bg-[var(--bg-elev)] border border-[var(--border-subtle)] shadow-[var(--shadow-elev-1)]",
-      glass: "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+      glass: "glass-surface",
       "glass-strong":
         "bg-[var(--bg-elev)] border border-[var(--border-subtle)] shadow-[var(--shadow-elev-1)]",
       sunken: "bg-[var(--bg-subtle)] border border-[var(--border-subtle)]",

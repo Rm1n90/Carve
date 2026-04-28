@@ -427,8 +427,8 @@ function AddClassInline({
           aria-label="New class name"
           className={cn(
             "flex-1 h-7 px-2 text-[12.5px]",
-            "bg-[var(--bg-elev)] text-[color:var(--text-primary)]",
-            "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+            "bg-transparent text-[color:var(--text-primary)]",
+            "rounded-[var(--radius-sm)] border border-[var(--glass-border)]",
             "focus:outline-none focus:border-[var(--accent)]",
           )}
           onKeyDown={(e) => {

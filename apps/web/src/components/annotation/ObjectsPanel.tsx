@@ -56,8 +56,8 @@ function ClassPickerPopover({
           onClick={(e) => e.stopPropagation()}
           className={cn(
             "ml-auto inline-flex items-center gap-1 max-w-[110px] h-6 px-1.5",
-            "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-            "bg-[var(--bg-elev)] text-[11px] tracking-tight text-[color:var(--text-secondary)]",
+            "rounded-[var(--radius-sm)] border border-[var(--glass-border)]",
+            "bg-transparent text-[11px] tracking-tight text-[color:var(--text-secondary)]",
             "hover:border-[var(--border-strong)] hover:text-[color:var(--text-primary)]",
           )}
         >

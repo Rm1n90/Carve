@@ -283,9 +283,9 @@
   /* v2.8 confirm-dialog motion. Tailwind v4 turns each `--animate-*`
      entry into a corresponding `animate-*` utility class. */
   --animate-confirm-in: confirm-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
-  --animate-confirm-out: confirm-out 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-confirm-out: confirm-out 80ms cubic-bezier(0.16, 1, 0.3, 1);
   --animate-confirm-fade-in: confirm-fade-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  --animate-confirm-fade-out: confirm-fade-out 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-confirm-fade-out: confirm-fade-out 80ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes confirm-in {

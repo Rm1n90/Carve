@@ -83,7 +83,7 @@ export function SamUnavailableBanner() {
         </strong>{" "}
         <span className="text-[color:var(--text-secondary)]">
           The model service is not running. Start it with{" "}
-          <code className="px-1 py-0.5 mx-0.5 rounded bg-[var(--bg-elev)] font-mono text-[11.5px] border border-[var(--border-subtle)]">
+          <code className="px-1 py-0.5 mx-0.5 rounded bg-[var(--glass-bg-subtle)] font-mono text-[11.5px] border border-[var(--border-subtle)]">
             docker compose --profile inference up -d
           </code>
           .
