@@ -50,6 +50,11 @@ const KIND_ICON = {
   tag: Tag,
 } as const;
 
+// v2.9 P2 G1 — shared empty array sentinel so the `?? EMPTY_ARR` fallback
+// doesn't allocate a new `[]` every render (and thus break referential
+// equality in downstream memoised consumers).
+const EMPTY_ARR: { tempId: string; kind: keyof typeof KIND_ICON }[] = [];
+
 // PALETTE is now imported from lib/swatch.ts as PALETTE_HEX so all color
 // surfaces share the same deterministic order. See bug F in the v2.1 audit.
 
@@ -647,7 +652,7 @@ export function ClassesPanel({
           </li>
         )}
         {filtered.map((c, i) => {
-          const cAnns = annotationsByClass[c.id] ?? [];
+          const cAnns = annotationsByClass[c.id] ?? EMPTY_ARR;
           return (
             <ClassRowItem
               key={c.id}

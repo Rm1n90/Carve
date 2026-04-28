@@ -88,11 +88,14 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // navigating between frames fits the canvas back to 100%. Without this
   // a zoomed-in view would silently follow the user across frames, which
   // is rarely what they want. (Settings.resetZoomOnFrameChange wiring.)
+  // v2.9 P2 E5 — subscribe to the setting so toggling it takes effect
+  // without requiring a frame change.
+  const resetZoomOnFrameChange = useEditorSettings((s) => s.resetZoomOnFrameChange);
   useEffect(() => {
-    if (useEditorSettings.getState().resetZoomOnFrameChange) {
+    if (resetZoomOnFrameChange) {
       window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
     }
-  }, [currentFrameIdx]);
+  }, [currentFrameIdx, resetZoomOnFrameChange]);
   // v2.9 P0-3: was `useState(true)` paired with dead `visibilityOn` /
   // `onToggleVisibility` props on EditorToolbar. The visibility menu in
   // the toolbar already drives `useTool.visibility.annotations`, so we
@@ -203,32 +206,35 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     };
   }, [assetQ.data?.asset?.original_name]);
 
-  // Class colors flow into the canvas as a prop (formerly a CustomEvent —
-  // see audit bug H for the timing race that motivated this change).
-  const classColorMap = useMemo<Record<string, string>>(() => {
-    if (!classesQ.data) return {};
-    const m: Record<string, string> = {};
-    for (const c of classesQ.data) m[c.id] = c.color;
-    return m;
+  // v2.9 P2 F4 — single pass over classesQ.data builds all three maps so
+  // we don't loop the same array three times every time it changes.
+  // - `colors` flows into the canvas as a prop (formerly a CustomEvent;
+  //   see audit bug H for the timing race that motivated this change).
+  // - `names` is consumed by the canvas's floating bbox label tags when
+  //   the `labels` visibility flag is on (audit bug O).
+  // - `byId` is consumed by ObjectsPanel so the CVAT-style filter
+  //   evaluator can resolve `label` rules (v2.6).
+  const classMaps = useMemo(() => {
+    type ClassRow = NonNullable<typeof classesQ.data>[number];
+    const empty: {
+      colors: Record<string, string>;
+      names: Record<string, string>;
+      byId: Record<string, ClassRow>;
+    } = { colors: {}, names: {}, byId: {} };
+    if (!classesQ.data) return empty;
+    const colors: Record<string, string> = {};
+    const names: Record<string, string> = {};
+    const byId: Record<string, ClassRow> = {};
+    for (const c of classesQ.data) {
+      colors[c.id] = c.color;
+      names[c.id] = c.name;
+      byId[c.id] = c;
+    }
+    return { colors, names, byId };
   }, [classesQ.data]);
-
-  // Class names — used by the canvas's floating bbox label tags when the
-  // `labels` visibility flag is on. See audit bug O.
-  const classNameMap = useMemo<Record<string, string>>(() => {
-    if (!classesQ.data) return {};
-    const m: Record<string, string> = {};
-    for (const c of classesQ.data) m[c.id] = c.name;
-    return m;
-  }, [classesQ.data]);
-
-  // Full ClassRow lookup keyed by id — passed to ObjectsPanel so the
-  // CVAT-style filter evaluator can resolve `label` rules. v2.6.
-  const classByIdMap = useMemo(() => {
-    if (!classesQ.data) return {};
-    const m: Record<string, (typeof classesQ.data)[number]> = {};
-    for (const c of classesQ.data) m[c.id] = c;
-    return m;
-  }, [classesQ.data]);
+  const classColorMap = classMaps.colors;
+  const classNameMap = classMaps.names;
+  const classByIdMap = classMaps.byId;
 
   // Prev/next asset navigation — wraps both the ArrowLeft/ArrowRight handler
   // below and the IconButtons in the editor top bar.
@@ -325,14 +331,19 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
           if (server) useAnnotations.getState().markPersisted(draft.tempId, server.id);
         });
       }
-      res.updated.forEach((u) => {
+      // v2.9 P2 F1 — collapse n setState calls into one pass.
+      const updates = res.updated;
+      if (updates.length > 0) {
         useAnnotations.setState((s) => ({
-          byId: {
-            ...s.byId,
-            [u.id]: s.byId[u.id] ? { ...s.byId[u.id], dirty: false } : s.byId[u.id],
-          },
+          byId: updates.reduce(
+            (acc, u) => ({
+              ...acc,
+              [u.id]: acc[u.id] ? { ...acc[u.id], dirty: false } : acc[u.id],
+            }),
+            s.byId,
+          ),
         }));
-      });
+      }
       useAnnotations.getState().clearPendingDeletes();
       qc.invalidateQueries({ queryKey: ["annotations", taskId] });
     },
@@ -539,6 +550,28 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
   }, []);
 
+  // v2.9 P2 G3 — memoize TopBar.rightAction so it doesn't allocate a new
+  // element on every render (which would force TopBar's children to reconcile
+  // even when nothing relevant changed). Hooks must run unconditionally,
+  // so this stays above the loading / error early returns.
+  const rightAction = useMemo(
+    () => (
+      <div className="flex items-center gap-2">
+        <ImageStatusBadge status={imageStatus} />
+        {taskAssets.length > 1 ? (
+          <AssetNavControls
+            taskAssets={taskAssets}
+            currentAssetIdx={currentAssetIdx}
+            prevAsset={prevAsset}
+            nextAsset={nextAsset}
+            onGoTo={goToAsset}
+          />
+        ) : null}
+      </div>
+    ),
+    [imageStatus, taskAssets, currentAssetIdx, prevAsset, nextAsset],
+  );
+
   // Only show the full-page loading screen on initial mount (no data yet).
   // During asset navigation, `assetQ.data` still holds the previous asset
   // thanks to `placeholderData`, so we render the full editor and let the
@@ -571,23 +604,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   return (
     <TooltipProvider delayDuration={250}>
     <div className="flex h-screen flex-col bg-[var(--bg-app)] overflow-hidden">
-      <TopBar
-        crumbs={crumbs}
-        rightAction={
-          <div className="flex items-center gap-2">
-            <ImageStatusBadge status={imageStatus} />
-            {taskAssets.length > 1 ? (
-              <AssetNavControls
-                taskAssets={taskAssets}
-                currentAssetIdx={currentAssetIdx}
-                prevAsset={prevAsset}
-                nextAsset={nextAsset}
-                onGoTo={goToAsset}
-              />
-            ) : null}
-          </div>
-        }
-      />
+      <TopBar crumbs={crumbs} rightAction={rightAction} />
 
       <div className="flex flex-1 min-h-0">
         <LeftNav />
@@ -922,10 +939,10 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
 function ImageStatusBadge({ status }: { status: ImageLoadStatus }) {
   const map: Record<ImageLoadStatus, { dot: string; label: string; fg: string; bg: string }> = {
     loading: {
-      dot: "bg-[#D97706] animate-pulse",
+      dot: "bg-[var(--warning)] animate-pulse",
       label: "Loading…",
-      fg: "text-[#92400E]",
-      bg: "bg-[#FEF3C7]",
+      fg: "text-[var(--warning)]",
+      bg: "bg-[var(--warning-bg)]",
     },
     loaded: {
       dot: "bg-[var(--success)]",
