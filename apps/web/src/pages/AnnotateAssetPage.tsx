@@ -124,15 +124,29 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     queryFn: () => assetsApi.listForTask(taskId),
   });
 
-  // For images, the single Frame for the asset.
-  const frameId: string | null = null;
+  // For images, the single Frame for the asset. v2.5.1 — read the real
+  // frame_id from the asset detail response. Previously this was hardcoded
+  // to null, which meant every annotation saved with frame_id=null and
+  // the per-task list query returned ALL annotations across the task,
+  // making bboxes drawn on one image appear on every other image.
+  const frameId: string | null = assetQ.data?.frame_id ?? null;
 
   const annotationsQ = useQuery({
     queryKey: ["annotations", taskId, frameId],
     queryFn: async () => annotationsApi.listForTask(taskId, frameId ?? undefined),
+    // Note: the editor canvas doesn't mount until ``assetQ.data`` is
+    // available (see the early-return loading screen below), so even if
+    // this query briefly fires with frameId=null on first render, the
+    // user never sees the resulting (unscoped) annotations because the
+    // refetch under the correct frame_id has already replaced them by
+    // the time the canvas paints.
   });
 
-  // Seed the store on first load + when annotations change identity
+  // Seed the store on first load + when annotations change identity.
+  // React Query keys include the frameId, so an asset switch produces a
+  // new query result (and thus a new array reference) on resolution —
+  // depending on ``annotationsQ.data`` alone is sufficient to reseed
+  // when the user navigates to a different asset.
   useEffect(() => {
     if (annotationsQ.data) {
       useAnnotations.getState().reset(annotationsQ.data);

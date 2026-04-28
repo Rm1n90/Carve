@@ -12,6 +12,9 @@ vi.mock("@/api/assets", () => ({
         created_at: "2026-04-25",
       },
       url: "https://fake/a.png",
+      // v2.5.1 — image assets now expose their primary frame_id so the
+      // editor can scope annotations per asset.
+      frame_id: "f-a1",
     }),
     listForTask: vi.fn().mockResolvedValue([
       { id: "a-1", task_id: "t-1", kind: "image", xxh3_128: "x", mime: "image/png",

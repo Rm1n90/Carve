@@ -1,8 +1,10 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from carve_api.annotations.models import Annotation
 from carve_api.annotations.schemas import (
     AnnotationIn, AnnotationOut, AnnotationPatch, BatchIn, BatchOut,
 )
@@ -10,7 +12,7 @@ from carve_api.annotations.service import AnnotationService
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.projects.models import Task as TaskModel
+from carve_api.projects.models import Task as TaskModel, TaskKind
 from carve_api.projects.service import ProjectService, TaskService
 
 router = APIRouter(prefix="/tasks", tags=["annotations"])
@@ -30,6 +32,24 @@ def _require_visible_task(db: Session, user: User, task_id: uuid.UUID) -> TaskMo
     return task
 
 
+def _require_frame_id_for_image_task(task: TaskModel, frame_id: str | None) -> None:
+    """Reject writes to image tasks that omit ``frame_id``.
+
+    v2.5.1 regression guard. Image tasks have exactly one ``Frame`` per
+    asset; an annotation without a frame_id can't be tied to a specific
+    asset and will appear on every image when the editor lists
+    annotations for the task. The frontend now reads
+    ``AssetWithUrl.frame_id`` and passes it through, but this validation
+    prevents a future regression from silently re-introducing the
+    cross-asset bleed.
+    """
+    if task.kind == TaskKind.image and not frame_id:
+        raise HTTPException(
+            status_code=422,
+            detail="frame_id_required_for_image_task",
+        )
+
+
 @router.post("/{task_id}/annotations", response_model=AnnotationOut, status_code=status.HTTP_201_CREATED)
 def create_annotation(
     task_id: uuid.UUID,
@@ -38,6 +58,7 @@ def create_annotation(
     db: Session = Depends(get_db),
 ) -> AnnotationOut:
     task = _require_visible_task(db, user, task_id)
+    _require_frame_id_for_image_task(task, payload.frame_id)
     try:
         a = AnnotationService(db).create(
             task=task, actor_id=user.id,
@@ -73,6 +94,10 @@ def batch(
     db: Session = Depends(get_db),
 ) -> BatchOut:
     task = _require_visible_task(db, user, task_id)
+    # v2.5.1 — every create entry on an image task must carry a frame_id,
+    # otherwise the annotation would bleed across all assets in the task.
+    for c in payload.create:
+        _require_frame_id_for_image_task(task, c.frame_id)
     svc = AnnotationService(db)
     try:
         created = [
@@ -164,3 +189,41 @@ def delete_annotation(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
+
+
+@ann_router.post("/cleanup-orphaned")
+def cleanup_orphaned_image_annotations(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """Admin-only one-off cleanup of pre-v2.5.1 orphaned annotations.
+
+    Pre-v2.5.1 the editor saved every annotation with ``frame_id=null``
+    for image tasks because the asset's primary frame_id wasn't exposed
+    on the asset endpoint. After the fix those rows can never appear on
+    any asset (the editor now scopes its query by frame_id), but they
+    sit in the database forever.
+
+    This endpoint deletes annotations where ``frame_id IS NULL`` AND the
+    parent task is an image task. Video tag annotations may legitimately
+    have ``frame_id = null`` and are NOT affected.
+
+    Admin only. Returns ``{"deleted": <count>}``.
+    """
+    from carve_api.auth.models import UserRole
+
+    if user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="admin_only")
+    image_task_ids = db.execute(
+        select(TaskModel.id).where(TaskModel.kind == TaskKind.image)
+    ).scalars().all()
+    if not image_task_ids:
+        return {"deleted": 0}
+    result = db.execute(
+        delete(Annotation).where(
+            Annotation.frame_id.is_(None),
+            Annotation.task_id.in_(image_task_ids),
+        )
+    )
+    db.commit()
+    return {"deleted": int(result.rowcount or 0)}

@@ -27,6 +27,25 @@ class AssetOut(BaseModel):
         )
 
 
+class AssetWithUrl(BaseModel):
+    """Single-asset GET response: the asset row + a presigned URL to fetch
+    the original bytes + the asset's primary frame_id.
+
+    For image assets the frame_id is the (single) Frame row created at
+    upload time. The editor uses it to scope annotations PER ASSET; without
+    it every annotation saves with frame_id=null and the per-task
+    annotations query returns ALL annotations regardless of which asset
+    you are viewing — fix v2.5.1.
+
+    For video assets frame_id is null (use the dedicated frames endpoint
+    to enumerate per-frame ids).
+    """
+
+    asset: AssetOut
+    url: str
+    frame_id: str | None = None
+
+
 class AssetCount(BaseModel):
     total: int
     annotated: int

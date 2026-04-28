@@ -45,15 +45,20 @@ def _setup(client, monkeypatch):
         files={"file": ("a.png", io.BytesIO(png), "image/png")},
         headers=_hdr(token),
     ).json()
-    return token, pid, tid, cid, aid_resp["id"]
+    aid = aid_resp["id"]
+    # v2.5.1 — image tasks now require ``frame_id`` on annotation writes.
+    # Pull it from the asset detail endpoint so every test that creates
+    # an annotation has the right per-asset frame to attach to.
+    fid = client.get(f"/assets/{aid}", headers=_hdr(token)).json()["frame_id"]
+    return token, pid, tid, cid, aid, fid
 
 
 def test_create_bbox_via_post(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     r = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "bbox",
+        json={"frame_id": fid, "class_id": cid, "kind": "bbox",
               "geometry": {"kind": "bbox", "x": 1, "y": 2, "w": 3, "h": 4}},
         headers=_hdr(token),
     )
@@ -63,10 +68,10 @@ def test_create_bbox_via_post(db_session, monkeypatch) -> None:
 
 def test_invalid_bbox_returns_422(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     r = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "bbox",
+        json={"frame_id": fid, "class_id": cid, "kind": "bbox",
               "geometry": {"kind": "bbox", "x": 0, "y": 0, "w": 0, "h": 5}},
         headers=_hdr(token),
     )
@@ -75,11 +80,11 @@ def test_invalid_bbox_returns_422(db_session, monkeypatch) -> None:
 
 def test_batch_create_update_delete(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     # Create one to update + delete
     r = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "bbox",
+        json={"frame_id": fid, "class_id": cid, "kind": "bbox",
               "geometry": {"kind": "bbox", "x": 0, "y": 0, "w": 5, "h": 5}},
         headers=_hdr(token),
     )
@@ -87,7 +92,7 @@ def test_batch_create_update_delete(db_session, monkeypatch) -> None:
 
     r2 = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "bbox",
+        json={"frame_id": fid, "class_id": cid, "kind": "bbox",
               "geometry": {"kind": "bbox", "x": 0, "y": 0, "w": 6, "h": 6}},
         headers=_hdr(token),
     )
@@ -95,9 +100,9 @@ def test_batch_create_update_delete(db_session, monkeypatch) -> None:
 
     payload = {
         "create": [
-            {"class_id": cid, "kind": "bbox",
+            {"frame_id": fid, "class_id": cid, "kind": "bbox",
              "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 2, "h": 2}},
-            {"class_id": cid, "kind": "bbox",
+            {"frame_id": fid, "class_id": cid, "kind": "bbox",
              "geometry": {"kind": "bbox", "x": 3, "y": 3, "w": 4, "h": 4}},
         ],
         "update": [
@@ -117,27 +122,29 @@ def test_batch_create_update_delete(db_session, monkeypatch) -> None:
 
 def test_list_filter_by_frame_id(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
-    # Get the asset's frame_id via /assets/{id}
-    asset_detail = client.get(f"/assets/{aid}", headers=_hdr(token)).json()
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     # The asset has 1 frame; fetch via direct DB? For simplicity, exercise list-without-filter.
     client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "bbox",
+        json={"frame_id": fid, "class_id": cid, "kind": "bbox",
               "geometry": {"kind": "bbox", "x": 0, "y": 0, "w": 5, "h": 5}},
         headers=_hdr(token),
     )
     r = client.get(f"/tasks/{tid}/annotations", headers=_hdr(token))
     assert r.status_code == 200
     assert len(r.json()) == 1
+    # And filtering by frame_id returns the same single row.
+    r2 = client.get(f"/tasks/{tid}/annotations?frame_id={fid}", headers=_hdr(token))
+    assert r2.status_code == 200
+    assert len(r2.json()) == 1
 
 
 def test_z_order_defaults_to_zero_on_create(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     r = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "bbox",
+        json={"frame_id": fid, "class_id": cid, "kind": "bbox",
               "geometry": {"kind": "bbox", "x": 0, "y": 0, "w": 5, "h": 5}},
         headers=_hdr(token),
     )
@@ -149,10 +156,10 @@ def test_z_order_defaults_to_zero_on_create(db_session, monkeypatch) -> None:
 
 def test_z_order_round_trip_via_patch(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     r = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "bbox",
+        json={"frame_id": fid, "class_id": cid, "kind": "bbox",
               "geometry": {"kind": "bbox", "x": 0, "y": 0, "w": 5, "h": 5}},
         headers=_hdr(token),
     )
@@ -172,13 +179,13 @@ def test_z_order_round_trip_via_patch(db_session, monkeypatch) -> None:
 
 def test_z_order_via_batch_create_and_update(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     payload = {
         "create": [
-            {"class_id": cid, "kind": "bbox",
+            {"frame_id": fid, "class_id": cid, "kind": "bbox",
              "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 5, "h": 5},
              "z_order": 10},
-            {"class_id": cid, "kind": "bbox",
+            {"frame_id": fid, "class_id": cid, "kind": "bbox",
              "geometry": {"kind": "bbox", "x": 2, "y": 2, "w": 5, "h": 5},
              "z_order": 5},
         ],
@@ -204,10 +211,10 @@ def test_z_order_via_batch_create_and_update(db_session, monkeypatch) -> None:
 def test_z_order_unspecified_remains_default(db_session, monkeypatch) -> None:
     """Tests that omitted z_order keeps default; matches existing-test expectation."""
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     payload = {
         "create": [
-            {"class_id": cid, "kind": "bbox",
+            {"frame_id": fid, "class_id": cid, "kind": "bbox",
              "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 5, "h": 5}},
         ],
         "update": [],
@@ -223,10 +230,10 @@ def test_z_order_unspecified_remains_default(db_session, monkeypatch) -> None:
 
 def test_bbox_negative_x_rejected_at_edge(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     r = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "bbox",
+        json={"frame_id": fid, "class_id": cid, "kind": "bbox",
               "geometry": {"kind": "bbox", "x": -10, "y": 0, "w": 5, "h": 5}},
         headers=_hdr(token),
     )
@@ -235,10 +242,10 @@ def test_bbox_negative_x_rejected_at_edge(db_session, monkeypatch) -> None:
 
 def test_polygon_with_two_points_rejected_at_edge(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     r = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "polygon",
+        json={"frame_id": fid, "class_id": cid, "kind": "polygon",
               "geometry": {"kind": "polygon", "points": [[0, 0], [10, 10]]}},
         headers=_hdr(token),
     )
@@ -247,10 +254,10 @@ def test_polygon_with_two_points_rejected_at_edge(db_session, monkeypatch) -> No
 
 def test_mask_with_empty_counts_rejected_at_edge(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     r = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "mask",
+        json={"frame_id": fid, "class_id": cid, "kind": "mask",
               "geometry": {"counts": "", "size": [100, 100]}},
         headers=_hdr(token),
     )
@@ -259,10 +266,10 @@ def test_mask_with_empty_counts_rejected_at_edge(db_session, monkeypatch) -> Non
 
 def test_mask_with_zero_size_rejected_at_edge(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     r = client.post(
         f"/tasks/{tid}/annotations",
-        json={"class_id": cid, "kind": "mask",
+        json={"frame_id": fid, "class_id": cid, "kind": "mask",
               "geometry": {"counts": "abc", "size": [0, 100]}},
         headers=_hdr(token),
     )
@@ -275,13 +282,13 @@ def test_mask_with_zero_size_rejected_at_edge(db_session, monkeypatch) -> None:
 
 def test_batch_create_echoes_temp_ids(db_session, monkeypatch) -> None:
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     payload = {
         "create": [
-            {"class_id": cid, "kind": "bbox",
+            {"frame_id": fid, "class_id": cid, "kind": "bbox",
              "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 2, "h": 2},
              "temp_id": "draft-alpha"},
-            {"class_id": cid, "kind": "bbox",
+            {"frame_id": fid, "class_id": cid, "kind": "bbox",
              "geometry": {"kind": "bbox", "x": 3, "y": 3, "w": 4, "h": 4},
              "temp_id": "draft-beta"},
         ],
@@ -303,10 +310,10 @@ def test_batch_create_temp_id_optional_defaults_null(db_session, monkeypatch) ->
     """Backward compat: clients that don't send temp_id still work; the
     server echoes ``null`` for those entries."""
     client = _client(db_session)
-    token, pid, tid, cid, aid = _setup(client, monkeypatch)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
     payload = {
         "create": [
-            {"class_id": cid, "kind": "bbox",
+            {"frame_id": fid, "class_id": cid, "kind": "bbox",
              "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 2, "h": 2}},
         ],
         "update": [],
@@ -316,3 +323,85 @@ def test_batch_create_temp_id_optional_defaults_null(db_session, monkeypatch) ->
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created_temp_ids"] == [None]
+
+
+# --- v2.5.1: enforce frame_id on image-task writes (regression guard).
+
+
+def test_create_without_frame_id_rejected_for_image_task(db_session, monkeypatch) -> None:
+    """v2.5.1 — annotations on image tasks must carry a frame_id. Without
+    this guard, every annotation drawn in the editor saves with
+    frame_id=null and appears on every asset in the task."""
+    client = _client(db_session)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
+    r = client.post(
+        f"/tasks/{tid}/annotations",
+        json={"class_id": cid, "kind": "bbox",
+              "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 2, "h": 2}},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 422
+    assert "frame_id" in r.text
+
+
+def test_batch_create_without_frame_id_rejected_for_image_task(db_session, monkeypatch) -> None:
+    """v2.5.1 — same guard at the batch entrypoint."""
+    client = _client(db_session)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
+    payload = {
+        "create": [
+            {"class_id": cid, "kind": "bbox",
+             "geometry": {"kind": "bbox", "x": 1, "y": 1, "w": 2, "h": 2}},
+        ],
+        "update": [],
+        "delete": [],
+    }
+    r = client.post(f"/tasks/{tid}/annotations:batch", json=payload, headers=_hdr(token))
+    assert r.status_code == 422
+
+
+def test_cleanup_orphaned_admin_only(db_session, monkeypatch) -> None:
+    """v2.5.1 — POST /annotations/cleanup-orphaned is admin-only and
+    deletes pre-fix orphans (frame_id=null on image tasks)."""
+    from carve_api.assets import service as svc_mod
+    monkeypatch.setattr(svc_mod, "MinioClient", _setup_fakestore())
+
+    client = _client(db_session)
+    token, pid, tid, cid, aid, fid = _setup(client, monkeypatch)
+
+    # Insert an orphaned annotation directly (bypassing the new validation).
+    from carve_api.annotations.models import Annotation
+    import uuid as _uuid
+    orphan = Annotation(
+        task_id=_uuid.UUID(tid),
+        frame_id=None,
+        class_id=_uuid.UUID(cid),
+        kind="bbox",
+        geometry={"kind": "bbox", "x": 0, "y": 0, "w": 5, "h": 5},
+    )
+    db_session.add(orphan)
+    db_session.flush()
+    db_session.commit()
+    orphan_id = orphan.id
+
+    # Bootstrap (first) user is the admin per project conventions; use that token.
+    r = client.post("/annotations/cleanup-orphaned", headers=_hdr(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["deleted"] >= 1
+
+    # The orphan is gone.
+    still = db_session.get(Annotation, orphan_id)
+    assert still is None
+
+
+def _setup_fakestore():
+    class _FakeStorage:
+        @classmethod
+        def from_settings(cls): return cls()
+        def ensure_bucket(self): pass
+        def put_object(self, *a, **k): pass
+        def get_object(self, key): return io.BytesIO(b"")
+        def remove_object(self, key): pass
+        def presigned_get(self, key, **k): return f"https://fake/{key}"
+    return _FakeStorage

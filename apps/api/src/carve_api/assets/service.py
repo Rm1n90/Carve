@@ -122,6 +122,25 @@ class AssetService:
         )
         return int(self.session.execute(stmt).scalar() or 0)
 
+    def primary_frame_id_for(self, asset: Asset) -> str | None:
+        """Return the asset's single Frame.id for image assets, else None.
+
+        v2.5.1 fix — image assets get exactly one ``Frame`` row at upload
+        time (see ``upload`` above). The editor needs that frame's id to
+        scope annotations per asset; without it every annotation saves
+        with ``frame_id=null`` and the per-task annotations query returns
+        ALL annotations regardless of which asset is on screen.
+
+        Video assets have many frames addressed via the dedicated frames
+        endpoint, so we return ``None`` here.
+        """
+        if asset.kind != AssetKind.image:
+            return None
+        frame_id = self.session.execute(
+            select(Frame.id).where(Frame.asset_id == asset.id).limit(1)
+        ).scalar_one_or_none()
+        return str(frame_id) if frame_id is not None else None
+
     def thumbnail_url_for(self, asset: Asset, *, expires_seconds: int = 600) -> str | None:
         """Presigned URL for the cached 200x200 JPEG thumbnail.
 

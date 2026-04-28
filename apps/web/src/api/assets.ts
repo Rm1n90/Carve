@@ -21,6 +21,13 @@ export interface Asset {
 export interface AssetWithUrl {
   asset: Asset;
   url: string;
+  /**
+   * For image assets, the id of the asset's single Frame row. The editor
+   * scopes annotations to this frame_id so each image's bboxes/polygons
+   * stay separate. Null for video assets — use the dedicated frames
+   * endpoint to enumerate per-frame ids. Added in v2.5.1.
+   */
+  frame_id: string | null;
 }
 
 export interface AssetListPage {
