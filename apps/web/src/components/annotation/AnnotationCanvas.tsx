@@ -9,6 +9,9 @@ import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
+import { useFilter } from "@/state/annotationFilter";
+import { evaluateFilter, hasMeaningfulRules } from "@/lib/annotation-filter";
+import type { ClassRow } from "@/api/classes";
 import {
   renderBbox,
   renderPolygon,
@@ -28,6 +31,20 @@ import {
 import { showToast } from "@/lib/toast";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
 import { AnnotationContextMenu } from "@/components/annotation/AnnotationContextMenu";
+import {
+  centeredOffset,
+  clampScale,
+  fitToHost,
+  wheelDeltaToFactor,
+  zoomAt,
+  zoomCentered,
+  type ZoomFrame,
+  ZOOM_STEP,
+} from "@/canvas/zoom";
+
+/** Smooth-ease duration for wheel zoom in ms. ~60ms ease-out feels
+ * responsive without snapping. */
+const WHEEL_EASE_MS = 60;
 
 /**
  * State of the underlying image's load lifecycle. Surfaced to callers
@@ -67,6 +84,13 @@ interface Props {
    * bug O. Falls back to "?" if a class is missing from the map.
    */
   classNameMap?: Record<string, string>;
+  /**
+   * Project classes — when provided, the right-click context menu shows
+   * a "Change class" submenu listing each class with a color chip.
+   * Selecting a class calls ``useAnnotations.update``. Defaults to
+   * ``undefined`` (entry hidden so legacy tests / hosts unaffected).
+   */
+  classes?: ClassRow[];
 }
 
 const DEFAULT_AMBER = 0xeab308;
@@ -130,6 +154,7 @@ export function AnnotationCanvas({
   reloadKey,
   classColorMap,
   classNameMap,
+  classes: classesProp,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<CanvasApp | null>(null);
@@ -152,6 +177,19 @@ export function AnnotationCanvas({
   const [hostSize, setHostSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const scaleRef = useRef(1);
   const offsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  // When `true`, the next host-resize / image-load pass will re-fit the
+  // image. Flipped to `false` the moment the user takes any explicit
+  // zoom action (wheel, +/−, 1:1, exact %). Resetting to `true` happens
+  // when the user clicks the Fit button or presses 0/F. v2.6 zoom.
+  const autoFitRef = useRef(true);
+  // Wheel-zoom smoothing: we keep the `target` (the eventually-applied
+  // frame) and `start` (the frame at the beginning of the current ease)
+  // in refs and tween between them inside a requestAnimationFrame loop.
+  // A single rAF id is kept so back-to-back wheel events cancel and
+  // restart the ease toward the new target rather than stacking.
+  const easeRafRef = useRef<number | null>(null);
+  const easeStartRef = useRef<{ frame: ZoomFrame; t0: number } | null>(null);
+  const easeTargetRef = useRef<ZoomFrame | null>(null);
   const previewGfxRef = useRef<unknown | null>(null);
   // Persistent sprite for the loaded asset image — kept across imageUrl
   // changes so the Pixi Application doesn't have to be torn down on
@@ -404,6 +442,80 @@ export function AnnotationCanvas({
     return () => ro.disconnect();
   }, []);
 
+  /**
+   * Apply a zoom frame (scale + offset) to the live Pixi layers and
+   * mirror it into the refs that hit-testing / pointer math read. This
+   * is the only place that touches the scene-graph transform once the
+   * canvas is mounted — keeping it centralised guarantees offsetRef and
+   * scaleRef never drift from the actual layer transform. v2.6 zoom.
+   */
+  const applyFrame = useCallback((frame: ZoomFrame) => {
+    const app = appRef.current;
+    if (!app) return;
+    scaleRef.current = frame.scale;
+    offsetRef.current = { x: frame.offset.x, y: frame.offset.y };
+    [app.imageLayer, app.shapeLayer, app.overlayLayer].forEach((layer) => {
+      layer.position.set(frame.offset.x, frame.offset.y);
+      layer.scale.set(frame.scale, frame.scale);
+    });
+    onZoomChange?.(frame.scale * 100);
+  }, [onZoomChange]);
+
+  /**
+   * Smoothly ease the rendered transform toward `target` over
+   * WHEEL_EASE_MS ms using cubic ease-out. Cancels any in-flight ease.
+   */
+  const easeTo = useCallback(
+    (target: ZoomFrame) => {
+      easeTargetRef.current = target;
+      easeStartRef.current = {
+        frame: { scale: scaleRef.current, offset: { ...offsetRef.current } },
+        t0: typeof performance !== "undefined" ? performance.now() : Date.now(),
+      };
+      if (easeRafRef.current !== null) {
+        if (typeof cancelAnimationFrame === "function") {
+          cancelAnimationFrame(easeRafRef.current);
+        }
+        easeRafRef.current = null;
+      }
+      const step = (now: number) => {
+        const start = easeStartRef.current;
+        const goal = easeTargetRef.current;
+        if (!start || !goal) {
+          easeRafRef.current = null;
+          return;
+        }
+        const elapsed = now - start.t0;
+        const t = Math.min(1, elapsed / WHEEL_EASE_MS);
+        // Cubic ease-out — fast first, settles to target.
+        const k = 1 - Math.pow(1 - t, 3);
+        const scale =
+          start.frame.scale + (goal.scale - start.frame.scale) * k;
+        const ox =
+          start.frame.offset.x + (goal.offset.x - start.frame.offset.x) * k;
+        const oy =
+          start.frame.offset.y + (goal.offset.y - start.frame.offset.y) * k;
+        applyFrame({ scale, offset: { x: ox, y: oy } });
+        if (t < 1 && typeof requestAnimationFrame === "function") {
+          easeRafRef.current = requestAnimationFrame(step);
+        } else {
+          easeRafRef.current = null;
+          easeStartRef.current = null;
+          easeTargetRef.current = null;
+        }
+      };
+      if (typeof requestAnimationFrame === "function") {
+        easeRafRef.current = requestAnimationFrame(step);
+      } else {
+        // No rAF (jsdom without polyfill) — apply immediately.
+        applyFrame(target);
+        easeStartRef.current = null;
+        easeTargetRef.current = null;
+      }
+    },
+    [applyFrame],
+  );
+
   // ----- Resize the Pixi renderer + recompute scale whenever host or image size changes.
   useEffect(() => {
     const app = appRef.current;
@@ -416,22 +528,110 @@ export function AnnotationCanvas({
     } catch {
       /* renderer not ready */
     }
-    const padding = 16;
-    const sx = (hw - padding * 2) / iw;
-    const sy = (hh - padding * 2) / ih;
-    const s = Math.min(sx, sy, 1);
-    scaleRef.current = s;
-    const drawnW = iw * s;
-    const drawnH = ih * s;
-    const ox = (hw - drawnW) / 2;
-    const oy = (hh - drawnH) / 2;
-    offsetRef.current = { x: ox, y: oy };
-    [app.imageLayer, app.shapeLayer, app.overlayLayer].forEach((layer) => {
-      layer.position.set(ox, oy);
-      layer.scale.set(s, s);
-    });
-    onZoomChange?.(s * 100);
-  }, [hostSize, imageSize, onZoomChange]);
+    if (autoFitRef.current) {
+      // First load / explicit Fit — recenter on the host with the
+      // shrink-to-fit scale.
+      const frame = fitToHost({ w: hw, h: hh }, { w: iw, h: ih });
+      applyFrame(frame);
+    } else {
+      // User has zoomed — keep their scale, but recenter the offset so
+      // the image stays roughly anchored after a host resize.
+      const offset = centeredOffset(
+        { w: hw, h: hh },
+        { w: iw, h: ih },
+        scaleRef.current,
+      );
+      applyFrame({ scale: scaleRef.current, offset });
+    }
+  }, [hostSize, imageSize, applyFrame]);
+
+  // ----- Wheel zoom (cursor-anchored). v2.6 zoom.
+  //
+  // CVAT-style: a bare wheel zooms — there's no horizontal scrollbar to
+  // compete with on the canvas. The handler computes the cursor's
+  // position inside the host, calls into `zoomAt` to derive the new
+  // (scale, offset) pair anchored at that position, and eases toward it
+  // so successive notches don't snap.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const rect = host!.getBoundingClientRect();
+      const anchor = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      };
+      const factor = wheelDeltaToFactor(e.deltaY);
+      if (factor === 1) return;
+      autoFitRef.current = false;
+      const current: ZoomFrame = {
+        scale: scaleRef.current,
+        offset: { ...offsetRef.current },
+      };
+      const next = zoomAt(current, factor, anchor);
+      easeTo(next);
+    }
+    host.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      host.removeEventListener("wheel", onWheel);
+    };
+  }, [easeTo]);
+
+  // ----- Toolbar / keyboard zoom commands. The toolbar dispatches
+  // window CustomEvents (so the toolbar doesn't need a ref into the
+  // canvas) and the canvas resolves them against the current frame.
+  // v2.6 zoom.
+  useEffect(() => {
+    function currentFrame(): ZoomFrame {
+      return {
+        scale: scaleRef.current,
+        offset: { ...offsetRef.current },
+      };
+    }
+    function onZoomIn() {
+      autoFitRef.current = false;
+      const next = zoomCentered(currentFrame(), hostSize, ZOOM_STEP);
+      easeTo(next);
+    }
+    function onZoomOut() {
+      autoFitRef.current = false;
+      const next = zoomCentered(currentFrame(), hostSize, 1 / ZOOM_STEP);
+      easeTo(next);
+    }
+    function onFit() {
+      autoFitRef.current = true;
+      const frame = fitToHost(hostSize, imageSize);
+      applyFrame(frame);
+    }
+    function onActual() {
+      // 1:1 — image natural pixel size, centered.
+      autoFitRef.current = false;
+      const offset = centeredOffset(hostSize, imageSize, 1);
+      applyFrame({ scale: 1, offset });
+    }
+    function onZoomTo(e: Event) {
+      const detail = (e as CustomEvent<{ pct?: number }>).detail;
+      const pct = detail?.pct;
+      if (typeof pct !== "number" || !Number.isFinite(pct)) return;
+      autoFitRef.current = false;
+      const targetScale = clampScale(pct / 100);
+      const offset = centeredOffset(hostSize, imageSize, targetScale);
+      applyFrame({ scale: targetScale, offset });
+    }
+    window.addEventListener("carve:zoom-in", onZoomIn);
+    window.addEventListener("carve:zoom-out", onZoomOut);
+    window.addEventListener("carve:fit-to-screen", onFit);
+    window.addEventListener("carve:zoom-actual", onActual);
+    window.addEventListener("carve:zoom-to", onZoomTo as EventListener);
+    return () => {
+      window.removeEventListener("carve:zoom-in", onZoomIn);
+      window.removeEventListener("carve:zoom-out", onZoomOut);
+      window.removeEventListener("carve:fit-to-screen", onFit);
+      window.removeEventListener("carve:zoom-actual", onActual);
+      window.removeEventListener("carve:zoom-to", onZoomTo as EventListener);
+    };
+  }, [easeTo, applyFrame, hostSize, imageSize]);
 
   // Class colors now arrive via the `classColorMap` prop (see audit bug H).
   // The window-event approach had a race on first mount where the canvas
@@ -483,11 +683,28 @@ export function AnnotationCanvas({
       const sortedDrafts = Object.values(state.byId)
         .filter((d) => d.frameId === frameId)
         .sort((a, b) => (a.zOrder ?? 0) - (b.zOrder ?? 0));
+      // Active CVAT-style annotation filter (v2.6). When the tree has at
+      // least one rule with a non-empty value, drafts that fail the
+      // predicate are forced invisible — same gating path as the legacy
+      // `hiddenAnnotationIds` list, just driven by the filter store.
+      const filterTree = useFilter.getState().filter;
+      const filterApplies = hasMeaningfulRules(filterTree);
+      // Build a synthetic ClassRow lookup from the canvas's classNameMap
+      // so the evaluator's `label` field can resolve class names. The
+      // evaluator only reads `.name`, so we don't need the real ClassRow
+      // shape — the cheap cast keeps the evaluator pure.
+      const classLookup: Record<string, ClassRow> = {};
+      for (const cid of Object.keys(classNames)) {
+        classLookup[cid] = { name: classNames[cid] } as unknown as ClassRow;
+      }
       for (const draft of sortedDrafts) {
         const id = draft.tempId;
+        const filteredOut =
+          filterApplies && !evaluateFilter(draft, classLookup, filterTree);
         const hidden =
           state.hiddenAnnotationIds.includes(id) ||
-          state.hiddenClassIds.includes(draft.classId);
+          state.hiddenClassIds.includes(draft.classId) ||
+          filteredOut;
         // Pixels visibility — currently only gates mask annotations (the
         // mask renderer is a placeholder; future raster decoding will hook
         // here). When pixels=false, hide masks entirely. Audit bug O.
@@ -532,6 +749,9 @@ export function AnnotationCanvas({
           0,
           Math.min(1, settings.selectedOpacity / 100),
         );
+        const outlineColor = settings.outlinedBorders
+          ? hexFromColor(settings.outlinedBorderColor)
+          : undefined;
         const isSelected =
           state.selectedId === id || state.selectedIds.includes(id);
         const isHovered = hovered === id;
@@ -545,6 +765,7 @@ export function AnnotationCanvas({
             fillAlpha,
             selectedFillAlpha,
             settings.controlPointsSize,
+            outlineColor,
           );
           // Class-name tag floating above the bbox top-left when the
           // `labels` flag is on. Skipped when the label flag is off OR no
@@ -590,6 +811,7 @@ export function AnnotationCanvas({
             fillAlpha,
             selectedFillAlpha,
             settings.controlPointsSize,
+            outlineColor,
           );
         } else if (draft.geometry.kind === "mask_rle") {
           // Render committed mask annotations as a tinted sprite.
@@ -679,11 +901,19 @@ export function AnnotationCanvas({
     const unsubS = useEditorSettings.subscribe(() => {
       void reconcile(useAnnotations.getState());
     });
+    // Re-render when the active annotation filter changes (v2.6).
+    // Without this, applying a filter via the dialog wouldn't trigger
+    // a reconcile pass — the canvas would only update on the next
+    // unrelated state change.
+    const unsubF = useFilter.subscribe(() => {
+      void reconcile(useAnnotations.getState());
+    });
     return () => {
       mounted = false;
       unsubA();
       unsubT();
       unsubS();
+      unsubF();
     };
   }, [frameId, classMap, classNames, imageSize]);
 
@@ -1371,6 +1601,7 @@ export function AnnotationCanvas({
         hostRef={hostRef}
         hitTest={hitTestClient}
         vertexHitTest={vertexHitTestClient}
+        classes={classesProp}
       />
     </div>
   );

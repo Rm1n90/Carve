@@ -7,6 +7,7 @@ import {
   AlertCircle,
   ChevronLeft,
   ChevronRight,
+  Info,
   Loader2,
   RefreshCw,
 } from "lucide-react";
@@ -15,7 +16,9 @@ import { AnnotationCanvas, type ImageLoadStatus } from "@/components/annotation/
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
 import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
+import { InfoDialog } from "@/components/annotation/InfoDialog";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
+import { AppearancePanel } from "@/components/annotation/AppearancePanel";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip";
@@ -29,6 +32,7 @@ import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
 import { useAnnotations } from "@/state/annotations";
+import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import { cn } from "@/lib/cn";
@@ -80,6 +84,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     }
   }, [currentFrameIdx]);
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
+  // v2.6 — Info dialog (CVAT-style task overview + per-class stats).
+  // Aggregates from the in-memory annotations store; no extra API calls.
+  const [infoOpen, setInfoOpen] = useState(false);
   // Image load lifecycle. Phase A core 1 — without this, image load failures
   // were invisible and the user just saw an empty canvas.
   const [imageStatus, setImageStatus] = useState<ImageLoadStatus>("loading");
@@ -180,6 +187,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     if (!classesQ.data) return {};
     const m: Record<string, string> = {};
     for (const c of classesQ.data) m[c.id] = c.name;
+    return m;
+  }, [classesQ.data]);
+
+  // Full ClassRow lookup keyed by id — passed to ObjectsPanel so the
+  // CVAT-style filter evaluator can resolve `label` rules. v2.6.
+  const classByIdMap = useMemo(() => {
+    if (!classesQ.data) return {};
+    const m: Record<string, (typeof classesQ.data)[number]> = {};
+    for (const c of classesQ.data) m[c.id] = c;
     return m;
   }, [classesQ.data]);
 
@@ -510,14 +526,23 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             hasError={hasError}
             dirtyCount={dirtyCount}
             zoomPct={zoomPct}
-            onZoomIn={() => setZoomPct((z) => Math.min(800, z + 25))}
-            onZoomOut={() => setZoomPct((z) => Math.max(10, z - 25))}
+            onZoomIn={() => {
+              window.dispatchEvent(new CustomEvent("carve:zoom-in"));
+            }}
+            onZoomOut={() => {
+              window.dispatchEvent(new CustomEvent("carve:zoom-out"));
+            }}
             onZoomTo={(p) => {
               if (p === 0) {
                 window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
               } else {
-                setZoomPct(p);
+                window.dispatchEvent(
+                  new CustomEvent("carve:zoom-to", { detail: { pct: p } }),
+                );
               }
+            }}
+            onZoomActual={() => {
+              window.dispatchEvent(new CustomEvent("carve:zoom-actual"));
             }}
             onFitToScreen={() => {
               window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
@@ -558,6 +583,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 reloadKey={imageReloadKey}
                 classColorMap={classColorMap}
                 classNameMap={classNameMap}
+                classes={classesQ.data ?? []}
               />
               {imageStatus === "error" && (
                 <div
@@ -598,7 +624,21 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   </div>
                 </div>
               )}
-              <div className="absolute top-2 right-2 z-20">
+              <div className="absolute top-2 right-2 z-20 flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Show task info"
+                  data-testid="info-dialog-trigger"
+                  title="Task info"
+                  onClick={() => setInfoOpen(true)}
+                  className={cn(
+                    "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
+                    "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+                    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
+                  )}
+                >
+                  <Info className="h-[18px] w-[18px]" />
+                </button>
                 <KeyboardCheatSheet />
               </div>
             </main>
@@ -608,7 +648,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
               aria-label="Classes"
               className="w-[220px] shrink-0 border-l border-[var(--border-subtle)] bg-[var(--bg-app)] flex flex-col"
             >
-              <Tabs.Root defaultValue="classes" className="flex flex-col h-full">
+              <Tabs.Root defaultValue="classes" className="flex-1 min-h-0 flex flex-col">
                 <Tabs.List
                   aria-label="Side panel"
                   className="flex shrink-0 border-b border-[var(--border-subtle)] px-2 pt-2 gap-1"
@@ -670,9 +710,10 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   value="objects"
                   className="flex-1 overflow-y-auto p-3 focus-visible:outline-none"
                 >
-                  <ObjectsPanel frameId={frameId} />
+                  <ObjectsPanel frameId={frameId} classes={classByIdMap} />
                 </Tabs.Content>
               </Tabs.Root>
+              <AppearancePanel />
             </aside>
           </div>
 
@@ -695,6 +736,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       </div>
 
       <CommandPalette classes={classesQ.data ?? []} onSaveNow={saveNow} />
+
+      <InfoDialog
+        open={infoOpen}
+        onOpenChange={setInfoOpen}
+        asset={assetQ.data}
+        totalAssets={taskAssets.length}
+        classes={classesQ.data ?? []}
+        assigneeEmail={useAuth.getState().user?.email ?? null}
+      />
     </div>
     </TooltipProvider>
   );

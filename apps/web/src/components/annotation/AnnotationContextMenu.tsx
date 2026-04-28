@@ -6,11 +6,14 @@ import {
   ChevronsDown,
   Trash2,
   Minus,
+  Tag as TagIcon,
+  ChevronRight,
 } from "lucide-react";
 import { useAnnotations } from "@/state/annotations";
 import { applyVertexDelete, POLY_MIN_VERTICES } from "@/canvas/polygonEdit";
 import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/lib/cn";
+import type { ClassRow } from "@/api/classes";
 
 interface MenuItem {
   key: string;
@@ -65,6 +68,13 @@ interface Props {
     clientX: number,
     clientY: number,
   ) => { annId: string; vertexIndex: number } | null;
+  /**
+   * Project classes — when provided, the menu adds a "Change class"
+   * entry whose submenu lists every class with a color chip. Selecting
+   * one calls ``useAnnotations.update(annId, { classId })`` which marks
+   * the annotation dirty. Defaults to ``undefined`` (entry hidden).
+   */
+  classes?: ClassRow[];
 }
 
 /**
@@ -72,7 +82,12 @@ interface Props {
  * floating menu. Avoids wrapping the host so the host remains the outer
  * element returned by tests / parent components.
  */
-export function AnnotationContextMenu({ hostRef, hitTest, vertexHitTest }: Props) {
+export function AnnotationContextMenu({
+  hostRef,
+  hitTest,
+  vertexHitTest,
+  classes,
+}: Props) {
   const [state, setState] = useState<
     | {
         x: number;
@@ -83,6 +98,7 @@ export function AnnotationContextMenu({ hostRef, hitTest, vertexHitTest }: Props
       }
     | null
   >(null);
+  const [classMenuOpen, setClassMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -118,10 +134,14 @@ export function AnnotationContextMenu({ hostRef, hitTest, vertexHitTest }: Props
     function close(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setState(null);
+        setClassMenuOpen(false);
       }
     }
     function esc(e: KeyboardEvent) {
-      if (e.key === "Escape") setState(null);
+      if (e.key === "Escape") {
+        setState(null);
+        setClassMenuOpen(false);
+      }
     }
     window.addEventListener("mousedown", close);
     window.addEventListener("keydown", esc);
@@ -202,6 +222,71 @@ export function AnnotationContextMenu({ hostRef, hitTest, vertexHitTest }: Props
           </>
         );
       })()}
+      {classes && classes.length > 0 && (
+        <>
+          <div className="my-1 h-px bg-[var(--border-subtle)]" />
+          <div className="relative">
+            <button
+              type="button"
+              data-testid="ctx-change-class"
+              onClick={() => setClassMenuOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={classMenuOpen}
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)]"
+            >
+              <TagIcon className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+              <span className="flex-1">Change class</span>
+              <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+            </button>
+            {classMenuOpen && (
+              <div
+                role="menu"
+                aria-label="Change class submenu"
+                data-testid="ctx-change-class-submenu"
+                className={cn(
+                  "absolute left-full top-0 ml-1 min-w-[180px] max-h-[260px] overflow-y-auto p-1",
+                  "rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
+                  "bg-[var(--bg-elev)] shadow-[var(--shadow-elev-2)]",
+                )}
+              >
+                {classes.map((c) => {
+                  const draft = useAnnotations.getState().byId[state.annId];
+                  const active = draft?.classId === c.id;
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      data-testid={`ctx-change-class-${c.id}`}
+                      onClick={() => {
+                        if (!active) {
+                          useAnnotations
+                            .getState()
+                            .update(state.annId, { classId: c.id });
+                        }
+                        setClassMenuOpen(false);
+                        setState(null);
+                      }}
+                      className={cn(
+                        "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12px] text-left cursor-pointer",
+                        active
+                          ? "bg-[var(--accent-bg)] text-[color:var(--accent)]"
+                          : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        className="h-3 w-3 shrink-0 rounded-full border border-[var(--border-strong)]"
+                        style={{ background: c.color }}
+                      />
+                      <span className="flex-1 truncate">{c.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      )}
       <div className="my-1 h-px bg-[var(--border-subtle)]" />
       <button
         type="button"

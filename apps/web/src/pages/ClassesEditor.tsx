@@ -42,7 +42,7 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
   }
 
   return (
-    <section className="grid gap-3">
+    <section className="grid gap-3 min-h-0">
       <header className="flex items-center justify-between">
         <h2 className="text-[14px] font-medium tracking-tight text-[color:var(--text-primary)]">
           Classes
@@ -52,82 +52,114 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
         </span>
       </header>
 
-      <form
-        onSubmit={onSubmit}
+      {/* Bounded shell: header (sticky) / scrollable list / footer (sticky add form).
+          max-h caps page growth so adding many classes doesn't push siblings down. */}
+      <div
+        data-testid="classes-editor-shell"
         className={cn(
-          "grid gap-2.5 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-3",
+          "grid grid-rows-[auto_1fr_auto] max-h-[calc(100vh-280px)] min-h-[320px]",
+          "rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
+          "overflow-hidden",
         )}
       >
-        <Input
-          label="Class name"
-          required
-          minLength={1}
-          maxLength={120}
-          placeholder="e.g. car, person, nucleus"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <div className="flex items-end gap-2">
-          <label className="grid gap-1.5">
-            <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
-              Color
-            </span>
-            <input
-              type="color"
-              aria-label="Color"
-              value={color}
-              onChange={(e) => setColor(e.target.value)}
-              className="h-9 w-12 cursor-pointer rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]"
-            />
-          </label>
-          <Button
-            type="submit"
-            variant="primary"
-            size="md"
-            loading={create.isPending}
-            leftIcon={!create.isPending && <Plus className="h-4 w-4" />}
-            className="flex-1"
-          >
-            {create.isPending ? "Adding" : "Add class"}
-          </Button>
-        </div>
-      </form>
+        <header
+          data-testid="classes-editor-header"
+          className="px-3 py-2 border-b border-[var(--border-subtle)] text-[11px] uppercase tracking-[0.08em] text-[color:var(--text-tertiary)] font-medium"
+        >
+          {q.data && q.data.length > 0
+            ? `${q.data.length} ${q.data.length === 1 ? "class" : "classes"}`
+            : "Classes"}
+        </header>
 
-      {q.isLoading && <p className="text-[color:var(--text-tertiary)] text-[13px]">Loading…</p>}
-      {q.data && q.data.length === 0 && (
-        <p className="text-[color:var(--text-tertiary)] text-[13px] italic px-1">No classes defined yet.</p>
-      )}
-      <ul className="grid gap-1">
-        {q.data?.map((c: ClassRow) => (
-          <li
-            key={c.id}
-            className={cn(
-              "flex items-center gap-2.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-3 py-1.5",
-              "transition-colors hover:border-[var(--border-strong)]",
-            )}
-          >
-            <span
-              aria-label={`Class ${c.idx} color`}
-              className="h-3 w-3 shrink-0 rounded-full border border-[var(--border-strong)]"
-              style={{ background: c.color }}
-            />
-            <span className="font-mono text-[10px] text-[color:var(--text-tertiary)] w-6">#{c.idx}</span>
-            <span className="flex-1 text-[13px] tracking-tight text-[color:var(--text-primary)] truncate">
-              {c.name}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                if (confirm(`Delete class "${c.name}"?`)) remove.mutate(c.id);
-              }}
-              aria-label={`Delete class ${c.name}`}
-              className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] transition-colors hover:bg-[var(--danger-bg)] hover:text-[color:var(--danger)]"
+        <div
+          data-testid="classes-editor-list"
+          className="overflow-y-auto px-2 py-2"
+        >
+          {q.isLoading && (
+            <p className="text-[color:var(--text-tertiary)] text-[13px] px-1 py-2">
+              Loading…
+            </p>
+          )}
+          {q.data && q.data.length === 0 && (
+            <p className="text-[color:var(--text-tertiary)] text-[13px] italic px-1 py-2">
+              No classes defined yet.
+            </p>
+          )}
+          <ul className="grid gap-1">
+            {q.data?.map((c: ClassRow) => (
+              <li
+                key={c.id}
+                className={cn(
+                  "flex items-center gap-2.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] px-3 py-1.5",
+                  "transition-colors hover:border-[var(--border-strong)]",
+                )}
+              >
+                <span
+                  aria-label={`Class ${c.idx} color`}
+                  className="h-3 w-3 shrink-0 rounded-full border border-[var(--border-strong)]"
+                  style={{ background: c.color }}
+                />
+                <span className="font-mono text-[10px] text-[color:var(--text-tertiary)] w-6">
+                  #{c.idx}
+                </span>
+                <span className="flex-1 text-[13px] tracking-tight text-[color:var(--text-primary)] truncate">
+                  {c.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm(`Delete class "${c.name}"?`)) remove.mutate(c.id);
+                  }}
+                  aria-label={`Delete class ${c.name}`}
+                  className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] transition-colors hover:bg-[var(--danger-bg)] hover:text-[color:var(--danger)]"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <form
+          data-testid="classes-editor-footer"
+          onSubmit={onSubmit}
+          className="grid gap-2 px-3 py-2.5 border-t border-[var(--border-subtle)] bg-[var(--bg-elev)]"
+        >
+          <Input
+            label="Class name"
+            required
+            minLength={1}
+            maxLength={120}
+            placeholder="e.g. car, person, nucleus"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <div className="flex items-end gap-2">
+            <label className="grid gap-1.5">
+              <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
+                Color
+              </span>
+              <input
+                type="color"
+                aria-label="Color"
+                value={color}
+                onChange={(e) => setColor(e.target.value)}
+                className="h-9 w-12 cursor-pointer rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]"
+              />
+            </label>
+            <Button
+              type="submit"
+              variant="primary"
+              size="md"
+              loading={create.isPending}
+              leftIcon={!create.isPending && <Plus className="h-4 w-4" />}
+              className="flex-1"
             >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          </li>
-        ))}
-      </ul>
+              {create.isPending ? "Adding" : "Add class"}
+            </Button>
+          </div>
+        </form>
+      </div>
     </section>
   );
 }
