@@ -101,9 +101,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     queryKey: ["project", projectId],
     queryFn: () => projectsApi.get(projectId),
   });
+  // `placeholderData: prev => prev` keeps the previous asset's data on
+  // screen while the next asset's query is in flight. Without it, every
+  // navigation flashes the entire editor through a "Loading…" page while
+  // the new asset is fetched. v2.5 perf fix.
   const assetQ = useQuery({
     queryKey: ["asset", assetId],
     queryFn: () => assetsApi.get(assetId),
+    placeholderData: (prev) => prev,
+    staleTime: 5 * 60 * 1000,
   });
   const classesQ = useQuery({
     queryKey: ["classes", projectId],
@@ -177,6 +183,32 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     next: nextAsset,
   });
   navAssetRef.current = { prev: prevAsset, next: nextAsset };
+
+  // Prefetch prev/next asset metadata + warm the browser image cache for
+  // their thumbnails. When the user hits ArrowLeft/Right the new asset's
+  // query is already populated, so navigation is near-instant. v2.5 perf
+  // fix.
+  useEffect(() => {
+    const targets: { id: string; thumb: string | null }[] = [];
+    if (prevAsset) targets.push({ id: prevAsset.id, thumb: prevAsset.thumbnail_url });
+    if (nextAsset) targets.push({ id: nextAsset.id, thumb: nextAsset.thumbnail_url });
+    for (const t of targets) {
+      qc.prefetchQuery({
+        queryKey: ["asset", t.id],
+        queryFn: () => assetsApi.get(t.id),
+        staleTime: 5 * 60 * 1000,
+      });
+      if (t.thumb) {
+        // Warm the browser image cache so the thumbnail strip + future
+        // <img> renders are an immediate cache hit. The Image() instance
+        // is GC'd as soon as the browser caches the bytes.
+        const img = new Image();
+        img.src = t.thumb;
+      }
+    }
+    // We deliberately depend on the asset ids only, not the full Asset
+    // objects, so prefetch fires once per neighbour change.
+  }, [prevAsset?.id, nextAsset?.id, qc]);
 
   function goToAsset(targetId: string) {
     void navigate({
@@ -402,7 +434,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     return c;
   }, [projectQ.data, assetQ.data, projectId]);
 
-  if (assetQ.isLoading || classesQ.isLoading) {
+  // Only show the full-page loading screen on initial mount (no data yet).
+  // During asset navigation, `assetQ.data` still holds the previous asset
+  // thanks to `placeholderData`, so we render the full editor and let the
+  // canvas + status badge surface the in-flight state. v2.5 perf fix.
+  if (!assetQ.data || !classesQ.data) {
     return (
       <div className="grid h-screen place-items-center">
         <div className="flex items-center gap-2 text-[color:var(--text-tertiary)] text-[13px]">

@@ -153,6 +153,14 @@ export function AnnotationCanvas({
   const scaleRef = useRef(1);
   const offsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const previewGfxRef = useRef<unknown | null>(null);
+  // Persistent sprite for the loaded asset image — kept across imageUrl
+  // changes so the Pixi Application doesn't have to be torn down on
+  // navigation. v2.5 perf fix.
+  const imageSpriteRef = useRef<unknown | null>(null);
+  // Tracks whether the Pixi app has finished initialising. The
+  // texture-swap effect waits on this so a fast first-paint imageUrl
+  // change still lands on a ready renderer.
+  const [pixiReady, setPixiReady] = useState(false);
   const shapeGfxByIdRef = useRef<Map<string, unknown>>(new Map());
   // Per-annotation mask sprites (for `geometry.kind === "mask_rle"`).
   // Stored separately from `shapeGfxByIdRef` so the bbox/polygon path
@@ -190,13 +198,14 @@ export function AnnotationCanvas({
     new Map(),
   );
 
-  // ----- Mount Pixi app once. Re-mount when imageUrl changes (or reloadKey
-  // bumps, signalling a parent-driven retry after an image-load error).
+  // ----- Mount Pixi app ONCE on the host element. Lifecycle is decoupled
+  // from imageUrl: navigating between assets only swaps the sprite texture
+  // (see the next effect), avoiding the 200-400ms cost of recreating the
+  // WebGL context + canvas. v2.5 perf fix.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     let cancelled = false;
-    onImageStatusChange?.("loading");
     const app = new CanvasApp({ width: 1, height: 1, backgroundAlpha: 0 });
     appRef.current = app;
 
@@ -212,59 +221,7 @@ export function AnnotationCanvas({
       cv.style.inset = "0";
       cv.style.width = "100%";
       cv.style.height = "100%";
-
-      // Pre-flight the image with a plain HTMLImageElement. Pixi's Assets cache
-      // sometimes hides 404s as an empty texture; the <img> error handler is
-      // the simplest reliable signal we can surface to the parent. Phase A
-      // core 1.
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const probe = new Image();
-          probe.onload = () => resolve();
-          probe.onerror = () =>
-            reject(new Error("network or 404 — image could not be fetched"));
-          // Allow cross-origin texture sampling in Pixi later.
-          probe.crossOrigin = "anonymous";
-          probe.src = imageUrl;
-        });
-      } catch (e) {
-        if (cancelled) return;
-        const message =
-          e instanceof Error ? e.message : "image failed to load";
-        onImageStatusChange?.("error", message);
-        return;
-      }
-
-      // Load image into imageLayer
-      try {
-        const { Assets, Sprite } = await import("pixi.js");
-        const tex = await Assets.load(imageUrl);
-        if (cancelled) return;
-        const sprite = new Sprite(tex);
-        // Apply the user's "Smooth image" preference. Pixi v8 stores the
-        // sampling mode on `texture.source.scaleMode` ("linear" | "nearest").
-        // Older texture shapes expose `tex.baseTexture.scaleMode`; we set
-        // both so the preference applies regardless of which path is hit.
-        try {
-          const smooth = useEditorSettings.getState().smoothImage;
-          const mode = smooth ? "linear" : "nearest";
-          const source = (tex as { source?: { scaleMode?: string } }).source;
-          if (source) source.scaleMode = mode;
-          const baseTex = (tex as { baseTexture?: { scaleMode?: string } }).baseTexture;
-          if (baseTex) baseTex.scaleMode = mode;
-        } catch {
-          /* best-effort — sprite will just render with the default mode */
-        }
-        app.imageLayer.addChild(sprite);
-        const realW = sprite.width || 1;
-        const realH = sprite.height || 1;
-        setImageSize({ w: realW, h: realH });
-        onImageStatusChange?.("loaded");
-      } catch (e) {
-        if (cancelled) return;
-        const message = e instanceof Error ? e.message : "pixi load failed";
-        onImageStatusChange?.("error", message);
-      }
+      setPixiReady(true);
     })();
 
     return () => {
@@ -275,12 +232,128 @@ export function AnnotationCanvas({
         /* ignore cleanup errors */
       }
       appRef.current = null;
+      imageSpriteRef.current = null;
       shapeGfxByIdRef.current.clear();
       labelGfxByIdRef.current.clear();
       previewGfxRef.current = null;
+      setPixiReady(false);
+    };
+  }, []);
+
+  // ----- Swap the image sprite's texture whenever imageUrl changes (or the
+  // parent bumps reloadKey to retry after an error). The Pixi app, host
+  // canvas, layers, and pointer wiring all stay alive — only the texture
+  // is replaced. v2.5 perf fix.
+  useEffect(() => {
+    if (!pixiReady || !imageUrl) return;
+    const app = appRef.current;
+    if (!app) return;
+    let cancelled = false;
+    onImageStatusChange?.("loading");
+
+    (async () => {
+      try {
+        const { Assets, Sprite } = await import("pixi.js");
+        const tex = await Assets.load(imageUrl);
+        if (cancelled) {
+          // Best-effort: drop the cached texture from Pixi's Assets cache
+          // so a stale entry doesn't pin GPU memory after a fast nav.
+          try {
+            const unload = (Assets as unknown as { unload?: (u: string) => Promise<void> }).unload;
+            unload?.(imageUrl).catch(() => undefined);
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+
+        // Apply the user's "Smooth image" preference at the time the
+        // texture is loaded. Live toggles are handled by the
+        // smoothImage subscriber below.
+        try {
+          const smooth = useEditorSettings.getState().smoothImage;
+          const mode = smooth ? "linear" : "nearest";
+          const source = (tex as { source?: { scaleMode?: string } }).source;
+          if (source) source.scaleMode = mode;
+          const baseTex = (tex as { baseTexture?: { scaleMode?: string } }).baseTexture;
+          if (baseTex) baseTex.scaleMode = mode;
+        } catch {
+          /* best-effort */
+        }
+
+        const existingSprite = imageSpriteRef.current as
+          | { texture: unknown; width: number; height: number }
+          | null;
+
+        if (existingSprite) {
+          // Reuse the persistent sprite — only the texture handle changes.
+          existingSprite.texture = tex;
+        } else {
+          const sprite = new Sprite(tex);
+          app.imageLayer.addChild(sprite);
+          imageSpriteRef.current = sprite;
+        }
+
+        // Read intrinsic dims off the texture rather than the sprite —
+        // Pixi v8's Sprite.width/height reflect the texture only after a
+        // re-render, but the texture exposes them synchronously.
+        const sourceDims = (tex as {
+          width?: number;
+          height?: number;
+          source?: { width?: number; height?: number };
+        });
+        const realW =
+          sourceDims.width ??
+          sourceDims.source?.width ??
+          (imageSpriteRef.current as { width?: number } | null)?.width ??
+          1;
+        const realH =
+          sourceDims.height ??
+          sourceDims.source?.height ??
+          (imageSpriteRef.current as { height?: number } | null)?.height ??
+          1;
+        setImageSize({ w: realW || 1, h: realH || 1 });
+        onImageStatusChange?.("loaded");
+      } catch (e) {
+        if (cancelled) return;
+        const message = e instanceof Error ? e.message : "image failed to load";
+        onImageStatusChange?.("error", message);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageUrl, reloadKey]);
+  }, [imageUrl, reloadKey, pixiReady]);
+
+  // ----- Reset shape / label graphics when the asset changes so leftover
+  // shapes from the previous asset don't briefly render before the new
+  // asset's annotations are seeded into the store. The reconcile effect
+  // below repopulates the layer from the store on the next tick.
+  useEffect(() => {
+    const app = appRef.current;
+    const gfxMap = shapeGfxByIdRef.current;
+    const labelMap = labelGfxByIdRef.current;
+    if (app) {
+      for (const g of gfxMap.values()) {
+        try {
+          app.shapeLayer.removeChild(g as never);
+        } catch {
+          /* ignore */
+        }
+      }
+      for (const entry of labelMap.values()) {
+        try {
+          app.shapeLayer.removeChild(entry.container as never);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    gfxMap.clear();
+    labelMap.clear();
+  }, [assetId]);
 
   // ----- Live-apply the user's "Smooth image" preference. The sampling
   // mode is stamped onto the texture at load time (see the sprite-load
