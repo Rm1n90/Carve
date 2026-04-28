@@ -56,7 +56,7 @@ export function NewTaskDialog({
   return (
     <form
       onSubmit={onSubmit}
-      className="grid gap-3 sm:grid-cols-[1fr_auto_auto] items-end rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3"
+      className="grid gap-2 sm:grid-cols-[1fr_auto_auto] items-end rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2"
     >
       <Input
         ref={inputRef}
@@ -68,14 +68,14 @@ export function NewTaskDialog({
         value={name}
         onChange={(e) => setName(e.target.value)}
       />
-      <label className="grid gap-1.5">
-        <span className="text-[12px] uppercase tracking-[0.08em] text-tertiary font-medium">
+      <label className="grid gap-1">
+        <span className="text-[10.5px] uppercase tracking-[0.08em] text-tertiary font-medium">
           Kind
         </span>
         <select
           value={kind}
           onChange={(e) => setKind(e.target.value as TaskKind)}
-          className="h-10 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3 text-[14px] text-primary focus:outline-none focus:border-[var(--accent)]"
+          className="h-8 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2 text-[12.5px] text-primary focus:outline-none focus:border-[var(--accent)]"
         >
           <option value="image">Image set</option>
           <option value="video">Video</option>
@@ -84,8 +84,9 @@ export function NewTaskDialog({
       <Button
         type="submit"
         variant="primary"
+        size="sm"
         loading={create.isPending}
-        leftIcon={!create.isPending && <Plus className="h-4 w-4" />}
+        leftIcon={!create.isPending && <Plus className="h-3.5 w-3.5" />}
       >
         {create.isPending ? "Creating" : "Add task"}
       </Button>
