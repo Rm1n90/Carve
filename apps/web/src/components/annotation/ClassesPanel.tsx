@@ -343,6 +343,20 @@ function AddClassInline({
 }) {
   const [name, setName] = useState("");
   const [color, setColor] = useState<string>(() => nextHexForIdx(currentClassCount));
+  // Defensive wrapper: if the parent's `onCreate` throws synchronously
+  // (programming error, mid-flight teardown, etc.), the React event
+  // dispatcher would rethrow into the global error handler and could
+  // unmount the surrounding panel. Wrapping here keeps the inline form
+  // alive and lets the user retry — same intent as the try/catch around
+  // `mutateAsync` in ClassesEditor.tsx.
+  function safeCreate(n: string, c: string) {
+    try {
+      onCreate(n, c);
+    } catch {
+      /* parent surfaces the error via its mutation state; we just
+         keep the inline form mounted so the panel doesn't disappear. */
+    }
+  }
   return (
     <div
       data-testid="add-class-inline"
@@ -373,7 +387,7 @@ function AddClassInline({
           )}
           onKeyDown={(e) => {
             if (e.key === "Enter" && name.trim()) {
-              onCreate(name.trim(), color);
+              safeCreate(name.trim(), color);
               setName("");
             } else if (e.key === "Escape") {
               onCancel();
@@ -392,7 +406,7 @@ function AddClassInline({
         <button
           type="button"
           disabled={!name.trim()}
-          onClick={() => name.trim() && onCreate(name.trim(), color)}
+          onClick={() => name.trim() && safeCreate(name.trim(), color)}
           className={cn(
             "h-7 px-2.5 rounded-[var(--radius-sm)] text-[12px] font-medium",
             "bg-[var(--accent)] text-[color:var(--accent-fg)]",
