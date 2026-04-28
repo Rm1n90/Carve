@@ -60,16 +60,71 @@ describe("canvas zoom helpers", () => {
   describe("wheelDeltaToFactor", () => {
     it("zooms in when deltaY is negative (wheel up)", () => {
       // Wheel-up — image gets bigger.
-      expect(wheelDeltaToFactor(-100)).toBeCloseTo(ZOOM_STEP, 10);
+      expect(wheelDeltaToFactor(-100)).toBeGreaterThan(1);
     });
 
     it("zooms out when deltaY is positive (wheel down)", () => {
       // Wheel-down — image gets smaller.
-      expect(wheelDeltaToFactor(100)).toBeCloseTo(1 / ZOOM_STEP, 10);
+      expect(wheelDeltaToFactor(100)).toBeLessThan(1);
     });
 
     it("returns 1 when deltaY is zero (no movement)", () => {
       expect(wheelDeltaToFactor(0)).toBe(1);
+    });
+
+    // v2.7 wave 2 item 6 — proportional smooth wheel zoom.
+    // The original implementation returned a constant ZOOM_STEP / (1/ZOOM_STEP)
+    // regardless of |deltaY|, which made trackpad pinch + fast scroll feel
+    // jerky and discrete. The replacement uses an exp curve so |deltaY|
+    // proportionally scales the factor while preserving the previous
+    // calibration at |deltaY|=100 (the typical browser wheel notch).
+
+    it("calibration: |deltaY| = 100 still yields ~ZOOM_STEP (smooth replacement is backward-compatible)", () => {
+      expect(wheelDeltaToFactor(-100)).toBeCloseTo(ZOOM_STEP, 1);
+      expect(wheelDeltaToFactor(100)).toBeCloseTo(1 / ZOOM_STEP, 2);
+    });
+
+    it("proportionality: factor(-50) and factor(-200) differ (was a constant before fix)", () => {
+      const small = wheelDeltaToFactor(-50);
+      const big = wheelDeltaToFactor(-200);
+      expect(small).not.toBe(big);
+      // Larger magnitude must produce a larger zoom-in factor.
+      expect(big).toBeGreaterThan(small);
+    });
+
+    it("monotonic: factor(-50) < factor(-100) < factor(-200) (zoom-in side)", () => {
+      expect(wheelDeltaToFactor(-50)).toBeLessThan(
+        wheelDeltaToFactor(-100),
+      );
+      expect(wheelDeltaToFactor(-100)).toBeLessThan(
+        wheelDeltaToFactor(-200),
+      );
+    });
+
+    it("monotonic: factor(50) > factor(100) > factor(200) (zoom-out side)", () => {
+      expect(wheelDeltaToFactor(50)).toBeGreaterThan(
+        wheelDeltaToFactor(100),
+      );
+      expect(wheelDeltaToFactor(100)).toBeGreaterThan(
+        wheelDeltaToFactor(200),
+      );
+    });
+
+    it("symmetry: factor(d) * factor(-d) ~= 1 for any d", () => {
+      for (const d of [10, 50, 100, 250, 500]) {
+        const product = wheelDeltaToFactor(d) * wheelDeltaToFactor(-d);
+        expect(product).toBeCloseTo(1, 5);
+      }
+    });
+
+    it("clamps a runaway pinch so per-event factor stays sane", () => {
+      // A 1000-pixel pinch must not 8x scale in one frame; the
+      // per-event factor is clamped to the [0.5, 2.0] range.
+      expect(wheelDeltaToFactor(-5000)).toBeLessThanOrEqual(2.0);
+      expect(wheelDeltaToFactor(5000)).toBeGreaterThanOrEqual(0.5);
+      // The clamp must STILL produce a meaningful zoom — never collapse to 1.
+      expect(wheelDeltaToFactor(-5000)).toBeGreaterThan(1);
+      expect(wheelDeltaToFactor(5000)).toBeLessThan(1);
     });
   });
 

@@ -144,14 +144,42 @@ export function zoomCentered(
 }
 
 /**
+ * Per-event clamp range for the wheel zoom factor. Without this a
+ * runaway 1000+ pixel trackpad pinch would multiply scale wildly in a
+ * single frame; clamping keeps the user's perceived zoom rate sane
+ * regardless of deltaY magnitude. Values chosen so `2.0` is roughly
+ * the maximum zoom-in per event (and `0.5` the maximum zoom-out),
+ * which is a comfortable upper bound — past that the user sees a
+ * "pop" rather than a smooth motion. v2.7 wave 2 item 6.
+ */
+export const WHEEL_FACTOR_MAX = 2.0;
+export const WHEEL_FACTOR_MIN = 0.5;
+
+/**
  * Convert a wheel-event ``deltaY`` value into a zoom factor. Negative
- * deltaY (wheel-up / scroll-up) zooms in; positive zooms out. The
- * step magnitude is constant — most browsers send |deltaY| ≈ 100 for a
- * single notch, so we just key off the sign.
+ * deltaY (wheel-up / scroll-up) zooms in; positive zooms out.
+ *
+ * v2.7 wave 2 item 6 — proportional smooth zoom. The factor follows
+ * an exp curve so |deltaY| scales the result continuously: a small
+ * trackpad pinch barely moves; a fast swipe still zooms quickly. The
+ * decay constant `k = ln(step) / 100` calibrates the curve so a
+ * 100-pixel notch (the typical browser wheel step) keeps the previous
+ * `step` factor — that preserves backward compatibility with the
+ * "feels like one notch" muscle memory while the rest of the curve
+ * flows smoothly.
+ *
+ * The factor is clamped to [WHEEL_FACTOR_MIN, WHEEL_FACTOR_MAX] so a
+ * runaway pinch can't wildly multiply scale in a single frame.
  */
 export function wheelDeltaToFactor(deltaY: number, step = ZOOM_STEP): number {
-  if (deltaY === 0) return 1;
-  return deltaY < 0 ? step : 1 / step;
+  if (!Number.isFinite(deltaY) || deltaY === 0) return 1;
+  // Calibration: factor(-100) === step exactly (round-trips the old
+  // single-notch behaviour). factor(d) * factor(-d) === 1.
+  const k = Math.log(step) / 100;
+  const raw = Math.exp(-deltaY * k);
+  if (raw > WHEEL_FACTOR_MAX) return WHEEL_FACTOR_MAX;
+  if (raw < WHEEL_FACTOR_MIN) return WHEEL_FACTOR_MIN;
+  return raw;
 }
 
 function sanitizeSize(s: Size): Size {

@@ -199,9 +199,16 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
               <button
                 type="button"
                 aria-label={`Delete ${a.kind}`}
+                title={`Delete ${a.kind} (Cmd+Z to undo)`}
                 onClick={(e) => {
+                  // Non-blocking delete — relies on Cmd+Z undo (the
+                  // store pushes history on every remove, see
+                  // annotations.ts pushPast). v2.7 wave2 item 2 — the
+                  // previous window.confirm prompt could be silently
+                  // suppressed by browsers / extensions, leading the
+                  // user to think delete didn't work.
                   e.stopPropagation();
-                  if (confirm(`Delete this ${a.kind}?`)) remove(a.tempId);
+                  remove(a.tempId);
                 }}
                 className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] text-tertiary opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[oklch(0.70_0.20_25_/_0.10)] hover:text-[color:var(--danger)]"
               >
