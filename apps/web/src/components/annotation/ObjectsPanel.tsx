@@ -1,5 +1,8 @@
-import { Square, Pentagon, Brush, Tag, X } from "lucide-react";
+import { Filter, Square, Pentagon, Brush, Tag, X } from "lucide-react";
 import { useAnnotations } from "@/state/annotations";
+import { useFilter } from "@/state/annotationFilter";
+import { evaluateFilter, hasMeaningfulRules } from "@/lib/annotation-filter";
+import type { ClassRow } from "@/api/classes";
 import { cn } from "@/lib/cn";
 
 const KIND_ICON = {
@@ -9,15 +12,32 @@ const KIND_ICON = {
   tag: Tag,
 } as const;
 
-export function ObjectsPanel({ frameId }: { frameId: string | null }) {
+interface ObjectsPanelProps {
+  frameId: string | null;
+  /**
+   * Class lookup keyed by class id. Optional — when omitted, label-field
+   * filter rules silently match nothing because they can't resolve the
+   * annotation's class name. Page-level callers pass the full map.
+   */
+  classes?: Record<string, ClassRow>;
+}
+
+export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
   const byId = useAnnotations((s) => s.byId);
   const selectedId = useAnnotations((s) => s.selectedId);
   const select = useAnnotations((s) => s.select);
   const remove = useAnnotations((s) => s.remove);
+  const filter = useFilter((s) => s.filter);
+  const clearFilter = useFilter((s) => s.clearFilter);
 
-  const items = Object.values(byId)
+  const allOnFrame = Object.values(byId)
     .filter((a) => a.frameId === frameId)
     .sort((a, b) => a.tempId.localeCompare(b.tempId));
+
+  const filterActive = hasMeaningfulRules(filter);
+  const items = filterActive
+    ? allOnFrame.filter((a) => evaluateFilter(a, classes ?? {}, filter))
+    : allOnFrame;
 
   return (
     <section aria-label="Objects on this frame" className="grid gap-2">
@@ -27,8 +47,32 @@ export function ObjectsPanel({ frameId }: { frameId: string | null }) {
         </h3>
         <span className="font-mono-data text-[10px] text-tertiary">{items.length}</span>
       </header>
+      {filterActive && (
+        <div
+          data-testid="filter-active-pill"
+          className="flex items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--accent)] bg-[var(--accent-bg)] px-2 py-1"
+        >
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-medium tracking-tight text-[color:var(--accent)]">
+            <Filter className="h-3 w-3" />
+            Filter active ({items.length} of {allOnFrame.length} shown)
+          </span>
+          <button
+            type="button"
+            aria-label="Clear filter"
+            data-testid="filter-active-clear"
+            onClick={clearFilter}
+            className="grid h-5 w-5 place-items-center rounded-[var(--radius-sm)] text-[color:var(--accent)] hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
       {items.length === 0 && (
-        <p className="text-tertiary text-[12px] italic">No annotations yet on this frame.</p>
+        <p className="text-tertiary text-[12px] italic">
+          {filterActive
+            ? "No annotations match the current filter."
+            : "No annotations yet on this frame."}
+        </p>
       )}
       <ul className="grid gap-1">
         {items.map((a) => {

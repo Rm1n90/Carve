@@ -9,6 +9,9 @@ import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
+import { useFilter } from "@/state/annotationFilter";
+import { evaluateFilter, hasMeaningfulRules } from "@/lib/annotation-filter";
+import type { ClassRow } from "@/api/classes";
 import {
   renderBbox,
   renderPolygon,
@@ -483,11 +486,28 @@ export function AnnotationCanvas({
       const sortedDrafts = Object.values(state.byId)
         .filter((d) => d.frameId === frameId)
         .sort((a, b) => (a.zOrder ?? 0) - (b.zOrder ?? 0));
+      // Active CVAT-style annotation filter (v2.6). When the tree has at
+      // least one rule with a non-empty value, drafts that fail the
+      // predicate are forced invisible — same gating path as the legacy
+      // `hiddenAnnotationIds` list, just driven by the filter store.
+      const filterTree = useFilter.getState().filter;
+      const filterApplies = hasMeaningfulRules(filterTree);
+      // Build a synthetic ClassRow lookup from the canvas's classNameMap
+      // so the evaluator's `label` field can resolve class names. The
+      // evaluator only reads `.name`, so we don't need the real ClassRow
+      // shape — the cheap cast keeps the evaluator pure.
+      const classLookup: Record<string, ClassRow> = {};
+      for (const cid of Object.keys(classNames)) {
+        classLookup[cid] = { name: classNames[cid] } as unknown as ClassRow;
+      }
       for (const draft of sortedDrafts) {
         const id = draft.tempId;
+        const filteredOut =
+          filterApplies && !evaluateFilter(draft, classLookup, filterTree);
         const hidden =
           state.hiddenAnnotationIds.includes(id) ||
-          state.hiddenClassIds.includes(draft.classId);
+          state.hiddenClassIds.includes(draft.classId) ||
+          filteredOut;
         // Pixels visibility — currently only gates mask annotations (the
         // mask renderer is a placeholder; future raster decoding will hook
         // here). When pixels=false, hide masks entirely. Audit bug O.
@@ -679,11 +699,19 @@ export function AnnotationCanvas({
     const unsubS = useEditorSettings.subscribe(() => {
       void reconcile(useAnnotations.getState());
     });
+    // Re-render when the active annotation filter changes (v2.6).
+    // Without this, applying a filter via the dialog wouldn't trigger
+    // a reconcile pass — the canvas would only update on the next
+    // unrelated state change.
+    const unsubF = useFilter.subscribe(() => {
+      void reconcile(useAnnotations.getState());
+    });
     return () => {
       mounted = false;
       unsubA();
       unsubT();
       unsubS();
+      unsubF();
     };
   }, [frameId, classMap, classNames, imageSize]);
 

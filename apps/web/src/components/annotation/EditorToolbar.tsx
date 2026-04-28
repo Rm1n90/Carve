@@ -9,6 +9,7 @@ import {
   Brush,
   Tag,
   Eye,
+  Filter,
   Maximize,
   Save,
   Sparkles,
@@ -23,6 +24,9 @@ import {
   Settings,
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
+import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
+import { useFilter } from "@/state/annotationFilter";
+import { hasMeaningfulRules } from "@/lib/annotation-filter";
 import { useTool, type ToolName, type VisibilityFlags } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -763,6 +767,11 @@ export function EditorToolbar({
   const setActive = useTool((s) => s.setActive);
   const toggleAutoApply = useTool((s) => s.toggleAutoApply);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [filterDialogOpen, setFilterDialogOpen] = useState(false);
+  // Drive the Filter icon's "active" styling from the filter store so
+  // users can see at a glance whether a filter is currently applied
+  // even when the dialog is closed.
+  const filterActive = useFilter((s) => hasMeaningfulRules(s.filter));
 
   // Single-letter hotkeys (V/B/P/M/T/S/A/F) trigger tool selection.
   useEffect(() => {
@@ -863,6 +872,28 @@ export function EditorToolbar({
         projectId={projectId}
         assetId={assetId}
         onAfter={onAfterYoloPredict}
+      />
+
+      <Tooltip content={filterActive ? "Filter (active)" : "Filter annotations"}>
+        <button
+          type="button"
+          onClick={() => setFilterDialogOpen(true)}
+          aria-label="Filter annotations"
+          aria-pressed={filterActive}
+          data-testid="filter-trigger"
+          className={cn(
+            "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors",
+            filterActive
+              ? "text-[color:var(--accent)] bg-[var(--accent-bg)] hover:bg-[var(--bg-hover)]"
+              : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+          )}
+        >
+          <Filter className="h-[16px] w-[16px]" />
+        </button>
+      </Tooltip>
+      <FilterBuilderDialog
+        open={filterDialogOpen}
+        onOpenChange={setFilterDialogOpen}
       />
 
       <Tooltip content="Editor settings">
