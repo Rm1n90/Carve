@@ -35,6 +35,7 @@ import { useAnnotations } from "@/state/annotations";
 import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
+import { useResizableRightPanel } from "@/hooks/useResizableRightPanel";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -103,6 +104,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const handleImageRetry = useCallback(() => {
     setImageReloadKey((k) => k + 1);
   }, []);
+
+  // v2.7 — drag-resizable right panel. Width persists to localStorage so the
+  // user's choice survives reload; canvas fills the remaining space and the
+  // existing Pixi ResizeObserver picks up the layout change for free.
+  const rightPanel = useResizableRightPanel();
 
   const projectQ = useQuery({
     queryKey: ["project", projectId],
@@ -643,10 +649,37 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
               </div>
             </main>
 
+            <div
+              data-testid="right-panel-resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize classes panel"
+              ref={rightPanel.handleRef}
+              className={cn(
+                "relative w-[4px] shrink-0 cursor-col-resize select-none",
+                "bg-[var(--border-subtle)] hover:bg-[var(--accent)]",
+                "transition-colors",
+                rightPanel.isDragging && "bg-[var(--accent)]",
+              )}
+            >
+              {/*
+                Wider invisible hit zone so the 4px visual divider is easier
+                to grab. -2px on each side keeps the click target ~8px without
+                visually thickening the line. pointer-events:auto so the drag
+                still starts here even when the cursor is between the visual
+                line and the panel content.
+              */}
+              <span
+                aria-hidden
+                className="absolute inset-y-0 -left-1 -right-1"
+              />
+            </div>
             <aside
               role="complementary"
               aria-label="Classes"
-              className="w-[220px] shrink-0 border-l border-[var(--border-subtle)] bg-[var(--bg-app)] flex flex-col"
+              data-testid="right-panel-aside"
+              style={{ width: `${rightPanel.width}px` }}
+              className="shrink-0 border-l border-[var(--border-subtle)] bg-[var(--bg-app)] flex flex-col"
             >
               <Tabs.Root defaultValue="classes" className="flex-1 min-h-0 flex flex-col">
                 <Tabs.List
