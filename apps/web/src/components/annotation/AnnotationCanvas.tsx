@@ -218,6 +218,14 @@ export function AnnotationCanvas({
   >(null);
   // Cursor override during a drag — clears when the drag ends.
   const [dragCursor, setDragCursor] = useState<string | null>(null);
+  // Reset the dragCursor whenever the active tool changes. Otherwise a
+  // pending hover-cursor (e.g. "ew-resize" from hovering a bbox handle
+  // while the cursor tool was active) sticks across V→B / B→V toggles
+  // because only the cursor-tool branch of onMove clears it. v2.7
+  // wave 2 item 5.
+  useEffect(() => {
+    setDragCursor(null);
+  }, [tool]);
   // Empty map fallback so the renderer doesn't depend on prop being provided.
   const classMap = classColorMap ?? EMPTY_CLASS_MAP;
   const classNames = classNameMap ?? EMPTY_CLASS_MAP;
