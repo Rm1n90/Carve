@@ -13,9 +13,14 @@ interface SaveIndicatorProps {
  * "Saved" / "Unsaved changes" / "Saving" / "Save failed (retry)".
  */
 export function SaveIndicator({ isSaving, hasError, dirtyCount, onRetry }: SaveIndicatorProps) {
+  // v2.9 P1-17 — wrap each branch in role="status" + aria-live="polite"
+  // so screen readers announce save transitions ("Saving…" → "Saved").
+  // Mirrors SelectionCountBadge's a11y pattern.
   if (isSaving) {
     return (
       <span
+        role="status"
+        aria-live="polite"
         data-testid="save-indicator"
         data-state="saving"
         className={cn(
@@ -34,6 +39,8 @@ export function SaveIndicator({ isSaving, hasError, dirtyCount, onRetry }: SaveI
       <button
         type="button"
         onClick={onRetry}
+        role="status"
+        aria-live="polite"
         data-testid="save-indicator"
         data-state="error"
         className={cn(
@@ -52,6 +59,8 @@ export function SaveIndicator({ isSaving, hasError, dirtyCount, onRetry }: SaveI
   if (dirtyCount > 0) {
     return (
       <span
+        role="status"
+        aria-live="polite"
         data-testid="save-indicator"
         data-state="dirty"
         className={cn(
@@ -67,6 +76,8 @@ export function SaveIndicator({ isSaving, hasError, dirtyCount, onRetry }: SaveI
   }
   return (
     <span
+      role="status"
+      aria-live="polite"
       data-testid="save-indicator"
       data-state="saved"
       className={cn(

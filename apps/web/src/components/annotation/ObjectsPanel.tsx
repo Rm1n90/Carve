@@ -180,12 +180,24 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
           const isSelected = a.tempId === selectedId;
           const cur = classes ? classes[a.classId] : undefined;
           return (
+            // v2.9 P1-18 — non-interactive <li> + click was unreachable
+            // by keyboard. role="button" + tabIndex + Enter/Space handler
+            // mirrors a real button without disturbing the list visual.
             <li
               key={a.tempId}
+              role="button"
+              tabIndex={0}
               data-testid={`object-row-${a.tempId}`}
               onClick={() => select(a.tempId)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  select(a.tempId);
+                }
+              }}
               className={cn(
                 "group flex items-center gap-2 rounded-[var(--radius-sm)] border px-2 py-1.5 cursor-pointer transition-colors",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
                 isSelected
                   ? "bg-[var(--accent-bg)] border-[var(--border-accent)] text-primary"
                   : "bg-transparent border-transparent text-secondary hover:bg-[var(--bg-surface)] hover:text-primary",

@@ -510,6 +510,35 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     return c;
   }, [projectQ.data, assetQ.data, projectId]);
 
+  // v2.9 P1-13 — memoize zoom callbacks. Inline arrows changed identity
+  // every render, which forced EditorToolbar's keydown useEffect to
+  // re-bind on every parent render (the effect lists these as deps).
+  // Empty deps are correct because each callback only dispatches a
+  // window CustomEvent — no closure state.
+  // Hooks must run unconditionally, so these stay above the loading /
+  // error early returns below.
+  const handleZoomIn = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("carve:zoom-in"));
+  }, []);
+  const handleZoomOut = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("carve:zoom-out"));
+  }, []);
+  const handleZoomTo = useCallback((p: number) => {
+    if (p === 0) {
+      window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
+    } else {
+      window.dispatchEvent(
+        new CustomEvent("carve:zoom-to", { detail: { pct: p } }),
+      );
+    }
+  }, []);
+  const handleZoomActual = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("carve:zoom-actual"));
+  }, []);
+  const handleFitToScreen = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
+  }, []);
+
   // Only show the full-page loading screen on initial mount (no data yet).
   // During asset navigation, `assetQ.data` still holds the previous asset
   // thanks to `placeholderData`, so we render the full editor and let the
@@ -572,27 +601,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             hasError={hasError}
             dirtyCount={dirtyCount}
             zoomPct={zoomPct}
-            onZoomIn={() => {
-              window.dispatchEvent(new CustomEvent("carve:zoom-in"));
-            }}
-            onZoomOut={() => {
-              window.dispatchEvent(new CustomEvent("carve:zoom-out"));
-            }}
-            onZoomTo={(p) => {
-              if (p === 0) {
-                window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
-              } else {
-                window.dispatchEvent(
-                  new CustomEvent("carve:zoom-to", { detail: { pct: p } }),
-                );
-              }
-            }}
-            onZoomActual={() => {
-              window.dispatchEvent(new CustomEvent("carve:zoom-actual"));
-            }}
-            onFitToScreen={() => {
-              window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
-            }}
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onZoomTo={handleZoomTo}
+            onZoomActual={handleZoomActual}
+            onFitToScreen={handleFitToScreen}
             onUndo={() => useAnnotations.getState().undo()}
             onRedo={() => useAnnotations.getState().redo()}
             onAfterYoloPredict={() => {
