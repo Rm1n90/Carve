@@ -28,6 +28,13 @@ import { TopBar } from "@/components/nav/TopBar";
 import { LeftNav } from "@/components/nav/LeftNav";
 import { BottomBar } from "@/components/nav/BottomBar";
 import { IconButton } from "@/components/ui/IconButton";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/Dialog";
 import { annotationsApi, type BatchPayload } from "@/api/annotations";
 import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
@@ -93,6 +100,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // v2.6 — Info dialog (CVAT-style task overview + per-class stats).
   // Aggregates from the in-memory annotations store; no extra API calls.
   const [infoOpen, setInfoOpen] = useState(false);
+  // v2.9 P0-4: replaces the previous `window.prompt("Rename class", …)`
+  // with an in-app Radix Dialog. Local state is plenty — only one site
+  // uses this flow.
+  const [renameClass, setRenameClass] = useState<{ id: string; name: string } | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   // Image load lifecycle. Phase A core 1 — without this, image load failures
   // were invisible and the user just saw an empty canvas.
   const [imageStatus, setImageStatus] = useState<ImageLoadStatus>("loading");
@@ -759,10 +771,8 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                     onEditClass={(cid) => {
                       const cls = (classesQ.data ?? []).find((c) => c.id === cid);
                       if (!cls) return;
-                      const next = window.prompt("Rename class", cls.name);
-                      if (next && next.trim() && next !== cls.name) {
-                        classUpdate.mutate({ cid, patch: { name: next.trim() } });
-                      }
+                      setRenameClass({ id: cls.id, name: cls.name });
+                      setRenameDraft(cls.name);
                     }}
                     onDeleteClass={(cid) => classRemove.mutate(cid)}
                   />
@@ -806,6 +816,74 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         classes={classesQ.data ?? []}
         assigneeEmail={useAuth.getState().user?.email ?? null}
       />
+
+      <Dialog
+        open={renameClass !== null}
+        onOpenChange={(o) => {
+          if (!o) {
+            setRenameClass(null);
+            setRenameDraft("");
+          }
+        }}
+      >
+        <DialogContent className="w-[min(92vw,420px)]">
+          <DialogHeader>
+            <DialogTitle>Rename class</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!renameClass) return;
+              const next = renameDraft.trim();
+              if (next && next !== renameClass.name) {
+                classUpdate.mutate({ cid: renameClass.id, patch: { name: next } });
+              }
+              setRenameClass(null);
+              setRenameDraft("");
+            }}
+          >
+            <input
+              type="text"
+              autoFocus
+              data-testid="rename-class-input"
+              aria-label="Class name"
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              className={cn(
+                "w-full h-9 px-2.5 rounded-[var(--radius-sm)]",
+                "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
+                "border border-[var(--border-subtle)]",
+                "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
+                "text-[13px]",
+              )}
+            />
+            <DialogFooter>
+              <button
+                type="button"
+                onClick={() => {
+                  setRenameClass(null);
+                  setRenameDraft("");
+                }}
+                data-testid="rename-class-cancel"
+                className="h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                data-testid="rename-class-save"
+                className={cn(
+                  "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium",
+                  "bg-[var(--accent)] text-[color:var(--accent-fg)]",
+                  "hover:opacity-90",
+                )}
+              >
+                Save
+              </button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
     </TooltipProvider>
   );
