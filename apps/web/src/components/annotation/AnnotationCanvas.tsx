@@ -553,24 +553,31 @@ export function AnnotationCanvas({
     }
   }, [hostSize, imageSize, applyFrame]);
 
-  // ----- Wheel zoom (cursor-anchored). v2.6 zoom.
+  // ----- Wheel zoom (cursor-anchored). v2.7 wave 2 item 6 — smooth.
   //
   // CVAT-style: a bare wheel zooms — there's no horizontal scrollbar to
-  // compete with on the canvas. The handler computes the cursor's
-  // position inside the host, calls into `zoomAt` to derive the new
-  // (scale, offset) pair anchored at that position, and eases toward it
-  // so successive notches don't snap.
+  // compete with on the canvas. The handler accumulates deltaY into a
+  // ref between rAF ticks so high-frequency trackpad pinches (60-120 Hz)
+  // collapse into one zoom step per frame, anchored at the most recent
+  // pointer position. The factor uses the now-proportional
+  // ``wheelDeltaToFactor`` so |deltaY| controls magnitude smoothly. We
+  // skip the previous 60 ms cubic ease — with proportional math the
+  // ease was fighting the input rather than smoothing it.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    function onWheel(e: WheelEvent) {
-      e.preventDefault();
-      const rect = host!.getBoundingClientRect();
-      const anchor = {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
-      };
-      const factor = wheelDeltaToFactor(e.deltaY);
+    let pendingDeltaY = 0;
+    let lastAnchor: { x: number; y: number } | null = null;
+    let rafId: number | null = null;
+
+    function flush() {
+      rafId = null;
+      const dy = pendingDeltaY;
+      const anchor = lastAnchor;
+      pendingDeltaY = 0;
+      lastAnchor = null;
+      if (dy === 0 || !anchor) return;
+      const factor = wheelDeltaToFactor(dy);
       if (factor === 1) return;
       autoFitRef.current = false;
       const current: ZoomFrame = {
@@ -578,13 +585,38 @@ export function AnnotationCanvas({
         offset: { ...offsetRef.current },
       };
       const next = zoomAt(current, factor, anchor);
-      easeTo(next);
+      applyFrame(next);
     }
+
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const rect = host!.getBoundingClientRect();
+      lastAnchor = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      };
+      pendingDeltaY += e.deltaY;
+      if (rafId === null) {
+        if (typeof requestAnimationFrame === "function") {
+          rafId = requestAnimationFrame(flush);
+        } else {
+          // jsdom / no rAF — apply immediately.
+          flush();
+        }
+      }
+    }
+
     host.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       host.removeEventListener("wheel", onWheel);
+      if (rafId !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(rafId);
+      }
+      rafId = null;
+      pendingDeltaY = 0;
+      lastAnchor = null;
     };
-  }, [easeTo]);
+  }, [applyFrame]);
 
   // ----- Toolbar / keyboard zoom commands. The toolbar dispatches
   // window CustomEvents (so the toolbar doesn't need a ref into the
