@@ -75,7 +75,7 @@ export function FrameTimeline({ totalFrames, currentIdx, onChange }: Props) {
       className={cn(
         "flex h-[60px] items-center gap-px overflow-x-auto px-3 py-2",
         "border-t border-[var(--border-subtle)]",
-        "bg-[var(--bg-glass-strong)] backdrop-blur-xl",
+        "bg-[var(--glass-bg-strong)] backdrop-blur-xl",
       )}
     >
       <span className="font-mono-data text-[10px] text-tertiary mr-3 shrink-0">
