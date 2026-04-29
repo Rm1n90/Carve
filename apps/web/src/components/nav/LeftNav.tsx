@@ -215,6 +215,7 @@ export function LeftNav() {
             label="YOLO weights"
             to="/models/yolo"
             active={isActive(path, "/models/yolo")}
+            icon={<Cpu className="h-3.5 w-3.5" />}
           />
           <NavItem
             label="SAM models"
