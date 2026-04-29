@@ -145,6 +145,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     queryFn: () => assetsApi.get(assetId),
     placeholderData: (prev) => prev,
     staleTime: 5 * 60 * 1000,
+    // v3.2 Issue 1: presigned MinIO URLs change identity on every refetch,
+    // and the canvas's texture-swap effect previously re-armed autoFit on
+    // every imageUrl change → user lost their zoom on every window focus.
+    // The autoFit logic is now gated on assetId, but disabling the
+    // window-focus refetch also avoids needless network churn.
+    refetchOnWindowFocus: false,
   });
   // v3.1 Issue 3 (Option A) — the editor consumes the *task-effective*
   // class list. When the task has no subset configured (allowed_class_ids
@@ -155,6 +161,10 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const taskClassesQ = useQuery({
     queryKey: ["task-classes", projectId, taskId],
     queryFn: () => tasksApi.getClasses(projectId, taskId),
+    // v3.2 Issue 1: avoid refetching the class list every window focus;
+    // the editor's canvas (and its derived classMap) doesn't need to
+    // remount because the user tabbed away.
+    refetchOnWindowFocus: false,
   });
   // Adapt the response shape so all downstream readers keep working
   // against a flat ``ClassRow[]`` like before.
@@ -597,7 +607,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // During asset navigation, `assetQ.data` still holds the previous asset
   // thanks to `placeholderData`, so we render the full editor and let the
   // canvas + status badge surface the in-flight state. v2.5 perf fix.
-  if (!assetQ.data || !classesQ.data) {
+  //
+  // v3.2 Issue 1: gate on `taskClassesQ.isLoading` (initial fetch only)
+  // rather than `!classesQ.data`. A transient refetch can briefly hand
+  // back `undefined` from `taskClassesQ.data?.classes`, which would
+  // otherwise unmount the canvas (and the user's zoom + Pixi state).
+  if (!assetQ.data || taskClassesQ.isLoading) {
     return (
       <div className="grid h-screen place-items-center">
         <div className="flex items-center gap-2 text-[color:var(--text-tertiary)] text-[13px]">

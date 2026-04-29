@@ -182,6 +182,13 @@ export function AnnotationCanvas({
   // zoom action (wheel, +/−, 1:1, exact %). Resetting to `true` happens
   // when the user clicks the Fit button or presses 0/F. v2.6 zoom.
   const autoFitRef = useRef(true);
+  // v3.2 Issue 1: tracks the assetId of the last successfully loaded
+  // texture so we only re-arm autoFit when the *asset* changes — not
+  // when the same asset's presigned MinIO URL is re-signed (which
+  // happens on every assetQ refetch / window-focus). Keying autoFit on
+  // the URL string would silently kill the user's zoom every time they
+  // tabbed back to the editor.
+  const prevAssetIdRef = useRef<string | null>(null);
   // Wheel-zoom smoothing: we keep the `target` (the eventually-applied
   // frame) and `start` (the frame at the beginning of the current ease)
   // in refs and tween between them inside a requestAnimationFrame loop.
@@ -374,7 +381,16 @@ export function AnnotationCanvas({
         // P0-2: only re-arm auto-fit AFTER the new dimensions are pushed
         // into state. A host-resize between the imageUrl change and the
         // texture-load can no longer fit to the previous imageSize.
-        autoFitRef.current = true;
+        //
+        // v3.2 Issue 1: gate the re-arm on assetId change — not URL change.
+        // A presigned MinIO URL re-sign (assetQ refetch on window focus)
+        // produces a new imageUrl string for the SAME asset; flipping
+        // autoFit there would silently throw away the user's zoom on
+        // every tab-back. Different asset → still refits correctly.
+        if (assetId !== prevAssetIdRef.current) {
+          autoFitRef.current = true;
+          prevAssetIdRef.current = assetId;
+        }
         onImageStatusChange?.("loaded");
       } catch (e) {
         if (cancelled) return;
