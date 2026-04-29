@@ -51,23 +51,23 @@ describe("ExportDialog — no-split toggle (v3.0 D12)", () => {
     (classesApi.listForProject as any).mockResolvedValue(mockClasses);
   });
 
-  it("defaults to train-val-test and renders the three numeric split inputs", async () => {
+  it("defaults to single set and hides the numeric split inputs (v3.1 Bug 4)", async () => {
     // Arrange / Act
     const { findByText, getByLabelText, queryByLabelText } = render(
       wrap(<ExportDialog projectId="p1" taskId="t1" />),
     );
     await findByText("car");
 
-    // Assert — radio default + 3 visible inputs.
+    // Assert — single set is now the default; train/val/test inputs are hidden.
     const trainValTestRadio = getByLabelText(
       "split-mode-train-val-test",
     ) as HTMLInputElement;
     const singleRadio = getByLabelText("split-mode-single") as HTMLInputElement;
-    expect(trainValTestRadio.checked).toBe(true);
-    expect(singleRadio.checked).toBe(false);
-    expect(queryByLabelText("split-train")).not.toBeNull();
-    expect(queryByLabelText("split-val")).not.toBeNull();
-    expect(queryByLabelText("split-test")).not.toBeNull();
+    expect(singleRadio.checked).toBe(true);
+    expect(trainValTestRadio.checked).toBe(false);
+    expect(queryByLabelText("split-train")).toBeNull();
+    expect(queryByLabelText("split-val")).toBeNull();
+    expect(queryByLabelText("split-test")).toBeNull();
   });
 
   it("hides the numeric split inputs when 'Single set' is selected", async () => {
@@ -109,12 +109,15 @@ describe("ExportDialog — no-split toggle (v3.0 D12)", () => {
   it("still submits the user-chosen splits when train-val-test mode is selected", async () => {
     // Arrange
     (exportsApi.create as any).mockResolvedValue({ export_id: "e-tvt" });
-    const { findByText, getByRole } = render(
+    const { findByText, getByLabelText, getByRole } = render(
       wrap(<ExportDialog projectId="p1" taskId="t1" />),
     );
     await findByText("car");
 
-    // Act — defaults: 0.8 / 0.1 / 0.1.
+    // Act — opt into train-val-test; defaults are 0.8 / 0.1 / 0.1.
+    // v3.1 Bug 4 — single-set is the default, so the radio must be flipped
+    // before submitting to exercise the train/val/test path.
+    fireEvent.click(getByLabelText("split-mode-train-val-test"));
     fireEvent.click(getByRole("button", { name: /export/i }));
 
     // Assert

@@ -59,8 +59,10 @@ export function ExportDialog({ projectId, taskId }: Props) {
   const [format, setFormat] = useState<ExportFormat>("yolo");
   const [splits, setSplits] = useState<ExportSplits>(DEFAULT_SPLITS);
   // v3.0 D12 — "single set" hides train/val/test inputs and ships
-  // {train: 1, val: 0, test: 0}. Default keeps the prior 80/10/10 flow.
-  const [mode, setMode] = useState<SplitMode>("train-val-test");
+  // {train: 1, val: 0, test: 0}.
+  // v3.1 Bug 4 — single-set is now the default. Users opt into the
+  // 80/10/10 train/val/test flow explicitly.
+  const [mode, setMode] = useState<SplitMode>("single");
   const [includeImages, setIncludeImages] = useState<boolean>(true);
   const [remap, setRemap] = useState<RemapState>({});
   const [exportId, setExportId] = useState<string | null>(null);

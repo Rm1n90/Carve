@@ -90,10 +90,13 @@ describe("ExportDialog", () => {
 
   it("submits class_remap with default mapping (idx → export_id, name unchanged)", async () => {
     (exportsApi.create as any).mockResolvedValue({ export_id: "e1" });
-    const { findByText, getByRole } = render(
+    const { findByText, getByLabelText, getByRole } = render(
       wrap(<ExportDialog projectId="p1" taskId="t1" />),
     );
     await findByText("car");
+    // v3.1 Bug 4 — single-set is the default; opt into train/val/test
+    // explicitly so the splits assertion below still exercises 0.8/0.1/0.1.
+    fireEvent.click(getByLabelText("split-mode-train-val-test"));
     fireEvent.click(getByRole("button", { name: /export/i }));
     await waitFor(() => {
       expect(exportsApi.create).toHaveBeenCalled();
