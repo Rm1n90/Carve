@@ -43,7 +43,7 @@ describe("ClassesEditor", () => {
     fireEvent.change(await screen.findByLabelText(/class name/i), {
       target: { value: "car" },
     });
-    fireEvent.change(screen.getByLabelText(/color/i), {
+    fireEvent.change(screen.getByLabelText(/^color$/i), {
       target: { value: "#ff0000" },
     });
     fireEvent.click(screen.getByRole("button", { name: /add class/i }));

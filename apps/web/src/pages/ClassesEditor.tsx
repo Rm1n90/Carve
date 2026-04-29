@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/Dialog";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
-import { nextHexForIdx } from "@/lib/swatch";
+import { PALETTE_HEX, nextHexForIdx } from "@/lib/swatch";
 
 export function ClassesEditor({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
@@ -219,10 +219,42 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
+          {/* v3.2 Issue 6 — preset swatch grid above the native picker so
+              users can one-click a palette color or mix a custom hex. The
+              currently-selected preset (if any) is highlighted. */}
+          <div className="grid gap-1.5">
+            <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
+              Color
+            </span>
+            <div
+              data-testid="classes-editor-swatch-grid"
+              className="grid grid-cols-6 gap-1"
+            >
+              {PALETTE_HEX.map((c) => {
+                const isSelected = c.toLowerCase() === color.toLowerCase();
+                return (
+                  <button
+                    key={c}
+                    type="button"
+                    aria-label={`Set color ${c}`}
+                    data-testid={`classes-editor-swatch-${c}`}
+                    data-selected={isSelected ? "true" : undefined}
+                    onClick={() => setColor(c)}
+                    className={cn(
+                      "h-6 w-6 rounded-[var(--radius-xs)] border border-[var(--border-subtle)]",
+                      "transition-transform hover:scale-110",
+                      isSelected && "ring-2 ring-[var(--accent)] ring-offset-1",
+                    )}
+                    style={{ background: c }}
+                  />
+                );
+              })}
+            </div>
+          </div>
           <div className="flex items-end gap-2">
             <label className="grid gap-1.5">
               <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
-                Color
+                Custom
               </span>
               <input
                 type="color"
