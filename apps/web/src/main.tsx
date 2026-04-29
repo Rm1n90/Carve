@@ -4,7 +4,7 @@ import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/jetbrains-mono";
-import "@fontsource/instrument-serif";
+import "@fontsource-variable/fraunces";
 import { rootRoute } from "./routes/_root";
 import { indexRoute } from "./routes/index";
 import { loginRoute } from "./routes/login";

@@ -438,13 +438,14 @@
     0 0 14px oklch(0.62 0.18 220 / 0.18);
 }
 
-/* Editorial display utility for Instrument Serif moments —
-   dialog titles, page headers, hero numbers. */
+/* Editorial display utility for Fraunces moments —
+   dialog titles, page headers, hero numbers. Non-italic, distinctive serif. */
 .font-editorial {
-  font-family: "Instrument Serif", "Times New Roman", serif;
-  font-style: italic;
-  font-weight: 400;
-  letter-spacing: -0.01em;
+  font-family: "Fraunces Variable", "Fraunces", "Times New Roman", serif;
+  font-style: normal;
+  font-weight: 500;
+  font-variation-settings: "opsz" 100, "SOFT" 0;
+  letter-spacing: -0.015em;
 }
 
 /* Tabular numerals utility — keeps stat tile numbers aligned across rows. */
