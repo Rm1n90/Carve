@@ -1,7 +1,15 @@
 import { useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, KeyRound, Trash2, UserCog } from "lucide-react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import {
+  Copy,
+  KeyRound,
+  MoreVertical,
+  Trash2,
+  UserCog,
+  UserPlus,
+} from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -14,11 +22,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/Dialog";
+import { Select } from "@/components/ui/Select";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/auth/store";
 import { changePassword as authChangePassword } from "@/auth/api";
 import { apiKeysApi, type ApiKey, type ApiKeyCreated } from "@/api/api_keys";
-import { membersApi, type Member, type Role } from "@/api/members";
+import {
+  membersApi,
+  type CreateRole,
+  type Member,
+  type Role,
+} from "@/api/members";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
@@ -408,31 +422,101 @@ function ApiKeyRow({ k, onRevoke }: { k: ApiKey; onRevoke: () => void }) {
 // ------------------------------ Members ------------------------------
 
 const ROLES: Role[] = ["admin", "member", "viewer"];
+// v3.0 Bug 14 — the new "Invite member" dialog only exposes admin and
+// member. ``viewer`` remains in the role-edit dropdown for legacy data.
+const INVITE_ROLES: CreateRole[] = ["admin", "member"];
+const MIN_INVITE_PASSWORD_LENGTH = 8;
 
 export function SettingsMembersPage() {
   const me = useAuth((s) => s.user);
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const membersQ = useQuery({ queryKey: ["members"], queryFn: membersApi.list });
   const setRoleM = useMutation({
     mutationFn: ({ id, role }: { id: string; role: Role }) =>
       membersApi.setRole(id, role),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["members"] }),
   });
+  const createM = useMutation({
+    mutationFn: ({
+      email,
+      password,
+      role,
+    }: {
+      email: string;
+      password: string;
+      role: CreateRole;
+    }) => membersApi.create(email, password, role),
+    onSuccess: (member) => {
+      qc.invalidateQueries({ queryKey: ["members"] });
+      showToast(`Created member ${member.email}`, { variant: "success" });
+    },
+    onError: (err: unknown) => {
+      const status =
+        (err as { response?: { status?: number } } | undefined)?.response?.status;
+      if (status === 409) {
+        showToast("That email is already taken", { variant: "error" });
+      } else if (status === 403) {
+        showToast("Only admins can invite members", { variant: "error" });
+      } else if (status === 422) {
+        showToast("Email or password is invalid", { variant: "error" });
+      } else {
+        showToast("Failed to create member", { variant: "error" });
+      }
+    },
+  });
+  const deleteM = useMutation({
+    mutationFn: (id: string) => membersApi.delete(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["members"] });
+      showToast("Member removed", { variant: "success" });
+    },
+    onError: (err: unknown) => {
+      const detail = (err as {
+        response?: { data?: { detail?: string } };
+      } | undefined)?.response?.data?.detail;
+      if (detail === "cannot_delete_last_admin") {
+        showToast("Can't remove the last admin", { variant: "error" });
+      } else if (detail === "cannot_delete_self") {
+        showToast("You can't remove yourself", { variant: "error" });
+      } else {
+        showToast("Failed to remove member", { variant: "error" });
+      }
+    },
+  });
+
+  const [inviting, setInviting] = useState(false);
 
   const members = membersQ.data ?? [];
+  const isAdmin = me?.role === "admin";
+  // Track the active admin count locally so we can hide the delete option
+  // on the last admin (defence-in-depth — server still enforces this).
+  const adminCount = members.filter((m) => m.role === "admin").length;
 
   return (
     <SettingsLayout>
       <Card variant="surface" radius="lg" className="p-6 grid gap-4">
-        <div className="flex items-baseline justify-between">
+        <div className="flex items-baseline justify-between gap-4">
           <div>
             <h2 className="text-[16px] font-medium tracking-tight">Members</h2>
             <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
               Everyone with access to this workspace.
             </p>
           </div>
-          {me?.role !== "admin" && (
-            <Badge variant="neutral">View-only · admin required to change roles</Badge>
+          {isAdmin ? (
+            <Button
+              variant="primary"
+              size="md"
+              leftIcon={<UserPlus className="h-4 w-4" />}
+              onClick={() => setInviting(true)}
+              data-testid="members-invite-button"
+            >
+              Invite member
+            </Button>
+          ) : (
+            <Badge variant="neutral">
+              View-only · admin required to change roles
+            </Badge>
           )}
         </div>
 
@@ -440,41 +524,202 @@ export function SettingsMembersPage() {
           <p className="text-[13px] text-[color:var(--text-tertiary)]">Loading…</p>
         ) : (
           <ul className="grid gap-2" data-testid="members-list">
-            {members.map((m) => (
-              <MemberRow
-                key={m.id}
-                m={m}
-                isMe={m.id === me?.id}
-                canEdit={me?.role === "admin"}
-                onChangeRole={(role) => setRoleM.mutate({ id: m.id, role })}
-              />
-            ))}
+            {members.map((m) => {
+              const isMe = m.id === me?.id;
+              const isLastAdmin = m.role === "admin" && adminCount <= 1;
+              return (
+                <MemberRow
+                  key={m.id}
+                  m={m}
+                  isMe={isMe}
+                  isAdmin={isAdmin}
+                  canDelete={isAdmin && !isMe && !isLastAdmin}
+                  onChangeRole={(role) => setRoleM.mutate({ id: m.id, role })}
+                  onDelete={async () => {
+                    const ok = await confirm({
+                      title: `Delete ${m.email}?`,
+                      description:
+                        "They will lose access immediately. This cannot be undone.",
+                      confirmLabel: "Delete",
+                      variant: "danger",
+                    });
+                    if (ok) deleteM.mutate(m.id);
+                  }}
+                />
+              );
+            })}
           </ul>
         )}
-
-        <Card variant="sunken" radius="md" className="p-4">
-          <p className="text-[12.5px] text-[color:var(--text-secondary)]">
-            <strong>Inviting users:</strong> sign-up is restricted after the
-            first admin is created. To add a new member, ask an existing admin
-            to register the account at <code className="font-mono">/register</code>{" "}
-            while authenticated.
-          </p>
-        </Card>
       </Card>
+
+      <InviteMemberDialog
+        open={inviting}
+        onOpenChange={setInviting}
+        pending={createM.isPending}
+        onSubmit={(values) =>
+          createM.mutate(values, {
+            onSuccess: () => setInviting(false),
+          })
+        }
+      />
     </SettingsLayout>
+  );
+}
+
+interface InviteMemberDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  pending: boolean;
+  onSubmit: (values: {
+    email: string;
+    password: string;
+    role: CreateRole;
+  }) => void;
+}
+
+function InviteMemberDialog({
+  open,
+  onOpenChange,
+  pending,
+  onSubmit,
+}: InviteMemberDialogProps) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<CreateRole>("member");
+
+  const trimmedEmail = email.trim();
+  const passwordTooShort =
+    password.length > 0 && password.length < MIN_INVITE_PASSWORD_LENGTH;
+  const canSubmit =
+    trimmedEmail.length > 0 &&
+    password.length >= MIN_INVITE_PASSWORD_LENGTH &&
+    !pending;
+
+  function handleOpenChange(next: boolean) {
+    if (!next) {
+      setEmail("");
+      setPassword("");
+      setRole("member");
+    }
+    onOpenChange(next);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Invite member</DialogTitle>
+          <DialogDescription>
+            Create an account with an initial password. They can change it
+            later from Settings → Profile.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="grid gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!canSubmit) return;
+            onSubmit({ email: trimmedEmail, password, role });
+          }}
+        >
+          <Input
+            label="Email"
+            type="email"
+            autoComplete="email"
+            placeholder="teammate@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            data-testid="invite-member-email"
+            autoFocus
+          />
+          <div className="grid gap-1">
+            <Input
+              label="Initial password"
+              type="password"
+              autoComplete="new-password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              aria-invalid={passwordTooShort || undefined}
+              data-testid="invite-member-password"
+            />
+            <p
+              className={cn(
+                "text-[11px] tracking-tight",
+                passwordTooShort
+                  ? "text-[color:var(--danger)]"
+                  : "text-[color:var(--text-tertiary)]",
+              )}
+            >
+              Min 8 characters. Share securely; they can rotate it on first
+              sign-in.
+            </p>
+          </div>
+          <div className="grid gap-1.5">
+            <label
+              className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium"
+              htmlFor="invite-member-role-trigger"
+            >
+              Role
+            </label>
+            <Select value={role} onValueChange={(v) => setRole(v as CreateRole)}>
+              <Select.Trigger
+                aria-label="Role"
+                data-testid="invite-member-role-trigger"
+              >
+                <Select.Value />
+              </Select.Trigger>
+              <Select.Content>
+                {INVITE_ROLES.map((r) => (
+                  <Select.Item
+                    key={r}
+                    value={r}
+                    data-testid={`invite-member-role-${r}`}
+                  >
+                    {r}
+                  </Select.Item>
+                ))}
+              </Select.Content>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => handleOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              loading={pending}
+              disabled={!canSubmit}
+              data-testid="invite-member-submit"
+            >
+              Create
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function MemberRow({
   m,
   isMe,
-  canEdit,
+  isAdmin,
+  canDelete,
   onChangeRole,
+  onDelete,
 }: {
   m: Member;
   isMe: boolean;
-  canEdit: boolean;
+  isAdmin: boolean;
+  canDelete: boolean;
   onChangeRole: (r: Role) => void;
+  onDelete: () => void;
 }) {
   const initial = m.email[0]?.toUpperCase() ?? "?";
   return (
@@ -492,7 +737,7 @@ function MemberRow({
           )}
         </p>
       </div>
-      {canEdit && !isMe ? (
+      {isAdmin && !isMe ? (
         <select
           aria-label={`Role for ${m.email}`}
           value={m.role}
@@ -514,6 +759,40 @@ function MemberRow({
         <Badge variant={m.role === "admin" ? "accent" : "neutral"}>
           <UserCog className="h-3 w-3" /> {m.role}
         </Badge>
+      )}
+      {canDelete && (
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <button
+              type="button"
+              aria-label={`More actions for ${m.email}`}
+              data-testid={`member-menu-trigger-${m.id}`}
+              className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
+            >
+              <MoreVertical className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={4}
+              className="z-[1000] min-w-[200px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+            >
+              <DropdownMenu.Item
+                data-testid={`member-menu-delete-${m.id}`}
+                onSelect={() => onDelete()}
+                className={cn(
+                  "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] outline-none",
+                  "data-[highlighted]:bg-[var(--bg-hover)] cursor-pointer",
+                  "text-[color:var(--danger)]",
+                )}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Delete member</span>
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
       )}
     </li>
   );
