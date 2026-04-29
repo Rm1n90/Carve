@@ -23,15 +23,27 @@ logger = logging.getLogger(__name__)
 
 def build_classes_manifest(
     classes: Iterable[Any],
+    *,
+    densified_remap: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the unified ``classes.json`` payload for an export archive.
 
     Each entry contains the class's stable id, ascending integer ``idx``, name
     and color so downstream consumers (training pipelines, dataset tools) can
     line up the index used in YOLO labels / COCO ``categories`` with the
-    visual identity defined in the project. The list is sorted by ``idx`` so
-    file order matches both the YOLO ``names:`` order and the COCO
-    ``categories`` ordering.
+    visual identity defined in the project.
+
+    When ``densified_remap`` is provided (a mapping of ``project_class_id ->
+    {"export_id": int, "name": str}`` already densified to 0..N-1), each
+    entry also carries ``export_idx`` — the dense index actually used inside
+    the export's label files / COCO categories. Included entries are sorted
+    by ``export_idx`` first; classes excluded from this export get
+    ``export_idx = None`` and trail the included ones, ordered by their
+    original ``idx`` so manifest order is stable.
+
+    Without ``densified_remap`` the original behaviour is preserved: a list
+    sorted by ``idx`` with no ``export_idx`` field. Existing consumers that
+    only read ``id/idx/name/color`` keep working.
 
     The ``Class`` model has no per-class ``kind`` column — annotation kind is
     a Task-level attribute — so ``kind`` is intentionally omitted from each
@@ -39,16 +51,66 @@ def build_classes_manifest(
     """
     out: list[dict[str, Any]] = []
     for c in classes:
-        out.append(
-            {
-                "id": str(c.id),
-                "idx": int(c.idx),
-                "name": str(c.name),
-                "color": str(c.color),
-            },
+        entry: dict[str, Any] = {
+            "id": str(c.id),
+            "idx": int(c.idx),
+            "name": str(c.name),
+            "color": str(c.color),
+        }
+        if densified_remap is not None:
+            target = densified_remap.get(str(c.id))
+            entry["export_idx"] = (
+                int(target["export_id"]) if target is not None else None
+            )
+        out.append(entry)
+    if densified_remap is None:
+        out.sort(key=lambda e: e["idx"])
+    else:
+        # Included entries first (sorted by export_idx), then excluded
+        # entries (sorted by their original idx). Tuples sort lexicographically
+        # and Python won't compare ``None`` with ``int``, so split the key.
+        out.sort(
+            key=lambda e: (
+                0 if e.get("export_idx") is not None else 1,
+                e["export_idx"] if e.get("export_idx") is not None else e["idx"],
+            ),
         )
-    out.sort(key=lambda e: e["idx"])
     return out
+
+
+# v3.2: class indices in YOLO/COCO output are densified to 0..N-1 to ensure
+# data.yaml/categories matches label indices exactly.
+def _densify_remap(class_remap: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Densify a user-supplied ``class_remap`` to dense 0..N-1 indices.
+
+    The frontend seeds each entry's ``export_id`` with the project class's
+    ``idx`` (which is sparse if the user has deleted classes). Trusting that
+    value verbatim breaks YOLO ``data.yaml`` (whose ``names`` array is N
+    long but indexed by sparse ints) and COCO ``categories`` similarly.
+
+    The fix is to treat the user's ``export_id`` only as a positional sort
+    key (preserving user-intended ordering) and reassign export ids to
+    ``0..N-1`` based on sorted position. Skipped classes (``v is None`` or
+    ``v.get("skip")``) are dropped from the dense mapping entirely.
+    """
+    user_targets: list[tuple[int, str, str]] = []
+    for src_class_id, v in class_remap.items():
+        if v is None:
+            continue
+        if isinstance(v, dict) and v.get("skip", False):
+            continue
+        if not isinstance(v, dict) or "export_id" not in v or "name" not in v:
+            # Match yolo_out._normalise_remap's strictness so we surface
+            # malformed payloads early instead of silently densifying junk.
+            raise ValueError(f"invalid remap entry for class {src_class_id}: {v!r}")
+        user_targets.append(
+            (int(v["export_id"]), str(v["name"]), str(src_class_id)),
+        )
+    user_targets.sort(key=lambda t: t[0])
+    return {
+        src_class_id: {"export_id": i, "name": name}
+        for i, (_export_id, name, src_class_id) in enumerate(user_targets)
+    }
 
 
 @dataclass
@@ -312,14 +374,21 @@ def run_export_inline(
                 select(Class).where(Class.project_id == task.project_id)
             ).scalars()
         )
-        classes_manifest = build_classes_manifest(project_classes)
+        # v3.2 Issue 5: densify export class indices to 0..N-1 BEFORE passing
+        # to writers and before building the manifest. The user-supplied
+        # export_id is treated only as a positional sort key.
+        densified_remap = _densify_remap(payload.class_remap)
+        classes_manifest = build_classes_manifest(
+            project_classes,
+            densified_remap=densified_remap,
+        )
 
         archive_bytes = _build_archive(
             task=task,
             assets=assets,
             annotations_by_asset_id=anns_by_asset,
             fmt=payload.fmt,
-            class_remap=payload.class_remap,
+            class_remap=densified_remap,
             include_images=payload.include_images,
             storage=storage,
             splits=payload.splits,
