@@ -50,17 +50,28 @@ async def upload_weight(
     project_id: uuid.UUID,
     name: str = Form(...),
     task_kind: WeightTaskKind = Form(...),
-    class_names: str = Form(..., description="JSON-encoded list of class names"),
+    # v3.3 (audit issue 3a): optional. Backend now delegates to the model
+    # service /yolo/inspect to extract real class names from the .pt; this
+    # form value is only used as a fallback when the model service is
+    # offline OR didn't return a usable name table. Older clients posting
+    # the JSON-encoded array still work unchanged.
+    class_names: str | None = Form(
+        None,
+        description="Optional JSON-encoded list of class names; auto-extracted from the .pt when the model service is reachable",
+    ),
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WeightOut:
-    try:
-        names = json.loads(class_names)
-    except json.JSONDecodeError as exc:
-        raise _http(WeightInvalid("class_names must be valid JSON")) from exc
-    if not isinstance(names, list):
-        raise _http(WeightInvalid("class_names must be a list"))
+    if class_names is None or class_names == "":
+        names: list = []
+    else:
+        try:
+            names = json.loads(class_names)
+        except json.JSONDecodeError as exc:
+            raise _http(WeightInvalid("class_names must be valid JSON")) from exc
+        if not isinstance(names, list):
+            raise _http(WeightInvalid("class_names must be a list"))
 
     body = await file.read()
     project = ProjectService(db).get(actor=user, project_id=project_id)
