@@ -348,11 +348,25 @@ function YoloPredictButton({
         ? inferenceApi.predictYolo(assetId, weightId, overwrite, confidence)
         : Promise.reject(new Error("no asset")),
     onSuccess: (res, weightId) => {
-      const created = res?.count ?? 0;
-      if (created === 0) {
+      const created = res?.annotations_created ?? res?.count ?? 0;
+      const skipped = res?.skipped_count ?? 0;
+      const unmappedClasses = Object.keys(res?.skipped_by_class ?? {});
+      if (created === 0 && skipped === 0) {
         showToast(
           `No detections at confidence ${(confidence * 100).toFixed(0)}%`,
           { variant: "warning" },
+        );
+      } else if (skipped > 0) {
+        // v3.3 Issue 3c — surface the per-class skipped tally so the user
+        // knows their weight has classes that don't bind to project classes.
+        // Direct them to the YOLO weight detail panel to remap.
+        const list =
+          unmappedClasses.length > 0
+            ? ` (unmapped: ${unmappedClasses.join(", ")})`
+            : "";
+        showToast(
+          `Created ${created} annotations. Skipped ${skipped} detections${list}.`,
+          { variant: "warning", duration: 5000 },
         );
       } else {
         showToast(`Created ${created} annotations from predictions`, {
