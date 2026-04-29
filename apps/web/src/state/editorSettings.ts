@@ -87,6 +87,16 @@ export interface EditorSettings {
 
 const STORAGE_KEY = "carve.settings.v1";
 
+/**
+ * Persisted-state schema version. Bumped to 2 in v3.0 to migrate users
+ * who had ``colorBy: "instance"`` carried over from an earlier session
+ * (every new bbox got a different color even though the class was the
+ * same). The migration is one-shot: when an old payload is read we flip
+ * ``instance`` → ``label`` and stamp the new version. The "Instance"
+ * radio remains available for users who explicitly opt back in.
+ */
+const STORAGE_VERSION = 2;
+
 export const DEFAULT_SETTINGS: EditorSettings = {
   // Player
   playerStep: 1,
@@ -130,22 +140,58 @@ function isValidPartial(input: unknown): input is Partial<EditorSettings> {
   return typeof input === "object" && input !== null && !Array.isArray(input);
 }
 
+interface PersistedShape extends Partial<EditorSettings> {
+  _v?: number;
+}
+
+/**
+ * One-shot migrations applied when reading an older persisted payload.
+ * v1 → v2: ``colorBy: "instance"`` is reset to ``"label"`` so that
+ * existing users get the predictable per-class palette by default.
+ * They can still opt back into instance coloring via the Appearance
+ * panel.
+ */
+function migrate(parsed: PersistedShape): PersistedShape {
+  const version = typeof parsed._v === "number" ? parsed._v : 1;
+  if (version >= STORAGE_VERSION) return parsed;
+  const next: PersistedShape = { ...parsed };
+  if (next.colorBy === "instance") {
+    next.colorBy = "label";
+  }
+  next._v = STORAGE_VERSION;
+  return next;
+}
+
 function loadFromStorage(): EditorSettings {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw) as unknown;
     if (!isValidPartial(parsed)) return DEFAULT_SETTINGS;
+    const migrated = migrate(parsed as PersistedShape);
     // Merge over defaults so newly added keys retain their defaults when
     // an old stored object is missing them.
-    return {
+    const merged: EditorSettings = {
       ...DEFAULT_SETTINGS,
-      ...parsed,
+      ...migrated,
       showLabelText: {
         ...DEFAULT_SETTINGS.showLabelText,
-        ...((parsed as Partial<EditorSettings>).showLabelText ?? {}),
+        ...(migrated.showLabelText ?? {}),
       },
     };
+    // If migration produced a different shape, persist the upgraded
+    // payload immediately so the same migration does not run again.
+    if ((parsed as PersistedShape)._v !== STORAGE_VERSION) {
+      try {
+        window.localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ ...merged, _v: STORAGE_VERSION }),
+        );
+      } catch {
+        /* ignore — we'll re-persist on the next setting change */
+      }
+    }
+    return merged;
   } catch {
     return DEFAULT_SETTINGS;
   }
@@ -153,7 +199,10 @@ function loadFromStorage(): EditorSettings {
 
 function persist(state: EditorSettings): void {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...state, _v: STORAGE_VERSION }),
+    );
   } catch {
     /* localStorage unavailable in some private modes */
   }
