@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ChevronDown,
@@ -18,6 +19,14 @@ import { useAuth } from "@/auth/store";
 import { logout } from "@/auth/api";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
+import { projectsApi } from "@/api/projects";
+
+/**
+ * v3.0 C5 — soft cap on how many projects we list inline under the
+ * "Annotate" section. Anything beyond this gets hidden behind a
+ * "Show all (N)" link to /projects so the nav rail stays scannable.
+ */
+const ANNOTATE_PROJECTS_LIMIT = 8;
 
 interface SectionProps {
   label: string;
@@ -83,11 +92,22 @@ function Section({
 interface NavItemProps {
   label: string;
   to?: string;
+  /**
+   * Optional TanStack Router params (e.g. `{ projectId: 'p1' }`) used when
+   * `to` is a parametric path like `/projects/$projectId`. Typed loosely
+   * so consumers don't need to import the per-route Param shapes.
+   */
+  params?: Record<string, string>;
   active?: boolean;
   icon?: React.ReactNode;
+  /**
+   * Optional test id for stable test selectors. Used by v3.0 C5 to
+   * target the dynamic per-project nav items.
+   */
+  testId?: string;
 }
 
-function NavItem({ label, to, active, icon }: NavItemProps) {
+function NavItem({ label, to, params, active, icon, testId }: NavItemProps) {
   const inner = (
     <span
       className={cn(
@@ -121,15 +141,22 @@ function NavItem({ label, to, active, icon }: NavItemProps) {
     </span>
   );
   if (to) {
+    // TanStack Router's `Link` typing is strict about route<->params, but
+    // we accept generic `string` for `to` here because LeftNav links to a
+    // mixed set of routes (some parametric, some not). Cast the Link to a
+    // permissive shape for this navigation chrome.
+    const AnyLink = Link as unknown as React.FC<
+      Record<string, unknown> & { children?: React.ReactNode }
+    >;
     return (
       <li>
-        <Link to={to} className="block">
+        <AnyLink to={to} params={params} className="block" data-testid={testId}>
           {inner}
-        </Link>
+        </AnyLink>
       </li>
     );
   }
-  return <li>{inner}</li>;
+  return <li data-testid={testId}>{inner}</li>;
 }
 
 function isActive(path: string, target: string, exact = true): boolean {
@@ -145,6 +172,19 @@ export function LeftNav() {
   const user = useAuth((s) => s.user);
   const nav = useNavigate();
   const confirm = useConfirm();
+
+  // v3.0 C5 — list user projects directly in the Annotate section so the
+  // most common nav target (a specific project) is one click away. We
+  // cap inline rendering at ANNOTATE_PROJECTS_LIMIT and surface a
+  // "Show all (N)" affordance for the overflow.
+  const projectsQ = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => projectsApi.list(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const projectList = projectsQ.data ?? [];
+  const visibleProjects = projectList.slice(0, ANNOTATE_PROJECTS_LIMIT);
+  const overflowCount = projectList.length - visibleProjects.length;
 
   const userInitial = user?.email?.[0]?.toUpperCase() ?? "?";
 
@@ -206,8 +246,37 @@ export function LeftNav() {
           <NavItem
             label="All projects"
             to="/projects"
-            active={isActive(path, "/projects", false)}
+            active={path === "/projects"}
           />
+          {/* v3.0 C5 — inline project list. Loading state shows a single
+              muted row; errors render nothing extra (the user can still
+              hit "All projects" above). */}
+          {projectsQ.isLoading && (
+            <li
+              className="px-5 py-1 mx-1 text-[12px] text-[color:var(--text-tertiary)]"
+              data-testid="leftnav-projects-loading"
+            >
+              Loading…
+            </li>
+          )}
+          {!projectsQ.isLoading &&
+            visibleProjects.map((p) => (
+              <NavItem
+                key={p.id}
+                label={p.name}
+                to="/projects/$projectId"
+                params={{ projectId: p.id }}
+                active={path.startsWith("/projects/" + p.id)}
+                testId={`leftnav-project-${p.id}`}
+              />
+            ))}
+          {!projectsQ.isLoading && overflowCount > 0 && (
+            <NavItem
+              label={`Show all (${projectList.length})`}
+              to="/projects"
+              testId="leftnav-projects-show-all"
+            />
+          )}
         </Section>
 
         <Section label="Models" icon={<Cpu className="h-3.5 w-3.5" />} initiallyOpen={false}>
