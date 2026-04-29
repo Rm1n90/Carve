@@ -8,6 +8,7 @@ import zipfile
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Iterable
 
 from sqlalchemy import select
 
@@ -15,9 +16,39 @@ from carve_api.annotations.models import Annotation
 from carve_api.assets.models import Asset, AssetKind
 from carve_api.io.coco_out import build_coco
 from carve_api.io.yolo_out import RemapTarget, write_data_yaml, write_yolo_label
-from carve_api.projects.models import Task
+from carve_api.projects.models import Class, Task
 
 logger = logging.getLogger(__name__)
+
+
+def build_classes_manifest(
+    classes: Iterable[Any],
+) -> list[dict[str, Any]]:
+    """Build the unified ``classes.json`` payload for an export archive.
+
+    Each entry contains the class's stable id, ascending integer ``idx``, name
+    and color so downstream consumers (training pipelines, dataset tools) can
+    line up the index used in YOLO labels / COCO ``categories`` with the
+    visual identity defined in the project. The list is sorted by ``idx`` so
+    file order matches both the YOLO ``names:`` order and the COCO
+    ``categories`` ordering.
+
+    The ``Class`` model has no per-class ``kind`` column — annotation kind is
+    a Task-level attribute — so ``kind`` is intentionally omitted from each
+    entry.
+    """
+    out: list[dict[str, Any]] = []
+    for c in classes:
+        out.append(
+            {
+                "id": str(c.id),
+                "idx": int(c.idx),
+                "name": str(c.name),
+                "color": str(c.color),
+            },
+        )
+    out.sort(key=lambda e: e["idx"])
+    return out
 
 
 @dataclass
@@ -67,6 +98,7 @@ def _yolo_archive(
     include_images: bool,
     storage,
     splits: dict[str, float] | None = None,
+    classes_manifest: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """Build a YOLO archive in memory. Returns the zip bytes.
 
@@ -127,6 +159,11 @@ def _yolo_archive(
                 },
             ),
         )
+        if classes_manifest is not None:
+            zf.writestr(
+                "classes.json",
+                json.dumps(classes_manifest, indent=2),
+            )
     return buf.getvalue()
 
 
@@ -137,6 +174,7 @@ def _coco_archive(
     class_remap: dict,
     include_images: bool,
     storage,
+    classes_manifest: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """Build a COCO archive (coco.json + optional images/ folder)."""
     buf = io.BytesIO()
@@ -177,6 +215,11 @@ def _coco_archive(
                 except Exception:
                     continue
                 zf.writestr(f"images/{asset.original_name}", body)
+        if classes_manifest is not None:
+            zf.writestr(
+                "classes.json",
+                json.dumps(classes_manifest, indent=2),
+            )
     return buf.getvalue()
 
 
@@ -190,6 +233,7 @@ def _build_archive(
     include_images: bool,
     storage,
     splits: dict[str, float] | None = None,
+    classes_manifest: list[dict[str, Any]] | None = None,
 ) -> bytes:
     if fmt == "yolo":
         return _yolo_archive(
@@ -200,6 +244,7 @@ def _build_archive(
             include_images=include_images,
             storage=storage,
             splits=splits,
+            classes_manifest=classes_manifest,
         )
     if fmt == "coco":
         # COCO uses a single coco.json — split partitioning is YOLO-only here.
@@ -209,6 +254,7 @@ def _build_archive(
             class_remap=class_remap,
             include_images=include_images,
             storage=storage,
+            classes_manifest=classes_manifest,
         )
     raise ValueError(f"unsupported export format: {fmt}")
 
@@ -258,6 +304,16 @@ def run_export_inline(
             if asset_id is not None:
                 anns_by_asset[asset_id].append(ann)
 
+        # v3.0 D11 — ship a unified classes.json manifest in every archive so
+        # downstream tools can map idx → name + brand color without parsing
+        # YOLO data.yaml / COCO categories.
+        project_classes = list(
+            session.execute(
+                select(Class).where(Class.project_id == task.project_id)
+            ).scalars()
+        )
+        classes_manifest = build_classes_manifest(project_classes)
+
         archive_bytes = _build_archive(
             task=task,
             assets=assets,
@@ -267,6 +323,7 @@ def run_export_inline(
             include_images=payload.include_images,
             storage=storage,
             splits=payload.splits,
+            classes_manifest=classes_manifest,
         )
 
         minio_key = f"exports/{task.id}/{export.id}.zip"
