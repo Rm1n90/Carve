@@ -3,6 +3,7 @@ import { useDropzone, type Accept } from "react-dropzone";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileArchive } from "lucide-react";
 import { importsApi, type ImportFormat, type ImportProgress } from "@/api/imports";
+import { Select } from "@/components/ui/Select";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -74,18 +75,22 @@ export function ImportDialog({ taskId }: Props) {
   return (
     <section className="grid gap-3">
       <h2 className="text-[18px] font-medium tracking-tight text-primary">Import annotations</h2>
-      <label className="flex items-center gap-3 text-[13px] text-secondary">
+      <div className="flex items-center gap-3 text-[13px] text-secondary">
         <span className="font-medium tracking-tight">Format:</span>
-        <select
-          aria-label="import-format"
-          value={format}
-          onChange={(e) => setFormat(e.target.value as ImportFormat)}
-          className="h-9 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3 text-[13px] text-primary focus:outline-none focus:border-[var(--accent)]"
-        >
-          <option value="yolo">YOLO</option>
-          <option value="coco">COCO</option>
-        </select>
-      </label>
+        <Select value={format} onValueChange={(v) => setFormat(v as ImportFormat)}>
+          <Select.Trigger aria-label="import-format" data-testid="import-format">
+            <Select.Value />
+          </Select.Trigger>
+          <Select.Content>
+            <Select.Item value="yolo" data-testid="import-format-yolo">
+              YOLO
+            </Select.Item>
+            <Select.Item value="coco" data-testid="import-format-coco">
+              COCO
+            </Select.Item>
+          </Select.Content>
+        </Select>
+      </div>
       <div
         {...getRootProps()}
         className={cn(

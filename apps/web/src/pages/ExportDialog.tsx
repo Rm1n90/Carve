@@ -11,6 +11,7 @@ import {
   type ExportSplits,
 } from "@/api/exports";
 import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 
 interface Props {
   projectId: string;
@@ -109,18 +110,22 @@ export function ExportDialog({ projectId, taskId }: Props) {
       <h2 className="text-[18px] font-medium tracking-tight text-primary">Export annotations</h2>
 
       <div className="flex flex-wrap items-center gap-4 text-[13px] text-secondary">
-        <label className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5">
           <span className="font-medium tracking-tight">Format</span>
-          <select
-            aria-label="export-format"
-            value={format}
-            onChange={(e) => setFormat(e.target.value as ExportFormat)}
-            className="h-8 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2 text-[12px] text-primary focus:outline-none focus:border-[var(--accent)]"
-          >
-            <option value="yolo">YOLO</option>
-            <option value="coco">COCO</option>
-          </select>
-        </label>
+          <Select value={format} onValueChange={(v) => setFormat(v as ExportFormat)}>
+            <Select.Trigger aria-label="export-format" data-testid="export-format">
+              <Select.Value />
+            </Select.Trigger>
+            <Select.Content>
+              <Select.Item value="yolo" data-testid="export-format-yolo">
+                YOLO
+              </Select.Item>
+              <Select.Item value="coco" data-testid="export-format-coco">
+                COCO
+              </Select.Item>
+            </Select.Content>
+          </Select>
+        </div>
         <label className="flex items-center gap-2 cursor-pointer">
           <input
             type="checkbox"

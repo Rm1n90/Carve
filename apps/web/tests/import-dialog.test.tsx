@@ -49,9 +49,15 @@ describe("ImportDialog", () => {
       total: 1,
       warnings: [],
     });
-    const { container, getByLabelText } = render(wrap(<ImportDialog taskId="t1" />));
-    const select = getByLabelText("import-format") as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "coco" } });
+    const { container, findByTestId, getByLabelText } = render(
+      wrap(<ImportDialog taskId="t1" />),
+    );
+    // v3.0: Format is now a Radix Select. Open trigger then click item.
+    const trigger = getByLabelText("import-format");
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: "mouse" });
+    fireEvent.click(trigger);
+    const cocoItem = await findByTestId("import-format-coco");
+    fireEvent.click(cocoItem);
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     const json = new File([new Uint8Array([0x7b, 0x7d])], "annotations.json", {
       type: "application/json",

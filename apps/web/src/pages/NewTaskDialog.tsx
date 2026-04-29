@@ -6,6 +6,7 @@ import { Plus } from "lucide-react";
 import { tasksApi, type Task, type TaskKind } from "@/api/tasks";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 
 function extractErrorCode(error: unknown): string {
   if (axios.isAxiosError(error)) {
@@ -68,19 +69,20 @@ export function NewTaskDialog({
         value={name}
         onChange={(e) => setName(e.target.value)}
       />
-      <label className="grid gap-1">
+      <div className="grid gap-1">
         <span className="text-[10.5px] uppercase tracking-[0.08em] text-tertiary font-medium">
           Kind
         </span>
-        <select
-          value={kind}
-          onChange={(e) => setKind(e.target.value as TaskKind)}
-          className="h-8 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2 text-[12.5px] text-primary focus:outline-none focus:border-[var(--accent)]"
-        >
-          <option value="image">Image set</option>
-          <option value="video">Video</option>
-        </select>
-      </label>
+        <Select value={kind} onValueChange={(v) => setKind(v as TaskKind)}>
+          <Select.Trigger aria-label="task-kind" data-testid="new-task-kind">
+            <Select.Value />
+          </Select.Trigger>
+          <Select.Content>
+            <Select.Item value="image">Image set</Select.Item>
+            <Select.Item value="video">Video</Select.Item>
+          </Select.Content>
+        </Select>
+      </div>
       <Button
         type="submit"
         variant="primary"

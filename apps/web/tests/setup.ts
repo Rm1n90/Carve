@@ -10,3 +10,22 @@ if (typeof (globalThis as { ResizeObserver?: unknown }).ResizeObserver === "unde
   }
   (globalThis as { ResizeObserver?: unknown }).ResizeObserver = StubResizeObserver;
 }
+
+// jsdom doesn't implement Pointer Capture or scrollIntoView. Radix Select
+// (added in v3.0) calls both during open/highlight; without these stubs
+// tests that drive a Radix Select trigger throw on click.
+type ElementProto = HTMLElement & {
+  hasPointerCapture?: (pointerId: number) => boolean;
+  releasePointerCapture?: (pointerId: number) => void;
+  scrollIntoView?: () => void;
+};
+const elementProto = HTMLElement.prototype as ElementProto;
+if (typeof elementProto.hasPointerCapture !== "function") {
+  elementProto.hasPointerCapture = () => false;
+}
+if (typeof elementProto.releasePointerCapture !== "function") {
+  elementProto.releasePointerCapture = () => undefined;
+}
+if (typeof elementProto.scrollIntoView !== "function") {
+  elementProto.scrollIntoView = () => undefined;
+}
