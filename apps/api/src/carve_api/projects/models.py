@@ -12,7 +12,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from carve_api.db import Base
@@ -55,6 +55,13 @@ class Task(Base):
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     kind: Mapped[TaskKind] = mapped_column(Enum(TaskKind, name="task_kind"), nullable=False)
+    # v3.1 Issue 3 (Option A: subset model). ``None`` means "use all
+    # project classes" (the default for legacy rows). An empty list is a
+    # legal-but-unusual "no classes for this task" state. Otherwise the
+    # list is the subset of class ids visible/usable in this task.
+    allowed_class_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=True, default=None
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

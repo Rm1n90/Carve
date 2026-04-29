@@ -165,6 +165,12 @@ class TaskService:
         if not _can_modify(actor, project):
             raise NotProjectOwner("only owner or admin can duplicate a task")
         src = self.get(project=project, task_id=task_id)
+        # v3.1 Issue 3 — copy the task-scoped class subset onto the new
+        # row so a duplicated task starts with the same scope. ``None``
+        # stays as ``None`` (i.e. "all project classes").
+        cloned_allowed = (
+            list(src.allowed_class_ids) if src.allowed_class_ids is not None else None
+        )
         new_tasks: list[Task] = []
         if name is not None:
             trimmed = name.strip()
@@ -176,6 +182,7 @@ class TaskService:
                 project_id=project.id,
                 name=trimmed,
                 kind=src.kind,
+                allowed_class_ids=cloned_allowed,
             )
             self.session.add(t)
             new_tasks.append(t)
@@ -186,11 +193,66 @@ class TaskService:
                     project_id=project.id,
                     name=(src.name + suffix)[:120],
                     kind=src.kind,
+                    allowed_class_ids=(
+                        list(cloned_allowed) if cloned_allowed is not None else None
+                    ),
                 )
                 self.session.add(t)
                 new_tasks.append(t)
         self.session.flush()
         return new_tasks
+
+    def get_effective_classes(
+        self, *, project: Project, task: Task
+    ) -> tuple[list["Class"], list[uuid.UUID] | None]:
+        """Return the task's effective class list and its subset config.
+
+        v3.1 Issue 3 (Option A). When ``task.allowed_class_ids`` is
+        ``None`` we return *all* project classes — the default
+        backward-compatible behaviour. Otherwise we return the project
+        classes whose ids appear in ``allowed_class_ids`` (preserving the
+        canonical project ordering by ``idx``).
+        """
+        all_classes = ClassService(self.session).list_for_project(project=project)
+        if task.allowed_class_ids is None:
+            return all_classes, None
+        allowed = set(task.allowed_class_ids)
+        effective = [c for c in all_classes if c.id in allowed]
+        return effective, list(task.allowed_class_ids)
+
+    def set_allowed_classes(
+        self,
+        *,
+        actor: User,
+        project: Project,
+        task: Task,
+        allowed_class_ids: list[uuid.UUID] | None,
+    ) -> Task:
+        """Update a task's class subset.
+
+        Validates that every id in ``allowed_class_ids`` belongs to the
+        same project — cross-project ids raise ``ValueError`` so the
+        router can surface a 422.
+        """
+        if not _can_modify(actor, project):
+            raise NotProjectOwner("only owner or admin can edit task classes")
+        if allowed_class_ids is not None:
+            project_class_ids = {
+                c.id
+                for c in ClassService(self.session).list_for_project(project=project)
+            }
+            unique_ids = list({cid for cid in allowed_class_ids})
+            for cid in unique_ids:
+                if cid not in project_class_ids:
+                    raise ValueError(
+                        "allowed_class_ids contains an id that does not belong to "
+                        "this project"
+                    )
+            task.allowed_class_ids = unique_ids
+        else:
+            task.allowed_class_ids = None
+        self.session.flush()
+        return task
 
 
 class ClassConflict(AppError):

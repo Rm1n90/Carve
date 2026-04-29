@@ -16,6 +16,8 @@ from carve_api.projects.schemas import (
     ProjectIn,
     ProjectOut,
     ProjectPatch,
+    TaskClassesIn,
+    TaskClassesOut,
     TaskIn,
     TaskOut,
 )
@@ -268,6 +270,86 @@ def import_classes(
         raise _http(exc) from exc
     db.commit()
     return ImportClassesOut(imported=imported, skipped=skipped)
+
+
+@router.get(
+    "/{project_id}/tasks/{task_id}/classes",
+    response_model=TaskClassesOut,
+)
+def get_task_classes(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TaskClassesOut:
+    """Effective class list for a task (v3.1 Issue 3, Option A).
+
+    Returns ``classes`` (the effective list — all project classes when
+    no subset is set, otherwise the subset filtered by the task's
+    ``allowed_class_ids``) and the raw ``allowed_class_ids`` so the UI
+    can distinguish "all" (``null``) from "explicit subset".
+    """
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+        task_svc = TaskService(db)
+        task = task_svc.get(project=project, task_id=task_id)
+        classes, allowed = task_svc.get_effective_classes(
+            project=project, task=task
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    return TaskClassesOut(
+        classes=[ClassOut.from_orm_class(c) for c in classes],
+        allowed_class_ids=allowed,
+    )
+
+
+@router.put(
+    "/{project_id}/tasks/{task_id}/classes",
+    response_model=TaskClassesOut,
+)
+def set_task_classes(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskClassesIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TaskClassesOut:
+    """Set the task's class subset (v3.1 Issue 3, Option A).
+
+    Admin or project owner only. ``None`` clears the subset (back to
+    "all project classes"); ``[]`` is the legal empty-subset state;
+    a populated list scopes the editor + exports to those classes.
+
+    Validation: every id must belong to the *same* project. Cross-
+    project ids return 422.
+
+    Annotations referencing classes that are now disallowed are NOT
+    deleted — they remain in the DB. The UI may hide them, but the API
+    does not destroy data on this call.
+    """
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+        task_svc = TaskService(db)
+        task = task_svc.get(project=project, task_id=task_id)
+        task_svc.set_allowed_classes(
+            actor=user,
+            project=project,
+            task=task,
+            allowed_class_ids=payload.allowed_class_ids,
+        )
+        classes, allowed = task_svc.get_effective_classes(
+            project=project, task=task
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.commit()
+    return TaskClassesOut(
+        classes=[ClassOut.from_orm_class(c) for c in classes],
+        allowed_class_ids=allowed,
+    )
 
 
 @router.post(
