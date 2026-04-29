@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, EmailStr, Field
 
 from carve_api.auth.models import UserRole
@@ -6,6 +8,17 @@ from carve_api.auth.models import UserRole
 class RegisterIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+
+
+class CreateMemberIn(BaseModel):
+    """Bug 14: admin-create-member payload. The role is constrained to
+    ``admin`` or ``member`` because ``viewer`` was removed from the v3.0
+    admin-invite flow (the existing role-edit dropdown still exposes it
+    so legacy data isn't broken)."""
+
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    role: Literal["admin", "member"] | None = "member"
 
 
 class LoginIn(BaseModel):
