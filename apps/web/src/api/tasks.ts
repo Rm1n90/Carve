@@ -37,13 +37,27 @@ export const tasksApi = {
     taskId: string,
     count = 1,
     name?: string,
+    allowed_class_ids?: string[] | null,
   ): Promise<Task[]> => {
     // v3.1 Bug 2 — when a custom name is provided, POST it as a JSON
     // body. The backend forces count=1 in that path; we keep the
     // ``count`` query param on the URL for back-compat with the
     // count-only callers (count is 1 by default).
+    //
+    // v3.2 Issue 4 — ``allowed_class_ids`` (optional) overrides the
+    // duplicate's class subset. ``undefined`` omits the field; ``null``
+    // means "keep source's snapshot"; ``[]`` means "no classes"; a
+    // populated list narrows the duplicate's subset. The backend
+    // validates ids belong to the source project.
     const url = `/projects/${projectId}/tasks/${taskId}/duplicate?count=${count}`;
-    const body = name !== undefined ? { name } : undefined;
+    const hasAnyField =
+      name !== undefined || allowed_class_ids !== undefined;
+    const body = hasAnyField
+      ? {
+          ...(name !== undefined ? { name } : {}),
+          ...(allowed_class_ids !== undefined ? { allowed_class_ids } : {}),
+        }
+      : undefined;
     return (await api.post<Task[]>(url, body)).data;
   },
   // v3.1 Issue 3 — task-effective classes (Option A subset model).

@@ -151,6 +151,17 @@ class DuplicateTaskIn(BaseModel):
     instead of the auto-generated ``(copy)`` suffix. ``count`` is forced
     to 1 in that path because a single custom name cannot apply to
     multiple copies without conflict.
+
+    v3.2 Issue 4 — ``allowed_class_ids`` lets the user override the new
+    task's class subset at duplicate time. Semantics:
+      - field omitted entirely → keep the source task's snapshot
+      - explicit ``null`` → keep the source task's snapshot (same as
+        omitted)
+      - empty list ``[]`` → new task has zero classes
+      - populated list → new task uses exactly that subset (validated
+        against the source project's class ids; cross-project ids return
+        422 from the router)
     """
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    allowed_class_ids: list[uuid.UUID] | None = Field(default=None)
