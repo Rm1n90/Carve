@@ -27,6 +27,12 @@ interface RemapRow {
 type RemapState = Record<string, RemapRow>;
 
 const DEFAULT_SPLITS: ExportSplits = { train: 0.8, val: 0.1, test: 0.1 };
+// v3.0 D12 — splits payload when the user picks "Single set (no split)".
+// The backend already accepts this shape (apps/api/.../exports/job.py:78);
+// this constant just makes the intent explicit on the wire.
+const SINGLE_SET_SPLITS: ExportSplits = { train: 1.0, val: 0.0, test: 0.0 };
+
+type SplitMode = "train-val-test" | "single";
 
 function buildDefaultRemap(classes: ClassRow[]): RemapState {
   const out: RemapState = {};
@@ -52,6 +58,9 @@ export function ExportDialog({ projectId, taskId }: Props) {
 
   const [format, setFormat] = useState<ExportFormat>("yolo");
   const [splits, setSplits] = useState<ExportSplits>(DEFAULT_SPLITS);
+  // v3.0 D12 — "single set" hides train/val/test inputs and ships
+  // {train: 1, val: 0, test: 0}. Default keeps the prior 80/10/10 flow.
+  const [mode, setMode] = useState<SplitMode>("train-val-test");
   const [includeImages, setIncludeImages] = useState<boolean>(true);
   const [remap, setRemap] = useState<RemapState>({});
   const [exportId, setExportId] = useState<string | null>(null);
@@ -103,7 +112,11 @@ export function ExportDialog({ projectId, taskId }: Props) {
     const body: ExportRequest = {
       format,
       class_remap: buildPayload(remap),
-      splits,
+      // v3.0 D12 — when "Single set" is selected we override the train/val/test
+      // form values so the user's last-typed numbers don't leak into the
+      // payload. Backend accepts {train: 1, val: 0, test: 0} as a no-split
+      // export.
+      splits: mode === "single" ? SINGLE_SET_SPLITS : splits,
       include_images: includeImages,
     };
     create.mutate(body);
@@ -147,34 +160,75 @@ export function ExportDialog({ projectId, taskId }: Props) {
         </label>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 text-[13px] text-secondary">
-        <span className="font-medium tracking-tight">Splits</span>
-        {(["train", "val", "test"] as const).map((k) => (
-          <label key={k} className="flex items-center gap-1.5">
-            <span className="text-tertiary text-[11px] uppercase tracking-wide">{k}</span>
-            <input
-              type="number"
-              step="0.1"
-              min={0}
-              max={1}
-              value={splits[k]}
-              onChange={(e) => setSplits((p) => ({ ...p, [k]: Number(e.target.value) }))}
-              aria-label={`split-${k}`}
-              className={numInput}
-            />
-          </label>
-        ))}
-        <span
-          className={
-            sumValid
-              ? "font-mono-data text-[11px] text-tertiary"
-              : "font-mono-data text-[11px] text-[color:var(--warning)]"
-          }
-        >
-          Sum: {splitSum.toFixed(2)}
-          {!sumValid && " — should be 1.0"}
-        </span>
+      {/* v3.0 D12 — top-level mode toggle: ship a single set, or split into
+          train/val/test. We use plain radios because there is no shared
+          RadioGroup primitive yet; promoting one is intentionally deferred. */}
+      <div
+        role="radiogroup"
+        aria-label="export-split-mode"
+        className="flex flex-wrap items-center gap-4 text-[13px] text-secondary"
+      >
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="radio"
+            name="export-split-mode"
+            value="train-val-test"
+            checked={mode === "train-val-test"}
+            onChange={() => setMode("train-val-test")}
+            aria-label="split-mode-train-val-test"
+            data-testid="export-split-mode-train-val-test"
+            className="h-4 w-4 accent-[var(--accent)]"
+          />
+          Train / Val / Test split
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="radio"
+            name="export-split-mode"
+            value="single"
+            checked={mode === "single"}
+            onChange={() => setMode("single")}
+            aria-label="split-mode-single"
+            data-testid="export-split-mode-single"
+            className="h-4 w-4 accent-[var(--accent)]"
+          />
+          Single set (no split)
+        </label>
       </div>
+
+      {mode === "train-val-test" && (
+        <div
+          data-testid="export-splits-row"
+          className="flex flex-wrap items-center gap-3 text-[13px] text-secondary"
+        >
+          <span className="font-medium tracking-tight">Splits</span>
+          {(["train", "val", "test"] as const).map((k) => (
+            <label key={k} className="flex items-center gap-1.5">
+              <span className="text-tertiary text-[11px] uppercase tracking-wide">{k}</span>
+              <input
+                type="number"
+                step="0.1"
+                min={0}
+                max={1}
+                value={splits[k]}
+                onChange={(e) => setSplits((p) => ({ ...p, [k]: Number(e.target.value) }))}
+                aria-label={`split-${k}`}
+                className={numInput}
+              />
+            </label>
+          ))}
+          <span
+            className={
+              sumValid
+                ? "font-mono-data text-[11px] text-tertiary"
+                : "font-mono-data text-[11px] text-[color:var(--warning)]"
+            }
+          >
+            Sum: {splitSum.toFixed(2)}
+            {!sumValid && " — should be 1.0"}
+          </span>
+        </div>
+      )}
 
       {classesQ.isLoading && (
         <p className="text-tertiary text-[13px]">Loading classes…</p>
