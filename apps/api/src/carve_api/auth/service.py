@@ -16,6 +16,13 @@ class InvalidCredentials(AppError):
     code = "invalid_credentials"
 
 
+class CurrentPasswordWrong(Exception):
+    """Raised by ``AuthService.change_password`` when the supplied
+    ``current_password`` does not match the stored hash. The router maps this
+    to HTTP 401 with detail ``current_password_wrong`` (audit Bug 16).
+    """
+
+
 class AuthService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -42,3 +49,20 @@ class AuthService:
         if user is None or not verify_password(password, user.password_hash):
             raise InvalidCredentials("email or password is wrong")
         return user
+
+    def change_password(
+        self, user: User, *, current_password: str, new_password: str
+    ) -> None:
+        """Self-service password rotation (audit Bug 16).
+
+        Validates the current password against the stored hash, enforces a
+        minimum length of 8 on the new password (defence in depth — the
+        Pydantic schema already rejects shorter inputs), then writes the new
+        bcrypt hash and commits.
+        """
+        if not verify_password(current_password, user.password_hash):
+            raise CurrentPasswordWrong()
+        if len(new_password) < 8:
+            raise ValueError("password too short")
+        user.password_hash = hash_password(new_password)
+        self.session.commit()

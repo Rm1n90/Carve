@@ -31,3 +31,10 @@ class UserOut(BaseModel):
 
 class RefreshIn(BaseModel):
     refresh_token: str
+
+
+class ChangePasswordIn(BaseModel):
+    """Payload for self-service password change (audit Bug 16)."""
+
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8, max_length=128)
