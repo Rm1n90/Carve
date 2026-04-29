@@ -16,8 +16,10 @@ import {
 } from "@/components/ui/Dialog";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/auth/store";
+import { changePassword as authChangePassword } from "@/auth/api";
 import { apiKeysApi, type ApiKey, type ApiKeyCreated } from "@/api/api_keys";
 import { membersApi, type Member, type Role } from "@/api/members";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
 const TABS: { to: string; label: string; adminOnly?: boolean }[] = [
@@ -98,26 +100,116 @@ export function SettingsProfilePage() {
         </div>
       </Card>
 
-      <Card variant="surface" radius="lg" className="p-6 grid gap-3">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-[16px] font-medium tracking-tight">Change password</h2>
-          <Badge variant="neutral">Coming soon</Badge>
-        </div>
-        <p className="text-[13px] text-[color:var(--text-secondary)]">
-          Self-service password rotation will be available in a later release.
-          For now, ask an admin to recreate your account.
-        </p>
-        <div className="grid gap-3 max-w-md opacity-60 pointer-events-none">
-          <Input label="Current password" type="password" placeholder="••••••••" disabled />
-          <Input label="New password" type="password" placeholder="••••••••" disabled />
-          <div>
-            <Button variant="primary" disabled>
-              Update password
-            </Button>
-          </div>
-        </div>
-      </Card>
+      <ChangePasswordCard />
     </SettingsLayout>
+  );
+}
+
+// Audit Bug 16 — self-service password change. The Settings card was
+// hard-coded "Coming soon" with disabled inputs; now it submits to the new
+// POST /auth/password endpoint and surfaces 401/422/429 responses as toasts.
+const MIN_PASSWORD_LENGTH = 8;
+
+function ChangePasswordCard() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+
+  const m = useMutation({
+    mutationFn: ({
+      current_password,
+      new_password,
+    }: {
+      current_password: string;
+      new_password: string;
+    }) => authChangePassword(current_password, new_password),
+    onSuccess: () => {
+      showToast("Password updated", { variant: "success" });
+      setCurrent("");
+      setNext("");
+    },
+    onError: (err: unknown) => {
+      const status =
+        (err as { response?: { status?: number } } | undefined)?.response?.status;
+      if (status === 401) {
+        showToast("Current password is wrong", { variant: "error" });
+      } else if (status === 422) {
+        showToast("New password must be at least 8 characters", {
+          variant: "error",
+        });
+      } else if (status === 429) {
+        showToast("Too many attempts. Please try again in a minute.", {
+          variant: "error",
+        });
+      } else {
+        showToast("Failed to change password", { variant: "error" });
+      }
+    },
+  });
+
+  const newTooShort = next.length > 0 && next.length < MIN_PASSWORD_LENGTH;
+  const canSubmit =
+    current.length > 0 && next.length >= MIN_PASSWORD_LENGTH && !m.isPending;
+
+  return (
+    <Card variant="surface" radius="lg" className="p-6 grid gap-3">
+      <div>
+        <h2 className="text-[16px] font-medium tracking-tight">Change password</h2>
+        <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
+          Rotate your sign-in password. You'll stay signed in on this session.
+        </p>
+      </div>
+      <form
+        className="grid gap-3 max-w-md"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!canSubmit) return;
+          m.mutate({ current_password: current, new_password: next });
+        }}
+      >
+        <Input
+          label="Current password"
+          type="password"
+          placeholder="••••••••"
+          autoComplete="current-password"
+          value={current}
+          onChange={(e) => setCurrent(e.target.value)}
+          data-testid="change-password-current"
+        />
+        <div className="grid gap-1">
+          <Input
+            label="New password"
+            type="password"
+            placeholder="••••••••"
+            autoComplete="new-password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            aria-invalid={newTooShort || undefined}
+            data-testid="change-password-new"
+          />
+          <p
+            className={cn(
+              "text-[11px] tracking-tight",
+              newTooShort
+                ? "text-[color:var(--danger)]"
+                : "text-[color:var(--text-tertiary)]",
+            )}
+            data-testid="change-password-hint"
+          >
+            Min 8 characters
+          </p>
+        </div>
+        <div>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={!canSubmit}
+            data-testid="change-password-submit"
+          >
+            {m.isPending ? "Updating…" : "Update password"}
+          </Button>
+        </div>
+      </form>
+    </Card>
   );
 }
 
