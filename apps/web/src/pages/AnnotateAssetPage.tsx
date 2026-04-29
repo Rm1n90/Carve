@@ -145,6 +145,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     queryFn: () => assetsApi.get(assetId),
     placeholderData: (prev) => prev,
     staleTime: 5 * 60 * 1000,
+    // v3.2 Issue 1: presigned MinIO URLs change identity on every refetch,
+    // and the canvas's texture-swap effect previously re-armed autoFit on
+    // every imageUrl change → user lost their zoom on every window focus.
+    // The autoFit logic is now gated on assetId, but disabling the
+    // window-focus refetch also avoids needless network churn.
+    refetchOnWindowFocus: false,
   });
   // v3.1 Issue 3 (Option A) — the editor consumes the *task-effective*
   // class list. When the task has no subset configured (allowed_class_ids
@@ -155,6 +161,10 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const taskClassesQ = useQuery({
     queryKey: ["task-classes", projectId, taskId],
     queryFn: () => tasksApi.getClasses(projectId, taskId),
+    // v3.2 Issue 1: avoid refetching the class list every window focus;
+    // the editor's canvas (and its derived classMap) doesn't need to
+    // remount because the user tabbed away.
+    refetchOnWindowFocus: false,
   });
   // Adapt the response shape so all downstream readers keep working
   // against a flat ``ClassRow[]`` like before.
@@ -317,6 +327,23 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const classCreate = useMutation({
     mutationFn: (input: ClassIn) => classesApi.create(projectId, input),
     onSuccess: () => invalidateClassesQueries(),
+    // v3.2 Issue 7 — surface the 409 duplicate-name error as a toast so the
+    // user understands why the create silently no-op'd. `pendingName` is
+    // captured from the mutation variables (TanStack Query passes them as
+    // the second argument to onError).
+    onError: (err: unknown, variables: ClassIn) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response
+        ?.data?.detail;
+      const pendingName = variables.name;
+      if (detail === "class_idx_or_name_conflict") {
+        showToast(
+          `A class named "${pendingName}" already exists in this project.`,
+          { variant: "error" },
+        );
+      } else {
+        showToast("Failed to add class.", { variant: "error" });
+      }
+    },
   });
   const classUpdate = useMutation({
     mutationFn: ({ cid, patch }: { cid: string; patch: Partial<ClassIn> }) =>
@@ -597,7 +624,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // During asset navigation, `assetQ.data` still holds the previous asset
   // thanks to `placeholderData`, so we render the full editor and let the
   // canvas + status badge surface the in-flight state. v2.5 perf fix.
-  if (!assetQ.data || !classesQ.data) {
+  //
+  // v3.2 Issue 1: gate on `taskClassesQ.isLoading` (initial fetch only)
+  // rather than `!classesQ.data`. A transient refetch can briefly hand
+  // back `undefined` from `taskClassesQ.data?.classes`, which would
+  // otherwise unmount the canvas (and the user's zoom + Pixi state).
+  if (!assetQ.data || taskClassesQ.isLoading) {
     return (
       <div className="grid h-screen place-items-center">
         <div className="flex items-center gap-2 text-[color:var(--text-tertiary)] text-[13px]">

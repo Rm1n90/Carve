@@ -149,3 +149,133 @@ def test_duplicate_task_name_overrides_count(db_session) -> None:
     # Only one row created despite count=3 on the query string.
     assert len(body) == 1
     assert body[0]["name"] == "Solo"
+
+
+# ---------------------------------------------------------------------------
+# v3.2 Issue 4 — duplicate with explicit ``allowed_class_ids`` override.
+# ---------------------------------------------------------------------------
+
+
+def _setup_with_classes(
+    client: TestClient, email: str
+) -> tuple[str, str, str, list[str]]:
+    """Project with 3 classes + a task whose allowed_class_ids is the
+    snapshot of those 3 ids (post-v3.2 Issue 3 default)."""
+    client.post("/auth/register", json={"email": email, "password": "hunter22"})
+    token = client.post(
+        "/auth/login", json={"email": email, "password": "hunter22"}
+    ).json()["access_token"]
+    pid = client.post(
+        "/projects", json={"name": "P"}, headers=_hdr(token)
+    ).json()["id"]
+    class_ids: list[str] = []
+    for i, name in enumerate(["alpha", "beta", "gamma"]):
+        cid = client.post(
+            f"/projects/{pid}/classes",
+            json={
+                "idx": i,
+                "name": name,
+                "color": "#ff0000",
+                "attributes": {},
+            },
+            headers=_hdr(token),
+        ).json()["id"]
+        class_ids.append(cid)
+    tid = client.post(
+        f"/projects/{pid}/tasks",
+        json={"name": "Source", "kind": "image"},
+        headers=_hdr(token),
+    ).json()["id"]
+    return pid, tid, token, class_ids
+
+
+def test_duplicate_with_subset_override(db_session) -> None:
+    """v3.2 Issue 4 — ``allowed_class_ids`` in the body overrides the
+    source task's snapshot. The new task must reflect the override, not
+    the source list."""
+    client = _client(db_session)
+    pid, tid, token, class_ids = _setup_with_classes(client, "td7@x.com")
+    override = class_ids[:2]
+    r = client.post(
+        f"/projects/{pid}/tasks/{tid}/duplicate",
+        json={"allowed_class_ids": override},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 201, r.text
+    new_tid = r.json()[0]["id"]
+    cls = client.get(
+        f"/projects/{pid}/tasks/{new_tid}/classes", headers=_hdr(token)
+    ).json()
+    assert set(cls["allowed_class_ids"]) == set(override)
+    assert {c["id"] for c in cls["classes"]} == set(override)
+
+
+def test_duplicate_with_empty_list_override(db_session) -> None:
+    """v3.2 Issue 4 — ``allowed_class_ids: []`` produces a duplicate
+    with zero classes (NOT the legacy 'all' fallback)."""
+    client = _client(db_session)
+    pid, tid, token, _ = _setup_with_classes(client, "td8@x.com")
+    r = client.post(
+        f"/projects/{pid}/tasks/{tid}/duplicate",
+        json={"allowed_class_ids": []},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 201, r.text
+    new_tid = r.json()[0]["id"]
+    cls = client.get(
+        f"/projects/{pid}/tasks/{new_tid}/classes", headers=_hdr(token)
+    ).json()
+    assert cls["allowed_class_ids"] == []
+    assert cls["classes"] == []
+
+
+def test_duplicate_with_foreign_class_id_returns_422(db_session) -> None:
+    """v3.2 Issue 4 — overriding with an id from a different project's
+    classes list must surface as 422."""
+    client = _client(db_session)
+    pid_a, tid_a, token_a, _ = _setup_with_classes(client, "td9a@x.com")
+    # Second user → second project + a class in that project.
+    client.post(
+        "/auth/register", json={"email": "td9b@x.com", "password": "hunter22"}
+    )
+    token_b = client.post(
+        "/auth/login", json={"email": "td9b@x.com", "password": "hunter22"}
+    ).json()["access_token"]
+    pid_b = client.post(
+        "/projects", json={"name": "Other"}, headers=_hdr(token_b)
+    ).json()["id"]
+    foreign_cid = client.post(
+        f"/projects/{pid_b}/classes",
+        json={"idx": 0, "name": "x", "color": "#00ff00", "attributes": {}},
+        headers=_hdr(token_b),
+    ).json()["id"]
+    r = client.post(
+        f"/projects/{pid_a}/tasks/{tid_a}/duplicate",
+        json={"allowed_class_ids": [foreign_cid]},
+        headers=_hdr(token_a),
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_duplicate_without_override_keeps_source_snapshot(db_session) -> None:
+    """v3.2 Issue 4 — when ``allowed_class_ids`` is omitted (or null) the
+    duplicate inherits the source task's snapshot verbatim."""
+    client = _client(db_session)
+    pid, tid, token, class_ids = _setup_with_classes(client, "td10@x.com")
+    # Narrow the source first so we have a non-default subset to inherit.
+    subset = class_ids[:2]
+    client.put(
+        f"/projects/{pid}/tasks/{tid}/classes",
+        json={"allowed_class_ids": subset},
+        headers=_hdr(token),
+    )
+    r = client.post(
+        f"/projects/{pid}/tasks/{tid}/duplicate",
+        headers=_hdr(token),
+    )
+    assert r.status_code == 201, r.text
+    new_tid = r.json()[0]["id"]
+    cls = client.get(
+        f"/projects/{pid}/tasks/{new_tid}/classes", headers=_hdr(token)
+    ).json()
+    assert set(cls["allowed_class_ids"]) == set(subset)

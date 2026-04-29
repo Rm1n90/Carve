@@ -1,13 +1,21 @@
 """v3.1 Issue 3 (Option A: subset model) — task-scoped classes.
 
 Covers GET/PUT ``/projects/{p}/tasks/{t}/classes``:
-  - GET with NULL subset returns all project classes
+  - GET on a freshly-created task returns the snapshot of project
+    classes at creation time (v3.2 Issue 3)
+  - GET with NULL subset returns all project classes (legacy fallback;
+    preserved for back-compat with rows existing before the 0014
+    migration ran)
   - GET with a subset returns only that subset
   - PUT subset (admin/owner) succeeds; GET reflects the new state
   - PUT empty array is allowed (zero classes for the task)
   - PUT clears the subset back to "all" via ``null``
   - PUT validates that ids belong to the same project (422 otherwise)
   - Non-admin / non-owner caller gets 403
+
+v3.2 Issue 3 — ``TaskService.create`` now snapshots the project's
+current class ids onto the new task. New classes added to the project
+after task creation no longer auto-appear in existing tasks.
 """
 from fastapi.testclient import TestClient
 
@@ -42,19 +50,16 @@ def _register(client: TestClient, email: str) -> str:
 def _setup(
     client: TestClient, email: str = "tc@x.com"
 ) -> tuple[str, str, str, list[str]]:
-    """Register a user, create a project + task + 3 classes.
+    """Register a user, create a project + 3 classes, then a task.
 
+    v3.2 Issue 3 — classes are created *before* the task so the new
+    task's auto-snapshotted ``allowed_class_ids`` reflects all 3 ids.
     Returns ``(project_id, task_id, token, [class_id, ...])``.
     """
     token = _register(client, email)
     pid = client.post("/projects", json={"name": "P"}, headers=_hdr(token)).json()[
         "id"
     ]
-    tid = client.post(
-        f"/projects/{pid}/tasks",
-        json={"name": "Task A", "kind": "image"},
-        headers=_hdr(token),
-    ).json()["id"]
     class_ids: list[str] = []
     for i, name in enumerate(["alpha", "beta", "gamma"]):
         cid = client.post(
@@ -68,10 +73,18 @@ def _setup(
             headers=_hdr(token),
         ).json()["id"]
         class_ids.append(cid)
+    tid = client.post(
+        f"/projects/{pid}/tasks",
+        json={"name": "Task A", "kind": "image"},
+        headers=_hdr(token),
+    ).json()["id"]
     return pid, tid, token, class_ids
 
 
-def test_get_task_classes_with_null_returns_all(db_session) -> None:
+def test_get_task_classes_returns_snapshot_at_creation(db_session) -> None:
+    """v3.2 Issue 3 — fresh task is created with a snapshot of the
+    project's current class ids (not NULL). The effective list and the
+    raw ``allowed_class_ids`` both reflect that snapshot."""
     client = _client(db_session)
     pid, tid, token, class_ids = _setup(client, email="tc1@x.com")
     r = client.get(
@@ -79,8 +92,65 @@ def test_get_task_classes_with_null_returns_all(db_session) -> None:
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["allowed_class_ids"] is None
+    assert body["allowed_class_ids"] is not None
+    assert set(body["allowed_class_ids"]) == set(class_ids)
     assert {c["id"] for c in body["classes"]} == set(class_ids)
+
+
+def test_new_class_does_not_auto_appear_in_existing_task(db_session) -> None:
+    """v3.2 Issue 3 — adding a class to the project AFTER a task was
+    created must NOT inject that class into the task's snapshot."""
+    client = _client(db_session)
+    pid, tid, token, class_ids = _setup(client, email="tc1b@x.com")
+    # Add a 4th class to the project after the task already exists.
+    new_cid = client.post(
+        f"/projects/{pid}/classes",
+        json={"idx": 99, "name": "delta", "color": "#0000ff", "attributes": {}},
+        headers=_hdr(token),
+    ).json()["id"]
+    # The task's allowed_class_ids must still contain only the original 3.
+    r = client.get(
+        f"/projects/{pid}/tasks/{tid}/classes", headers=_hdr(token)
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["allowed_class_ids"] is not None
+    assert set(body["allowed_class_ids"]) == set(class_ids)
+    assert new_cid not in set(body["allowed_class_ids"])
+    assert {c["id"] for c in body["classes"]} == set(class_ids)
+
+
+def test_task_created_when_project_has_no_classes_gets_empty_snapshot(
+    db_session,
+) -> None:
+    """v3.2 Issue 3 — a task created against a project that has zero
+    classes is created with ``allowed_class_ids = []`` (not NULL).
+    Classes added later do NOT auto-appear."""
+    client = _client(db_session)
+    token = _register(client, "tc1c@x.com")
+    pid = client.post(
+        "/projects", json={"name": "P"}, headers=_hdr(token)
+    ).json()["id"]
+    tid = client.post(
+        f"/projects/{pid}/tasks",
+        json={"name": "T", "kind": "image"},
+        headers=_hdr(token),
+    ).json()["id"]
+    # Now add a class to the project.
+    client.post(
+        f"/projects/{pid}/classes",
+        json={"idx": 0, "name": "x", "color": "#ff00ff", "attributes": {}},
+        headers=_hdr(token),
+    )
+    r = client.get(
+        f"/projects/{pid}/tasks/{tid}/classes", headers=_hdr(token)
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Empty list — NOT NULL — so the legacy "NULL means all" fallback
+    # does not bleed the new class into the empty-snapshot task.
+    assert body["allowed_class_ids"] == []
+    assert body["classes"] == []
 
 
 def test_put_subset_then_get_reflects(db_session) -> None:

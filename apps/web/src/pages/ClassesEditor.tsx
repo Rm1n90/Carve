@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/Dialog";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
-import { nextHexForIdx } from "@/lib/swatch";
+import { PALETTE_HEX, nextHexForIdx } from "@/lib/swatch";
 
 export function ClassesEditor({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
@@ -29,6 +29,23 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
     mutationFn: (input: { idx: number; name: string; color: string }) =>
       classesApi.create(projectId, input),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+    // v3.2 Issue 7 — surface the 409 duplicate-name error as a toast so the
+    // user understands why the create silently no-op'd. `pendingName` is
+    // captured from the mutation variables (TanStack Query passes them as
+    // the second argument to onError).
+    onError: (err: unknown, variables: { idx: number; name: string; color: string }) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response
+        ?.data?.detail;
+      const pendingName = variables.name;
+      if (detail === "class_idx_or_name_conflict") {
+        showToast(
+          `A class named "${pendingName}" already exists in this project.`,
+          { variant: "error" },
+        );
+      } else {
+        showToast("Failed to add class.", { variant: "error" });
+      }
+    },
   });
   const remove = useMutation({
     mutationFn: (cid: string) => classesApi.delete(projectId, cid),
@@ -219,10 +236,42 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
+          {/* v3.2 Issue 6 — preset swatch grid above the native picker so
+              users can one-click a palette color or mix a custom hex. The
+              currently-selected preset (if any) is highlighted. */}
+          <div className="grid gap-1.5">
+            <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
+              Color
+            </span>
+            <div
+              data-testid="classes-editor-swatch-grid"
+              className="grid grid-cols-6 gap-1"
+            >
+              {PALETTE_HEX.map((c) => {
+                const isSelected = c.toLowerCase() === color.toLowerCase();
+                return (
+                  <button
+                    key={c}
+                    type="button"
+                    aria-label={`Set color ${c}`}
+                    data-testid={`classes-editor-swatch-${c}`}
+                    data-selected={isSelected ? "true" : undefined}
+                    onClick={() => setColor(c)}
+                    className={cn(
+                      "h-6 w-6 rounded-[var(--radius-xs)] border border-[var(--border-subtle)]",
+                      "transition-transform hover:scale-110",
+                      isSelected && "ring-2 ring-[var(--accent)] ring-offset-1",
+                    )}
+                    style={{ background: c }}
+                  />
+                );
+              })}
+            </div>
+          </div>
           <div className="flex items-end gap-2">
             <label className="grid gap-1.5">
               <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
-                Color
+                Custom
               </span>
               <input
                 type="color"

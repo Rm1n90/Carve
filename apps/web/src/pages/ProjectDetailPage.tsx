@@ -684,19 +684,72 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
   // v3.1 Bug 2 — Duplicate opens a name dialog; ×3 was removed because
   // users only want a single, named copy.
+  // v3.2 Issue 4 — the dialog also includes a class checkbox grid so
+  // the user can narrow the duplicate's subset at duplicate time.
   const [duplicateTarget, setDuplicateTarget] = useState<Task | null>(null);
   const [duplicateDraft, setDuplicateDraft] = useState<string>("");
+  const [duplicateClasses, setDuplicateClasses] = useState<Set<string>>(
+    new Set(),
+  );
+  // ``true`` = "use source's snapshot" (allowed_class_ids = null in
+  // payload → backend keeps source list verbatim). When toggled OFF the
+  // ``duplicateClasses`` set is sent as the override. Defaults to OFF
+  // because the v3.2 Issue 3 fix snapshots classes at task creation, so
+  // the user usually wants an explicit override here.
+  const [duplicateUseSourceClasses, setDuplicateUseSourceClasses] =
+    useState<boolean>(false);
   // v3.1 Issue 3 — per-task class subset dialog target.
   const [classesTarget, setClassesTarget] = useState<Task | null>(null);
+
+  // v3.2 Issue 4 — load the source task's effective classes (for
+  // pre-fill) plus the project's full class list (for the picker grid).
+  const duplicateProjectClassesQ = useQuery({
+    queryKey: ["classes", projectId],
+    queryFn: () => classesApi.listForProject(projectId),
+    enabled: duplicateTarget !== null,
+  });
+  const duplicateSourceClassesQ = useQuery({
+    queryKey: ["task-classes", projectId, duplicateTarget?.id ?? ""],
+    queryFn: () => tasksApi.getClasses(projectId, duplicateTarget!.id),
+    enabled: duplicateTarget !== null,
+  });
+
+  // Pre-fill the picker every time the dialog opens for a new target or
+  // the source-task's class list arrives.
+  useEffect(() => {
+    if (duplicateTarget === null) return;
+    const allowed = duplicateSourceClassesQ.data?.allowed_class_ids;
+    const projectClasses = duplicateProjectClassesQ.data ?? [];
+    if (allowed === null || allowed === undefined) {
+      // Source is in legacy "use all" mode → pre-fill with all project ids.
+      setDuplicateClasses(new Set(projectClasses.map((c) => c.id)));
+    } else {
+      setDuplicateClasses(new Set(allowed));
+    }
+  }, [
+    duplicateTarget,
+    duplicateSourceClassesQ.data?.allowed_class_ids,
+    duplicateProjectClassesQ.data,
+  ]);
+
   const duplicateTask = useMutation({
-    mutationFn: ({ taskId, name }: { taskId: string; name: string }) =>
-      tasksApi.duplicate(projectId, taskId, 1, name),
+    mutationFn: ({
+      taskId,
+      name,
+      allowed_class_ids,
+    }: {
+      taskId: string;
+      name: string;
+      allowed_class_ids: string[] | null;
+    }) => tasksApi.duplicate(projectId, taskId, 1, name, allowed_class_ids),
     onSuccess: (_created, vars) => {
       qc.invalidateQueries({ queryKey: ["tasks", projectId] });
       qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
       showToast(`Duplicated as ${vars.name}`, { variant: "success" });
       setDuplicateTarget(null);
       setDuplicateDraft("");
+      setDuplicateClasses(new Set());
+      setDuplicateUseSourceClasses(false);
     },
     onError: () => {
       showToast("Failed to duplicate task", { variant: "error" });
@@ -914,18 +967,22 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
         </Tabs.Content>
       </Tabs.Root>
 
-      {/* v3.1 Bug 2 — Duplicate-task name dialog. Cloned from the
-          rename-class dialog at AnnotateAssetPage.tsx:862-902. */}
+      {/* v3.1 Bug 2 + v3.2 Issue 4 — Duplicate-task dialog: name input
+          plus a class-subset picker. The picker pre-fills with the
+          source task's effective ``allowed_class_ids`` so the user can
+          uncheck classes they do not want in the duplicate. */}
       <Dialog
         open={duplicateTarget !== null}
         onOpenChange={(o) => {
           if (!o) {
             setDuplicateTarget(null);
             setDuplicateDraft("");
+            setDuplicateClasses(new Set());
+            setDuplicateUseSourceClasses(false);
           }
         }}
       >
-        <DialogContent className="w-[min(92vw,420px)]">
+        <DialogContent className="w-[min(92vw,520px)]">
           <DialogHeader>
             <DialogTitle>Duplicate task</DialogTitle>
           </DialogHeader>
@@ -935,31 +992,135 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
               if (!duplicateTarget) return;
               const next = duplicateDraft.trim();
               if (!next) return;
-              duplicateTask.mutate({ taskId: duplicateTarget.id, name: next });
+              const overrideIds: string[] | null = duplicateUseSourceClasses
+                ? null
+                : Array.from(duplicateClasses);
+              duplicateTask.mutate({
+                taskId: duplicateTarget.id,
+                name: next,
+                allowed_class_ids: overrideIds,
+              });
             }}
           >
-            <input
-              type="text"
-              autoFocus
-              data-testid="duplicate-task-input"
-              aria-label="New task name"
-              value={duplicateDraft}
-              onChange={(e) => setDuplicateDraft(e.target.value)}
-              maxLength={120}
-              className={cn(
-                "w-full h-9 px-2.5 rounded-[var(--radius-sm)]",
-                "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
-                "border border-[var(--border-subtle)]",
-                "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
-                "text-[13px]",
-              )}
-            />
+            <div className="grid gap-3">
+              <input
+                type="text"
+                autoFocus
+                data-testid="duplicate-task-input"
+                aria-label="New task name"
+                value={duplicateDraft}
+                onChange={(e) => setDuplicateDraft(e.target.value)}
+                maxLength={120}
+                className={cn(
+                  "w-full h-9 px-2.5 rounded-[var(--radius-sm)]",
+                  "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
+                  "border border-[var(--border-subtle)]",
+                  "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
+                  "text-[13px]",
+                )}
+              />
+
+              {/* v3.2 Issue 4 — class-subset picker. */}
+              <div
+                className="grid gap-2"
+                data-testid="duplicate-task-classes-section"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <label className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+                    Classes
+                  </label>
+                  <label className="flex items-center gap-1.5 text-[11.5px] text-[color:var(--text-secondary)] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      data-testid="duplicate-task-use-source-classes"
+                      checked={duplicateUseSourceClasses}
+                      onChange={(e) =>
+                        setDuplicateUseSourceClasses(e.target.checked)
+                      }
+                      className="h-3.5 w-3.5 accent-[var(--accent)]"
+                    />
+                    Use source classes
+                  </label>
+                </div>
+                <div
+                  data-testid="duplicate-task-classes-list"
+                  className={cn(
+                    "max-h-[260px] overflow-y-auto rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)]",
+                    duplicateUseSourceClasses && "opacity-50 pointer-events-none",
+                  )}
+                >
+                  {duplicateProjectClassesQ.isLoading && (
+                    <p className="px-3 py-2 text-[12px] text-[color:var(--text-tertiary)]">
+                      Loading classes…
+                    </p>
+                  )}
+                  {!duplicateProjectClassesQ.isLoading &&
+                    (duplicateProjectClassesQ.data?.length ?? 0) === 0 && (
+                      <p className="px-3 py-3 text-[12px] italic text-[color:var(--text-tertiary)]">
+                        This project has no classes yet.
+                      </p>
+                    )}
+                  {(duplicateProjectClassesQ.data ?? []).map((c) => {
+                    const checked = duplicateClasses.has(c.id);
+                    return (
+                      <label
+                        key={c.id}
+                        className={cn(
+                          "flex items-center gap-2.5 px-3 py-1.5 cursor-pointer",
+                          "border-b border-[var(--border-subtle)] last:border-b-0",
+                          "hover:bg-[var(--bg-hover)] transition-colors",
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          data-testid={`duplicate-task-class-${c.id}`}
+                          checked={checked}
+                          onChange={() => {
+                            setDuplicateClasses((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(c.id)) {
+                                next.delete(c.id);
+                              } else {
+                                next.add(c.id);
+                              }
+                              return next;
+                            });
+                          }}
+                          className="h-3.5 w-3.5 accent-[var(--accent)]"
+                        />
+                        <span
+                          aria-hidden
+                          className="h-3 w-3 rounded-sm border border-[var(--border-subtle)]"
+                          style={{ backgroundColor: c.color }}
+                        />
+                        <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
+                          {c.idx}
+                        </span>
+                        <span className="text-[12.5px] text-[color:var(--text-primary)] truncate">
+                          {c.name}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <span
+                  data-testid="duplicate-task-classes-count"
+                  className="font-mono text-[11px] text-[color:var(--text-tertiary)] self-end"
+                >
+                  {duplicateUseSourceClasses
+                    ? "Using source's classes"
+                    : `${duplicateClasses.size} selected`}
+                </span>
+              </div>
+            </div>
             <DialogFooter>
               <button
                 type="button"
                 onClick={() => {
                   setDuplicateTarget(null);
                   setDuplicateDraft("");
+                  setDuplicateClasses(new Set());
+                  setDuplicateUseSourceClasses(false);
                 }}
                 data-testid="duplicate-task-cancel"
                 className="h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"

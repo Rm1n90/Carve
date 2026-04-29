@@ -377,6 +377,7 @@ def duplicate_task(
     conflict).
     """
     name_override = payload.name if payload is not None else None
+    classes_override = payload.allowed_class_ids if payload is not None else None
     if name_override is not None:
         count = 1
     try:
@@ -387,6 +388,7 @@ def duplicate_task(
             task_id=task_id,
             count=count,
             name=name_override,
+            allowed_class_ids=classes_override,
         )
     except AppError as exc:
         raise _http(exc) from exc

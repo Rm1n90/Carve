@@ -90,23 +90,50 @@ function ColorPickerPopover({
           data-testid="class-color-swatch"
         />
       </PopoverTrigger>
-      <PopoverContent align="start" sideOffset={4} className="grid grid-cols-6 gap-1 p-2">
-        {PALETTE_HEX.map((c) => (
-          <button
-            key={c}
-            type="button"
-            aria-label={`Set color ${c}`}
-            onClick={(e) => {
+      <PopoverContent align="start" sideOffset={4} className="grid gap-2 p-2">
+        {/* v3.2 Issue 6 — preset swatches + native custom-color picker share
+            the same onChange path. Selecting a non-palette hex from the native
+            picker simply forwards through; the swatch grid stays unselected. */}
+        <div className="grid grid-cols-6 gap-1">
+          {PALETTE_HEX.map((c) => {
+            const isSelected = c.toLowerCase() === color.toLowerCase();
+            return (
+              <button
+                key={c}
+                type="button"
+                aria-label={`Set color ${c}`}
+                data-selected={isSelected ? "true" : undefined}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onChange?.(c);
+                }}
+                className={cn(
+                  "h-6 w-6 rounded-[var(--radius-xs)] border border-[var(--border-subtle)]",
+                  "hover:scale-110 transition-transform",
+                  isSelected && "ring-2 ring-[var(--accent)] ring-offset-1",
+                )}
+                style={{ background: c }}
+              />
+            );
+          })}
+        </div>
+        <div className="flex items-center gap-2 border-t border-[var(--border-subtle)] pt-2">
+          <span className="text-[11px] tracking-tight text-[color:var(--text-tertiary)]">
+            Custom
+          </span>
+          <input
+            type="color"
+            aria-label="Custom color"
+            data-testid="class-color-custom"
+            value={color}
+            onChange={(e) => {
               e.stopPropagation();
-              onChange?.(c);
+              onChange?.(e.target.value);
             }}
-            className={cn(
-              "h-6 w-6 rounded-[var(--radius-xs)] border border-[var(--border-subtle)]",
-              "hover:scale-110 transition-transform",
-            )}
-            style={{ background: c }}
+            onClick={(e) => e.stopPropagation()}
+            className="h-6 w-10 cursor-pointer rounded-[var(--radius-xs)] border border-[var(--border-subtle)] bg-transparent p-0"
           />
-        ))}
+        </div>
       </PopoverContent>
     </Popover>
   );
