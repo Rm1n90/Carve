@@ -7,7 +7,6 @@ import {
   BarChart3,
   ChevronRight,
   Copy,
-  CopyPlus,
   Image as ImageIcon,
   MoreVertical,
   Settings,
@@ -18,6 +17,13 @@ import { projectsApi } from "@/api/projects";
 import { tasksApi, type Task } from "@/api/tasks";
 import { statsApi, type ProjectStats } from "@/api/stats";
 import { Badge } from "@/components/ui/Badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/Dialog";
 import { ClassesEditor } from "./ClassesEditor";
 import { NewTaskDialog } from "./NewTaskDialog";
 import { StatsPanel } from "./StatsPanel";
@@ -271,9 +277,9 @@ function ProjectSettingsForm({
 }
 
 // ---------------------------------------------------------------------------
-// Per-task 3-dot menu — duplicate × 1 / × 3 (v3.0 Bug 8). Existing nav happens
-// via the row's <Link>; the menu sits next to it as a sibling so click events
-// don't propagate into the navigation.
+// Per-task 3-dot menu — Duplicate (v3.1 Bug 2). The user no longer wants
+// the implicit ×3 fan-out; clicking Duplicate now opens a small dialog
+// where the user types the new task's name.
 // ---------------------------------------------------------------------------
 function TaskRowMenu({
   task,
@@ -282,7 +288,7 @@ function TaskRowMenu({
 }: {
   task: Task;
   pending: boolean;
-  onDuplicate: (count: number) => void;
+  onDuplicate: () => void;
 }) {
   return (
     <DropdownMenu.Root>
@@ -314,7 +320,7 @@ function TaskRowMenu({
         >
           <DropdownMenu.Item
             data-testid={`project-detail-task-duplicate-${task.id}`}
-            onSelect={() => onDuplicate(1)}
+            onSelect={() => onDuplicate()}
             className={cn(
               "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
               "cursor-pointer outline-none text-[color:var(--text-primary)]",
@@ -323,18 +329,6 @@ function TaskRowMenu({
           >
             <Copy className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
             <span className="flex-1">Duplicate</span>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            data-testid={`project-detail-task-duplicate-x3-${task.id}`}
-            onSelect={() => onDuplicate(3)}
-            className={cn(
-              "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
-              "cursor-pointer outline-none text-[color:var(--text-primary)]",
-              "data-[highlighted]:bg-[var(--bg-hover)]",
-            )}
-          >
-            <CopyPlus className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-            <span className="flex-1">Duplicate ×3</span>
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
@@ -371,18 +365,19 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     queryFn: () => statsApi.projectStats(projectId),
   });
   const qc = useQueryClient();
+  // v3.1 Bug 2 — Duplicate opens a name dialog; ×3 was removed because
+  // users only want a single, named copy.
+  const [duplicateTarget, setDuplicateTarget] = useState<Task | null>(null);
+  const [duplicateDraft, setDuplicateDraft] = useState<string>("");
   const duplicateTask = useMutation({
-    mutationFn: ({ taskId, count }: { taskId: string; count: number }) =>
-      tasksApi.duplicate(projectId, taskId, count),
-    onSuccess: (created, vars) => {
+    mutationFn: ({ taskId, name }: { taskId: string; name: string }) =>
+      tasksApi.duplicate(projectId, taskId, 1, name),
+    onSuccess: (_created, vars) => {
       qc.invalidateQueries({ queryKey: ["tasks", projectId] });
       qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
-      showToast(
-        vars.count === 1
-          ? "Duplicated"
-          : `${created.length} copies created`,
-        { variant: "success" },
-      );
+      showToast(`Duplicated as ${vars.name}`, { variant: "success" });
+      setDuplicateTarget(null);
+      setDuplicateDraft("");
     },
     onError: () => {
       showToast("Failed to duplicate task", { variant: "error" });
@@ -553,9 +548,10 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                         duplicateTask.isPending &&
                         duplicateTask.variables?.taskId === t.id
                       }
-                      onDuplicate={(count) =>
-                        duplicateTask.mutate({ taskId: t.id, count })
-                      }
+                      onDuplicate={() => {
+                        setDuplicateTarget(t);
+                        setDuplicateDraft(`${t.name} (copy)`);
+                      }}
                     />
                   </li>
                 ))}
@@ -592,6 +588,75 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
           />
         </Tabs.Content>
       </Tabs.Root>
+
+      {/* v3.1 Bug 2 — Duplicate-task name dialog. Cloned from the
+          rename-class dialog at AnnotateAssetPage.tsx:862-902. */}
+      <Dialog
+        open={duplicateTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) {
+            setDuplicateTarget(null);
+            setDuplicateDraft("");
+          }
+        }}
+      >
+        <DialogContent className="w-[min(92vw,420px)]">
+          <DialogHeader>
+            <DialogTitle>Duplicate task</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!duplicateTarget) return;
+              const next = duplicateDraft.trim();
+              if (!next) return;
+              duplicateTask.mutate({ taskId: duplicateTarget.id, name: next });
+            }}
+          >
+            <input
+              type="text"
+              autoFocus
+              data-testid="duplicate-task-input"
+              aria-label="New task name"
+              value={duplicateDraft}
+              onChange={(e) => setDuplicateDraft(e.target.value)}
+              maxLength={120}
+              className={cn(
+                "w-full h-9 px-2.5 rounded-[var(--radius-sm)]",
+                "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
+                "border border-[var(--border-subtle)]",
+                "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
+                "text-[13px]",
+              )}
+            />
+            <DialogFooter>
+              <button
+                type="button"
+                onClick={() => {
+                  setDuplicateTarget(null);
+                  setDuplicateDraft("");
+                }}
+                data-testid="duplicate-task-cancel"
+                className="h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                data-testid="duplicate-task-save"
+                disabled={!duplicateDraft.trim() || duplicateTask.isPending}
+                className={cn(
+                  "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium",
+                  "bg-[var(--accent)] text-[color:var(--accent-fg)]",
+                  "hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed",
+                )}
+              >
+                {duplicateTask.isPending ? "Duplicating…" : "Duplicate"}
+              </button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

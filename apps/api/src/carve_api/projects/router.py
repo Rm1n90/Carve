@@ -10,6 +10,7 @@ from carve_api.projects.schemas import (
     ClassIn,
     ClassOut,
     ClassPatch,
+    DuplicateTaskIn,
     ImportClassesIn,
     ImportClassesOut,
     ProjectIn,
@@ -277,21 +278,37 @@ def import_classes(
 def duplicate_task(
     project_id: uuid.UUID,
     task_id: uuid.UUID,
+    payload: DuplicateTaskIn | None = None,
     count: int = Query(default=1, ge=1, le=10),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[TaskOut]:
-    """Duplicate a task ``count`` times in the same project.
+    """Duplicate a task in the same project.
 
     Copies only ``name`` and ``kind``. Assets/annotations/exports/imports
-    /jobs are NOT copied. Cap of 10 prevents accidental fan-out.
+    /jobs are NOT copied. Cap of 10 (via ``count`` query param) prevents
+    accidental fan-out.
+
+    v3.1 Bug 2 — when an optional ``payload.name`` is provided the new
+    task is created with that exact name and ``count`` is forced to 1
+    (a single custom name cannot be applied to multiple copies without
+    conflict).
     """
+    name_override = payload.name if payload is not None else None
+    if name_override is not None:
+        count = 1
     try:
         project = ProjectService(db).get(actor=user, project_id=project_id)
         new_tasks = TaskService(db).duplicate(
-            actor=user, project=project, task_id=task_id, count=count
+            actor=user,
+            project=project,
+            task_id=task_id,
+            count=count,
+            name=name_override,
         )
     except AppError as exc:
         raise _http(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     db.commit()
     return [TaskOut.from_orm_task(t) for t in new_tasks]

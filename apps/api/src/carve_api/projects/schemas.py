@@ -119,3 +119,15 @@ class ImportClassesIn(BaseModel):
 class ImportClassesOut(BaseModel):
     imported: int
     skipped: int
+
+
+class DuplicateTaskIn(BaseModel):
+    """Optional body for the task-duplicate endpoint.
+
+    v3.1 Bug 2 — when ``name`` is provided the backend uses it verbatim
+    instead of the auto-generated ``(copy)`` suffix. ``count`` is forced
+    to 1 in that path because a single custom name cannot apply to
+    multiple copies without conflict.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)

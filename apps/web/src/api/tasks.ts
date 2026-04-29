@@ -27,10 +27,14 @@ export const tasksApi = {
     projectId: string,
     taskId: string,
     count = 1,
-  ): Promise<Task[]> =>
-    (
-      await api.post<Task[]>(
-        `/projects/${projectId}/tasks/${taskId}/duplicate?count=${count}`,
-      )
-    ).data,
+    name?: string,
+  ): Promise<Task[]> => {
+    // v3.1 Bug 2 — when a custom name is provided, POST it as a JSON
+    // body. The backend forces count=1 in that path; we keep the
+    // ``count`` query param on the URL for back-compat with the
+    // count-only callers (count is 1 by default).
+    const url = `/projects/${projectId}/tasks/${taskId}/duplicate?count=${count}`;
+    const body = name !== undefined ? { name } : undefined;
+    return (await api.post<Task[]>(url, body)).data;
+  },
 };

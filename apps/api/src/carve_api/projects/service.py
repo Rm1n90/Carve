@@ -145,6 +145,7 @@ class TaskService:
         project: Project,
         task_id: uuid.UUID,
         count: int = 1,
+        name: str | None = None,
     ) -> list[Task]:
         """Duplicate a task ``count`` times in the same project.
 
@@ -153,22 +154,41 @@ class TaskService:
         a duplicated task starts empty so users can stage a parallel
         labelling pass without inheriting source state.
 
-        First copy is suffixed with " (copy)"; subsequent copies use
-        " (copy 2)", " (copy 3)", etc. — predictable and sortable.
+        v3.1 Bug 2 — when ``name`` is supplied it is used verbatim and
+        ``count`` is ignored (forced to a single copy because one custom
+        name cannot apply to multiple rows without conflict). Validated
+        to ``≤ 120`` chars to match the ``tasks.name`` column. When
+        ``name`` is ``None`` the legacy auto-suffix path runs: first
+        copy is suffixed with " (copy)"; subsequent copies use
+        " (copy 2)", " (copy 3)", etc.
         """
         if not _can_modify(actor, project):
             raise NotProjectOwner("only owner or admin can duplicate a task")
         src = self.get(project=project, task_id=task_id)
         new_tasks: list[Task] = []
-        for i in range(count):
-            suffix = " (copy)" if i == 0 else f" (copy {i + 1})"
+        if name is not None:
+            trimmed = name.strip()
+            if not trimmed:
+                raise ValueError("name must not be empty")
+            if len(trimmed) > 120:
+                raise ValueError("name must be ≤ 120 characters")
             t = Task(
                 project_id=project.id,
-                name=(src.name + suffix)[:120],
+                name=trimmed,
                 kind=src.kind,
             )
             self.session.add(t)
             new_tasks.append(t)
+        else:
+            for i in range(count):
+                suffix = " (copy)" if i == 0 else f" (copy {i + 1})"
+                t = Task(
+                    project_id=project.id,
+                    name=(src.name + suffix)[:120],
+                    kind=src.kind,
+                )
+                self.session.add(t)
+                new_tasks.append(t)
         self.session.flush()
         return new_tasks
 
