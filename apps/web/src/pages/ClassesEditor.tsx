@@ -29,6 +29,23 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
     mutationFn: (input: { idx: number; name: string; color: string }) =>
       classesApi.create(projectId, input),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+    // v3.2 Issue 7 — surface the 409 duplicate-name error as a toast so the
+    // user understands why the create silently no-op'd. `pendingName` is
+    // captured from the mutation variables (TanStack Query passes them as
+    // the second argument to onError).
+    onError: (err: unknown, variables: { idx: number; name: string; color: string }) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response
+        ?.data?.detail;
+      const pendingName = variables.name;
+      if (detail === "class_idx_or_name_conflict") {
+        showToast(
+          `A class named "${pendingName}" already exists in this project.`,
+          { variant: "error" },
+        );
+      } else {
+        showToast("Failed to add class.", { variant: "error" });
+      }
+    },
   });
   const remove = useMutation({
     mutationFn: (cid: string) => classesApi.delete(projectId, cid),

@@ -327,6 +327,23 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const classCreate = useMutation({
     mutationFn: (input: ClassIn) => classesApi.create(projectId, input),
     onSuccess: () => invalidateClassesQueries(),
+    // v3.2 Issue 7 — surface the 409 duplicate-name error as a toast so the
+    // user understands why the create silently no-op'd. `pendingName` is
+    // captured from the mutation variables (TanStack Query passes them as
+    // the second argument to onError).
+    onError: (err: unknown, variables: ClassIn) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response
+        ?.data?.detail;
+      const pendingName = variables.name;
+      if (detail === "class_idx_or_name_conflict") {
+        showToast(
+          `A class named "${pendingName}" already exists in this project.`,
+          { variant: "error" },
+        );
+      } else {
+        showToast("Failed to add class.", { variant: "error" });
+      }
+    },
   });
   const classUpdate = useMutation({
     mutationFn: ({ cid, patch }: { cid: string; patch: Partial<ClassIn> }) =>
