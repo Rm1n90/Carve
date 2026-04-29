@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from redis import Redis
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from carve_api.annotations.router import _require_visible_task
@@ -54,29 +55,54 @@ def _http(err: AppError) -> HTTPException:
     return HTTPException(status_code=err.http_status, detail=err.code)
 
 
-@router.post("/{asset_id}/auto-annotate", response_model=list[AnnotationOut])
+class AutoAnnotateResponse(BaseModel):
+    """v3.3 Issue 3c — predict response now includes a skipped-by-class
+    summary so the editor can surface "Created N · skipped M (unmapped: …)"
+    instead of silently dropping unmapped detections."""
+
+    annotations: list[AnnotationOut]
+    annotations_created: int
+    skipped_count: int
+    skipped_by_class: dict[str, int]
+
+
+@router.post("/{asset_id}/auto-annotate", response_model=AutoAnnotateResponse)
 def auto_annotate(
     asset_id: uuid.UUID,
-    weight_id: uuid.UUID,
+    weight_id: uuid.UUID | None = None,
     overwrite: bool = False,
     min_confidence: float = 0.0,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[AnnotationOut]:
+) -> AutoAnnotateResponse:
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     task = _require_visible_task(db, user, asset.task_id)
-    weight = db.get(Weight, weight_id)
-    if weight is None:
-        raise HTTPException(status_code=404, detail="weight_not_found")
+    # v3.3 Issue 4 — `weight_id` is now optional. When omitted, fall back to
+    # the project's default weight (any task_kind). Tasks don't carry a
+    # YOLO-task-kind themselves (their `kind` is image/video), so we pick the
+    # newest default in the project — typically users only ever set one.
+    if weight_id is None:
+        weight = db.execute(
+            select(Weight)
+            .where(Weight.project_id == task.project_id, Weight.is_default.is_(True))
+            .order_by(Weight.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if weight is None:
+            raise HTTPException(status_code=400, detail="no_default_weight")
+    else:
+        weight = db.get(Weight, weight_id)
+        if weight is None:
+            raise HTTPException(status_code=404, detail="weight_not_found")
     # Clamp incoming `min_confidence` so a misbehaving client can't bypass
     # the bounds. The slider in the UI is 0..1; anything else is a bug.
     min_confidence = max(0.0, min(1.0, float(min_confidence)))
     try:
         body = fetch_asset_bytes(asset)
         url = presigned_url_for_weight(weight)
-        anns = auto_annotate_asset(
+        result = auto_annotate_asset(
             session=db,
             actor=user,
             task=task,
@@ -90,7 +116,12 @@ def auto_annotate(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
-    return [AnnotationOut.from_orm_annotation(a) for a in anns]
+    return AutoAnnotateResponse(
+        annotations=[AnnotationOut.from_orm_annotation(a) for a in result.annotations],
+        annotations_created=result.annotations_created,
+        skipped_count=result.skipped_count,
+        skipped_by_class=dict(result.skipped_by_class),
+    )
 
 
 @task_inference_router.post("/{task_id}/auto-annotate")

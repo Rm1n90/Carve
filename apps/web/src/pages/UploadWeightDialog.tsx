@@ -34,8 +34,11 @@ interface Props {
  * Upload-a-YOLO-weight dialog. Backend endpoint:
  *   POST /projects/{project_id}/weights (multipart)
  *
- * v1 keeps `class_names` empty so the backend can auto-detect from the file.
- * See /tmp/v21-audit.md bug 4 — the table view existed but had no upload UI.
+ * v3.3 (audit issue 3a): the backend now delegates to the model service's
+ * /yolo/inspect endpoint to extract `model.names` from the .pt itself, so
+ * the dialog no longer needs to ask the user for the class table. We keep
+ * the `class_names: []` submission for backwards-compatibility with older
+ * api versions; the field is optional server-side as of v3.3.
  */
 export function UploadWeightDialog({ open, onOpenChange, defaultProjectId }: Props) {
   const qc = useQueryClient();
@@ -109,7 +112,8 @@ export function UploadWeightDialog({ open, onOpenChange, defaultProjectId }: Pro
           <DialogTitle>Upload YOLO weight</DialogTitle>
           <DialogDescription>
             Upload a custom <code className="font-mono text-[12px]">.pt</code> file
-            for inference. Class names are auto-detected from the model.
+            for inference. We&apos;ll extract the class names from your weight file
+            after upload.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="grid gap-3" data-testid="upload-weight-form">

@@ -112,6 +112,24 @@ def yolo_predict(weight_id: str, image_b64: str, *, conf: float = 0.25, iou: flo
         return r.json()
 
 
+def yolo_inspect(file_bytes: bytes, *, filename: str = "weight.pt") -> dict:
+    """POST /yolo/inspect — returns ``{class_names: [...], task_kind: "..."}``.
+
+    Used by ``WeightService.upload`` to populate ``Weight.class_names`` from
+    the actual checkpoint instead of trusting the form-supplied ``[]``. The
+    model service runs torch.load — keeping that off the api container is
+    the entire point of delegating here.
+    """
+    with _wrap_unreachable("yolo_inspect"), _client() as c:
+        r = c.post(
+            "/yolo/inspect",
+            files={"file": (filename, file_bytes, "application/octet-stream")},
+        )
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
 def sam_encode(image_b64: str) -> dict:
     """POST /sam/encode — returns {image_hash, shape}."""
     with _wrap_unreachable("sam_encode"), _client() as c:

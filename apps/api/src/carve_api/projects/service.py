@@ -41,6 +41,24 @@ class ProjectService:
         stmt = stmt.order_by(Project.created_at.desc())
         return list(self.session.execute(stmt).scalars())
 
+    def list_visible_with_owner_email(
+        self, *, actor: User, include_deleted: bool = False
+    ) -> list[tuple[Project, str | None]]:  # noqa: ARG002
+        """v3.3 Issue 2 — list visible projects with each owner's email.
+
+        JOINs ``users`` to populate ``owner_email`` so the API can return
+        a friendly label without forcing the client to N+1 GET each user.
+        Uses an outer join so a soft-deleted owner row still yields the
+        project with ``owner_email = None``.
+        """
+        stmt = select(Project, User.email).outerjoin(
+            User, User.id == Project.owner_id
+        )
+        if not include_deleted:
+            stmt = stmt.where(Project.deleted_at.is_(None))
+        stmt = stmt.order_by(Project.created_at.desc())
+        return [(p, email) for p, email in self.session.execute(stmt).all()]
+
     def get(
         self,
         *,
@@ -54,6 +72,24 @@ class ProjectService:
         if not include_deleted and p.deleted_at is not None:
             raise ProjectNotFound("project not found")
         return p
+
+    def get_with_owner_email(
+        self,
+        *,
+        actor: User,
+        project_id: uuid.UUID,
+        include_deleted: bool = False,
+    ) -> tuple[Project, str | None]:
+        """v3.3 Issue 2 — get a single project with its owner email.
+
+        Re-uses :meth:`get` for the project lookup + permission semantics,
+        then resolves the owner email in a separate ``session.get`` so
+        existing tests for :meth:`get` are unaffected.
+        """
+        p = self.get(actor=actor, project_id=project_id, include_deleted=include_deleted)
+        owner = self.session.get(User, p.owner_id)
+        owner_email = owner.email if owner is not None else None
+        return p, owner_email
 
     def update(
         self,

@@ -5,6 +5,10 @@ export interface Project {
   name: string;
   description: string | null;
   owner_id: string;
+  // v3.3 Issue 2 — backend resolves the owner's email via a JOIN to users
+  // so the UI can render a friendly "Created by …" label. Nullable to
+  // tolerate orphaned/missing owner rows.
+  owner_email: string | null;
   created_at: string;
 }
 

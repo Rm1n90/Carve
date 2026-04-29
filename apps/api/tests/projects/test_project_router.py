@@ -41,10 +41,34 @@ def test_create_and_list_project(db_session) -> None:
     token = _login(client, "u@x.com", "hunter22")
     r = client.post("/projects", json={"name": "P1"}, headers=_hdr(token))
     assert r.status_code == 201
-    pid = r.json()["id"]
+    body = r.json()
+    pid = body["id"]
+    # v3.3 Issue 2 — POST response must include owner_email.
+    assert body.get("owner_email") == "u@x.com"
     r = client.get("/projects", headers=_hdr(token))
     assert r.status_code == 200
-    assert any(p["id"] == pid for p in r.json())
+    listed = r.json()
+    assert any(p["id"] == pid for p in listed)
+    # v3.3 Issue 2 — every list-projects row must include owner_email.
+    for p in listed:
+        assert "owner_email" in p
+
+
+def test_get_project_returns_owner_email(db_session) -> None:
+    """v3.3 Issue 2 — GET /projects/{id} populates owner_email via JOIN."""
+    client = _client(db_session)
+    client.post(
+        "/auth/register", json={"email": "owner-meta@x.com", "password": "hunter22"}
+    )
+    token = _login(client, "owner-meta@x.com", "hunter22")
+    pid = client.post(
+        "/projects", json={"name": "Meta"}, headers=_hdr(token)
+    ).json()["id"]
+    r = client.get(f"/projects/{pid}", headers=_hdr(token))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["owner_email"] == "owner-meta@x.com"
+    assert "created_at" in body
 
 
 def test_get_404(db_session) -> None:

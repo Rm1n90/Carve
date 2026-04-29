@@ -40,7 +40,9 @@ def create_project(
         actor=user, name=payload.name, description=payload.description
     )
     db.commit()
-    return ProjectOut.from_orm_project(p)
+    # v3.3 Issue 2 — newly-created project's owner is the current actor;
+    # surface their email so the response shape matches list/get.
+    return ProjectOut.from_orm_project(p, owner_email=user.email)
 
 
 @router.get("", response_model=list[ProjectOut])
@@ -49,9 +51,13 @@ def list_projects(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[ProjectOut]:
+    # v3.3 Issue 2 — single JOIN'd query yields (Project, owner_email) so
+    # the response includes a friendly owner label without per-row lookups.
     return [
-        ProjectOut.from_orm_project(p)
-        for p in ProjectService(db).list_visible(actor=user, include_deleted=include_deleted)
+        ProjectOut.from_orm_project(p, owner_email=email)
+        for p, email in ProjectService(db).list_visible_with_owner_email(
+            actor=user, include_deleted=include_deleted
+        )
     ]
 
 
@@ -62,10 +68,12 @@ def get_project(
     db: Session = Depends(get_db),
 ) -> ProjectOut:
     try:
-        p = ProjectService(db).get(actor=user, project_id=project_id)
+        p, owner_email = ProjectService(db).get_with_owner_email(
+            actor=user, project_id=project_id
+        )
     except AppError as exc:
         raise _http(exc) from exc
-    return ProjectOut.from_orm_project(p)
+    return ProjectOut.from_orm_project(p, owner_email=owner_email)
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)
@@ -85,7 +93,12 @@ def patch_project(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
-    return ProjectOut.from_orm_project(p)
+    # v3.3 Issue 2 — resolve the owner email after the update so the
+    # response carries the same shape as list/get.
+    _, owner_email = ProjectService(db).get_with_owner_email(
+        actor=user, project_id=project_id
+    )
+    return ProjectOut.from_orm_project(p, owner_email=owner_email)
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

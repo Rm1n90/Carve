@@ -42,6 +42,8 @@ const project = {
   name: "Demo Project",
   description: "A sample dataset",
   owner_id: "u-1",
+  // v3.3 Issue 2 — Project type now requires owner_email.
+  owner_email: "u@example.com",
   created_at: "2026-04-25",
 };
 

@@ -66,6 +66,12 @@ export interface Weight {
   class_names: string[];
   created_by: string | null;
   created_at: string;
+  /**
+   * v3.3 Issue 4 — true when this weight is the project default for its
+   * `task_kind`. The backend enforces at most one default per
+   * (project_id, task_kind) via a partial unique index.
+   */
+  is_default: boolean;
 }
 
 export interface UploadWeightInput {
@@ -101,14 +107,69 @@ export const weightsApi = {
   delete: async (weightId: string): Promise<void> => {
     await api.delete(`/weights/${weightId}`);
   },
+  /**
+   * v3.3 Issue 4 — mark this weight as the default for its
+   * `(project_id, task_kind)` slot. Admin-or-owner gated server-side.
+   */
+  setDefault: async (weightId: string): Promise<Weight> =>
+    (await api.post<Weight>(`/weights/${weightId}/default`)).data,
+  /**
+   * v3.3 Issue 3c — list every weight-class → project-class mapping row
+   * for a weight. Returned in `weight_class_idx` order.
+   */
+  getMappings: async (weightId: string): Promise<WeightClassMapping[]> =>
+    (await api.get<WeightClassMapping[]>(`/weights/${weightId}/mappings`)).data,
+  /**
+   * v3.3 Issue 3c — update a single mapping row's `project_class_id`.
+   * Pass `null` to disconnect (the auto-annotate path will then skip
+   * detections for that weight class and surface them in the toast).
+   */
+  updateMapping: async (
+    weightId: string,
+    mappingId: string,
+    patch: { project_class_id: string | null },
+  ): Promise<WeightClassMapping> =>
+    (
+      await api.put<WeightClassMapping>(
+        `/weights/${weightId}/mappings/${mappingId}`,
+        patch,
+      )
+    ).data,
 };
+
+/**
+ * v3.3 Issue 3c — single mapping row exposed by
+ * `GET /weights/{wid}/mappings`. `project_class_id` is null when the
+ * weight class doesn't (yet) bind to a project class.
+ */
+export interface WeightClassMapping {
+  id: string;
+  weight_id: string;
+  weight_class_idx: number;
+  weight_class_name: string;
+  project_class_id: string | null;
+}
 
 // --------------------------- /assets/{aid}/auto-annotate ---------------------------
 
+/**
+ * v3.3 Issue 3c — predict response now includes a per-class skipped tally
+ * so the editor can surface "Created N · skipped M (unmapped: …)" instead
+ * of the old silent-drop. `count` is preserved as a convenience alias for
+ * `annotations_created` so legacy call sites keep working.
+ */
 export interface YoloPredictResult {
-  // Returns the array of created annotations (already persisted).
-  // We re-fetch annotations after a predict to keep state consistent.
   count: number;
+  annotations_created: number;
+  skipped_count: number;
+  skipped_by_class: Record<string, number>;
+}
+
+interface AutoAnnotateApiResponse {
+  annotations: unknown[];
+  annotations_created: number;
+  skipped_count: number;
+  skipped_by_class: Record<string, number>;
 }
 
 export const inferenceApi = {
@@ -124,7 +185,23 @@ export const inferenceApi = {
       min_confidence: String(minConfidence),
     });
     const url = `/assets/${assetId}/auto-annotate?${params.toString()}`;
-    const r = await api.post<unknown[]>(url);
-    return { count: Array.isArray(r.data) ? r.data.length : 0 };
+    const r = await api.post<AutoAnnotateApiResponse>(url);
+    const data = r.data;
+    const created =
+      typeof data?.annotations_created === "number"
+        ? data.annotations_created
+        : Array.isArray(data?.annotations)
+          ? data.annotations.length
+          : 0;
+    return {
+      count: created,
+      annotations_created: created,
+      skipped_count:
+        typeof data?.skipped_count === "number" ? data.skipped_count : 0,
+      skipped_by_class:
+        data?.skipped_by_class && typeof data.skipped_by_class === "object"
+          ? data.skipped_by_class
+          : {},
+    };
   },
 };

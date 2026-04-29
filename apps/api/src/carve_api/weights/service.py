@@ -1,16 +1,25 @@
+import logging
 import uuid
 from io import BytesIO
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from carve_api.auth.models import User
 from carve_api.errors import AppError
-from carve_api.projects.models import Project
+from carve_api.inference.model_client import ModelServiceError, yolo_inspect
+from carve_api.projects.models import Class, Project
 from carve_api.projects.service import _can_modify
 from carve_api.storage.client import MinioClient
 from carve_api.storage.hashing import stream_xxh3_128
-from carve_api.weights.models import Weight, WeightTaskKind
+from carve_api.weights.models import Weight, WeightClassMapping, WeightTaskKind
+
+log = logging.getLogger(__name__)
+
+# Task kinds the model service is allowed to override the user's choice with.
+# Anything outside this set is ignored — keeps the enum in sync with
+# ``WeightTaskKind`` without coupling the inspect contract to SQLAlchemy.
+_VALID_TASK_KINDS: frozenset[str] = frozenset(k.value for k in WeightTaskKind)
 
 
 _MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB cap on .pt files
@@ -74,18 +83,59 @@ class WeightService:
         self.storage.ensure_bucket()
         self.storage.put_object(key, BytesIO(body), len(body), "application/octet-stream")
 
+        # v3.3 fix (audit issue 3a): ask the model service to parse the .pt
+        # for ``model.names`` so the row gets the real class table instead of
+        # the form-supplied ``[]``. The model service is opt-in via the
+        # ``inference`` docker-compose profile, so a 503 / connect failure
+        # here is expected on dev rigs without it — we log and fall back to
+        # the user-supplied ``class_names`` rather than failing the upload.
+        inspected_names, inspected_task = _inspect_weight(body, original_name)
+        final_class_names = inspected_names if inspected_names else class_names
+        final_task_kind = task_kind
+        if inspected_task is not None and inspected_task != task_kind.value:
+            try:
+                final_task_kind = WeightTaskKind(inspected_task)
+            except ValueError:
+                final_task_kind = task_kind
+
         w = Weight(
             id=weight_id,
             project_id=project.id,
             name=name,
-            task_kind=task_kind,
+            task_kind=final_task_kind,
             minio_key=key,
             size_bytes=len(body),
-            class_names=class_names,
+            class_names=final_class_names,
             created_by=actor.id,
         )
         self.session.add(w)
         self.session.flush()
+
+        # v3.3 Issue 3c — seed the WeightClassMapping rows. Name match is
+        # case-insensitive against ``classes.name`` for this project. We
+        # insert one row per ``(idx, name)`` pair so unmapped weight classes
+        # are still represented (with ``project_class_id=NULL``) and the UI
+        # can offer a manual override. Same transaction as the weight insert
+        # so a failure rolls everything back.
+        if final_class_names:
+            project_classes = list(
+                self.session.execute(
+                    select(Class).where(Class.project_id == project.id)
+                ).scalars()
+            )
+            classes_by_name: dict[str, uuid.UUID] = {
+                c.name.lower(): c.id for c in project_classes
+            }
+            for idx, cls_name in enumerate(final_class_names):
+                self.session.add(
+                    WeightClassMapping(
+                        weight_id=w.id,
+                        weight_class_idx=idx,
+                        weight_class_name=cls_name,
+                        project_class_id=classes_by_name.get(cls_name.lower()),
+                    )
+                )
+            self.session.flush()
         return w
 
     def list_for_project(self, *, project: Project) -> list[Weight]:
@@ -115,3 +165,77 @@ class WeightService:
             pass  # best-effort; row removal is the source of truth
         self.session.delete(w)
         self.session.flush()
+
+    def set_default(self, *, weight_id: uuid.UUID, project_id: uuid.UUID) -> Weight:
+        """Mark `weight_id` as the default for its `(project_id, task_kind)` slot.
+
+        v3.3 Issue 4 — clears any sibling default in the same project + task
+        kind first, then flips this one to default. Both writes happen in the
+        same SQLAlchemy session; the partial unique index added in migration
+        ``0015_weight_is_default`` guards against any race that would otherwise
+        leave two defaults for the same slot.
+        """
+        w = self.get(weight_id=weight_id)
+        if w.project_id != project_id:
+            raise WeightNotFound("weight not found")
+        # Clear sibling default first so the partial unique index doesn't see
+        # two `is_default=true` rows mid-transaction.
+        self.session.execute(
+            update(Weight)
+            .where(
+                Weight.project_id == project_id,
+                Weight.task_kind == w.task_kind,
+                Weight.id != w.id,
+                Weight.is_default.is_(True),
+            )
+            .values(is_default=False)
+        )
+        w.is_default = True
+        self.session.flush()
+        return w
+
+    def get_default_for_kind(
+        self, *, project_id: uuid.UUID, task_kind: WeightTaskKind
+    ) -> Weight | None:
+        """Return the project's default weight for the given task kind, if any."""
+        return self.session.execute(
+            select(Weight).where(
+                Weight.project_id == project_id,
+                Weight.task_kind == task_kind,
+                Weight.is_default.is_(True),
+            )
+        ).scalar_one_or_none()
+
+
+def _inspect_weight(body: bytes, original_name: str) -> tuple[list[str], str | None]:
+    """Best-effort call to the model service to extract ``names`` from a .pt.
+
+    Returns ``(class_names, task_kind)``. On any failure (model service down,
+    422 from the parser, malformed pickle, etc.) returns ``([], None)`` so
+    the caller falls back to its existing values. The upload path treats
+    this as enrichment, never as a hard requirement.
+    """
+    try:
+        result = yolo_inspect(body, filename=original_name or "weight.pt")
+    except ModelServiceError as exc:
+        if exc.status_code == 503:
+            log.warning(
+                "weight upload: model service unavailable; class names not extracted"
+            )
+        else:
+            log.warning(
+                "weight upload: yolo_inspect returned %s: %r",
+                exc.status_code,
+                exc.body,
+            )
+        return [], None
+    except Exception as exc:  # noqa: BLE001 — never fail upload for an enrichment call
+        log.warning("weight upload: yolo_inspect raised %s: %s", type(exc).__name__, exc)
+        return [], None
+
+    raw_names = result.get("class_names") or []
+    names = [str(n) for n in raw_names if isinstance(n, str)]
+    task = result.get("task_kind")
+    if isinstance(task, str) and task in _VALID_TASK_KINDS:
+        return names, task
+    return names, None

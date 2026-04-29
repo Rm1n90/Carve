@@ -34,11 +34,35 @@ import { Kbd } from "@/components/ui/Kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/Popover";
 import { SaveIndicator } from "@/components/annotation/SaveIndicator";
 import { modelsApi, weightsApi, inferenceApi, type Weight } from "@/api/phase2";
+import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
 const PREDICT_CONF_KEY = "carve.predict.minConfidence";
 const DEFAULT_PREDICT_CONFIDENCE = 0.4;
+// v3.3 Issue 4 — last-used YOLO weight per project. Keyed so switching
+// projects shows the right preselection without leaking across boundaries.
+const LAST_WEIGHT_KEY_PREFIX = "carve.editor.lastWeight.";
+
+function lastWeightKey(projectId: string): string {
+  return `${LAST_WEIGHT_KEY_PREFIX}${projectId}`;
+}
+
+function loadLastWeight(projectId: string): string | null {
+  try {
+    return window.localStorage.getItem(lastWeightKey(projectId));
+  } catch {
+    return null;
+  }
+}
+
+function saveLastWeight(projectId: string, weightId: string): void {
+  try {
+    window.localStorage.setItem(lastWeightKey(projectId), weightId);
+  } catch {
+    /* localStorage may be unavailable (private mode) — non-fatal */
+  }
+}
 
 function loadStoredConfidence(): number {
   try {
@@ -270,22 +294,89 @@ function YoloPredictButton({
     enabled: !!projectId && open,
   });
 
+  // v3.3 Issue 3b — workspace-wide weights, used to populate the empty
+  // state with a cross-project hint. Only fetched when the popover is
+  // open AND the current project has no weights of its own, so we don't
+  // incur an extra request on the happy path.
+  const projectHasWeights = (wq.data?.length ?? 0) > 0;
+  const wsWq = useQuery<Weight[]>({
+    queryKey: ["weights", "workspace", "for-empty-hint"],
+    queryFn: () => weightsApi.listWorkspace(),
+    enabled: open && !projectHasWeights && !!projectId && !wq.isLoading,
+  });
+
+  // Pull project names for the cross-project hint. Fetched once and
+  // cached by react-query — same key as everywhere else in the app.
+  const projectsQ = useQuery<Project[]>({
+    queryKey: ["projects"],
+    queryFn: () => projectsApi.list(),
+    enabled: open && !projectHasWeights,
+    staleTime: 60_000,
+  });
+  const projectNameById = (() => {
+    const m = new Map<string, string>();
+    for (const p of projectsQ.data ?? []) m.set(p.id, p.name);
+    return m;
+  })();
+
+  // v3.3 Issue 4 — when the popover opens, pre-select the project's
+  // last-used weight (if still present) or fall back to the project
+  // default. Runs once per open transition and only when nothing is
+  // currently selected so reopening after a manual choice doesn't
+  // overwrite the user's pick.
+  useEffect(() => {
+    if (!open) return;
+    if (selected !== null) return;
+    const weights = wq.data ?? [];
+    if (weights.length === 0) return;
+    if (projectId) {
+      const last = loadLastWeight(projectId);
+      if (last && weights.some((w) => w.id === last)) {
+        setSelected(last);
+        return;
+      }
+    }
+    const def = weights.find((w) => w.is_default);
+    if (def) {
+      setSelected(def.id);
+    }
+  }, [open, selected, wq.data, projectId]);
+
   const m = useMutation({
     mutationFn: (weightId: string) =>
       assetId
         ? inferenceApi.predictYolo(assetId, weightId, overwrite, confidence)
         : Promise.reject(new Error("no asset")),
-    onSuccess: (res) => {
-      const created = res?.count ?? 0;
-      if (created === 0) {
+    onSuccess: (res, weightId) => {
+      const created = res?.annotations_created ?? res?.count ?? 0;
+      const skipped = res?.skipped_count ?? 0;
+      const unmappedClasses = Object.keys(res?.skipped_by_class ?? {});
+      if (created === 0 && skipped === 0) {
         showToast(
           `No detections at confidence ${(confidence * 100).toFixed(0)}%`,
           { variant: "warning" },
+        );
+      } else if (skipped > 0) {
+        // v3.3 Issue 3c — surface the per-class skipped tally so the user
+        // knows their weight has classes that don't bind to project classes.
+        // Direct them to the YOLO weight detail panel to remap.
+        const list =
+          unmappedClasses.length > 0
+            ? ` (unmapped: ${unmappedClasses.join(", ")})`
+            : "";
+        showToast(
+          `Created ${created} annotations. Skipped ${skipped} detections${list}.`,
+          { variant: "warning", duration: 5000 },
         );
       } else {
         showToast(`Created ${created} annotations from predictions`, {
           variant: "success",
         });
+      }
+      // v3.3 Issue 4 — remember the last-used weight per project so the
+      // next predict in this project pre-selects it.
+      if (projectId) {
+        saveLastWeight(projectId, weightId);
       }
       setOpen(false);
       onAfter?.();
@@ -365,9 +456,56 @@ function YoloPredictButton({
             </p>
           )}
           {!wq.isLoading && weights.length === 0 && (
-            <p className="px-2 py-2 text-[12px] text-[color:var(--text-tertiary)] italic">
-              No weights uploaded for this project yet.
-            </p>
+            <div className="grid gap-1.5">
+              <p
+                data-testid="yolo-empty-hint"
+                className="px-2 py-2 text-[12px] text-[color:var(--text-tertiary)] italic"
+              >
+                No weights uploaded for this project yet.
+              </p>
+              {/* v3.3 Issue 3b — show up to 5 workspace-wide weights as
+                  disabled rows so the user can see what exists elsewhere
+                  and switch projects to use one. */}
+              {(wsWq.data ?? []).length > 0 && (
+                <div
+                  data-testid="yolo-cross-project-hint"
+                  className="grid gap-1 pt-1 mt-1 border-t border-[var(--border-subtle)]"
+                >
+                  <p className="px-2 pt-1 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
+                    Available in other projects
+                  </p>
+                  {(wsWq.data ?? []).slice(0, 5).map((w) => {
+                    const projName =
+                      projectNameById.get(w.project_id) ?? "another project";
+                    return (
+                      <div
+                        key={w.id}
+                        data-testid={`weight-row-other-${w.id}`}
+                        title={`Switch to project '${projName}' to use this weight.`}
+                        className={cn(
+                          "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
+                          "text-[12px] opacity-60 cursor-not-allowed",
+                        )}
+                      >
+                        <span className="h-3.5 w-3.5" aria-hidden />
+                        <span className="flex-1 min-w-0 truncate">
+                          <span className="truncate">{w.name}</span>
+                          <span className="ml-1 text-[10.5px] text-[color:var(--text-tertiary)]">
+                            in project: {projName}
+                          </span>
+                        </span>
+                        <span className="text-[10px] uppercase tracking-wider text-[color:var(--text-tertiary)]">
+                          {w.task_kind}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <p className="px-2 pb-1 text-[10.5px] text-[color:var(--text-tertiary)] italic">
+                    Switch projects to use one of these weights.
+                  </p>
+                </div>
+              )}
+            </div>
           )}
           {weights.map((w) => (
             <button
@@ -380,6 +518,7 @@ function YoloPredictButton({
                 selected === w.id ? "bg-[var(--accent-bg)]" : "hover:bg-[var(--bg-hover)]",
               )}
               data-testid={`weight-row-${w.id}`}
+              data-default={w.is_default ? "true" : undefined}
             >
               {selected === w.id ? (
                 <Check className="h-3.5 w-3.5 text-[color:var(--accent)]" />
@@ -387,6 +526,14 @@ function YoloPredictButton({
                 <span className="h-3.5 w-3.5" aria-hidden />
               )}
               <span className="flex-1 truncate">{w.name}</span>
+              {w.is_default && (
+                <span
+                  data-testid={`weight-default-badge-${w.id}`}
+                  className="text-[9.5px] uppercase tracking-[0.10em] px-1.5 py-0.5 rounded bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium"
+                >
+                  Default
+                </span>
+              )}
               <span className="text-[10px] uppercase tracking-wider text-[color:var(--text-tertiary)]">
                 {w.task_kind}
               </span>

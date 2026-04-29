@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Bar,
@@ -29,10 +29,12 @@ import {
   type AspectRatioBucket,
   type ClassFrequencyRow,
   type Heatmap,
+  type ProjectStats,
   type SizeDistribution,
   type TaskProgress,
   type TimeOnTaskRow,
 } from "@/api/stats";
+import { Select } from "@/components/ui/Select";
 
 // ---------------------------------------------------------------------------
 // Public props — accept either a single task or a project (project picks 1st task).
@@ -450,8 +452,142 @@ function StatsGrid({ taskId }: { taskId: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Project-mode wrapper — picks the first task, since stats are task-scoped
-// in the API. If the project has no tasks, we render a clean empty state.
+// Project rollup — compact project-level summary that mirrors
+// ProjectStatsStrip's data (totals + by_class + per-task progress) but renders
+// in a tighter layout to feel different from the Overview tab. v3.3 Issue 1.
+// ---------------------------------------------------------------------------
+function ProjectRollup({ projectId }: { projectId: string }) {
+  const q = useQuery<ProjectStats>({
+    queryKey: ["stats", "project", projectId],
+    queryFn: () => statsApi.projectStats(projectId),
+  });
+
+  if (q.isLoading) {
+    return (
+      <p className={placeholderClass} data-testid="stats-rollup-loading">
+        Loading rollup…
+      </p>
+    );
+  }
+  if (q.isError || !q.data) {
+    return (
+      <p className={errorClass} data-testid="stats-rollup-error">
+        Failed to load rollup.
+      </p>
+    );
+  }
+
+  const { totals, by_class, tasks } = q.data;
+  const completionPct =
+    tasks.length > 0
+      ? Math.round(
+          (tasks.reduce((acc, t) => acc + Math.max(0, Math.min(1, t.progress_pct)), 0) /
+            tasks.length) *
+            100,
+        )
+      : 0;
+
+  return (
+    <section
+      data-testid="project-rollup"
+      className="relative grid gap-3 rounded-2xl glass-surface glass-specular p-4"
+    >
+      <header className="flex items-baseline justify-between gap-3">
+        <h3 className={headingClass}>
+          <Sparkles className="h-3.5 w-3.5" /> Project rollup
+        </h3>
+      </header>
+
+      <div className="flex flex-wrap gap-4">
+        <div data-testid="rollup-totals-annotations" className="grid gap-0.5">
+          <span className="font-mono text-[24px] leading-none text-[color:var(--text-primary)] font-semibold tabular-tight">
+            {totals.annotations}
+          </span>
+          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+            Annotations
+          </span>
+        </div>
+        <div data-testid="rollup-totals-assets" className="grid gap-0.5">
+          <span className="font-mono text-[24px] leading-none text-[color:var(--text-primary)] font-semibold tabular-tight">
+            {totals.assets}
+          </span>
+          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+            Assets
+          </span>
+        </div>
+        <div data-testid="rollup-totals-completion" className="grid gap-0.5">
+          <span className="font-mono text-[24px] leading-none text-[color:var(--text-primary)] font-semibold tabular-tight">
+            {completionPct}%
+          </span>
+          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+            Completion
+          </span>
+        </div>
+      </div>
+
+      {by_class.length > 0 && (
+        <ul
+          data-testid="rollup-by-class"
+          className="flex flex-wrap gap-1.5 m-0 p-0 list-none"
+        >
+          {by_class.slice(0, 12).map((c) => (
+            <li
+              key={c.class_id}
+              className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] px-2 py-0.5 text-[11.5px] text-[color:var(--text-secondary)]"
+            >
+              <span className="truncate max-w-[140px]">{c.name}</span>
+              <span className="font-mono text-[10px] tabular-nums text-[color:var(--text-tertiary)]">
+                {c.count}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {tasks.length > 0 && (
+        <ul data-testid="rollup-task-bars" className="grid gap-1.5 m-0 p-0 list-none">
+          {tasks.map((t) => {
+            const pct = Math.round(
+              Math.min(Math.max(t.progress_pct, 0), 1) * 100,
+            );
+            return (
+              <li
+                key={t.task_id}
+                className="grid grid-cols-[1fr_44px] items-center gap-3 text-[12px]"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <span
+                    className="min-w-[80px] max-w-[180px] text-[color:var(--text-secondary)] tracking-tight truncate"
+                    title={t.name}
+                  >
+                    {t.name}
+                  </span>
+                  <div className="relative h-1 flex-1 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+                    <div
+                      data-testid={`rollup-task-bar-${t.task_id}`}
+                      className="absolute inset-y-0 left-0 bg-[var(--accent)]"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+                <span className="text-right font-mono text-[10.5px] text-[color:var(--text-tertiary)] tabular-nums">
+                  {pct}%
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Project-mode wrapper — v3.3 Issue 1. Renders:
+//   • Project rollup at the top (project-wide totals + by-class + per-task).
+//   • Per-task deep-dive grid below, with a task selector to choose which
+//     task's six widgets to view (default: tasks[0]).
+// If the project has no tasks, we render a clean empty state.
 // ---------------------------------------------------------------------------
 function ProjectStatsPanel({ projectId }: { projectId: string }) {
   const tasksQ = useQuery({
@@ -459,49 +595,96 @@ function ProjectStatsPanel({ projectId }: { projectId: string }) {
     queryFn: () => tasksApi.listForProject(projectId),
   });
 
+  const tasks = tasksQ.data ?? [];
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(
+    tasks[0]?.id ?? null,
+  );
+
+  // Initialize / reconcile selection once the tasks list resolves. We avoid
+  // resetting on every render so the user's pick survives re-renders, but we
+  // DO fall back to tasks[0] when the previous selection is no longer in the
+  // list (e.g., task deleted).
+  useEffect(() => {
+    if (tasks.length === 0) {
+      if (selectedTaskId !== null) setSelectedTaskId(null);
+      return;
+    }
+    if (
+      selectedTaskId === null ||
+      !tasks.some((t) => t.id === selectedTaskId)
+    ) {
+      setSelectedTaskId(tasks[0].id);
+    }
+    // We intentionally depend on the tasks identity (re-fetch result) rather
+    // than the selection itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks]);
+
   if (tasksQ.isLoading) {
     return <p className={placeholderClass}>Loading tasks…</p>;
   }
   if (tasksQ.isError) {
     return <p className={errorClass}>Failed to load tasks.</p>;
   }
-  const tasks = tasksQ.data ?? [];
   if (tasks.length === 0) {
     return (
-      <div
-        className="relative rounded-2xl glass-surface p-8"
-        data-testid="stats-no-tasks"
-      >
-        <EmptyState
-          icon={<Inbox className="h-4 w-4" />}
-          title="No tasks in this project yet"
-          hint="Create a task and upload assets to start collecting stats."
-        />
-      </div>
+      <section className="grid gap-4">
+        <ProjectRollup projectId={projectId} />
+        <div
+          className="relative rounded-2xl glass-surface p-8"
+          data-testid="stats-no-tasks"
+        >
+          <EmptyState
+            icon={<Inbox className="h-4 w-4" />}
+            title="No tasks in this project yet"
+            hint="Create a task and upload assets to start collecting stats."
+          />
+        </div>
+      </section>
     );
   }
 
-  // First task by default. Future enhancement: dropdown selector.
-  const primary = tasks[0];
+  const selectedTask =
+    tasks.find((t) => t.id === selectedTaskId) ?? tasks[0];
+
   return (
     <section className="grid gap-4">
-      <header className="flex items-baseline justify-between gap-3">
+      <ProjectRollup projectId={projectId} />
+      <header
+        data-testid="per-task-header"
+        className="flex items-center justify-between gap-3 flex-wrap"
+      >
         <p className="text-[12px] text-[color:var(--text-tertiary)] tracking-tight">
-          Showing stats for{" "}
+          Per-task analytics — task:{" "}
           <span className="font-medium text-[color:var(--text-secondary)]">
-            {primary.name}
+            {selectedTask.name}
           </span>
-          {tasks.length > 1 && (
-            <>
-              {" "}
-              <span className="text-[color:var(--text-tertiary)]">
-                ({tasks.length} tasks total)
-              </span>
-            </>
-          )}
         </p>
+        {tasks.length > 1 && (
+          <Select
+            value={selectedTask.id}
+            onValueChange={(v) => setSelectedTaskId(v)}
+          >
+            <Select.Trigger
+              aria-label="Select task"
+              data-testid="per-task-selector"
+              className="min-w-[180px]"
+            />
+            <Select.Content>
+              {tasks.map((t) => (
+                <Select.Item
+                  key={t.id}
+                  value={t.id}
+                  data-testid={`per-task-option-${t.id}`}
+                >
+                  {t.name}
+                </Select.Item>
+              ))}
+            </Select.Content>
+          </Select>
+        )}
       </header>
-      <StatsGrid taskId={primary.id} />
+      <StatsGrid taskId={selectedTask.id} />
     </section>
   );
 }

@@ -170,6 +170,13 @@ describe("StatsPanel project mode", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     emptyTaskStats();
+    // v3.3 Issue 1 — ProjectStatsPanel now also calls projectStats for
+    // the project rollup section. Provide a default empty payload.
+    (statsApi.projectStats as any).mockResolvedValue({
+      totals: { annotations: 0, assets: 0, tasks: 0 },
+      by_class: [],
+      tasks: [],
+    });
   });
 
   it("renders 'no tasks' empty state when project has zero tasks", async () => {
@@ -192,13 +199,14 @@ describe("StatsPanel project mode", () => {
     await findByTestId("stats-card-time-on-task");
   });
 
-  it("shows a hint when there are multiple tasks", async () => {
+  it("shows a per-task selector when there are multiple tasks (v3.3 Issue 1)", async () => {
     (tasksApi.listForProject as any).mockResolvedValue([
       { id: "t1", project_id: "p1", name: "First", kind: "image", created_at: "2026-01-01" },
       { id: "t2", project_id: "p1", name: "Second", kind: "video", created_at: "2026-01-02" },
     ]);
-    const { findByText } = render(wrap(<StatsPanel projectId="p1" />));
-    await findByText(/2 tasks total/);
+    const { findByTestId } = render(wrap(<StatsPanel projectId="p1" />));
+    // The dropdown only appears when there are 2+ tasks.
+    await findByTestId("per-task-selector");
   });
 
   it("renders empty states (not broken charts) when task stats are zero", async () => {
