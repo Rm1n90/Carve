@@ -18,6 +18,8 @@ import {
   ArrowDown01,
   ArrowDown10,
   Check,
+  MoreVertical,
+  Eraser,
 } from "lucide-react";
 import {
   Popover,
@@ -39,6 +41,12 @@ interface Props {
   onDeleteClass?: (cid: string) => void;
   onUpdateColor?: (cid: string, color: string) => void;
   onCreateClass?: (name: string, color: string) => void;
+  /**
+   * v3.0 B2 — current frame in the editor. Used to scope the "Clear on this
+   * frame" per-class action. ``null`` covers single-image assets where every
+   * annotation has ``frameId === null``.
+   */
+  currentFrameId?: string | null;
 }
 
 type SortMode = "idx" | "name-asc" | "name-desc" | "count-asc" | "count-desc";
@@ -204,6 +212,8 @@ function ClassRowItem({
   onToggleHidden,
   onEditClass,
   onDeleteClass,
+  onClearOnFrame,
+  frameAnnotationCount,
   onUpdateColor,
   classAnnotations,
   hoveredAnnId,
@@ -220,6 +230,13 @@ function ClassRowItem({
   onToggleHidden: () => void;
   onEditClass?: (cid: string) => void;
   onDeleteClass?: (cid: string) => void;
+  /**
+   * v3.0 B2 — invoked from the row's 3-dot menu. Removes every annotation of
+   * this class on the current frame after a count-aware confirm dialog.
+   */
+  onClearOnFrame?: (cid: string, count: number) => void;
+  /** Count of this class's annotations on the current frame (drives the menu copy). */
+  frameAnnotationCount: number;
   onUpdateColor?: (cid: string, color: string) => void;
   classAnnotations: { tempId: string; kind: keyof typeof KIND_ICON }[];
   hoveredAnnId: string | null;
@@ -335,32 +352,86 @@ function ClassRowItem({
               <Pencil className="h-3 w-3" />
             </button>
           )}
-          {onDeleteClass && (
-            <button
-              type="button"
-              onClick={async (e) => {
-                e.stopPropagation();
-                const ok = await confirm({
-                  title: "Delete class?",
-                  description: (
-                    <>
-                      Remove the class{" "}
-                      <span className="font-medium text-[color:var(--text-primary)]">
-                        {cls.name}
-                      </span>
-                      ? Annotations referencing it will become unclassified.
-                    </>
-                  ),
-                  variant: "danger",
-                  confirmLabel: "Delete",
-                });
-                if (ok) onDeleteClass(cls.id);
-              }}
-              aria-label={`Delete class ${cls.name}`}
-              className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] hover:bg-[var(--danger-bg)] hover:text-[color:var(--danger)]"
-            >
-              <Trash2 className="h-3 w-3" />
-            </button>
+          {(onDeleteClass || onClearOnFrame) && (
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label={`More actions for class ${cls.name}`}
+                  data-testid={`class-menu-trigger-${cls.id}`}
+                  className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] hover:bg-[var(--bg-app)] hover:text-[color:var(--text-primary)]"
+                >
+                  <MoreVertical className="h-3 w-3" />
+                </button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="end"
+                  sideOffset={4}
+                  onClick={(e) => e.stopPropagation()}
+                  className="z-[1000] min-w-[200px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+                >
+                  {onClearOnFrame && (
+                    <DropdownMenu.Item
+                      data-testid={`class-menu-clear-frame-${cls.id}`}
+                      disabled={frameAnnotationCount === 0}
+                      onSelect={() => {
+                        if (frameAnnotationCount > 0) {
+                          onClearOnFrame(cls.id, frameAnnotationCount);
+                        }
+                      }}
+                      className={cn(
+                        "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] outline-none",
+                        "data-[highlighted]:bg-[var(--bg-hover)]",
+                        "data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed",
+                        frameAnnotationCount > 0
+                          ? "cursor-pointer text-[color:var(--text-primary)]"
+                          : "text-[color:var(--text-tertiary)]",
+                      )}
+                    >
+                      <Eraser className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                      <span className="flex-1">Clear on this frame</span>
+                      {frameAnnotationCount > 0 && (
+                        <span className="font-mono text-[10.5px] tabular-nums text-[color:var(--text-tertiary)]">
+                          {frameAnnotationCount}
+                        </span>
+                      )}
+                    </DropdownMenu.Item>
+                  )}
+                  {onDeleteClass && (
+                    <DropdownMenu.Item
+                      data-testid={`class-menu-delete-${cls.id}`}
+                      onSelect={async () => {
+                        const ok = await confirm({
+                          title: "Delete class?",
+                          description: (
+                            <>
+                              Remove the class{" "}
+                              <span className="font-medium text-[color:var(--text-primary)]">
+                                {cls.name}
+                              </span>
+                              ? Annotations referencing it will become unclassified.
+                            </>
+                          ),
+                          variant: "danger",
+                          confirmLabel: "Delete",
+                        });
+                        if (ok) onDeleteClass(cls.id);
+                      }}
+                      className={cn(
+                        "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none",
+                        "text-[color:var(--danger)]",
+                        "data-[highlighted]:bg-[var(--danger-bg)]",
+                      )}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span className="flex-1">Delete class…</span>
+                    </DropdownMenu.Item>
+                  )}
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
           )}
         </span>
       </div>
@@ -485,6 +556,7 @@ export function ClassesPanel({
   onDeleteClass,
   onUpdateColor,
   onCreateClass,
+  currentFrameId = null,
 }: Props) {
   const activeClassId = useTool((s) => s.activeClassId);
   const setActiveClassId = useTool((s) => s.setActiveClassId);
@@ -494,6 +566,7 @@ export function ClassesPanel({
   const hiddenClassIds = useAnnotations((s) => s.hiddenClassIds);
   const hiddenAnnotationIds = useAnnotations((s) => s.hiddenAnnotationIds);
   const setHiddenForClass = useAnnotations((s) => s.setHiddenForClass);
+  const confirm = useConfirm();
 
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortMode>("idx");
@@ -507,6 +580,45 @@ export function ClassesPanel({
     }
     return m;
   }, [byId]);
+
+  // v3.0 B2 — per-class count of annotations on the *current frame*. Drives
+  // the "Clear on this frame" menu item: copy/disabled state + confirm copy.
+  const frameCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const a of Object.values(byId)) {
+      if (a.frameId === currentFrameId) {
+        m[a.classId] = (m[a.classId] ?? 0) + 1;
+      }
+    }
+    return m;
+  }, [byId, currentFrameId]);
+
+  const handleClearOnFrame = async (classId: string, n: number) => {
+    if (n === 0) return;
+    const cls = classes.find((c) => c.id === classId);
+    const name = cls?.name ?? "this class";
+    const ok = await confirm({
+      title: "Clear annotations on this frame?",
+      description: (
+        <>
+          Delete <span className="font-medium text-[color:var(--text-primary)]">{n}</span>{" "}
+          annotation{n === 1 ? "" : "s"} of class{" "}
+          <span className="font-medium text-[color:var(--text-primary)]">{name}</span> on
+          this frame? Press Cmd+Z to undo.
+        </>
+      ),
+      variant: "danger",
+      confirmLabel: "Clear",
+    });
+    if (!ok) return;
+    const store = useAnnotations.getState();
+    const targets = Object.values(store.byId).filter(
+      (a) => a.frameId === currentFrameId && a.classId === classId,
+    );
+    for (const t of targets) {
+      useAnnotations.getState().remove(t.tempId);
+    }
+  };
 
   const annotationsByClass = useMemo(() => {
     const m: Record<string, { tempId: string; kind: keyof typeof KIND_ICON }[]> = {};
@@ -668,6 +780,8 @@ export function ClassesPanel({
               onToggleHidden={() => setHiddenForClass(c.id, !hiddenClassIds.includes(c.id))}
               onEditClass={onEditClass}
               onDeleteClass={onDeleteClass}
+              onClearOnFrame={handleClearOnFrame}
+              frameAnnotationCount={frameCounts[c.id] ?? 0}
               onUpdateColor={onUpdateColor}
               classAnnotations={cAnns}
               hoveredAnnId={hoveredAnnotationId}
