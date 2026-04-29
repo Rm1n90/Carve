@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -33,6 +33,7 @@ import {
   type Member,
   type Role,
 } from "@/api/members";
+import { workspaceApi } from "@/api/workspace";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
@@ -800,24 +801,224 @@ function MemberRow({
 
 // ------------------------------ Workspace ------------------------------
 
+// v3.1 Bug 6 — replaces the prior "Coming soon" placeholder. The workspace
+// is now a real singleton row backed by ``GET /workspace`` and
+// ``PATCH /workspace``; admins can rename it and edit a description.
+const WORKSPACE_NAME_MAX = 120;
+const WORKSPACE_DESCRIPTION_MAX = 2000;
+
 export function SettingsWorkspacePage() {
+  const role = useAuth((s) => s.user?.role);
+  const isAdmin = role === "admin";
+  const qc = useQueryClient();
+
+  const wsQ = useQuery({
+    queryKey: ["workspace"],
+    queryFn: workspaceApi.get,
+  });
+
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  // Sync local form state from server data when it (re)loads. Only resets
+  // on identity change so the user's in-flight edits survive a background
+  // refetch that returns the same payload.
+  const wsId = wsQ.data?.id;
+  useEffect(() => {
+    if (wsQ.data) {
+      setName(wsQ.data.name);
+      setDescription(wsQ.data.description ?? "");
+    }
+  }, [wsId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const m = useMutation({
+    mutationFn: (patch: { name?: string; description?: string }) =>
+      workspaceApi.update(patch),
+    onSuccess: () => {
+      showToast("Workspace updated", { variant: "success" });
+      qc.invalidateQueries({ queryKey: ["workspace"] });
+    },
+    onError: (err: unknown) => {
+      const status =
+        (err as { response?: { status?: number } } | undefined)?.response
+          ?.status;
+      if (status === 403) {
+        showToast("Only admins can edit the workspace", { variant: "error" });
+      } else if (status === 422) {
+        showToast("Invalid workspace details", { variant: "error" });
+      } else {
+        showToast("Failed to update workspace", { variant: "error" });
+      }
+    },
+  });
+
+  const trimmedName = name.trim();
+  const serverName = wsQ.data?.name ?? "";
+  const serverDescription = wsQ.data?.description ?? "";
+  const dirty =
+    trimmedName !== serverName.trim() || description !== serverDescription;
+  const canSubmit =
+    isAdmin &&
+    trimmedName.length > 0 &&
+    trimmedName.length <= WORKSPACE_NAME_MAX &&
+    description.length <= WORKSPACE_DESCRIPTION_MAX &&
+    dirty &&
+    !m.isPending;
+
+  const created = wsQ.data?.created_at
+    ? new Date(wsQ.data.created_at).toLocaleDateString()
+    : null;
+
   return (
     <SettingsLayout>
-      <Card variant="surface" radius="lg" className="p-6 grid gap-4">
-        <div className="flex items-baseline justify-between">
+      <Card variant="surface" radius="lg" className="p-6 grid gap-5">
+        <div>
           <h2 className="text-[16px] font-medium tracking-tight">Workspace</h2>
-          <Badge variant="neutral">Coming soon</Badge>
+          <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
+            One workspace per install. Admins can rename it and add a
+            description that surfaces in member-facing UI.
+          </p>
         </div>
-        <p className="text-[13px] text-[color:var(--text-secondary)]">
-          Workspace-level configuration (name, default task kind, retention)
-          will be configurable here in a later release. For now, the workspace
-          is a singleton driven by environment variables on the API service.
-        </p>
-        <div className="grid gap-3 max-w-md opacity-60 pointer-events-none">
-          <Input label="Workspace name" value="Carve" disabled />
-          <Input label="Default task kind" value="image" disabled />
-        </div>
+
+        {wsQ.isLoading && (
+          <p
+            className="text-[13px] text-[color:var(--text-tertiary)]"
+            data-testid="workspace-loading"
+          >
+            Loading…
+          </p>
+        )}
+
+        {wsQ.data && (
+          <form
+            className="grid gap-4 max-w-xl"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!canSubmit) return;
+              const patch: { name?: string; description?: string } = {};
+              if (trimmedName !== serverName.trim()) patch.name = trimmedName;
+              if (description !== serverDescription)
+                patch.description = description;
+              m.mutate(patch);
+            }}
+          >
+            <Input
+              label="Workspace name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={WORKSPACE_NAME_MAX}
+              required
+              disabled={!isAdmin}
+              hint={
+                isAdmin
+                  ? `Up to ${WORKSPACE_NAME_MAX} characters.`
+                  : undefined
+              }
+              data-testid="workspace-name"
+            />
+            <div className="grid gap-1.5">
+              <label
+                htmlFor="workspace-description"
+                className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium"
+              >
+                Description
+                <span className="text-[color:var(--text-tertiary)] font-normal">
+                  {" "}
+                  (optional)
+                </span>
+              </label>
+              <textarea
+                id="workspace-description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                maxLength={WORKSPACE_DESCRIPTION_MAX}
+                disabled={!isAdmin}
+                rows={4}
+                className={cn(
+                  "w-full rounded-[var(--radius-md)]",
+                  "bg-[var(--bg-elev)] text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
+                  "border border-[var(--border-subtle)]",
+                  "px-3 py-2 text-[13px] leading-[1.55] resize-y min-h-[88px]",
+                  "transition-colors duration-150",
+                  "hover:border-[var(--border-strong)]",
+                  "focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[rgba(99,102,241,0.18)]",
+                  "disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-[var(--bg-hover)]",
+                )}
+                placeholder={
+                  isAdmin
+                    ? "What this workspace is for, who uses it, anything teammates should know."
+                    : ""
+                }
+                data-testid="workspace-description"
+              />
+              <p className="text-[12px] text-[color:var(--text-tertiary)] flex justify-between">
+                <span>
+                  {isAdmin
+                    ? "Plain text, shown to teammates."
+                    : "Only admins can edit"}
+                </span>
+                <span>
+                  {description.length}/{WORKSPACE_DESCRIPTION_MAX}
+                </span>
+              </p>
+            </div>
+
+            {isAdmin ? (
+              <div>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  disabled={!canSubmit}
+                  data-testid="workspace-submit"
+                >
+                  {m.isPending ? "Saving…" : "Save changes"}
+                </Button>
+              </div>
+            ) : (
+              <p
+                className="text-[12px] text-[color:var(--text-tertiary)] italic"
+                data-testid="workspace-readonly-note"
+              >
+                Only admins can edit the workspace.
+              </p>
+            )}
+          </form>
+        )}
       </Card>
+
+      {wsQ.data && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Card variant="surface" radius="lg" className="p-5 grid gap-1">
+            <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+              Members
+            </span>
+            <Link
+              to="/settings/members"
+              className="text-[28px] tracking-tight font-medium text-[color:var(--text-primary)] hover:text-[color:var(--accent)] transition-colors"
+              data-testid="workspace-members-link"
+            >
+              {wsQ.data.members_count}
+            </Link>
+            <span className="text-[12px] text-[color:var(--text-secondary)]">
+              Active members. Manage in Settings → Members.
+            </span>
+          </Card>
+          <Card variant="surface" radius="lg" className="p-5 grid gap-1">
+            <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+              Created
+            </span>
+            <span
+              className="text-[28px] tracking-tight font-medium text-[color:var(--text-primary)]"
+              data-testid="workspace-created"
+            >
+              {created ?? "—"}
+            </span>
+            <span className="text-[12px] text-[color:var(--text-secondary)]">
+              Workspace creation date.
+            </span>
+          </Card>
+        </div>
+      )}
     </SettingsLayout>
   );
 }
