@@ -40,8 +40,15 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
         />
         <DialogPrimitive.Content
           ref={ref}
+          // v3.1 Bug 1 — centering uses the legacy `transform` property
+          // (NOT Tailwind's `-translate-x-1/2 -translate-y-1/2`, which v4
+          // implements via the modern `translate` CSS property). The
+          // `confirm-in/out` keyframes also animate `transform`, so they
+          // now agree and the panel stays centered for the entire
+          // animation instead of snapping into place at the end.
+          style={{ transform: "translate(-50%, -50%)" }}
           className={cn(
-            "fixed left-1/2 top-1/2 z-[901] -translate-x-1/2 -translate-y-1/2",
+            "fixed left-1/2 top-1/2 z-[901]",
             "w-[min(92vw,520px)] max-h-[88vh] overflow-auto",
             "rounded-[var(--radius-lg)]",
             "glass-surface-strong glass-specular",
