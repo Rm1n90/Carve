@@ -138,6 +138,40 @@ class TaskService:
         t.deleted_at = datetime.now(timezone.utc)
         self.session.flush()
 
+    def duplicate(
+        self,
+        *,
+        actor: User,
+        project: Project,
+        task_id: uuid.UUID,
+        count: int = 1,
+    ) -> list[Task]:
+        """Duplicate a task ``count`` times in the same project.
+
+        Copies only the task's intrinsic shape (``name``, ``kind``).
+        Assets, annotations, exports, imports, and jobs are NOT copied —
+        a duplicated task starts empty so users can stage a parallel
+        labelling pass without inheriting source state.
+
+        First copy is suffixed with " (copy)"; subsequent copies use
+        " (copy 2)", " (copy 3)", etc. — predictable and sortable.
+        """
+        if not _can_modify(actor, project):
+            raise NotProjectOwner("only owner or admin can duplicate a task")
+        src = self.get(project=project, task_id=task_id)
+        new_tasks: list[Task] = []
+        for i in range(count):
+            suffix = " (copy)" if i == 0 else f" (copy {i + 1})"
+            t = Task(
+                project_id=project.id,
+                name=(src.name + suffix)[:120],
+                kind=src.kind,
+            )
+            self.session.add(t)
+            new_tasks.append(t)
+        self.session.flush()
+        return new_tasks
+
 
 class ClassConflict(AppError):
     http_status = 409
@@ -200,3 +234,36 @@ class ClassService:
         c = self.get(project=project, class_id=class_id)
         self.session.delete(c)
         self.session.flush()
+
+    def import_from_project(
+        self, *, source: Project, dest: Project
+    ) -> tuple[int, int]:
+        """Copy classes from ``source`` project into ``dest`` project.
+
+        Skips any class whose name already exists in the destination
+        (uq_classes_project_name unique constraint). Returns
+        ``(imported, skipped)``.
+        """
+        existing_dest = self.list_for_project(project=dest)
+        existing_names = {c.name for c in existing_dest}
+        next_idx = max((c.idx for c in existing_dest), default=-1) + 1
+
+        src_classes = self.list_for_project(project=source)
+        imported = 0
+        skipped = 0
+        for src_c in src_classes:
+            if src_c.name in existing_names:
+                skipped += 1
+                continue
+            new_c = Class(
+                project_id=dest.id,
+                idx=next_idx,
+                name=src_c.name,
+                color=src_c.color,
+                attributes=dict(src_c.attributes or {}),
+            )
+            self.session.add(new_c)
+            next_idx += 1
+            imported += 1
+        self.session.flush()
+        return imported, skipped

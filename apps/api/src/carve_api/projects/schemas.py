@@ -1,4 +1,5 @@
 import re
+import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
@@ -109,3 +110,12 @@ class ClassOut(BaseModel):
             attributes=c.attributes,
             created_at=c.created_at,
         )
+
+
+class ImportClassesIn(BaseModel):
+    source_project_id: uuid.UUID
+
+
+class ImportClassesOut(BaseModel):
+    imported: int
+    skipped: int
