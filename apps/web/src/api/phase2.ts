@@ -66,6 +66,12 @@ export interface Weight {
   class_names: string[];
   created_by: string | null;
   created_at: string;
+  /**
+   * v3.3 Issue 4 — true when this weight is the project default for its
+   * `task_kind`. The backend enforces at most one default per
+   * (project_id, task_kind) via a partial unique index.
+   */
+  is_default: boolean;
 }
 
 export interface UploadWeightInput {
@@ -101,6 +107,12 @@ export const weightsApi = {
   delete: async (weightId: string): Promise<void> => {
     await api.delete(`/weights/${weightId}`);
   },
+  /**
+   * v3.3 Issue 4 — mark this weight as the default for its
+   * `(project_id, task_kind)` slot. Admin-or-owner gated server-side.
+   */
+  setDefault: async (weightId: string): Promise<Weight> =>
+    (await api.post<Weight>(`/weights/${weightId}/default`)).data,
 };
 
 // --------------------------- /assets/{aid}/auto-annotate ---------------------------

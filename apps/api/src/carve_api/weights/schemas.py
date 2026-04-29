@@ -15,6 +15,8 @@ class WeightOut(BaseModel):
     class_names: list[str]
     created_by: str | None
     created_at: datetime
+    # v3.3 Issue 4 — exposes the per-project default flag to the client.
+    is_default: bool = False
 
     @classmethod
     def from_orm_weight(cls, w) -> "WeightOut":
@@ -28,4 +30,5 @@ class WeightOut(BaseModel):
             class_names=list(w.class_names or []),
             created_by=str(w.created_by) if w.created_by else None,
             created_at=w.created_at,
+            is_default=bool(getattr(w, "is_default", False)),
         )

@@ -2,7 +2,7 @@ import logging
 import uuid
 from io import BytesIO
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from carve_api.auth.models import User
@@ -139,6 +139,46 @@ class WeightService:
             pass  # best-effort; row removal is the source of truth
         self.session.delete(w)
         self.session.flush()
+
+    def set_default(self, *, weight_id: uuid.UUID, project_id: uuid.UUID) -> Weight:
+        """Mark `weight_id` as the default for its `(project_id, task_kind)` slot.
+
+        v3.3 Issue 4 — clears any sibling default in the same project + task
+        kind first, then flips this one to default. Both writes happen in the
+        same SQLAlchemy session; the partial unique index added in migration
+        ``0015_weight_is_default`` guards against any race that would otherwise
+        leave two defaults for the same slot.
+        """
+        w = self.get(weight_id=weight_id)
+        if w.project_id != project_id:
+            raise WeightNotFound("weight not found")
+        # Clear sibling default first so the partial unique index doesn't see
+        # two `is_default=true` rows mid-transaction.
+        self.session.execute(
+            update(Weight)
+            .where(
+                Weight.project_id == project_id,
+                Weight.task_kind == w.task_kind,
+                Weight.id != w.id,
+                Weight.is_default.is_(True),
+            )
+            .values(is_default=False)
+        )
+        w.is_default = True
+        self.session.flush()
+        return w
+
+    def get_default_for_kind(
+        self, *, project_id: uuid.UUID, task_kind: WeightTaskKind
+    ) -> Weight | None:
+        """Return the project's default weight for the given task kind, if any."""
+        return self.session.execute(
+            select(Weight).where(
+                Weight.project_id == project_id,
+                Weight.task_kind == task_kind,
+                Weight.is_default.is_(True),
+            )
+        ).scalar_one_or_none()
 
 
 def _inspect_weight(body: bytes, original_name: str) -> tuple[list[str], str | None]:

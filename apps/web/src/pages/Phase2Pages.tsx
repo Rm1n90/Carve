@@ -5,6 +5,7 @@ import {
   Layers,
   RotateCcw,
   Sparkles,
+  Star,
   Trash2,
   Upload,
   Pencil,
@@ -145,7 +146,18 @@ export function ModelsYoloPage() {
     queryKey: ["weights", "workspace"],
     queryFn: weightsApi.listWorkspace,
   });
-  const weights = wsQ.data ?? [];
+  // v3.3 Issue 4 — defaults float to the top, then by newest. We sort a
+  // copy so we don't mutate react-query's cache.
+  const weights = (() => {
+    const rows = wsQ.data ?? [];
+    const sorted = [...rows].sort((a, b) => {
+      if (a.is_default !== b.is_default) return a.is_default ? -1 : 1;
+      return (
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    });
+    return sorted;
+  })();
   const [uploadOpen, setUploadOpen] = useState(false);
   // v3.0 C6 — selected weight drives the right-side details panel. We
   // store the id rather than the object so it stays valid across
@@ -178,6 +190,20 @@ export function ModelsYoloPage() {
     },
     onError: (err: Error) => {
       showToast(err?.message ?? "Rename failed", { variant: "error" });
+    },
+  });
+
+  // v3.3 Issue 4 — flip a weight to "default" for its (project, task_kind).
+  // The backend clears any sibling default in the same slot atomically.
+  const setDefaultM = useMutation({
+    mutationFn: (id: string) => weightsApi.setDefault(id),
+    onSuccess: () => {
+      showToast("Default weight updated", { variant: "success" });
+      qc.invalidateQueries({ queryKey: ["weights"] });
+      qc.invalidateQueries({ queryKey: ["weights", "workspace"] });
+    },
+    onError: (err: Error) => {
+      showToast(err?.message ?? "Failed to set default", { variant: "error" });
     },
   });
 
@@ -301,16 +327,30 @@ export function ModelsYoloPage() {
                         className="px-4 py-2.5"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <InlineName
-                          weight={w}
-                          canEdit={canDelete}
-                          busy={
-                            renameM.isPending && renameM.variables?.id === w.id
-                          }
-                          onSubmit={(name) =>
-                            renameM.mutate({ id: w.id, name })
-                          }
-                        />
+                        <span className="inline-flex items-center gap-1.5">
+                          <InlineName
+                            weight={w}
+                            canEdit={canDelete}
+                            busy={
+                              renameM.isPending &&
+                              renameM.variables?.id === w.id
+                            }
+                            onSubmit={(name) =>
+                              renameM.mutate({ id: w.id, name })
+                            }
+                          />
+                          {w.is_default && (
+                            <span
+                              data-testid={`weight-row-default-badge-${w.id}`}
+                              title="Project default for this task kind"
+                              aria-label="Default weight"
+                              className="inline-flex items-center gap-1 rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)] px-1.5 py-0.5 text-[10px] font-medium tracking-tight"
+                            >
+                              <Star className="h-2.5 w-2.5 fill-current" />
+                              Default
+                            </span>
+                          )}
+                        </span>
                       </td>
                       <td className="px-4 py-2.5">
                         <Badge variant="accent">{w.task_kind}</Badge>
@@ -413,7 +453,31 @@ export function ModelsYoloPage() {
                 )}
               </div>
 
-              <div className="flex items-center justify-end pt-1">
+              {/* v3.3 Issue 4 — default toggle. If currently default, show
+                  a status pill; otherwise show a button to flip the slot. */}
+              <div className="flex items-center justify-between gap-2 pt-1">
+                {selectedWeight.is_default ? (
+                  <span
+                    data-testid="yolo-details-default-badge"
+                    aria-label="This weight is the project default"
+                    className="inline-flex items-center gap-1 rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)] px-2 py-1 text-[11px] font-medium tracking-tight"
+                  >
+                    <Star className="h-3 w-3 fill-current" />
+                    Default
+                    <Check className="h-3 w-3" />
+                  </span>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    leftIcon={<Star className="h-3.5 w-3.5" />}
+                    disabled={!canDelete || setDefaultM.isPending}
+                    data-testid="yolo-details-set-default"
+                    onClick={() => setDefaultM.mutate(selectedWeight.id)}
+                  >
+                    Set as default
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   variant="danger"

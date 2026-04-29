@@ -158,3 +158,34 @@ def update_weight(
     db.flush()
     db.commit()
     return WeightOut.from_orm_weight(w)
+
+
+@router.post(
+    "/weights/{weight_id}/default",
+    response_model=WeightOut,
+)
+def set_weight_default(
+    weight_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WeightOut:
+    """Mark a weight as the default for its `(project, task_kind)` slot.
+
+    v3.3 Issue 4 — admin-or-owner gated, mirrors the rename guard.
+    """
+    from carve_api.projects.service import _can_modify
+
+    svc = WeightService(db)
+    try:
+        w = svc.get(weight_id=weight_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    project = ProjectService(db).get(actor=user, project_id=w.project_id)
+    if not _can_modify(user, project):
+        raise HTTPException(status_code=403, detail="weight_forbidden")
+    try:
+        updated = svc.set_default(weight_id=weight_id, project_id=project.id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+    return WeightOut.from_orm_weight(updated)

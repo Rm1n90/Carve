@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, String, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,4 +35,11 @@ class Weight(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # v3.3 Issue 4 — at most one default per (project_id, task_kind), enforced
+    # at the DB layer via a partial unique index (see 0015 migration). The
+    # auto-annotate endpoint falls back to this when no explicit weight_id is
+    # supplied, and the editor predict popover pre-selects it on open.
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
