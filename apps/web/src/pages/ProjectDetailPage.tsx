@@ -474,7 +474,18 @@ function EditTaskClassesDialog({
   });
 
   const toggleClass = (classId: string) => {
-    setMode("subset");
+    // When the user is in "all" mode (allowed_class_ids === null) every
+    // checkbox renders as checked. The first toggle has to seed the
+    // explicit-subset set from the *current* full project list so
+    // unchecking "c1" leaves "c2", "c3" selected — not just removes c1
+    // from an empty set.
+    if (mode === "all") {
+      const seed = new Set(projectClasses.map((c) => c.id));
+      seed.delete(classId);
+      setMode("subset");
+      setSelected(seed);
+      return;
+    }
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(classId)) {
