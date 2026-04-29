@@ -2,22 +2,27 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import * as Tabs from "@radix-ui/react-tabs";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   BarChart3,
   ChevronRight,
+  Copy,
+  CopyPlus,
   Image as ImageIcon,
+  MoreVertical,
   Settings,
   Sparkles,
   Video,
 } from "lucide-react";
 import { projectsApi } from "@/api/projects";
-import { tasksApi } from "@/api/tasks";
+import { tasksApi, type Task } from "@/api/tasks";
 import { statsApi, type ProjectStats } from "@/api/stats";
 import { Badge } from "@/components/ui/Badge";
 import { ClassesEditor } from "./ClassesEditor";
 import { NewTaskDialog } from "./NewTaskDialog";
 import { StatsPanel } from "./StatsPanel";
 import { cn } from "@/lib/cn";
+import { showToast } from "@/lib/toast";
 
 // ---------------------------------------------------------------------------
 // Stat tile (used inside the totals strip)
@@ -266,6 +271,78 @@ function ProjectSettingsForm({
 }
 
 // ---------------------------------------------------------------------------
+// Per-task 3-dot menu — duplicate × 1 / × 3 (v3.0 Bug 8). Existing nav happens
+// via the row's <Link>; the menu sits next to it as a sibling so click events
+// don't propagate into the navigation.
+// ---------------------------------------------------------------------------
+function TaskRowMenu({
+  task,
+  pending,
+  onDuplicate,
+}: {
+  task: Task;
+  pending: boolean;
+  onDuplicate: (count: number) => void;
+}) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          data-testid={`project-detail-task-menu-trigger-${task.id}`}
+          aria-label={`More actions for task ${task.name}`}
+          disabled={pending}
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            "grid w-9 shrink-0 place-items-center",
+            "text-[color:var(--text-tertiary)]",
+            "hover:bg-[var(--bg-subtle)] hover:text-[color:var(--text-primary)]",
+            "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]",
+            "disabled:opacity-50 disabled:cursor-not-allowed",
+            "transition-colors",
+          )}
+        >
+          <MoreVertical className="h-3.5 w-3.5" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={4}
+          onClick={(e) => e.stopPropagation()}
+          className="z-[1000] min-w-[180px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+        >
+          <DropdownMenu.Item
+            data-testid={`project-detail-task-duplicate-${task.id}`}
+            onSelect={() => onDuplicate(1)}
+            className={cn(
+              "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
+              "cursor-pointer outline-none text-[color:var(--text-primary)]",
+              "data-[highlighted]:bg-[var(--bg-hover)]",
+            )}
+          >
+            <Copy className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+            <span className="flex-1">Duplicate</span>
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            data-testid={`project-detail-task-duplicate-x3-${task.id}`}
+            onSelect={() => onDuplicate(3)}
+            className={cn(
+              "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
+              "cursor-pointer outline-none text-[color:var(--text-primary)]",
+              "data-[highlighted]:bg-[var(--bg-hover)]",
+            )}
+          >
+            <CopyPlus className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+            <span className="flex-1">Duplicate ×3</span>
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Tab trigger styling — same look as AnnotateAssetPage tabs.
 // ---------------------------------------------------------------------------
 const tabTriggerClass = cn(
@@ -292,6 +369,24 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   const statsQ = useQuery({
     queryKey: ["project-stats", projectId],
     queryFn: () => statsApi.projectStats(projectId),
+  });
+  const qc = useQueryClient();
+  const duplicateTask = useMutation({
+    mutationFn: ({ taskId, count }: { taskId: string; count: number }) =>
+      tasksApi.duplicate(projectId, taskId, count),
+    onSuccess: (created, vars) => {
+      qc.invalidateQueries({ queryKey: ["tasks", projectId] });
+      qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
+      showToast(
+        vars.count === 1
+          ? "Duplicated"
+          : `${created.length} copies created`,
+        { variant: "success" },
+      );
+    },
+    onError: () => {
+      showToast("Failed to duplicate task", { variant: "error" });
+    },
   });
 
   // Browser tab title — show the current project name.
@@ -431,13 +526,13 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                 {tasksQ.data?.map((t) => (
                   <li
                     key={t.id}
-                    className="border-b border-[var(--border-subtle)] last:border-b-0"
+                    className="flex items-stretch border-b border-[var(--border-subtle)] last:border-b-0 hover:bg-[var(--bg-hover)] transition-colors group"
                   >
                     <Link
                       to="/projects/$projectId/tasks/$taskId"
                       params={{ projectId, taskId: t.id }}
                       data-testid={`project-detail-task-row-${t.id}`}
-                      className="flex items-center gap-3 px-3 py-2 hover:bg-[var(--bg-hover)] transition-colors group"
+                      className="flex flex-1 items-center gap-3 px-3 py-2 min-w-0"
                     >
                       <span className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)]">
                         {t.kind === "video" ? (
@@ -452,6 +547,16 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                       <Badge variant="ghost">{t.kind}</Badge>
                       <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)] transition-transform group-hover:translate-x-0.5" />
                     </Link>
+                    <TaskRowMenu
+                      task={t}
+                      pending={
+                        duplicateTask.isPending &&
+                        duplicateTask.variables?.taskId === t.id
+                      }
+                      onDuplicate={(count) =>
+                        duplicateTask.mutate({ taskId: t.id, count })
+                      }
+                    />
                   </li>
                 ))}
                 {(tasksQ.data?.length ?? 0) === 0 && !tasksQ.isLoading && (

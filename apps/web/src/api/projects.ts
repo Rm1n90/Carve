@@ -13,6 +13,11 @@ export interface ProjectIn {
   description?: string;
 }
 
+export interface ImportClassesResult {
+  imported: number;
+  skipped: number;
+}
+
 export const projectsApi = {
   list: async (): Promise<Project[]> => (await api.get<Project[]>("/projects")).data,
   get: async (id: string): Promise<Project> =>
@@ -24,4 +29,14 @@ export const projectsApi = {
   delete: async (id: string): Promise<void> => {
     await api.delete(`/projects/${id}`);
   },
+  importClasses: async (
+    projectId: string,
+    sourceProjectId: string,
+  ): Promise<ImportClassesResult> =>
+    (
+      await api.post<ImportClassesResult>(
+        `/projects/${projectId}/classes/import`,
+        { source_project_id: sourceProjectId },
+      )
+    ).data,
 };

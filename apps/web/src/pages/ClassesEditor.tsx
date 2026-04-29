@@ -1,11 +1,21 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2, Plus } from "lucide-react";
+import { Copy, Trash2, Plus } from "lucide-react";
 import { classesApi, type ClassRow } from "@/api/classes";
+import { projectsApi, type Project } from "@/api/projects";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/Dialog";
 import { cn } from "@/lib/cn";
+import { showToast } from "@/lib/toast";
 import { nextHexForIdx } from "@/lib/swatch";
 
 export function ClassesEditor({ projectId }: { projectId: string }) {
@@ -24,6 +34,22 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
     mutationFn: (cid: string) => classesApi.delete(projectId, cid),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
   });
+  const importFrom = useMutation({
+    mutationFn: (sourceProjectId: string) =>
+      projectsApi.importClasses(projectId, sourceProjectId),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["classes", projectId] });
+      showToast(
+        `Imported ${result.imported} ${result.imported === 1 ? "class" : "classes"} (${result.skipped} skipped)`,
+        { variant: "success" },
+      );
+    },
+    onError: () => {
+      showToast("Failed to import classes", { variant: "error" });
+    },
+  });
+
+  const [copyDialogOpen, setCopyDialogOpen] = useState(false);
 
   const classCount = q.data?.length ?? 0;
   const [name, setName] = useState("");
@@ -60,14 +86,42 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
 
   return (
     <section className="grid gap-3 min-h-0">
-      <header className="flex items-center justify-between">
+      <header className="flex items-center justify-between gap-2">
         <h2 className="text-[14px] font-medium tracking-tight text-[color:var(--text-primary)]">
           Classes
         </h2>
-        <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
-          {q.data?.length ?? 0} defined
-        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="classes-editor-copy-from-project"
+            onClick={() => setCopyDialogOpen(true)}
+            className={cn(
+              "inline-flex items-center gap-1 h-7 px-2.5",
+              "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+              "text-[11.5px] tracking-tight text-[color:var(--text-secondary)]",
+              "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+              "transition-colors",
+            )}
+          >
+            <Copy className="h-3 w-3" />
+            Copy from project…
+          </button>
+          <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
+            {q.data?.length ?? 0} defined
+          </span>
+        </div>
       </header>
+      <CopyClassesFromProjectDialog
+        open={copyDialogOpen}
+        onOpenChange={setCopyDialogOpen}
+        currentProjectId={projectId}
+        onConfirm={(sourceProjectId) => {
+          importFrom.mutate(sourceProjectId, {
+            onSettled: () => setCopyDialogOpen(false),
+          });
+        }}
+        pending={importFrom.isPending}
+      />
 
       {/* Bounded shell: header (sticky) / scrollable list / footer (sticky add form).
           max-h caps page growth so adding many classes doesn't push siblings down. */}
@@ -192,5 +246,115 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
         </form>
       </div>
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bulk copy classes from another project (v3.0 Bug 8). Keeps the picker tiny —
+// authenticated users see all projects, so a flat list with the current
+// project filtered out is enough.
+// ---------------------------------------------------------------------------
+interface CopyClassesFromProjectDialogProps {
+  open: boolean;
+  onOpenChange: (next: boolean) => void;
+  currentProjectId: string;
+  onConfirm: (sourceProjectId: string) => void;
+  pending: boolean;
+}
+
+function CopyClassesFromProjectDialog({
+  open,
+  onOpenChange,
+  currentProjectId,
+  onConfirm,
+  pending,
+}: CopyClassesFromProjectDialogProps) {
+  const projectsQ = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => projectsApi.list(),
+    enabled: open,
+  });
+  const [selected, setSelected] = useState<string | null>(null);
+
+  // Reset selection whenever the dialog re-opens so a stale highlight doesn't
+  // carry over to the next session.
+  useEffect(() => {
+    if (open) setSelected(null);
+  }, [open]);
+
+  const candidates: Project[] = (projectsQ.data ?? []).filter(
+    (p) => p.id !== currentProjectId,
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(92vw,460px)]">
+        <DialogHeader>
+          <DialogTitle>Copy classes from another project</DialogTitle>
+          <DialogDescription>
+            Pick a source project. Existing classes in this project are kept;
+            only new names are copied with their colors and indices.
+          </DialogDescription>
+        </DialogHeader>
+        <div
+          data-testid="copy-classes-project-list"
+          className="grid gap-1 max-h-[320px] overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-1"
+        >
+          {projectsQ.isLoading && (
+            <p className="text-[13px] text-[color:var(--text-tertiary)] px-2 py-3">
+              Loading projects…
+            </p>
+          )}
+          {!projectsQ.isLoading && candidates.length === 0 && (
+            <p className="text-[13px] text-[color:var(--text-tertiary)] italic px-2 py-3">
+              No other projects available.
+            </p>
+          )}
+          {candidates.map((p) => {
+            const isSelected = selected === p.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                data-testid={`copy-classes-source-${p.id}`}
+                onClick={() => setSelected(p.id)}
+                className={cn(
+                  "flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-xs)]",
+                  "text-left text-[13px] tracking-tight transition-colors",
+                  isSelected
+                    ? "bg-[var(--accent-subtle,var(--bg-hover))] text-[color:var(--text-primary)] outline outline-1 outline-[var(--accent)]"
+                    : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+                )}
+              >
+                <span className="flex-1 truncate">{p.name}</span>
+              </button>
+            );
+          })}
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            size="md"
+            onClick={() => onOpenChange(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="primary"
+            size="md"
+            data-testid="copy-classes-confirm"
+            disabled={!selected || pending}
+            loading={pending}
+            onClick={() => {
+              if (selected) onConfirm(selected);
+            }}
+          >
+            {pending ? "Copying" : "Copy classes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
