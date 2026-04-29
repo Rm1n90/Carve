@@ -53,6 +53,26 @@ vi.mock("@/api/classes", () => ({
   },
 }));
 
+// v3.1 Issue 3 — editor reads classes via tasksApi.getClasses (Option A
+// subset model). Mirror the same single-class shape so existing test
+// expectations still hold.
+vi.mock("@/api/tasks", () => ({
+  tasksApi: {
+    getClasses: vi.fn().mockResolvedValue({
+      classes: [
+        { id: "c-1", project_id: "p-1", idx: 0, name: "car", color: "#ff0000",
+          attributes: {}, created_at: "" },
+      ],
+      allowed_class_ids: null,
+    }),
+    setClasses: vi.fn().mockResolvedValue({ classes: [], allowed_class_ids: null }),
+    listForProject: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockResolvedValue({}),
+    delete: vi.fn().mockResolvedValue(undefined),
+    duplicate: vi.fn().mockResolvedValue([]),
+  },
+}));
+
 vi.mock("@/api/annotations", () => ({
   annotationsApi: {
     listForTask: vi.fn().mockResolvedValue([]),

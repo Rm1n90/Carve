@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Download, FileDown } from "lucide-react";
-import { classesApi, type ClassRow } from "@/api/classes";
+import { type ClassRow } from "@/api/classes";
+import { tasksApi } from "@/api/tasks";
 import {
   exportsApi,
   type ClassRemap,
@@ -51,10 +52,18 @@ function buildPayload(remap: RemapState): ClassRemap {
 }
 
 export function ExportDialog({ projectId, taskId }: Props) {
-  const classesQ = useQuery<ClassRow[]>({
-    queryKey: ["classes", projectId],
-    queryFn: () => classesApi.listForProject(projectId),
+  // v3.1 Issue 3 (Option A) — exports are task-scoped. Pull the
+  // task-effective class list so the remap table only shows classes the
+  // task is actually configured to use. When no subset is set the
+  // backend returns the full project list, preserving the legacy view.
+  const taskClassesQ = useQuery({
+    queryKey: ["task-classes", projectId, taskId],
+    queryFn: () => tasksApi.getClasses(projectId, taskId),
   });
+  const classesQ = {
+    data: taskClassesQ.data?.classes as ClassRow[] | undefined,
+    isLoading: taskClassesQ.isLoading,
+  };
 
   const [format, setFormat] = useState<ExportFormat>("yolo");
   const [splits, setSplits] = useState<ExportSplits>(DEFAULT_SPLITS);

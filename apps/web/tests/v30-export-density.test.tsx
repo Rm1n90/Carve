@@ -19,13 +19,20 @@ vi.mock("@/api/exports", () => ({
   },
 }));
 
+// v3.1 Issue 3 — ExportDialog reads classes via tasksApi.getClasses.
 vi.mock("@/api/classes", () => ({
   classesApi: {
     listForProject: vi.fn(),
   },
 }));
 
-import { classesApi } from "@/api/classes";
+vi.mock("@/api/tasks", () => ({
+  tasksApi: {
+    getClasses: vi.fn(),
+  },
+}));
+
+import { tasksApi } from "@/api/tasks";
 import { ExportDialog } from "@/pages/ExportDialog";
 
 afterEach(cleanup);
@@ -51,7 +58,10 @@ function wrap(node: React.ReactNode) {
 describe("ExportDialog — class density (v3.0 B10)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (classesApi.listForProject as any).mockResolvedValue(manyClasses(100));
+    (tasksApi.getClasses as any).mockResolvedValue({
+      classes: manyClasses(100),
+      allowed_class_ids: null,
+    });
   });
 
   it("renders the class-remap table inside a max-h-[400px] scroll container", async () => {

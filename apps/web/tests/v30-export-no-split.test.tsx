@@ -18,14 +18,21 @@ vi.mock("@/api/exports", () => ({
   },
 }));
 
+// v3.1 Issue 3 — ExportDialog reads classes via tasksApi.getClasses.
 vi.mock("@/api/classes", () => ({
   classesApi: {
     listForProject: vi.fn(),
   },
 }));
 
+vi.mock("@/api/tasks", () => ({
+  tasksApi: {
+    getClasses: vi.fn(),
+  },
+}));
+
 import { exportsApi } from "@/api/exports";
-import { classesApi } from "@/api/classes";
+import { tasksApi } from "@/api/tasks";
 import { ExportDialog } from "@/pages/ExportDialog";
 
 const mockClasses = [
@@ -48,7 +55,10 @@ function wrap(node: React.ReactNode) {
 describe("ExportDialog — no-split toggle (v3.0 D12)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (classesApi.listForProject as any).mockResolvedValue(mockClasses);
+    (tasksApi.getClasses as any).mockResolvedValue({
+      classes: mockClasses,
+      allowed_class_ids: null,
+    });
   });
 
   it("defaults to single set and hides the numeric split inputs (v3.1 Bug 4)", async () => {
