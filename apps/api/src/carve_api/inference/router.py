@@ -55,7 +55,18 @@ def _http(err: AppError) -> HTTPException:
     return HTTPException(status_code=err.http_status, detail=err.code)
 
 
-@router.post("/{asset_id}/auto-annotate", response_model=list[AnnotationOut])
+class AutoAnnotateResponse(BaseModel):
+    """v3.3 Issue 3c — predict response now includes a skipped-by-class
+    summary so the editor can surface "Created N · skipped M (unmapped: …)"
+    instead of silently dropping unmapped detections."""
+
+    annotations: list[AnnotationOut]
+    annotations_created: int
+    skipped_count: int
+    skipped_by_class: dict[str, int]
+
+
+@router.post("/{asset_id}/auto-annotate", response_model=AutoAnnotateResponse)
 def auto_annotate(
     asset_id: uuid.UUID,
     weight_id: uuid.UUID | None = None,
@@ -63,7 +74,7 @@ def auto_annotate(
     min_confidence: float = 0.0,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[AnnotationOut]:
+) -> AutoAnnotateResponse:
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
@@ -91,7 +102,7 @@ def auto_annotate(
     try:
         body = fetch_asset_bytes(asset)
         url = presigned_url_for_weight(weight)
-        anns = auto_annotate_asset(
+        result = auto_annotate_asset(
             session=db,
             actor=user,
             task=task,
@@ -105,7 +116,12 @@ def auto_annotate(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
-    return [AnnotationOut.from_orm_annotation(a) for a in anns]
+    return AutoAnnotateResponse(
+        annotations=[AnnotationOut.from_orm_annotation(a) for a in result.annotations],
+        annotations_created=result.annotations_created,
+        skipped_count=result.skipped_count,
+        skipped_by_class=dict(result.skipped_by_class),
+    )
 
 
 @task_inference_router.post("/{task_id}/auto-annotate")

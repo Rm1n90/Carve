@@ -118,11 +118,17 @@ def test_auto_annotate_creates_bbox_annotations(db_session, monkeypatch) -> None
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        # 'unknown' class is skipped; case-insensitive 'TRUCK' matches 'truck'
-        assert len(body) == 2
-        kinds = {a["kind"] for a in body}
+        # 'unknown' class is skipped; case-insensitive 'TRUCK' matches 'truck'.
+        # v3.3 Issue 3c: response is now {annotations, annotations_created,
+        # skipped_count, skipped_by_class}; the unmapped 'unknown' detection
+        # is no longer silently dropped — it's tallied in skipped_by_class.
+        assert body["annotations_created"] == 2
+        assert body["skipped_count"] == 1
+        assert "unknown" in body["skipped_by_class"]
+        anns = body["annotations"]
+        kinds = {a["kind"] for a in anns}
         assert kinds == {"bbox"}
-        cls_ids = {a["class_id"] for a in body}
+        cls_ids = {a["class_id"] for a in anns}
         assert cls_ids == {car_id, truck_id}
     finally:
         model_client_mod.set_test_transport(None)
@@ -148,9 +154,11 @@ def test_auto_annotate_creates_polygon_annotations(db_session, monkeypatch) -> N
         )
         assert r.status_code == 200
         body = r.json()
-        assert len(body) == 1
-        assert body[0]["kind"] == "polygon"
-        assert body[0]["geometry"]["points"] == [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]
+        anns = body["annotations"]
+        assert body["annotations_created"] == 1
+        assert len(anns) == 1
+        assert anns[0]["kind"] == "polygon"
+        assert anns[0]["geometry"]["points"] == [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]
     finally:
         model_client_mod.set_test_transport(None)
 

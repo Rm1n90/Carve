@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User
 from carve_api.errors import AppError
 from carve_api.inference.model_client import ModelServiceError, yolo_inspect
-from carve_api.projects.models import Project
+from carve_api.projects.models import Class, Project
 from carve_api.projects.service import _can_modify
 from carve_api.storage.client import MinioClient
 from carve_api.storage.hashing import stream_xxh3_128
-from carve_api.weights.models import Weight, WeightTaskKind
+from carve_api.weights.models import Weight, WeightClassMapping, WeightTaskKind
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +110,32 @@ class WeightService:
         )
         self.session.add(w)
         self.session.flush()
+
+        # v3.3 Issue 3c — seed the WeightClassMapping rows. Name match is
+        # case-insensitive against ``classes.name`` for this project. We
+        # insert one row per ``(idx, name)`` pair so unmapped weight classes
+        # are still represented (with ``project_class_id=NULL``) and the UI
+        # can offer a manual override. Same transaction as the weight insert
+        # so a failure rolls everything back.
+        if final_class_names:
+            project_classes = list(
+                self.session.execute(
+                    select(Class).where(Class.project_id == project.id)
+                ).scalars()
+            )
+            classes_by_name: dict[str, uuid.UUID] = {
+                c.name.lower(): c.id for c in project_classes
+            }
+            for idx, cls_name in enumerate(final_class_names):
+                self.session.add(
+                    WeightClassMapping(
+                        weight_id=w.id,
+                        weight_class_idx=idx,
+                        weight_class_name=cls_name,
+                        project_class_id=classes_by_name.get(cls_name.lower()),
+                    )
+                )
+            self.session.flush()
         return w
 
     def list_for_project(self, *, project: Project) -> list[Weight]:

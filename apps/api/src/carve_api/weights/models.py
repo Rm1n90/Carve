@@ -2,7 +2,18 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, String, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,4 +53,46 @@ class Weight(Base):
     # supplied, and the editor predict popover pre-selects it on open.
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
+
+class WeightClassMapping(Base):
+    """Explicit mapping between a YOLO weight's classes and project classes.
+
+    v3.3 Issue 3c — auto-populated by name-match on weight upload, can be
+    manually overridden via the weight detail panel, and consulted by the
+    auto-annotate pipeline before falling back to the legacy name match.
+    """
+
+    __tablename__ = "weight_class_mappings"
+    __table_args__ = (
+        UniqueConstraint(
+            "weight_id", "weight_class_idx", name="uq_weight_class_mappings_weight_idx"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    weight_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("weights.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    weight_class_idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    weight_class_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    project_class_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("classes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

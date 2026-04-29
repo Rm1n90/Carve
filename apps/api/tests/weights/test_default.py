@@ -197,7 +197,12 @@ def test_auto_annotate_without_weight_id_uses_default(db_session, monkeypatch) -
         # No weight_id query param — service should fall back to the default.
         r = client.post(f"/assets/{aid}/auto-annotate", headers=_hdr(token))
         assert r.status_code == 200, r.text
-        assert len(r.json()) == 1
+        # v3.3 Issue 3c — response shape is now {annotations, annotations_created,
+        # skipped_count, skipped_by_class}; older list-shaped tests get migrated
+        # piecewise as fixtures land.
+        body = r.json()
+        assert body["annotations_created"] == 1
+        assert len(body["annotations"]) == 1
     finally:
         model_client_mod.set_test_transport(None)
 
