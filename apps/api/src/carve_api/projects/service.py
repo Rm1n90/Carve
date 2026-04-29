@@ -102,7 +102,24 @@ class TaskService:
         self.session = session
 
     def create(self, *, actor: User, project: Project, name: str, kind: TaskKind) -> Task:
-        t = Task(project_id=project.id, name=name, kind=kind)
+        # v3.2 Issue 3 — snapshot the project's current class ids onto the
+        # new task. Previously ``allowed_class_ids`` defaulted to ``NULL``,
+        # which the effective-classes resolver treats as "all current
+        # project classes" → adding a class to the project after the fact
+        # made it appear in every existing task automatically. By
+        # snapshotting at creation time, new project classes added later
+        # are *not* injected into already-created tasks. The user can
+        # explicitly clear the subset back to ``NULL`` (legacy "all" mode)
+        # via the Edit-classes dialog.
+        project_class_ids = [
+            c.id for c in ClassService(self.session).list_for_project(project=project)
+        ]
+        t = Task(
+            project_id=project.id,
+            name=name,
+            kind=kind,
+            allowed_class_ids=project_class_ids,
+        )
         self.session.add(t)
         self.session.flush()
         return t
@@ -146,6 +163,7 @@ class TaskService:
         task_id: uuid.UUID,
         count: int = 1,
         name: str | None = None,
+        allowed_class_ids: list[uuid.UUID] | None = None,
     ) -> list[Task]:
         """Duplicate a task ``count`` times in the same project.
 
@@ -161,16 +179,43 @@ class TaskService:
         ``name`` is ``None`` the legacy auto-suffix path runs: first
         copy is suffixed with " (copy)"; subsequent copies use
         " (copy 2)", " (copy 3)", etc.
+
+        v3.2 Issue 4 — ``allowed_class_ids`` lets the caller override
+        the duplicate's class subset. ``None`` (default) means "clone
+        the source task's snapshot verbatim". ``[]`` means "duplicate
+        with zero classes". A populated list is validated against the
+        source project's class ids — cross-project ids raise
+        ``ValueError`` so the router can return 422.
         """
         if not _can_modify(actor, project):
             raise NotProjectOwner("only owner or admin can duplicate a task")
         src = self.get(project=project, task_id=task_id)
-        # v3.1 Issue 3 — copy the task-scoped class subset onto the new
-        # row so a duplicated task starts with the same scope. ``None``
-        # stays as ``None`` (i.e. "all project classes").
-        cloned_allowed = (
-            list(src.allowed_class_ids) if src.allowed_class_ids is not None else None
-        )
+        # v3.2 Issue 4 — override path. ``None`` = "keep source snapshot";
+        # any list (including ``[]``) replaces it.
+        if allowed_class_ids is None:
+            # v3.1 Issue 3 — copy the task-scoped class subset onto the
+            # new row so a duplicated task starts with the same scope.
+            # ``None`` stays as ``None`` (legacy "all project classes").
+            cloned_allowed = (
+                list(src.allowed_class_ids)
+                if src.allowed_class_ids is not None
+                else None
+            )
+        else:
+            # Validate the override ids belong to the source project —
+            # cross-project ids must surface as 422 at the router layer.
+            project_class_ids = {
+                c.id
+                for c in ClassService(self.session).list_for_project(project=project)
+            }
+            unique_override = list({cid for cid in allowed_class_ids})
+            for cid in unique_override:
+                if cid not in project_class_ids:
+                    raise ValueError(
+                        "allowed_class_ids contains an id that does not belong to "
+                        "this project"
+                    )
+            cloned_allowed = unique_override
         new_tasks: list[Task] = []
         if name is not None:
             trimmed = name.strip()
