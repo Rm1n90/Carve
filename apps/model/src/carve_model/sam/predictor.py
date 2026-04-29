@@ -286,6 +286,75 @@ def force_evict_predictor() -> bool:
     return True
 
 
+# --- runtime variant switching --------------------------------------------
+#
+# v3.0 Bug 7: operators (and end users with the right role) can swap SAM
+# variants without restarting the model container. The flow is:
+#
+#   1. POST /sam/switch  →  load_predictor(variant)
+#   2. evict the current predictor (if any) + free GPU memory
+#   3. set ``SAM_MODEL`` in-process so ``_default_factory`` reads the new
+#      variant on the next ``get_predictor()`` call
+#   4. eagerly build the new predictor under ``_PREDICTOR_LOCK`` so we
+#      surface load failures synchronously to the caller (5-30s).
+
+
+def load_predictor(variant: str) -> None:
+    """Switch the active SAM variant. Idempotent on the current variant.
+
+    - Validates the variant against ``ALLOWED_SAM_MODELS``; raises ``ValueError``.
+    - No-op when ``variant`` already matches the configured model AND a
+      predictor is already loaded. (When no predictor is loaded yet but
+      the env already matches, we still skip the eager build — the next
+      inference call will lazy-build it.)
+    - Otherwise: evicts the existing predictor, updates ``SAM_MODEL`` in
+      ``os.environ`` so ``_default_factory()`` picks up the new value, and
+      eagerly builds the new predictor so load failures surface to the
+      caller (rather than to the next encode/decode request).
+
+    Concurrent calls serialise on ``_PREDICTOR_LOCK``. Test-injected
+    predictors are left untouched — switching during a test would clobber
+    the fake the test registered.
+    """
+    if variant not in ALLOWED_SAM_MODELS:
+        raise ValueError(
+            f"unknown SAM variant {variant!r}; "
+            f"allowed: {', '.join(ALLOWED_SAM_MODELS)}"
+        )
+
+    # Test-injected predictors take priority — switching is a no-op so
+    # tests don't have to special-case this path. We still update
+    # ``SAM_MODEL`` so ``get_sam_model()`` reflects the requested variant
+    # for any subsequent assertions.
+    if _TEST_PREDICTOR is not None:
+        os.environ["SAM_MODEL"] = variant
+        return
+
+    current = get_sam_model()
+    with _PREDICTOR_LOCK:
+        global _PREDICTOR
+        if variant == current and _PREDICTOR is not None:
+            # Already on the requested variant with a loaded predictor.
+            return
+        # Drop the existing singleton; we'll rebuild below.
+        _PREDICTOR = None
+
+    # Free GPU memory outside the lock so other threads can read state.
+    _empty_cuda_cache()
+
+    # Update the env so ``_default_factory()`` and ``get_sam_model()``
+    # reflect the new variant on subsequent calls. Legacy ``SAM_VARIANT``
+    # is intentionally not touched — operators who set it explicitly keep
+    # their override; ``SAM_MODEL`` wins in ``get_sam_model``.
+    os.environ["SAM_MODEL"] = variant
+
+    # Eagerly build the new predictor so load failures surface here
+    # rather than on the next inference request.
+    with _PREDICTOR_LOCK:
+        _PREDICTOR = _default_factory()
+        touch_predictor()
+
+
 def set_test_predictor(p: SamPredictor | None) -> None:
     """Inject a stub for tests; pass None to clear."""
     global _TEST_PREDICTOR
