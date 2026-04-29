@@ -35,6 +35,7 @@ import {
   centeredOffset,
   clampScale,
   fitToHost,
+  panBy,
   wheelDeltaToFactor,
   zoomAt,
   zoomCentered,
@@ -225,6 +226,20 @@ export function AnnotationCanvas({
   >(null);
   // Cursor override during a drag — clears when the drag ends.
   const [dragCursor, setDragCursor] = useState<string | null>(null);
+  // v3.2 Issue 2: canvas-pan affordances. `spacePanRef` tracks whether
+  // Space is held (enables click-drag pan regardless of active tool);
+  // `panActiveRef` tracks whether a pan drag is in flight (Space+drag
+  // OR middle-mouse drag); `panOriginRef` snapshots the pointer's
+  // client position + the frame offset at pan-start so move events
+  // produce deltas relative to a stable origin instead of the previous
+  // event. Without these, a zoomed-in image had no way to scroll.
+  const spacePanRef = useRef(false);
+  const panActiveRef = useRef(false);
+  const panOriginRef = useRef<{
+    clientX: number;
+    clientY: number;
+    startOffset: { x: number; y: number };
+  } | null>(null);
   // Reset the dragCursor whenever the active tool changes. Otherwise a
   // pending hover-cursor (e.g. "ew-resize" from hovering a bbox handle
   // while the cursor tool was active) sticks across V→B / B→V toggles
@@ -652,6 +667,49 @@ export function AnnotationCanvas({
       lastAnchor = null;
     };
   }, [applyFrame]);
+
+  // ----- Space-hold pan toggle. v3.2 Issue 2.
+  //
+  // When Space is held, the canvas enters a "pan-armed" state — the
+  // host cursor flips to "grab" and the pointer-down handler intercepts
+  // before the active tool, starting a drag that pans the layer offset.
+  // Space release clears the armed state. We attach to `window` (rather
+  // than the host) so the toggle works whether or not the host has
+  // focus, but we still respect target tag so Space typed into the nav
+  // search box / a text area / a contenteditable doesn't hijack the
+  // page's normal scroll-on-Space behaviour.
+  useEffect(() => {
+    function isEditableTarget(target: EventTarget | null): boolean {
+      const el = target as HTMLElement | null;
+      if (!el || typeof el !== "object") return false;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") return true;
+      if (el.isContentEditable) return true;
+      return false;
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.code !== "Space" && e.key !== " ") return;
+      if (isEditableTarget(e.target)) return;
+      // Avoid stomping on key-repeat: only flip the cursor / preventDefault
+      // on the first transition. Holding Space still keeps the ref true.
+      e.preventDefault();
+      if (!spacePanRef.current) {
+        spacePanRef.current = true;
+        // Don't override an active drag's grabbing cursor.
+        if (!panActiveRef.current) setDragCursor("grab");
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code !== "Space" && e.key !== " ") return;
+      spacePanRef.current = false;
+      if (!panActiveRef.current) setDragCursor(null);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
 
   // ----- Toolbar / keyboard zoom commands. The toolbar dispatches
   // window CustomEvents (so the toolbar doesn't need a ref into the
@@ -1288,6 +1346,30 @@ export function AnnotationCanvas({
     }
 
     function onDown(e: PointerEvent) {
+      // v3.2 Issue 2: pan branch — runs BEFORE tool routing so a
+      // Space-armed click or middle-mouse click never gets eaten by the
+      // active tool's onPointerDown (which would otherwise start a bbox
+      // drag, drop a polygon vertex, etc.).
+      const isMiddle = e.button === 1;
+      if (spacePanRef.current || isMiddle) {
+        // Suppress browser middle-click default (autoscroll on Windows /
+        // open-link-in-new-tab over <a>). Space-pan also benefits from
+        // preventDefault to avoid focus-shifts on click.
+        e.preventDefault();
+        try {
+          host!.setPointerCapture(e.pointerId);
+        } catch {
+          /* setPointerCapture not always available in jsdom */
+        }
+        panActiveRef.current = true;
+        panOriginRef.current = {
+          clientX: e.clientX,
+          clientY: e.clientY,
+          startOffset: { x: offsetRef.current.x, y: offsetRef.current.y },
+        };
+        setDragCursor("grabbing");
+        return;
+      }
       const p = pointerXY(e);
       if (tool === "cursor") {
         // 1. If we have a selected bbox, did we click one of its handles?
@@ -1390,6 +1472,25 @@ export function AnnotationCanvas({
     }
 
     function onMove(e: PointerEvent) {
+      // v3.2 Issue 2: pan-move branch. While a pan drag is in flight,
+      // delta is computed against the captured origin (not the previous
+      // event) so accumulated rounding can't drift the offset.
+      if (panActiveRef.current && panOriginRef.current) {
+        const origin = panOriginRef.current;
+        const dx = e.clientX - origin.clientX;
+        const dy = e.clientY - origin.clientY;
+        autoFitRef.current = false;
+        const next = panBy(
+          {
+            scale: scaleRef.current,
+            offset: { x: origin.startOffset.x, y: origin.startOffset.y },
+          },
+          dx,
+          dy,
+        );
+        applyFrame(next);
+        return;
+      }
       const p = pointerXY(e);
       if (tool === "bbox") {
         const r = bbox.onPointerMove(p);
@@ -1467,6 +1568,22 @@ export function AnnotationCanvas({
     }
 
     function onUp(e: PointerEvent) {
+      // v3.2 Issue 2: pan-release branch. Pan state is shared between
+      // Space-drag and middle-mouse drag; on release we revert the
+      // cursor, but if Space is still held we leave it on "grab" so
+      // the next click can pan again without re-pressing Space.
+      if (panActiveRef.current) {
+        panActiveRef.current = false;
+        panOriginRef.current = null;
+        try {
+          host!.releasePointerCapture(e.pointerId);
+        } catch {
+          /* not all environments implement releasePointerCapture */
+        }
+        if (spacePanRef.current) setDragCursor("grab");
+        else setDragCursor(null);
+        return;
+      }
       const p = pointerXY(e);
       if (tool === "bbox") {
         bbox.onPointerUp(p);

@@ -5,6 +5,7 @@ import {
   fitToHost,
   MAX_SCALE,
   MIN_SCALE,
+  panBy,
   wheelDeltaToFactor,
   zoomAt,
   zoomCentered,
@@ -260,6 +261,26 @@ describe("canvas zoom helpers", () => {
       const start: ZoomFrame = { scale: 2, offset: { x: 0, y: 0 } };
       const next = zoomCentered(start, { w: 800, h: 600 }, 1 / ZOOM_STEP);
       expect(next.scale).toBeCloseTo(2 / ZOOM_STEP, 10);
+    });
+  });
+
+  describe("panBy — translate offset without changing scale (v3.2 Issue 2)", () => {
+    it("translates the offset by the given (dx, dy) and keeps the scale", () => {
+      const result = panBy({ scale: 2, offset: { x: 10, y: 20 } }, 5, -3);
+      expect(result).toEqual({ scale: 2, offset: { x: 15, y: 17 } });
+    });
+
+    it("never mutates the scale across a pan step", () => {
+      const start: ZoomFrame = { scale: 3.7, offset: { x: 0, y: 0 } };
+      const next = panBy(start, 100, -50);
+      expect(next.scale).toBe(start.scale);
+    });
+
+    it("returns the same offset when dx and dy are zero", () => {
+      const start: ZoomFrame = { scale: 1.5, offset: { x: 42, y: -7 } };
+      const next = panBy(start, 0, 0);
+      expect(next.offset).toEqual(start.offset);
+      expect(next.scale).toBe(start.scale);
     });
   });
 

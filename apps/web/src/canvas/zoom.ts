@@ -128,6 +128,22 @@ export function zoomAt(
 }
 
 /**
+ * Translate the current frame by ``(dx, dy)`` host pixels without changing
+ * the scale. Used by the canvas pan affordances (Space-hold + drag, and
+ * middle-mouse drag) introduced in v3.2 to fix Issue 2 — once the user
+ * zoomed in past the host bounds, there was no way to reach the
+ * off-screen portion of the image. Pure helper, mirrors ``zoomAt`` /
+ * ``zoomCentered`` in keeping the math out of the React component for
+ * cheap unit tests.
+ */
+export function panBy(frame: ZoomFrame, dx: number, dy: number): ZoomFrame {
+  return {
+    scale: frame.scale,
+    offset: { x: frame.offset.x + dx, y: frame.offset.y + dy },
+  };
+}
+
+/**
  * Zoom by a step factor anchored to the centre of the host. Used by the
  * `+` / `-` toolbar buttons and the keyboard shortcuts.
  */
