@@ -58,6 +58,7 @@ vi.mock("@/api/phase2", () => ({
   },
   modelsApi: {
     samActive: vi.fn(),
+    samSetActive: vi.fn(),
   },
   weightsApi: {
     listWorkspace: vi.fn(),

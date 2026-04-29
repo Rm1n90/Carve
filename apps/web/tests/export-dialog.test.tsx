@@ -134,12 +134,16 @@ describe("ExportDialog", () => {
 
   it("switches format to coco", async () => {
     (exportsApi.create as any).mockResolvedValue({ export_id: "e3" });
-    const { findByText, getByRole, getByLabelText } = render(
+    const { findByText, findByTestId, getByRole, getByLabelText } = render(
       wrap(<ExportDialog projectId="p1" taskId="t1" />),
     );
     await findByText("car");
-    const formatSelect = getByLabelText("export-format") as HTMLSelectElement;
-    fireEvent.change(formatSelect, { target: { value: "coco" } });
+    // v3.0: Format is now a Radix Select. Open trigger then click item.
+    const trigger = getByLabelText("export-format");
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: "mouse" });
+    fireEvent.click(trigger);
+    const cocoItem = await findByTestId("export-format-coco");
+    fireEvent.click(cocoItem);
     fireEvent.click(getByRole("button", { name: /export/i }));
     await waitFor(() => {
       expect(exportsApi.create).toHaveBeenCalled();

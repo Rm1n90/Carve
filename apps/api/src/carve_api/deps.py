@@ -50,7 +50,8 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     user = db.get(User, claims["sub"])
-    if user is None:
+    # Bug 14: soft-deleted users must not be able to use an existing JWT.
+    if user is None or user.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="user not found")
     return user
 
@@ -62,3 +63,11 @@ def require_role(*roles: UserRole):
         return user
 
     return _checker
+
+
+def get_current_admin_user(user: User = Depends(get_current_user)) -> User:
+    """Convenience wrapper around ``require_role(UserRole.admin)`` for the
+    new admin-only member CRUD endpoints (Bug 14)."""
+    if user.role != UserRole.admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    return user

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import type { WheelEvent } from "react";
 import { assetsApi, type Asset } from "@/api/assets";
 import { cn } from "@/lib/cn";
 
@@ -66,14 +67,21 @@ export function AssetThumbnailStrip({ taskId, projectId, activeAssetId }: Props)
   });
   const assets = (q.data ?? []).slice(-MAX_THUMBS);
   if (assets.length <= 1) return null;
+  function onWheel(e: WheelEvent<HTMLDivElement>) {
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      e.currentTarget.scrollLeft += e.deltaY;
+      e.preventDefault();
+    }
+  }
   return (
     <div
       role="region"
       aria-label="Task thumbnails"
       data-testid="asset-thumbnail-strip"
+      onWheel={onWheel}
       className={cn(
         "h-[64px] shrink-0 border-b border-[var(--border-subtle)]",
-        "bg-[var(--bg-app)] flex items-center gap-2 px-3 overflow-x-auto",
+        "bg-[var(--bg-app)] flex items-center gap-2 px-3 overflow-x-auto overflow-y-hidden",
       )}
     >
       {assets.map((a) => (

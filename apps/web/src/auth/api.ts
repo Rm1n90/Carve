@@ -38,3 +38,16 @@ export async function login(email: string, password: string): Promise<void> {
 export function logout(): void {
   useAuth.getState().clear();
 }
+
+/**
+ * Self-service password rotation (audit Bug 16). Posts to
+ * ``POST /auth/password``; on success the server returns 204 with no body.
+ * Errors propagate as Axios errors so callers can branch on
+ * ``err.response?.status`` (401 wrong current, 422 validation, 429 rate limit).
+ */
+export async function changePassword(
+  current_password: string,
+  new_password: string,
+): Promise<void> {
+  await api.post("/auth/password", { current_password, new_password });
+}

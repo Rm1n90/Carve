@@ -798,6 +798,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 >
                   <ClassesPanel
                     classes={classesQ.data ?? []}
+                    currentFrameId={frameId}
                     onCreateClass={(name, color) => {
                       const list = classesQ.data ?? [];
                       const nextIdx = list.reduce(

@@ -89,5 +89,9 @@ class ApiKeyService:
             if verify_password(raw_token, k.hashed_token):
                 k.last_used_at = datetime.now(timezone.utc)
                 self.session.flush()
-                return self.session.get(User, k.user_id)
+                # Bug 14: soft-deleted users must not authenticate via PAT.
+                user = self.session.get(User, k.user_id)
+                if user is None or user.deleted_at is not None:
+                    return None
+                return user
         return None

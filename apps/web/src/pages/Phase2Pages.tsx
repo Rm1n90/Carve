@@ -147,6 +147,14 @@ export function ModelsYoloPage() {
   });
   const weights = wsQ.data ?? [];
   const [uploadOpen, setUploadOpen] = useState(false);
+  // v3.0 C6 — selected weight drives the right-side details panel. We
+  // store the id rather than the object so it stays valid across
+  // re-fetches (rows are replaced by reference but the id is stable).
+  const [selectedWeightId, setSelectedWeightId] = useState<string | null>(
+    null,
+  );
+  const selectedWeight =
+    weights.find((w) => w.id === selectedWeightId) ?? null;
 
   const deleteM = useMutation({
     mutationFn: (id: string) => weightsApi.delete(id),
@@ -175,8 +183,37 @@ export function ModelsYoloPage() {
 
   const canDelete = me?.role === "admin";
 
+  async function handleDeleteWeight(w: Weight) {
+    const ok = await confirm({
+      title: "Delete weight?",
+      description: (
+        <>
+          Permanently remove the weight{" "}
+          <span className="font-medium text-[color:var(--text-primary)]">
+            {w.name}
+          </span>
+          . This cannot be undone.
+        </>
+      ),
+      variant: "danger",
+      confirmLabel: "Delete",
+    });
+    if (ok) {
+      deleteM.mutate(w.id, {
+        onSuccess: () => {
+          // Drop selection if the deleted row was selected.
+          setSelectedWeightId((prev) => (prev === w.id ? null : prev));
+        },
+      });
+    }
+  }
+
   return (
-    <div className="grid gap-6 max-w-[1100px]">
+    // v3.0 C6 — full-width canvas (was capped at 1100px). The page now
+    // uses the wide outer container so the table breathes on 1440+
+    // screens and we can fit the right-side details panel without
+    // squeezing the table columns.
+    <div className="grid gap-6 max-w-screen-2xl">
       {/* v2.9 P1-16 — editorial header pattern. */}
       <header className="flex items-baseline justify-between gap-4 flex-wrap">
         <div className="grid gap-1">
@@ -203,99 +240,204 @@ export function ModelsYoloPage() {
       </header>
       <UploadWeightDialog open={uploadOpen} onOpenChange={setUploadOpen} />
 
-      <Card variant="surface" radius="lg" className="overflow-hidden">
-        {wsQ.isLoading ? (
-          <p className="p-6 text-[13px] text-[color:var(--text-tertiary)]">
-            Loading…
-          </p>
-        ) : weights.length === 0 ? (
-          <div className="p-12 text-center grid gap-3 place-items-center">
-            <span className="grid h-12 w-12 place-items-center rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)]">
-              <Cpu className="h-5 w-5" />
-            </span>
-            <p className="text-[14px] font-medium tracking-tight">
-              No custom YOLO weights yet
+      {/* v3.0 C6 — table on the left, details panel on the right at
+          widescreen. Single column below `lg` so mobile / split-pane
+          screens keep the panel below the table without squeezing. */}
+      <div
+        data-testid="yolo-page-grid"
+        className="grid gap-6 lg:grid-cols-[1fr_320px]"
+      >
+        <Card variant="surface" radius="lg" className="overflow-hidden">
+          {wsQ.isLoading ? (
+            <p className="p-6 text-[13px] text-[color:var(--text-tertiary)]">
+              Loading…
             </p>
-            <p className="text-[12.5px] text-[color:var(--text-tertiary)] max-w-md">
-              Upload a <code className="font-mono">.pt</code> file from a
-              project's detail page to make it available for inference and
-              auto-annotation.
-            </p>
-          </div>
-        ) : (
-          <table className="w-full text-[13px]">
-            <thead className="bg-[var(--bg-subtle)] text-[12px] tracking-tight text-[color:var(--text-tertiary)]">
-              <tr>
-                <th className="text-left font-medium px-4 py-2.5">Name</th>
-                <th className="text-left font-medium px-4 py-2.5">Task</th>
-                <th className="text-left font-medium px-4 py-2.5">Classes</th>
-                <th className="text-right font-medium px-4 py-2.5">Size</th>
-                <th className="text-left font-medium px-4 py-2.5">Uploaded</th>
-                <th className="text-right font-medium px-4 py-2.5">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {weights.map((w) => (
-                <tr
-                  key={w.id}
-                  className="border-t border-[var(--border-subtle)] hover:bg-[var(--bg-hover)]"
-                >
-                  <td className="px-4 py-2.5">
-                    <InlineName
-                      weight={w}
-                      canEdit={canDelete}
-                      busy={renameM.isPending && renameM.variables?.id === w.id}
-                      onSubmit={(name) => renameM.mutate({ id: w.id, name })}
-                    />
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <Badge variant="accent">{w.task_kind}</Badge>
-                  </td>
-                  <td className="px-4 py-2.5 text-[color:var(--text-secondary)]">
-                    {w.class_names.length}
-                  </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-[12px]">
-                    {bytesToMb(w.size_bytes)}
-                  </td>
-                  <td className="px-4 py-2.5 text-[color:var(--text-tertiary)]">
-                    {new Date(w.created_at).toLocaleDateString()}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex items-center justify-end">
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        leftIcon={<Trash2 className="h-3.5 w-3.5" />}
-                        disabled={!canDelete || deleteM.isPending}
-                        data-testid={`weight-delete-${w.id}`}
-                        onClick={async () => {
-                          const ok = await confirm({
-                            title: "Delete weight?",
-                            description: (
-                              <>
-                                Permanently remove the weight{" "}
-                                <span className="font-medium text-[color:var(--text-primary)]">
-                                  {w.name}
-                                </span>
-                                . This cannot be undone.
-                              </>
-                            ),
-                            variant: "danger",
-                            confirmLabel: "Delete",
-                          });
-                          if (ok) deleteM.mutate(w.id);
-                        }}
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  </td>
+          ) : weights.length === 0 ? (
+            <div className="p-12 text-center grid gap-3 place-items-center">
+              <span className="grid h-12 w-12 place-items-center rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)]">
+                <Cpu className="h-5 w-5" />
+              </span>
+              <p className="text-[14px] font-medium tracking-tight">
+                No custom YOLO weights yet
+              </p>
+              <p className="text-[12.5px] text-[color:var(--text-tertiary)] max-w-md">
+                Upload a <code className="font-mono">.pt</code> file from a
+                project's detail page to make it available for inference and
+                auto-annotation.
+              </p>
+            </div>
+          ) : (
+            <table className="w-full text-[13px]">
+              <thead className="bg-[var(--bg-subtle)] text-[12px] tracking-tight text-[color:var(--text-tertiary)]">
+                <tr>
+                  <th className="text-left font-medium px-4 py-2.5">Name</th>
+                  <th className="text-left font-medium px-4 py-2.5">Task</th>
+                  <th className="text-left font-medium px-4 py-2.5">Classes</th>
+                  <th className="text-right font-medium px-4 py-2.5">Size</th>
+                  <th className="text-left font-medium px-4 py-2.5">Uploaded</th>
+                  <th className="text-right font-medium px-4 py-2.5">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
+              </thead>
+              <tbody>
+                {weights.map((w) => {
+                  const isSelected = w.id === selectedWeightId;
+                  return (
+                    <tr
+                      key={w.id}
+                      // v3.0 C6 — click-to-select drives the right panel.
+                      // The action buttons stop propagation so the row
+                      // selection doesn't fight Edit/Delete.
+                      onClick={() => setSelectedWeightId(w.id)}
+                      data-testid={`weight-row-${w.id}`}
+                      data-selected={isSelected ? "true" : undefined}
+                      className={
+                        "cursor-pointer border-t border-[var(--border-subtle)] " +
+                        (isSelected
+                          ? "bg-[var(--accent-bg)]"
+                          : "hover:bg-[var(--bg-hover)]")
+                      }
+                    >
+                      <td
+                        className="px-4 py-2.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <InlineName
+                          weight={w}
+                          canEdit={canDelete}
+                          busy={
+                            renameM.isPending && renameM.variables?.id === w.id
+                          }
+                          onSubmit={(name) =>
+                            renameM.mutate({ id: w.id, name })
+                          }
+                        />
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <Badge variant="accent">{w.task_kind}</Badge>
+                      </td>
+                      <td className="px-4 py-2.5 text-[color:var(--text-secondary)]">
+                        {w.class_names.length}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono text-[12px]">
+                        {bytesToMb(w.size_bytes)}
+                      </td>
+                      <td className="px-4 py-2.5 text-[color:var(--text-tertiary)]">
+                        {new Date(w.created_at).toLocaleDateString()}
+                      </td>
+                      <td
+                        className="px-4 py-2.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex items-center justify-end">
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            leftIcon={<Trash2 className="h-3.5 w-3.5" />}
+                            disabled={!canDelete || deleteM.isPending}
+                            data-testid={`weight-delete-${w.id}`}
+                            onClick={() => {
+                              void handleDeleteWeight(w);
+                            }}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </Card>
+
+        {/* v3.0 C6 — right-side details panel. Glass card mirrors the
+            existing surface treatment used elsewhere in v2.9. Empty
+            selection shows muted helper text per the audit. */}
+        <Card
+          variant="surface"
+          radius="lg"
+          className="p-4 grid gap-3 self-start"
+          data-testid="yolo-details-panel"
+        >
+          {selectedWeight ? (
+            <>
+              <div className="grid gap-1">
+                <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+                  Selected weight
+                </span>
+                <p
+                  className="text-[15px] font-medium tracking-tight truncate"
+                  data-testid="yolo-details-name"
+                >
+                  {selectedWeight.name}
+                </p>
+              </div>
+
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12.5px]">
+                <dt className="text-[color:var(--text-tertiary)]">Task</dt>
+                <dd>
+                  <Badge variant="accent">{selectedWeight.task_kind}</Badge>
+                </dd>
+
+                <dt className="text-[color:var(--text-tertiary)]">Size</dt>
+                <dd className="font-mono text-[12px]">
+                  {bytesToMb(selectedWeight.size_bytes)}
+                </dd>
+
+                <dt className="text-[color:var(--text-tertiary)]">Uploaded</dt>
+                <dd className="text-[color:var(--text-secondary)]">
+                  {new Date(selectedWeight.created_at).toLocaleString()}
+                </dd>
+              </dl>
+
+              <div className="grid gap-1.5">
+                <span className="text-[11px] tracking-tight text-[color:var(--text-tertiary)] uppercase">
+                  Classes ({selectedWeight.class_names.length})
+                </span>
+                {selectedWeight.class_names.length === 0 ? (
+                  <p className="text-[12px] text-[color:var(--text-tertiary)] italic">
+                    No class metadata recorded for this weight.
+                  </p>
+                ) : (
+                  <ul
+                    className="flex flex-wrap gap-1"
+                    data-testid="yolo-details-classes"
+                  >
+                    {selectedWeight.class_names.map((cn) => (
+                      <li key={cn}>
+                        <Badge variant="neutral">{cn}</Badge>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end pt-1">
+                <Button
+                  size="sm"
+                  variant="danger"
+                  leftIcon={<Trash2 className="h-3.5 w-3.5" />}
+                  disabled={!canDelete || deleteM.isPending}
+                  data-testid="yolo-details-delete"
+                  onClick={() => {
+                    void handleDeleteWeight(selectedWeight);
+                  }}
+                >
+                  Delete
+                </Button>
+              </div>
+            </>
+          ) : (
+            <p
+              className="text-[12.5px] text-[color:var(--text-tertiary)]"
+              data-testid="yolo-details-empty"
+            >
+              Select a weight to see details
+            </p>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
@@ -311,8 +453,50 @@ const SAM_VARIANT_LABEL: Record<string, string> = {
 };
 
 export function ModelsSamPage() {
+  const qc = useQueryClient();
+  const confirm = useConfirm();
   const samQ = useQuery({ queryKey: ["sam-active"], queryFn: modelsApi.samActive });
   const data = samQ.data;
+
+  // v3.0 Bug 7: hot-swap UI. ``switching`` reflects whether a load is in
+  // flight — drives the spinner, disabled radios, and the live region copy.
+  const [switching, setSwitching] = useState(false);
+  const [pendingVariant, setPendingVariant] = useState<string | null>(null);
+
+  const switchM = useMutation({
+    mutationFn: (variant: string) => modelsApi.samSetActive(variant),
+    onMutate: (variant) => {
+      setSwitching(true);
+      setPendingVariant(variant);
+    },
+    onSuccess: (result) => {
+      showToast(`Active SAM variant: ${result.active_variant}`, {
+        variant: "success",
+      });
+      void qc.invalidateQueries({ queryKey: ["sam-active"] });
+    },
+    onError: () => {
+      showToast("Failed to switch SAM variant", { variant: "error" });
+    },
+    onSettled: () => {
+      setSwitching(false);
+      setPendingVariant(null);
+    },
+  });
+
+  async function handleVariantChange(variant: string) {
+    if (switching) return;
+    if (variant === data?.active) return;
+    const ok = await confirm({
+      title: `Switch to ${SAM_VARIANT_LABEL[variant] ?? variant}?`,
+      description:
+        "The current model will be offloaded from GPU memory. Loading the new variant takes 5-30 seconds.",
+      confirmLabel: "Switch",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    switchM.mutate(variant);
+  }
 
   return (
     <div className="grid gap-6 max-w-[1100px]">
@@ -338,7 +522,10 @@ export function ModelsSamPage() {
             <p className="text-[12px] tracking-tight text-[color:var(--text-tertiary)] uppercase">
               Active variant
             </p>
-            <p className="text-[18px] font-medium tracking-tight">
+            <p
+              className="text-[18px] font-medium tracking-tight"
+              data-testid="sam-active-variant-label"
+            >
               {samQ.isLoading
                 ? "…"
                 : SAM_VARIANT_LABEL[data?.active ?? ""] ?? data?.active}
@@ -353,14 +540,21 @@ export function ModelsSamPage() {
             Available variants
           </h2>
           <p className="text-[12px] text-[color:var(--text-tertiary)] mt-0.5">
-            To switch, edit <code className="font-mono">SAM_MODEL</code> in the
-            API <code className="font-mono">.env</code> and restart the model
-            service.
+            Select a variant to hot-swap the active SAM model. The model
+            service offloads the current model and loads the new one
+            (typically 5-30 seconds).
           </p>
         </div>
-        <ul>
+        <ul
+          role="radiogroup"
+          aria-label="sam-variant"
+          aria-busy={switching}
+          data-testid="sam-variant-radiogroup"
+        >
           {(data?.available ?? []).map((variant) => {
             const active = variant === data?.active;
+            const id = `sam-variant-${variant}`;
+            const disabled = switching;
             return (
               <li
                 key={variant}
@@ -369,6 +563,20 @@ export function ModelsSamPage() {
                   (active ? "bg-[var(--accent-bg)]" : "")
                 }
               >
+                <input
+                  type="radio"
+                  id={id}
+                  name="sam-variant"
+                  value={variant}
+                  checked={active}
+                  disabled={disabled}
+                  onChange={() => {
+                    void handleVariantChange(variant);
+                  }}
+                  className="h-4 w-4 accent-[var(--accent)] cursor-pointer disabled:cursor-not-allowed"
+                  data-testid={`sam-variant-radio-${variant}`}
+                  aria-label={SAM_VARIANT_LABEL[variant] ?? variant}
+                />
                 <Layers
                   className={
                     "h-3.5 w-3.5 " +
@@ -377,10 +585,16 @@ export function ModelsSamPage() {
                       : "text-[color:var(--text-tertiary)]")
                   }
                 />
-                <span className="text-[13.5px] tracking-tight">
+                <label
+                  htmlFor={id}
+                  className={
+                    "text-[13.5px] tracking-tight " +
+                    (disabled ? "" : "cursor-pointer")
+                  }
+                >
                   {SAM_VARIANT_LABEL[variant] ?? variant}
-                </span>
-                {active && (
+                </label>
+                {active && !switching && (
                   <Badge variant="accent" className="ml-auto">
                     Active
                   </Badge>
@@ -389,6 +603,23 @@ export function ModelsSamPage() {
             );
           })}
         </ul>
+        {switching && (
+          <div
+            className="px-6 py-3 border-t border-[var(--border-subtle)] flex items-center gap-3 bg-[var(--bg-subtle)]"
+            role="status"
+            aria-live="polite"
+            data-testid="sam-switching-status"
+          >
+            <span
+              className="inline-block h-3.5 w-3.5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin"
+              aria-hidden="true"
+            />
+            <span className="text-[12.5px] text-[color:var(--text-secondary)]">
+              Loading {SAM_VARIANT_LABEL[pendingVariant ?? ""] ?? pendingVariant}
+              … this can take 30 seconds.
+            </span>
+          </div>
+        )}
       </Card>
     </div>
   );

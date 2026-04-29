@@ -23,4 +23,14 @@ export const tasksApi = {
   delete: async (projectId: string, taskId: string): Promise<void> => {
     await api.delete(`/projects/${projectId}/tasks/${taskId}`);
   },
+  duplicate: async (
+    projectId: string,
+    taskId: string,
+    count = 1,
+  ): Promise<Task[]> =>
+    (
+      await api.post<Task[]>(
+        `/projects/${projectId}/tasks/${taskId}/duplicate?count=${count}`,
+      )
+    ).data,
 };

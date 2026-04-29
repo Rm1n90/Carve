@@ -29,3 +29,9 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Bug 14: soft delete. Admins remove members from Settings -> Members.
+    # Every read-side query that returns a User to a client must filter on
+    # ``deleted_at IS NULL`` so a removed user never reappears.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -9,8 +9,20 @@ from carve_api.auth.jwt import (
     decode_token,
 )
 from carve_api.auth.models import User
-from carve_api.auth.schemas import LoginIn, RefreshIn, RegisterIn, TokenPair, UserOut
-from carve_api.auth.service import AuthService, EmailTaken, InvalidCredentials
+from carve_api.auth.schemas import (
+    ChangePasswordIn,
+    LoginIn,
+    RefreshIn,
+    RegisterIn,
+    TokenPair,
+    UserOut,
+)
+from carve_api.auth.service import (
+    AuthService,
+    CurrentPasswordWrong,
+    EmailTaken,
+    InvalidCredentials,
+)
 from carve_api.deps import _bearer_token, get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.ratelimit import limiter
@@ -95,3 +107,28 @@ def refresh(payload: RefreshIn, db: Session = Depends(get_db)) -> TokenPair:
 @router.get("/me", response_model=UserOut)
 def me(current: User = Depends(get_current_user)) -> UserOut:
     return UserOut.from_orm_user(current)
+
+
+@router.post("/password", status_code=204)
+@limiter.limit("5/minute")
+def change_password(
+    request: Request,  # required by slowapi for rate-limit key extraction
+    payload: ChangePasswordIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    """Self-service password rotation (audit Bug 16).
+
+    Authenticated user verifies their current password and chooses a new one
+    (>= 8 chars, enforced by Pydantic). On success returns 204 with no body.
+    Rate-limited to 5/min/IP to slow brute-force against the current password.
+    """
+    try:
+        AuthService(db).change_password(
+            user,
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+        )
+    except CurrentPasswordWrong:
+        raise HTTPException(status_code=401, detail="current_password_wrong")
+    return Response(status_code=204)

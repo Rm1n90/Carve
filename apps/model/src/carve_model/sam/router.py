@@ -40,14 +40,16 @@ from pydantic import BaseModel, Field
 
 from carve_model.sam.codec import encode_mask_rle
 from carve_model.sam.predictor import (
+    ALLOWED_SAM_MODELS,
     autocast_ctx,
     extract_embedding,
     force_evict_predictor,
     get_box_predictor,
     get_predictor,
-    get_sam_model,  # noqa: F401 — re-export for callers historically importing from router
+    get_sam_model,
     get_sam_variant,
     get_text_predictor,
+    load_predictor,
 )
 from carve_model.sam.tracker import force_evict_all_sessions
 
@@ -263,3 +265,41 @@ def unload(payload: UnloadIn = Body(default_factory=UnloadIn)) -> UnloadOut:
         if sessions_released > 0:
             evicted.append("tracker")
     return UnloadOut(evicted=evicted, sessions_released=sessions_released)
+
+
+# --- /sam/switch (variant hot-swap) -----------------------------------------
+#
+# v3.0 Bug 7 — replaces the old "edit SAM_MODEL in .env and restart" flow.
+# Loading a variant takes 5-30s; the endpoint blocks the calling worker
+# for the full duration so failures surface synchronously with the right
+# HTTP status. The API service proxies this with a 60s httpx timeout.
+
+
+class SwitchIn(BaseModel):
+    variant: str = Field(..., min_length=1)
+
+
+class SwitchOut(BaseModel):
+    active_variant: str
+
+
+@router.post("/switch", response_model=SwitchOut)
+def switch(payload: SwitchIn) -> SwitchOut:
+    """Hot-swap the active SAM variant. 422 on unknown variant; 503 on load failure."""
+    if payload.variant not in ALLOWED_SAM_MODELS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown_variant; allowed: {', '.join(ALLOWED_SAM_MODELS)}",
+        )
+    try:
+        load_predictor(payload.variant)
+    except ValueError as exc:
+        # Defensive: ALLOWED_SAM_MODELS check above should already cover this,
+        # but ``load_predictor`` re-validates and we want the same 422 response.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — model load can fail many ways
+        raise HTTPException(
+            status_code=503,
+            detail="sam_variant_load_failed",
+        ) from exc
+    return SwitchOut(active_variant=get_sam_model())
