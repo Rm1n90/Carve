@@ -55,6 +55,8 @@ export function ExportDialog({ projectId, taskId }: Props) {
   const [includeImages, setIncludeImages] = useState<boolean>(true);
   const [remap, setRemap] = useState<RemapState>({});
   const [exportId, setExportId] = useState<string | null>(null);
+  // v3.0 B10 — class density: filter the remap table on long class lists.
+  const [classFilter, setClassFilter] = useState<string>("");
 
   useEffect(() => {
     if (classesQ.data) {
@@ -85,6 +87,13 @@ export function ExportDialog({ projectId, taskId }: Props) {
   const sortedClasses = useMemo(() => {
     return (classesQ.data ?? []).slice().sort((a, b) => a.idx - b.idx);
   }, [classesQ.data]);
+
+  // v3.0 B10 — sub-string match on class name, case-insensitive.
+  const visibleClasses = useMemo(() => {
+    const q = classFilter.trim().toLowerCase();
+    if (!q) return sortedClasses;
+    return sortedClasses.filter((c) => c.name.toLowerCase().includes(q));
+  }, [sortedClasses, classFilter]);
 
   const updateRow = (classId: string, patch: Partial<RemapRow>) => {
     setRemap((p) => ({ ...p, [classId]: { ...p[classId], ...patch } }));
@@ -172,59 +181,92 @@ export function ExportDialog({ projectId, taskId }: Props) {
       )}
 
       {sortedClasses.length > 0 && (
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] overflow-hidden">
-          <table className="w-full border-collapse text-[12px]">
-            <thead>
-              <tr className="bg-[var(--bg-raised)] text-tertiary uppercase tracking-[0.08em]">
-                <th className="px-3 py-2 text-left font-medium">Source</th>
-                <th className="px-3 py-2 text-left font-medium">Export id</th>
-                <th className="px-3 py-2 text-left font-medium">Export name</th>
-                <th className="px-3 py-2 text-left font-medium">Skip</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedClasses.map((c) => {
-                const row = remap[c.id] ?? { export_id: c.idx, name: c.name, skip: false };
-                return (
-                  <tr key={c.id} className="border-t border-[var(--border-subtle)]">
-                    <td className="px-3 py-2">
-                      <span className="font-mono-data text-tertiary mr-2">{c.idx}</span>
-                      <span className="text-primary tracking-tight">{c.name}</span>
-                    </td>
-                    <td className="px-3 py-2">
-                      <input
-                        type="number"
-                        value={row.export_id}
-                        disabled={row.skip}
-                        onChange={(e) => updateRow(c.id, { export_id: Number(e.target.value) })}
-                        aria-label={`export-id-${c.id}`}
-                        className={numInput}
-                      />
-                    </td>
-                    <td className="px-3 py-2">
-                      <input
-                        type="text"
-                        value={row.name}
-                        disabled={row.skip}
-                        onChange={(e) => updateRow(c.id, { name: e.target.value })}
-                        aria-label={`export-name-${c.id}`}
-                        className={textInput}
-                      />
-                    </td>
-                    <td className="px-3 py-2">
-                      <input
-                        type="checkbox"
-                        checked={row.skip}
-                        onChange={(e) => updateRow(c.id, { skip: e.target.checked })}
-                        aria-label={`skip-${c.id}`}
-                        className="h-4 w-4 accent-[var(--accent)]"
-                      />
+        <div className="grid gap-2">
+          {/* v3.0 B10 — class density: filter input + count above the scroll host. */}
+          <div className="flex items-center gap-3">
+            <input
+              type="search"
+              placeholder="Filter classes…"
+              value={classFilter}
+              onChange={(e) => setClassFilter(e.target.value)}
+              aria-label="filter-classes"
+              data-testid="export-class-filter"
+              className="h-8 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2.5 text-[12px] text-primary placeholder:text-tertiary focus:outline-none focus:border-[var(--accent)]"
+            />
+            <span
+              className="font-mono-data text-[11px] text-tertiary whitespace-nowrap"
+              data-testid="export-class-count"
+            >
+              Showing {visibleClasses.length} of {sortedClasses.length} classes
+            </span>
+          </div>
+          <div
+            data-testid="export-class-table-scroll"
+            className="max-h-[400px] overflow-y-auto rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
+          >
+            <table className="w-full border-collapse text-[12px]">
+              <thead className="sticky top-0 z-10 bg-[var(--bg-raised)]">
+                <tr className="text-tertiary uppercase tracking-[0.08em]">
+                  <th className="px-3 py-2 text-left font-medium">Source</th>
+                  <th className="px-3 py-2 text-left font-medium">Export id</th>
+                  <th className="px-3 py-2 text-left font-medium">Export name</th>
+                  <th className="px-3 py-2 text-left font-medium">Skip</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleClasses.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={4}
+                      className="px-3 py-4 text-center text-tertiary italic"
+                    >
+                      No classes match “{classFilter}”.
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                )}
+                {visibleClasses.map((c) => {
+                  const row = remap[c.id] ?? { export_id: c.idx, name: c.name, skip: false };
+                  return (
+                    <tr key={c.id} className="border-t border-[var(--border-subtle)]">
+                      <td className="px-3 py-2">
+                        <span className="font-mono-data text-tertiary mr-2">{c.idx}</span>
+                        <span className="text-primary tracking-tight">{c.name}</span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={row.export_id}
+                          disabled={row.skip}
+                          onChange={(e) => updateRow(c.id, { export_id: Number(e.target.value) })}
+                          aria-label={`export-id-${c.id}`}
+                          className={numInput}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          value={row.name}
+                          disabled={row.skip}
+                          onChange={(e) => updateRow(c.id, { name: e.target.value })}
+                          aria-label={`export-name-${c.id}`}
+                          className={textInput}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={row.skip}
+                          onChange={(e) => updateRow(c.id, { skip: e.target.checked })}
+                          aria-label={`skip-${c.id}`}
+                          className="h-4 w-4 accent-[var(--accent)]"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
