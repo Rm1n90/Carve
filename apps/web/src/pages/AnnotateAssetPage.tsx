@@ -39,6 +39,7 @@ import { annotationsApi, type BatchPayload } from "@/api/annotations";
 import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
+import { tasksApi } from "@/api/tasks";
 import { useAnnotations } from "@/state/annotations";
 import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
@@ -145,10 +146,23 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     placeholderData: (prev) => prev,
     staleTime: 5 * 60 * 1000,
   });
-  const classesQ = useQuery({
-    queryKey: ["classes", projectId],
-    queryFn: () => classesApi.listForProject(projectId),
+  // v3.1 Issue 3 (Option A) — the editor consumes the *task-effective*
+  // class list. When the task has no subset configured (allowed_class_ids
+  // is null) the backend returns the full project list, preserving the
+  // pre-v3.1 behaviour. When a subset is configured the editor only sees
+  // those classes (annotations referencing other classes are kept in the
+  // DB but hidden from new-class pickers).
+  const taskClassesQ = useQuery({
+    queryKey: ["task-classes", projectId, taskId],
+    queryFn: () => tasksApi.getClasses(projectId, taskId),
   });
+  // Adapt the response shape so all downstream readers keep working
+  // against a flat ``ClassRow[]`` like before.
+  const classesQ = {
+    data: taskClassesQ.data?.classes,
+    isLoading: taskClassesQ.isLoading,
+    error: taskClassesQ.error,
+  } as const;
 
   // List of all assets in this task — drives ArrowLeft/ArrowRight navigation
   // and the prev/next IconButtons in the toolbar. The same query is consumed
@@ -293,18 +307,25 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // Inline class management mutations — exposed via ClassesPanel callbacks
   // so the user can add/edit/delete classes without leaving the editor.
   // Phase A core 4.
+  // v3.1 Issue 3 — class CRUD still hits the project-level endpoints, but
+  // we invalidate the per-task ``task-classes`` query since that's what
+  // the editor actually consumes after the Option A subset switch.
+  const invalidateClassesQueries = () => {
+    qc.invalidateQueries({ queryKey: ["classes", projectId] });
+    qc.invalidateQueries({ queryKey: ["task-classes", projectId, taskId] });
+  };
   const classCreate = useMutation({
     mutationFn: (input: ClassIn) => classesApi.create(projectId, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+    onSuccess: () => invalidateClassesQueries(),
   });
   const classUpdate = useMutation({
     mutationFn: ({ cid, patch }: { cid: string; patch: Partial<ClassIn> }) =>
       classesApi.update(projectId, cid, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+    onSuccess: () => invalidateClassesQueries(),
   });
   const classRemove = useMutation({
     mutationFn: (cid: string) => classesApi.delete(projectId, cid),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+    onSuccess: () => invalidateClassesQueries(),
   });
 
   const saveMutation = useMutation({

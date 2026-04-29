@@ -119,3 +119,38 @@ class ImportClassesIn(BaseModel):
 class ImportClassesOut(BaseModel):
     imported: int
     skipped: int
+
+
+class TaskClassesIn(BaseModel):
+    """Body for ``PUT /projects/{p}/tasks/{t}/classes``.
+
+    v3.1 Issue 3 (Option A: subset model). ``None`` clears any subset and
+    falls back to "all project classes". An explicit empty list is a
+    legal "no classes" state; a populated list is the subset.
+    """
+
+    allowed_class_ids: list[uuid.UUID] | None = None
+
+
+class TaskClassesOut(BaseModel):
+    """Response for ``GET /projects/{p}/tasks/{t}/classes``.
+
+    ``classes`` is the *effective* list (filtered by the task's subset
+    when one is set, otherwise the full project list). The frontend
+    editor and exporter consume ``classes`` directly.
+    """
+
+    classes: list["ClassOut"]
+    allowed_class_ids: list[uuid.UUID] | None
+
+
+class DuplicateTaskIn(BaseModel):
+    """Optional body for the task-duplicate endpoint.
+
+    v3.1 Bug 2 — when ``name`` is provided the backend uses it verbatim
+    instead of the auto-generated ``(copy)`` suffix. ``count`` is forced
+    to 1 in that path because a single custom name cannot apply to
+    multiple copies without conflict.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)

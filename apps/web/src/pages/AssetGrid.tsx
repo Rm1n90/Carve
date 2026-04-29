@@ -5,7 +5,6 @@ import {
   useQuery,
 } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { Search, Video } from "lucide-react";
 import {
   assetsApi,
@@ -15,9 +14,13 @@ import {
 import { cn } from "@/lib/cn";
 
 const PAGE_SIZE = 100;
-const TILE_HEIGHT = 220; // tile body + label gutter
-const TILE_MIN_WIDTH = 180;
+// Tile size is purely CSS-driven via `auto-fill, minmax(...)` so the layout is
+// deterministic across navigations and does not depend on JS measurement
+// timing (which previously caused a 4-vs-6 column regression — see v3.1 Issue 7).
+const TILE_MIN_WIDTH = 140;
 const SEARCH_DEBOUNCE_MS = 300;
+
+const GRID_TEMPLATE_COLUMNS = `repeat(auto-fill, minmax(${TILE_MIN_WIDTH}px, 1fr))`;
 
 function useDebounced<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -75,10 +78,20 @@ function AssetTile({ asset, projectId, taskId }: AssetTileProps) {
         ) : (
           <div className="h-full w-full bg-[var(--bg-subtle)]" />
         )}
+        {/* Bottom gradient scrim ensures the filename overlay reads on bright
+            images (v3.1 Issue 7 — the prior flat backdrop was unreadable). */}
         <div
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-x-0 bottom-0 h-16",
+            "bg-gradient-to-t from-black/70 via-black/40 to-transparent",
+          )}
+        />
+        <div
+          data-testid={`asset-tile-name-${asset.id}`}
           className={cn(
             "absolute inset-x-2 bottom-2 px-2 py-1",
-            "rounded-[var(--radius-xs)] bg-[oklch(0.06_0.012_240_/_0.7)] backdrop-blur-md",
+            "rounded-[var(--radius-xs)] bg-[oklch(0.06_0.012_240_/_0.85)] backdrop-blur-md",
             "text-[11px] text-secondary truncate",
           )}
         >
@@ -176,42 +189,35 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
   );
   const total = pagesQ.data?.pages[0]?.total ?? 0;
 
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [columns, setColumns] = useState(4);
+  // Infinite-scroll trigger: when the user scrolls near the bottom of the
+  // scroll container, fetch the next page. We use IntersectionObserver against
+  // a sentinel rather than virtualization — for typical 100–500 image tasks a
+  // plain CSS grid is fine, and removing the virtualizer eliminates the
+  // measure-timing race that produced the 4-vs-6 column regression (v3.1
+  // Issue 7).
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const measure = () => {
-      const w = el.clientWidth || 0;
-      const cols = Math.max(1, Math.floor(w / TILE_MIN_WIDTH));
-      setColumns(cols);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const rows = Math.ceil(assets.length / columns);
-  const virtualizer = useVirtualizer({
-    count: rows,
-    getScrollElement: () => containerRef.current,
-    estimateSize: () => TILE_HEIGHT,
-    overscan: 4,
-  });
-
-  const virtualItems = virtualizer.getVirtualItems();
-  useEffect(() => {
-    const last = virtualItems[virtualItems.length - 1];
-    if (!last) return;
-    if (
-      last.index >= rows - 3 &&
-      pagesQ.hasNextPage &&
-      !pagesQ.isFetchingNextPage
-    ) {
-      pagesQ.fetchNextPage();
-    }
-  }, [virtualItems, rows, pagesQ]);
+    const sentinel = sentinelRef.current;
+    const root = scrollRef.current;
+    if (!sentinel || !root) return;
+    if (typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.some((e) => e.isIntersecting);
+        if (
+          visible &&
+          pagesQ.hasNextPage &&
+          !pagesQ.isFetchingNextPage
+        ) {
+          pagesQ.fetchNextPage();
+        }
+      },
+      { root, rootMargin: "200px 0px" },
+    );
+    io.observe(sentinel);
+    return () => io.disconnect();
+  }, [pagesQ, assets.length]);
 
   const isInitialLoading = pagesQ.isLoading || pagesQ.isPending;
   const isError = pagesQ.isError;
@@ -285,9 +291,7 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
       {isInitialLoading ? (
         <div
           className="grid gap-3"
-          style={{
-            gridTemplateColumns: `repeat(auto-fill, minmax(${TILE_MIN_WIDTH}px, 1fr))`,
-          }}
+          style={{ gridTemplateColumns: GRID_TEMPLATE_COLUMNS }}
           data-testid="asset-grid-skeleton"
         >
           {Array.from({ length: 12 }).map((_, i) => (
@@ -302,49 +306,31 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
         </p>
       ) : (
         <div
-          ref={containerRef}
+          ref={scrollRef}
           data-testid="asset-grid-virtual-scroll"
           className="overflow-y-auto"
           style={{ height: "70vh", minHeight: 480 }}
         >
           <div
-            style={{
-              height: `${virtualizer.getTotalSize()}px`,
-              width: "100%",
-              position: "relative",
-            }}
+            data-testid="asset-grid"
+            className="grid gap-3 px-1"
+            style={{ gridTemplateColumns: GRID_TEMPLATE_COLUMNS }}
           >
-            {virtualItems.map((virtualRow) => {
-              const startIndex = virtualRow.index * columns;
-              const rowAssets = assets.slice(startIndex, startIndex + columns);
-              return (
-                <div
-                  key={virtualRow.key}
-                  data-testid="asset-grid-row"
-                  data-row-index={virtualRow.index}
-                  className="grid gap-3 px-1"
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: "100%",
-                    height: `${virtualRow.size}px`,
-                    transform: `translateY(${virtualRow.start}px)`,
-                    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-                  }}
-                >
-                  {rowAssets.map((a) => (
-                    <AssetTile
-                      key={a.id}
-                      asset={a}
-                      projectId={projectId}
-                      taskId={taskId}
-                    />
-                  ))}
-                </div>
-              );
-            })}
+            {assets.map((a) => (
+              <AssetTile
+                key={a.id}
+                asset={a}
+                projectId={projectId}
+                taskId={taskId}
+              />
+            ))}
           </div>
+          <div
+            ref={sentinelRef}
+            data-testid="asset-grid-sentinel"
+            aria-hidden
+            style={{ height: 1 }}
+          />
           {pagesQ.isFetchingNextPage && (
             <p className="text-center text-tertiary text-[12px] py-3">
               Loading more…

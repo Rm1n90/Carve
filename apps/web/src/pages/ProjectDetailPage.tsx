@@ -7,7 +7,6 @@ import {
   BarChart3,
   ChevronRight,
   Copy,
-  CopyPlus,
   Image as ImageIcon,
   MoreVertical,
   Settings,
@@ -15,14 +14,24 @@ import {
   Video,
 } from "lucide-react";
 import { projectsApi } from "@/api/projects";
+import { classesApi } from "@/api/classes";
 import { tasksApi, type Task } from "@/api/tasks";
 import { statsApi, type ProjectStats } from "@/api/stats";
 import { Badge } from "@/components/ui/Badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/Dialog";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { ClassesEditor } from "./ClassesEditor";
 import { NewTaskDialog } from "./NewTaskDialog";
 import { StatsPanel } from "./StatsPanel";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
+import { Tag } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Stat tile (used inside the totals strip)
@@ -271,18 +280,20 @@ function ProjectSettingsForm({
 }
 
 // ---------------------------------------------------------------------------
-// Per-task 3-dot menu — duplicate × 1 / × 3 (v3.0 Bug 8). Existing nav happens
-// via the row's <Link>; the menu sits next to it as a sibling so click events
-// don't propagate into the navigation.
+// Per-task 3-dot menu — Duplicate (v3.1 Bug 2). The user no longer wants
+// the implicit ×3 fan-out; clicking Duplicate now opens a small dialog
+// where the user types the new task's name.
 // ---------------------------------------------------------------------------
 function TaskRowMenu({
   task,
   pending,
   onDuplicate,
+  onEditClasses,
 }: {
   task: Task;
   pending: boolean;
-  onDuplicate: (count: number) => void;
+  onDuplicate: () => void;
+  onEditClasses: () => void;
 }) {
   return (
     <DropdownMenu.Root>
@@ -314,7 +325,7 @@ function TaskRowMenu({
         >
           <DropdownMenu.Item
             data-testid={`project-detail-task-duplicate-${task.id}`}
-            onSelect={() => onDuplicate(1)}
+            onSelect={() => onDuplicate()}
             className={cn(
               "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
               "cursor-pointer outline-none text-[color:var(--text-primary)]",
@@ -325,20 +336,320 @@ function TaskRowMenu({
             <span className="flex-1">Duplicate</span>
           </DropdownMenu.Item>
           <DropdownMenu.Item
-            data-testid={`project-detail-task-duplicate-x3-${task.id}`}
-            onSelect={() => onDuplicate(3)}
+            data-testid={`project-detail-task-edit-classes-${task.id}`}
+            onSelect={() => onEditClasses()}
             className={cn(
               "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
               "cursor-pointer outline-none text-[color:var(--text-primary)]",
               "data-[highlighted]:bg-[var(--bg-hover)]",
             )}
           >
-            <CopyPlus className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-            <span className="flex-1">Duplicate ×3</span>
+            <Tag className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+            <span className="flex-1">Edit classes…</span>
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v3.1 Issue 3 (Option A) — Per-task class subset chip used in the task
+// row. Shows the task's *effective* class count. Clicking the chip opens
+// the Edit-classes dialog.
+// ---------------------------------------------------------------------------
+function TaskClassesChip({
+  projectId,
+  taskId,
+  onClick,
+}: {
+  projectId: string;
+  taskId: string;
+  onClick: () => void;
+}) {
+  const q = useQuery({
+    queryKey: ["task-classes", projectId, taskId],
+    queryFn: () => tasksApi.getClasses(projectId, taskId),
+  });
+  const count = q.data?.classes.length ?? 0;
+  const isSubset = q.data?.allowed_class_ids !== null && q.data !== undefined;
+  return (
+    <button
+      type="button"
+      data-testid={`project-detail-task-classes-chip-${taskId}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onClick();
+      }}
+      title={
+        isSubset
+          ? `${count} classes (subset)`
+          : `${count} classes (all project classes)`
+      }
+      className={cn(
+        "inline-flex items-center gap-1 h-6 px-2 rounded-full",
+        "border border-[var(--border-subtle)] bg-[var(--bg-subtle)]",
+        "text-[10.5px] font-mono tabular-nums tracking-tight",
+        "text-[color:var(--text-tertiary)]",
+        "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+        "transition-colors",
+      )}
+    >
+      <Tag className="h-2.5 w-2.5" />
+      {q.isLoading ? "…" : `${count} classes`}
+      {isSubset && (
+        <span
+          aria-hidden
+          className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]"
+        />
+      )}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v3.1 Issue 3 (Option A) — Edit-classes dialog. Lists all project
+// classes as checkboxes; the task's current ``allowed_class_ids``
+// determines initial checked state. ``Select all`` clears the subset
+// (sends ``null`` so the task falls back to "all project classes").
+// ``None`` confirms first then sends ``[]``.
+// ---------------------------------------------------------------------------
+function EditTaskClassesDialog({
+  projectId,
+  task,
+  open,
+  onClose,
+}: {
+  projectId: string;
+  task: Task | null;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const taskId = task?.id ?? "";
+
+  const projectClassesQ = useQuery({
+    queryKey: ["classes", projectId],
+    queryFn: () => classesApi.listForProject(projectId),
+    enabled: open,
+  });
+  const taskClassesQ = useQuery({
+    queryKey: ["task-classes", projectId, taskId],
+    queryFn: () => tasksApi.getClasses(projectId, taskId),
+    enabled: open && !!taskId,
+  });
+
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // ``null`` mode = "use all project classes" (Select all). Otherwise the
+  // mode is "explicit subset" and the actual list comes from ``selected``.
+  const [mode, setMode] = useState<"all" | "subset">("all");
+
+  // Sync local state with the loaded task's subset config every time the
+  // dialog opens (or the task data arrives).
+  useEffect(() => {
+    if (!open) return;
+    const allowed = taskClassesQ.data?.allowed_class_ids;
+    if (allowed === null || allowed === undefined) {
+      setMode("all");
+      setSelected(new Set());
+    } else {
+      setMode("subset");
+      setSelected(new Set(allowed));
+    }
+  }, [open, taskClassesQ.data?.allowed_class_ids]);
+
+  const save = useMutation({
+    mutationFn: async (allowed: string[] | null) =>
+      tasksApi.setClasses(projectId, taskId, allowed),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["task-classes", projectId, taskId] });
+      showToast("Task classes updated", { variant: "success" });
+      onClose();
+    },
+    onError: () => {
+      showToast("Failed to update task classes", { variant: "error" });
+    },
+  });
+
+  const toggleClass = (classId: string) => {
+    // When the user is in "all" mode (allowed_class_ids === null) every
+    // checkbox renders as checked. The first toggle has to seed the
+    // explicit-subset set from the *current* full project list so
+    // unchecking "c1" leaves "c2", "c3" selected — not just removes c1
+    // from an empty set.
+    if (mode === "all") {
+      const seed = new Set(projectClasses.map((c) => c.id));
+      seed.delete(classId);
+      setMode("subset");
+      setSelected(seed);
+      return;
+    }
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(classId)) {
+        next.delete(classId);
+      } else {
+        next.add(classId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    setMode("all");
+    setSelected(new Set());
+  };
+
+  const handleNone = async () => {
+    const ok = await confirm({
+      title: "Allow no classes for this task?",
+      description:
+        "The task will have zero classes available. Existing annotations are preserved but no new classes can be picked. You can change this later.",
+      confirmLabel: "Set to none",
+      variant: "danger",
+    });
+    if (ok) {
+      setMode("subset");
+      setSelected(new Set());
+    }
+  };
+
+  const handleSubmit = () => {
+    const payload: string[] | null =
+      mode === "all" ? null : Array.from(selected);
+    save.mutate(payload);
+  };
+
+  const projectClasses = projectClassesQ.data ?? [];
+  const isAllSelected = mode === "all";
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent
+        className="w-[min(92vw,520px)]"
+        data-testid="task-classes-dialog"
+      >
+        <DialogHeader>
+          <DialogTitle>
+            Edit classes{task ? ` — ${task.name}` : ""}
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="grid gap-3">
+          <div className="flex items-center gap-2 text-[12px] text-[color:var(--text-secondary)]">
+            <button
+              type="button"
+              data-testid="task-classes-select-all"
+              onClick={handleSelectAll}
+              className={cn(
+                "h-7 px-2 rounded-[var(--radius-sm)] border text-[12px]",
+                isAllSelected
+                  ? "border-[var(--accent)] bg-[var(--bg-subtle)] text-[color:var(--text-primary)]"
+                  : "border-[var(--border-subtle)] hover:bg-[var(--bg-hover)]",
+              )}
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              data-testid="task-classes-none"
+              onClick={handleNone}
+              className={cn(
+                "h-7 px-2 rounded-[var(--radius-sm)] border text-[12px]",
+                "border-[var(--border-subtle)] hover:bg-[var(--bg-hover)]",
+              )}
+            >
+              None
+            </button>
+            <span className="ml-auto font-mono text-[11px] text-[color:var(--text-tertiary)]">
+              {isAllSelected
+                ? `All (${projectClasses.length})`
+                : `${selected.size} selected`}
+            </span>
+          </div>
+
+          <div
+            data-testid="task-classes-list"
+            className="max-h-[320px] overflow-y-auto rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
+          >
+            {projectClassesQ.isLoading && (
+              <p className="px-3 py-2 text-[12px] text-[color:var(--text-tertiary)]">
+                Loading classes…
+              </p>
+            )}
+            {!projectClassesQ.isLoading && projectClasses.length === 0 && (
+              <p className="px-3 py-3 text-[12px] italic text-[color:var(--text-tertiary)]">
+                This project has no classes yet. Add classes from the
+                project page first.
+              </p>
+            )}
+            {projectClasses.map((c) => {
+              const checked = isAllSelected || selected.has(c.id);
+              return (
+                <label
+                  key={c.id}
+                  className={cn(
+                    "flex items-center gap-2.5 px-3 py-1.5 cursor-pointer",
+                    "border-b border-[var(--border-subtle)] last:border-b-0",
+                    "hover:bg-[var(--bg-hover)] transition-colors",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    data-testid={`task-classes-checkbox-${c.id}`}
+                    checked={checked}
+                    onChange={() => toggleClass(c.id)}
+                    className="h-3.5 w-3.5 accent-[var(--accent)]"
+                  />
+                  <span
+                    aria-hidden
+                    className="h-3 w-3 rounded-sm border border-[var(--border-subtle)]"
+                    style={{ backgroundColor: c.color }}
+                  />
+                  <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
+                    {c.idx}
+                  </span>
+                  <span className="text-[12.5px] text-[color:var(--text-primary)] truncate">
+                    {c.name}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <button
+            type="button"
+            data-testid="task-classes-cancel"
+            onClick={onClose}
+            className="h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-testid="task-classes-save"
+            disabled={save.isPending || !taskId}
+            onClick={handleSubmit}
+            className={cn(
+              "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium",
+              "bg-[var(--accent)] text-[color:var(--accent-fg)]",
+              "hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed",
+            )}
+          >
+            {save.isPending ? "Saving…" : "Save"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -371,18 +682,21 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     queryFn: () => statsApi.projectStats(projectId),
   });
   const qc = useQueryClient();
+  // v3.1 Bug 2 — Duplicate opens a name dialog; ×3 was removed because
+  // users only want a single, named copy.
+  const [duplicateTarget, setDuplicateTarget] = useState<Task | null>(null);
+  const [duplicateDraft, setDuplicateDraft] = useState<string>("");
+  // v3.1 Issue 3 — per-task class subset dialog target.
+  const [classesTarget, setClassesTarget] = useState<Task | null>(null);
   const duplicateTask = useMutation({
-    mutationFn: ({ taskId, count }: { taskId: string; count: number }) =>
-      tasksApi.duplicate(projectId, taskId, count),
-    onSuccess: (created, vars) => {
+    mutationFn: ({ taskId, name }: { taskId: string; name: string }) =>
+      tasksApi.duplicate(projectId, taskId, 1, name),
+    onSuccess: (_created, vars) => {
       qc.invalidateQueries({ queryKey: ["tasks", projectId] });
       qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
-      showToast(
-        vars.count === 1
-          ? "Duplicated"
-          : `${created.length} copies created`,
-        { variant: "success" },
-      );
+      showToast(`Duplicated as ${vars.name}`, { variant: "success" });
+      setDuplicateTarget(null);
+      setDuplicateDraft("");
     },
     onError: () => {
       showToast("Failed to duplicate task", { variant: "error" });
@@ -544,6 +858,11 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                       <span className="flex-1 text-[12.5px] tracking-tight text-[color:var(--text-primary)] truncate">
                         {t.name}
                       </span>
+                      <TaskClassesChip
+                        projectId={projectId}
+                        taskId={t.id}
+                        onClick={() => setClassesTarget(t)}
+                      />
                       <Badge variant="ghost">{t.kind}</Badge>
                       <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)] transition-transform group-hover:translate-x-0.5" />
                     </Link>
@@ -553,9 +872,11 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                         duplicateTask.isPending &&
                         duplicateTask.variables?.taskId === t.id
                       }
-                      onDuplicate={(count) =>
-                        duplicateTask.mutate({ taskId: t.id, count })
-                      }
+                      onDuplicate={() => {
+                        setDuplicateTarget(t);
+                        setDuplicateDraft(`${t.name} (copy)`);
+                      }}
+                      onEditClasses={() => setClassesTarget(t)}
                     />
                   </li>
                 ))}
@@ -592,6 +913,83 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
           />
         </Tabs.Content>
       </Tabs.Root>
+
+      {/* v3.1 Bug 2 — Duplicate-task name dialog. Cloned from the
+          rename-class dialog at AnnotateAssetPage.tsx:862-902. */}
+      <Dialog
+        open={duplicateTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) {
+            setDuplicateTarget(null);
+            setDuplicateDraft("");
+          }
+        }}
+      >
+        <DialogContent className="w-[min(92vw,420px)]">
+          <DialogHeader>
+            <DialogTitle>Duplicate task</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!duplicateTarget) return;
+              const next = duplicateDraft.trim();
+              if (!next) return;
+              duplicateTask.mutate({ taskId: duplicateTarget.id, name: next });
+            }}
+          >
+            <input
+              type="text"
+              autoFocus
+              data-testid="duplicate-task-input"
+              aria-label="New task name"
+              value={duplicateDraft}
+              onChange={(e) => setDuplicateDraft(e.target.value)}
+              maxLength={120}
+              className={cn(
+                "w-full h-9 px-2.5 rounded-[var(--radius-sm)]",
+                "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
+                "border border-[var(--border-subtle)]",
+                "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
+                "text-[13px]",
+              )}
+            />
+            <DialogFooter>
+              <button
+                type="button"
+                onClick={() => {
+                  setDuplicateTarget(null);
+                  setDuplicateDraft("");
+                }}
+                data-testid="duplicate-task-cancel"
+                className="h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                data-testid="duplicate-task-save"
+                disabled={!duplicateDraft.trim() || duplicateTask.isPending}
+                className={cn(
+                  "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium",
+                  "bg-[var(--accent)] text-[color:var(--accent-fg)]",
+                  "hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed",
+                )}
+              >
+                {duplicateTask.isPending ? "Duplicating…" : "Duplicate"}
+              </button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* v3.1 Issue 3 (Option A) — per-task class subset dialog. */}
+      <EditTaskClassesDialog
+        projectId={projectId}
+        task={classesTarget}
+        open={classesTarget !== null}
+        onClose={() => setClassesTarget(null)}
+      />
     </div>
   );
 }

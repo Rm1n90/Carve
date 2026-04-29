@@ -50,9 +50,18 @@ export interface ConfirmDialogProps {
   onConfirm: () => void | Promise<void>;
 }
 
+// v3.1 Bug 1 — centering moved out of Tailwind classes to an inline
+// `transform` style on the panel. Tailwind v4's `-translate-x-1/2
+// -translate-y-1/2` writes the modern CSS `translate` property, which is
+// independent of the `transform` property the `confirm-in/out` keyframes
+// animate. The two stacked → panel offset by (-100%, -100%) during enter
+// and snapped to (-50%, -50%) when the keyframe ended. Using
+// `transform` here keeps the property name consistent with the keyframes.
+const PANEL_STYLE = { transform: "translate(-50%, -50%)" } as const;
+
 const PANEL_CLASSES = cn(
-  // Position: centered.
-  "fixed left-1/2 top-1/2 z-[1100] -translate-x-1/2 -translate-y-1/2",
+  // Position: centered (offset applied via PANEL_STYLE).
+  "fixed left-1/2 top-1/2 z-[1100]",
   // Sizing.
   "w-[min(92vw,440px)] max-h-[88vh] overflow-hidden",
   // Glass.
@@ -134,6 +143,7 @@ export function ConfirmDialog({
         <AlertDialogPrimitive.Overlay className={OVERLAY_CLASSES} />
         <AlertDialogPrimitive.Content
           className={PANEL_CLASSES}
+          style={PANEL_STYLE}
           data-variant={variant}
         >
           <AlertDialogPrimitive.Title

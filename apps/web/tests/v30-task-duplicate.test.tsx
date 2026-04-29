@@ -1,9 +1,10 @@
 /**
- * v3.0 Bug 8 — ProjectDetailPage task-row 3-dot duplicate menu.
+ * v3.0 Bug 8 / v3.1 Bug 2 — ProjectDetailPage task-row 3-dot duplicate menu.
  *
- * Asserts the per-row dropdown exposes "Duplicate" and "Duplicate ×3"
- * actions, and that clicking each fires `tasksApi.duplicate(projectId,
- * taskId, count)`.
+ * v3.0 shipped Duplicate + Duplicate ×3. v3.1 dropped ×3 (the user only
+ * wants a single named copy). Clicking Duplicate now opens a small
+ * dialog that pre-fills "<name> (copy)"; submitting fires
+ * `tasksApi.duplicate(projectId, taskId, 1, customName)`.
  */
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -119,15 +120,13 @@ beforeEach(() => {
   setupMocks();
 });
 
-describe("ProjectDetailPage — task duplicate menu (v3.0 Bug 8)", () => {
-  it("calls tasksApi.duplicate(projectId, taskId, 1) when Duplicate clicked", async () => {
+describe("ProjectDetailPage — Duplicate task (v3.1 Bug 2)", () => {
+  it("opens a name dialog pre-filled with '<name> (copy)' when Duplicate is clicked", async () => {
     render(wrap(<ProjectDetailPage projectId="p1" />));
 
     const trigger = await screen.findByTestId(
       "project-detail-task-menu-trigger-t1",
     );
-    // Radix DropdownMenu opens reliably via Enter in jsdom (pointerDown+click
-    // requires a real layout box jsdom does not provide for the float).
     trigger.focus();
     fireEvent.keyDown(trigger, { key: "Enter", code: "Enter" });
 
@@ -136,29 +135,57 @@ describe("ProjectDetailPage — task duplicate menu (v3.0 Bug 8)", () => {
     );
     fireEvent.click(item);
 
-    await waitFor(() => {
-      expect(tasksApi.duplicate).toHaveBeenCalledWith("p1", "t1", 1);
-    });
+    const input = (await screen.findByTestId(
+      "duplicate-task-input",
+    )) as HTMLInputElement;
+    expect(input.value).toBe("Test (copy)");
+    // No mutation has fired just from opening the dialog.
+    expect(tasksApi.duplicate).not.toHaveBeenCalled();
   });
 
-  it("calls tasksApi.duplicate(projectId, taskId, 3) when Duplicate ×3 clicked", async () => {
+  it("submits duplicate with count=1 and the custom name", async () => {
     render(wrap(<ProjectDetailPage projectId="p1" />));
 
     const trigger = await screen.findByTestId(
       "project-detail-task-menu-trigger-t1",
     );
-    // Radix DropdownMenu opens reliably via Enter in jsdom (pointerDown+click
-    // requires a real layout box jsdom does not provide for the float).
     trigger.focus();
     fireEvent.keyDown(trigger, { key: "Enter", code: "Enter" });
 
-    const item = await screen.findByTestId(
-      "project-detail-task-duplicate-x3-t1",
+    fireEvent.click(
+      await screen.findByTestId("project-detail-task-duplicate-t1"),
     );
-    fireEvent.click(item);
+
+    const input = (await screen.findByTestId(
+      "duplicate-task-input",
+    )) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Variant B" } });
+    fireEvent.click(screen.getByTestId("duplicate-task-save"));
 
     await waitFor(() => {
-      expect(tasksApi.duplicate).toHaveBeenCalledWith("p1", "t1", 3);
+      expect(tasksApi.duplicate).toHaveBeenCalledWith(
+        "p1",
+        "t1",
+        1,
+        "Variant B",
+      );
     });
+  });
+
+  it("does not expose a Duplicate ×3 menu item (removed in v3.1)", async () => {
+    render(wrap(<ProjectDetailPage projectId="p1" />));
+
+    const trigger = await screen.findByTestId(
+      "project-detail-task-menu-trigger-t1",
+    );
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter", code: "Enter" });
+
+    // The Duplicate item is present…
+    await screen.findByTestId("project-detail-task-duplicate-t1");
+    // …but the ×3 variant is gone.
+    expect(
+      screen.queryByTestId("project-detail-task-duplicate-x3-t1"),
+    ).toBeNull();
   });
 });

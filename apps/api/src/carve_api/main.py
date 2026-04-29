@@ -36,6 +36,9 @@ def create_app() -> FastAPI:
     from carve_api.members.router import router as members_router
     app.include_router(members_router)
 
+    from carve_api.workspace.router import router as workspace_router
+    app.include_router(workspace_router)
+
     from carve_api.projects.router import router as projects_router
     app.include_router(projects_router)
 

@@ -115,3 +115,37 @@ def test_duplicate_task_count_eleven_rejected(db_session) -> None:
         f"/projects/{pid}/tasks/{tid}/duplicate?count=11", headers=_hdr(token)
     )
     assert r.status_code == 422
+
+
+def test_duplicate_task_with_custom_name(db_session) -> None:
+    """v3.1 Bug 2 — POST body ``{name: ...}`` overrides the auto-suffix."""
+    client = _client(db_session)
+    pid, tid, token = _setup(client, email="td5@x.com")
+    r = client.post(
+        f"/projects/{pid}/tasks/{tid}/duplicate",
+        json={"name": "Task A — variant B"},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert isinstance(body, list) and len(body) == 1
+    assert body[0]["name"] == "Task A — variant B"
+    assert body[0]["kind"] == "image"
+    assert body[0]["id"] != tid
+
+
+def test_duplicate_task_name_overrides_count(db_session) -> None:
+    """v3.1 Bug 2 — supplying ``name`` forces ``count=1`` even when
+    ``count=3`` is sent on the query string."""
+    client = _client(db_session)
+    pid, tid, token = _setup(client, email="td6@x.com")
+    r = client.post(
+        f"/projects/{pid}/tasks/{tid}/duplicate?count=3",
+        json={"name": "Solo"},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    # Only one row created despite count=3 on the query string.
+    assert len(body) == 1
+    assert body[0]["name"] == "Solo"

@@ -10,14 +10,24 @@ vi.mock("@/api/exports", () => ({
   },
 }));
 
+// v3.1 Issue 3 — ExportDialog now pulls task-effective classes via
+// tasksApi.getClasses (Option A subset model). The legacy classesApi
+// mock is no longer used by ExportDialog but we keep a stub so any
+// transitive import path resolves.
 vi.mock("@/api/classes", () => ({
   classesApi: {
     listForProject: vi.fn(),
   },
 }));
 
+vi.mock("@/api/tasks", () => ({
+  tasksApi: {
+    getClasses: vi.fn(),
+  },
+}));
+
 import { exportsApi } from "@/api/exports";
-import { classesApi } from "@/api/classes";
+import { tasksApi } from "@/api/tasks";
 import { ExportDialog } from "@/pages/ExportDialog";
 
 const mockClasses = [
@@ -76,7 +86,10 @@ function wrap(node: React.ReactNode) {
 describe("ExportDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (classesApi.listForProject as any).mockResolvedValue(mockClasses);
+    (tasksApi.getClasses as any).mockResolvedValue({
+      classes: mockClasses,
+      allowed_class_ids: null,
+    });
   });
 
   it("renders one row per project class", async () => {
@@ -90,10 +103,13 @@ describe("ExportDialog", () => {
 
   it("submits class_remap with default mapping (idx → export_id, name unchanged)", async () => {
     (exportsApi.create as any).mockResolvedValue({ export_id: "e1" });
-    const { findByText, getByRole } = render(
+    const { findByText, getByLabelText, getByRole } = render(
       wrap(<ExportDialog projectId="p1" taskId="t1" />),
     );
     await findByText("car");
+    // v3.1 Bug 4 — single-set is the default; opt into train/val/test
+    // explicitly so the splits assertion below still exercises 0.8/0.1/0.1.
+    fireEvent.click(getByLabelText("split-mode-train-val-test"));
     fireEvent.click(getByRole("button", { name: /export/i }));
     await waitFor(() => {
       expect(exportsApi.create).toHaveBeenCalled();
