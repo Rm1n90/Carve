@@ -24,15 +24,20 @@ class ProjectOut(BaseModel):
     name: str
     description: str | None
     owner_id: str
+    # v3.3 Issue 2 — surface the owner's email so the UI can label projects
+    # with "Created by …". ``None`` when the owner row is missing or
+    # soft-deleted (defensive; the FK is non-null by schema).
+    owner_email: str | None
     created_at: datetime
 
     @classmethod
-    def from_orm_project(cls, p) -> "ProjectOut":
+    def from_orm_project(cls, p, owner_email: str | None = None) -> "ProjectOut":
         return cls(
             id=str(p.id),
             name=p.name,
             description=p.description,
             owner_id=str(p.owner_id),
+            owner_email=owner_email,
             created_at=p.created_at,
         )
 

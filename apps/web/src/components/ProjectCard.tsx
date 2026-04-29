@@ -3,6 +3,7 @@ import { Trash2 } from "lucide-react";
 import type { Project } from "@/api/projects";
 import { cn } from "@/lib/cn";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { formatRelative } from "@/lib/relativeTime";
 
 interface ProjectCardProps {
   project: Project;
@@ -47,6 +48,14 @@ export function ProjectCard({ project, onDelete }: ProjectCardProps) {
         ) : (
           <p className="text-[12.5px] text-[color:var(--text-tertiary)] italic">No description.</p>
         )}
+        {/* v3.3 Issue 2 — created_at + owner email meta row. */}
+        <div
+          data-testid="project-card-meta"
+          className="text-[11px] text-[color:var(--text-tertiary)] mt-1 truncate"
+        >
+          Created {formatRelative(project.created_at)} ·{" "}
+          {project.owner_email ?? "Unknown"}
+        </div>
       </Link>
       <button
         type="button"

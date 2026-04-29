@@ -32,6 +32,7 @@ import { StatsPanel } from "./StatsPanel";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
 import { Tag } from "lucide-react";
+import { formatRelative } from "@/lib/relativeTime";
 
 // ---------------------------------------------------------------------------
 // Stat tile (used inside the totals strip)
@@ -795,6 +796,14 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
               {project.description}
             </p>
           )}
+          {/* v3.3 Issue 2 — created_at + owner email meta row. */}
+          <div
+            data-testid="project-detail-meta"
+            className="text-[11px] text-[color:var(--text-tertiary)] mt-1"
+          >
+            Created {formatRelative(project.created_at)} ·{" "}
+            {project.owner_email ?? "Unknown"}
+          </div>
         </div>
         <Link
           to="/projects/$projectId/stats"
