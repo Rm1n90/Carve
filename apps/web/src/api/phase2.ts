@@ -36,9 +36,22 @@ export interface SamActive {
   reachable?: boolean;
 }
 
+/** Response from POST /models/sam-active — the active variant after the
+ * model service finished loading. */
+export interface SamSwitchResult {
+  active_variant: string;
+}
+
 export const modelsApi = {
   samActive: async (): Promise<SamActive> =>
     (await api.get<SamActive>("/models/sam-active")).data,
+  /**
+   * Hot-swap the active SAM variant. Blocks for the full model load
+   * (5-30s typical). Throws on 422 (unknown variant) or 503
+   * (model service unavailable).
+   */
+  samSetActive: async (variant: string): Promise<SamSwitchResult> =>
+    (await api.post<SamSwitchResult>("/models/sam-active", { variant })).data,
 };
 
 // --------------------------- /weights (workspace) ---------------------------
