@@ -15,6 +15,18 @@ export interface SamDecodeResult {
   score: number;
 }
 
+/**
+ * Result item from the SAM 3 text/box prompt endpoints. The model
+ * service returns a list (one entry per candidate); ``bbox`` is xyxy
+ * (image-space pixels) so the canvas can frame the produced mask.
+ */
+export interface SamPromptResult {
+  counts: string;
+  size: [number, number];
+  score: number;
+  bbox: [number, number, number, number];
+}
+
 export const samApi = {
   encode: async (assetId: string): Promise<SamEncodeResult> =>
     (await api.post<SamEncodeResult>(`/assets/${assetId}/sam/encode`)).data,
@@ -31,4 +43,42 @@ export const samApi = {
         labels,
       })
     ).data,
+  /**
+   * SAM 3 text concept prompt — returns mask candidates for ``text``.
+   * Throws an AxiosError with ``response.status === 409`` when the
+   * active SAM variant is not SAM 3 (UI should disable the mode).
+   */
+  textPrompt: async (
+    assetId: string,
+    text: string,
+  ): Promise<SamPromptResult[]> =>
+    (
+      await api.post<SamPromptResult[]>(
+        `/assets/${assetId}/sam/text-prompt`,
+        { text },
+      )
+    ).data,
+  /**
+   * SAM 3 box prompt — boxes are xyxy floats; ``boxLabels`` are 1
+   * (positive include) or 0 (negative exclude). The optional ``text``
+   * combines a concept with the boxes for refinement.
+   */
+  boxPrompt: async (
+    assetId: string,
+    boxes: [number, number, number, number][],
+    boxLabels: number[],
+    text?: string,
+  ): Promise<SamPromptResult[]> => {
+    const body: Record<string, unknown> = {
+      boxes,
+      box_labels: boxLabels,
+    };
+    if (text !== undefined) body.text = text;
+    return (
+      await api.post<SamPromptResult[]>(
+        `/assets/${assetId}/sam/box-prompt`,
+        body,
+      )
+    ).data;
+  },
 };

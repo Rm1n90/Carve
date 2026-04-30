@@ -659,6 +659,89 @@ function MaskBrushSizeControl() {
   );
 }
 
+/**
+ * v3.5 Phase D — SAM mode picker. Inline 3-chip strip (Point / Box /
+ * Text) shown only while the SAM tool is active. Text + Box require
+ * SAM 3; on SAM 2 variants those chips render disabled with a tooltip
+ * directing the user to the SAM model picker. The picker writes into
+ * the ``samMode`` field of the tool store; the canvas + SamTool
+ * subscribe and reset their in-flight state on transitions.
+ */
+function SamModePicker() {
+  const active = useTool((s) => s.active);
+  const samMode = useTool((s) => s.samMode);
+  const setSamMode = useTool((s) => s.setSamMode);
+  const samQ = useQuery({
+    queryKey: ["sam-active"],
+    queryFn: () => modelsApi.samActive(),
+  });
+  const variant = samQ.data?.active ?? "sam2.1-base+";
+  // Anything starting with "sam3" gates text + box prompting on. The
+  // model-service API has the canonical check (get_sam_variant()), but
+  // gating on the variant string in the UI prevents a guaranteed-409
+  // round-trip for SAM 2 users.
+  const isSam3 = variant.toLowerCase().startsWith("sam3");
+
+  if (active !== "sam") return null;
+
+  const modes: { id: import("@/canvas/tools/SamTool").SamMode; label: string; sam3Only: boolean }[] = [
+    { id: "point", label: "Point", sam3Only: false },
+    { id: "box", label: "Box", sam3Only: true },
+    { id: "text", label: "Text", sam3Only: true },
+  ];
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="SAM input mode"
+      data-testid="sam-mode-picker"
+      className="inline-flex items-center gap-0.5 h-8 px-1 rounded-[var(--radius-sm)] bg-[var(--bg-subtle)]"
+    >
+      {modes.map((m) => {
+        const disabled = m.sam3Only && !isSam3;
+        const isActive = samMode === m.id;
+        const button = (
+          <button
+            key={m.id}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            aria-disabled={disabled}
+            disabled={disabled}
+            onClick={() => {
+              if (disabled) return;
+              setSamMode(m.id);
+            }}
+            data-testid={`sam-mode-${m.id}`}
+            data-active={isActive ? "true" : undefined}
+            data-disabled={disabled ? "true" : undefined}
+            className={cn(
+              "h-6 px-2 rounded-[var(--radius-xs)] text-[11.5px] font-medium tracking-tight transition-colors",
+              isActive
+                ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
+                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+              disabled && "opacity-40 cursor-not-allowed hover:bg-transparent",
+            )}
+          >
+            {m.label}
+          </button>
+        );
+        if (disabled) {
+          return (
+            <Tooltip
+              key={m.id}
+              content="Switch to SAM 3 for text/box prompting"
+            >
+              {button}
+            </Tooltip>
+          );
+        }
+        return button;
+      })}
+    </div>
+  );
+}
+
 function AutoApplyToggle() {
   const active = useTool((s) => s.active);
   const auto = useTool((s) => s.autoApply);
@@ -1065,6 +1148,7 @@ export function EditorToolbar({
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
       <SamModelPicker />
+      <SamModePicker />
       <AutoApplyToggle />
       <MaskBrushSizeControl />
 

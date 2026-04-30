@@ -233,6 +233,17 @@ export function AnnotationCanvas({
   >(null);
   // Cursor override during a drag — clears when the drag ends.
   const [dragCursor, setDragCursor] = useState<string | null>(null);
+  // v3.5 Phase D — in-flight box draft for SAM ``box`` mode. Mirrors
+  // BboxTool's anchor/current pair; lives in a ref so the tool-routing
+  // useEffect doesn't recreate on every move event.
+  const samBoxDraftRef = useRef<{ anchor: Point; current: Point } | null>(null);
+  // Mirror of the ``samMode`` zustand slice so the tool-routing useEffect
+  // can branch on it without re-running on every keystroke. We keep it as
+  // a separate state read so React re-renders the floating text input
+  // (which is JSX, not Pixi).
+  const samMode = useTool((s) => s.samMode);
+  const [samTextDraft, setSamTextDraft] = useState("");
+  const [samTextPending, setSamTextPending] = useState(false);
   // v3.2 Issue 2: canvas-pan affordances. `spacePanRef` tracks whether
   // Space is held (enables click-drag pan regardless of active tool);
   // `panActiveRef` tracks whether a pan drag is in flight (Space+drag
@@ -255,6 +266,16 @@ export function AnnotationCanvas({
   useEffect(() => {
     setDragCursor(null);
   }, [tool]);
+  // v3.5 Phase D — keep the SamTool instance's mode in sync with the
+  // toolbar picker. Decoupling via the store (rather than a prop) keeps
+  // the EditorToolbar from importing the canvas's SamTool instance.
+  useEffect(() => {
+    samTool.setMode(samMode);
+    // Clear any in-flight box drag / draft text when the user flips
+    // modes mid-interaction.
+    samBoxDraftRef.current = null;
+    if (samMode !== "text") setSamTextDraft("");
+  }, [samMode, samTool]);
   // Empty map fallback so the renderer doesn't depend on prop being provided.
   const classMap = classColorMap ?? EMPTY_CLASS_MAP;
   const classNames = classNameMap ?? EMPTY_CLASS_MAP;
@@ -1312,6 +1333,20 @@ export function AnnotationCanvas({
       return { x: (cx - off.x) / s, y: (cy - off.y) / s };
     }
 
+    /**
+     * Clamp a pointer to the live image bounds. Returns ``p`` unchanged
+     * when the texture hasn't loaded (1×1 sentinel). Mirrors
+     * ``clampToImage`` in BboxTool — kept local so the SAM box-mode
+     * branch doesn't need to import the bbox helper.
+     */
+    function clampPointToImage(p: Point): Point {
+      if (imageSize.w <= 1 || imageSize.h <= 1) return p;
+      return {
+        x: Math.max(0, Math.min(imageSize.w, p.x)),
+        y: Math.max(0, Math.min(imageSize.h, p.y)),
+      };
+    }
+
     function hitTest(p: Point): string | null {
       const drafts = Object.values(useAnnotations.getState().byId).filter(
         (d) => d.frameId === frameId,
@@ -1491,7 +1526,22 @@ export function AnnotationCanvas({
       }
       else if (tool === "sam") {
         e.preventDefault();
-        void samTool.addClick(p, { pointer: e.button });
+        const mode = useTool.getState().samMode;
+        if (mode === "box") {
+          // SAM 3 box prompt — clamp to image bounds (mirrors BboxTool)
+          // so a drag past the canvas backdrop produces sane xyxy.
+          const clamped = clampPointToImage(p);
+          samBoxDraftRef.current = { anchor: clamped, current: clamped };
+          try {
+            host!.setPointerCapture(e.pointerId);
+          } catch {
+            /* setPointerCapture not always available in jsdom */
+          }
+        } else if (mode === "point") {
+          void samTool.addClick(p, { pointer: e.button });
+        }
+        // text mode is driven by the floating input — pointer events on
+        // the canvas are no-ops so the user can still pan/zoom.
       }
     }
 
@@ -1532,6 +1582,18 @@ export function AnnotationCanvas({
           const color = hexFromColor(cls ? classMap[cls] : undefined);
           void drawMaskPreview(r.getCanvas(), color, 0.4);
         }
+      } else if (tool === "sam" && samBoxDraftRef.current) {
+        // SAM box-mode in-flight drag — paint a live xyxy preview using
+        // the existing bbox preview Graphics so the user sees what
+        // they're about to send to /sam/box-prompt.
+        const draft = samBoxDraftRef.current;
+        const clamped = clampPointToImage(p);
+        draft.current = clamped;
+        const x = Math.min(draft.anchor.x, clamped.x);
+        const y = Math.min(draft.anchor.y, clamped.y);
+        const w = Math.abs(draft.anchor.x - clamped.x);
+        const h = Math.abs(draft.anchor.y - clamped.y);
+        void drawPreviewRect({ x, y, w, h });
       } else if (tool === "cursor") {
         const drag = dragRef.current;
         if (drag) {
@@ -1614,6 +1676,37 @@ export function AnnotationCanvas({
         clearPreview();
       } else if (tool === "mask") {
         mask.onPointerUp(p);
+      } else if (tool === "sam" && samBoxDraftRef.current) {
+        // Finalise the SAM box drag — drop minimum-size drags as noise
+        // (mirrors BboxTool's MIN_DRAG_PX gate) and forward to the
+        // SAM tool. Errors propagate as toasts via describeSamError.
+        const draft = samBoxDraftRef.current;
+        samBoxDraftRef.current = null;
+        clearPreview();
+        try {
+          host!.releasePointerCapture(e.pointerId);
+        } catch {
+          /* not all environments implement releasePointerCapture */
+        }
+        const clamped = clampPointToImage(p);
+        const x1 = Math.min(draft.anchor.x, clamped.x);
+        const y1 = Math.min(draft.anchor.y, clamped.y);
+        const x2 = Math.max(draft.anchor.x, clamped.x);
+        const y2 = Math.max(draft.anchor.y, clamped.y);
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        // 4px min edge — same threshold the bbox tool uses to filter
+        // accidental click-as-drag events.
+        if (dx >= 4 && dy >= 4) {
+          void samTool
+            .setBox([x1, y1, x2, y2])
+            .catch((err: unknown) => {
+              showToast(describeSamError(err), {
+                variant: "error",
+                duration: 5000,
+              });
+            });
+        }
       } else if (tool === "cursor") {
         if (dragRef.current) {
           dragRef.current = null;
@@ -1792,6 +1885,23 @@ export function AnnotationCanvas({
   const canvasBg = useEditorSettings((s) => s.canvasBgColor);
   const canvasPattern = useEditorSettings((s) => s.canvasPattern);
 
+  function applySamText(): void {
+    const text = samTextDraft.trim();
+    if (text.length === 0 || samTextPending) return;
+    setSamTextPending(true);
+    samTool
+      .setText(text)
+      .catch((err: unknown) => {
+        showToast(describeSamError(err), {
+          variant: "error",
+          duration: 5000,
+        });
+      })
+      .finally(() => {
+        setSamTextPending(false);
+      });
+  }
+
   return (
     <div
       ref={hostRef}
@@ -1828,6 +1938,89 @@ export function AnnotationCanvas({
           }
         }}
       />
+      {tool === "sam" && samMode === "text" && (
+        // v3.5 Phase D — floating text-prompt input. Top-left of the
+        // canvas so it never collides with the toolbar's mode picker.
+        // Apply runs samTool.setText; the resulting mask lives on the
+        // SamTool's lastResult so the existing Enter→commit flow still
+        // applies.
+        <div
+          data-testid="sam-text-prompt-input"
+          style={{
+            position: "absolute",
+            top: 12,
+            left: 12,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "6px 8px",
+            borderRadius: 8,
+            background: "var(--glass-bg-strong, rgba(20,20,22,0.85))",
+            backdropFilter: "blur(12px)",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+            zIndex: 50,
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="text"
+            placeholder="enter object name…"
+            value={samTextDraft}
+            onChange={(e) => setSamTextDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                applySamText();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setSamTextDraft("");
+              }
+            }}
+            data-testid="sam-text-prompt-field"
+            disabled={samTextPending}
+            style={{
+              minWidth: 220,
+              height: 28,
+              padding: "0 8px",
+              borderRadius: 6,
+              border: "1px solid var(--border-subtle, rgba(255,255,255,0.1))",
+              background: "var(--bg-subtle, rgba(255,255,255,0.05))",
+              color: "var(--text-primary, #fff)",
+              fontSize: 12.5,
+              outline: "none",
+            }}
+          />
+          <button
+            type="button"
+            data-testid="sam-text-prompt-apply"
+            disabled={samTextPending || samTextDraft.trim().length === 0}
+            onClick={() => applySamText()}
+            style={{
+              height: 28,
+              padding: "0 12px",
+              borderRadius: 6,
+              border: "none",
+              background:
+                samTextDraft.trim().length === 0 || samTextPending
+                  ? "var(--bg-subtle, rgba(255,255,255,0.05))"
+                  : "var(--accent, #6366f1)",
+              color:
+                samTextDraft.trim().length === 0 || samTextPending
+                  ? "var(--text-tertiary, rgba(255,255,255,0.4))"
+                  : "var(--accent-fg, #fff)",
+              fontSize: 12,
+              fontWeight: 500,
+              cursor:
+                samTextDraft.trim().length === 0 || samTextPending
+                  ? "not-allowed"
+                  : "pointer",
+            }}
+          >
+            {samTextPending ? "…" : "Apply"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
