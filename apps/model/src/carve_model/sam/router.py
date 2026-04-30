@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field
 from carve_model.sam.codec import encode_mask_rle
 from carve_model.sam.predictor import (
     ALLOWED_SAM_MODELS,
+    _reset_singleton,
     autocast_ctx,
     extract_embedding,
     force_evict_predictor,
@@ -48,15 +49,14 @@ from carve_model.sam.predictor import (
     get_predictor,
     get_sam_model,
     get_sam_variant,
+    get_session,
     get_text_predictor,
     load_predictor,
+    set_loaded_image,
 )
 from carve_model.sam.tracker import force_evict_all_sessions
 
 router = APIRouter(prefix="/sam", tags=["sam"])
-
-_LOADED_HASH: str | None = None  # the most recently encoded image's xxh3
-_LOADED_SHAPE: list[int] = []     # [h, w]
 
 
 class EncodeIn(BaseModel):
@@ -86,7 +86,6 @@ class DecodeOut(BaseModel):
 
 @router.post("/encode", response_model=EncodeOut)
 def encode(payload: EncodeIn) -> EncodeOut:
-    global _LOADED_HASH, _LOADED_SHAPE
     try:
         img_bytes = base64.b64decode(payload.image_b64)
     except Exception as exc:  # noqa: BLE001
@@ -96,22 +95,26 @@ def encode(payload: EncodeIn) -> EncodeOut:
     img = np.array(Image.open(BytesIO(img_bytes)).convert("RGB"))
     p = get_predictor()
     p.set_image(img)
-    _LOADED_HASH = h
-    _LOADED_SHAPE = [int(img.shape[0]), int(img.shape[1])]
+    shape = [int(img.shape[0]), int(img.shape[1])]
+    # Record the loaded image's hash + shape on the active session so a
+    # subsequent /sam/decode can verify the predictor still holds these
+    # encoded features. Lifecycle ops (evict, force-evict, switch) drop
+    # the session as a unit — preventing the v3.4 desync where the hash
+    # gate passed but the predictor's _raw_image had been cleared.
+    set_loaded_image(h, shape)
     embedding_bytes = extract_embedding(p)
     embedding_b64 = (
         base64.b64encode(embedding_bytes).decode("ascii")
         if embedding_bytes is not None
         else None
     )
-    return EncodeOut(
-        image_hash=h, shape=_LOADED_SHAPE, embedding_b64=embedding_b64
-    )
+    return EncodeOut(image_hash=h, shape=shape, embedding_b64=embedding_b64)
 
 
 @router.post("/decode", response_model=DecodeOut)
 def decode(payload: DecodeIn) -> DecodeOut:
-    if _LOADED_HASH is None or _LOADED_HASH != payload.image_hash:
+    session = get_session()
+    if session is None or session.loaded_hash != payload.image_hash:
         raise HTTPException(
             status_code=409,
             detail="embedding_not_loaded; call /sam/encode again",
@@ -141,10 +144,13 @@ def _to_numpy(arr: Any) -> np.ndarray:
 
 
 def _reset_for_test() -> None:
-    """Clear the cached image hash. Used in tests to guarantee independence."""
-    global _LOADED_HASH, _LOADED_SHAPE
-    _LOADED_HASH = None
-    _LOADED_SHAPE = []
+    """Clear the cached image hash. Used in tests to guarantee independence.
+
+    The image hash now lives on ``predictor._SESSION``, so resetting the
+    router's view of "what's loaded" is the same as resetting the
+    predictor's session.
+    """
+    _reset_singleton()
 
 
 # --- SAM 3 text-prompt endpoint ---------------------------------------------

@@ -22,12 +22,12 @@ from carve_model.sam import router as r_mod
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     p_mod.set_test_predictor(None)
-    p_mod._PREDICTOR = None  # type: ignore[attr-defined]
+    p_mod._set_test_session(None)
     monkeypatch.delenv("SAM_MODEL", raising=False)
     monkeypatch.delenv("SAM_VARIANT", raising=False)
     yield
     p_mod.set_test_predictor(None)
-    p_mod._PREDICTOR = None  # type: ignore[attr-defined]
+    p_mod._set_test_session(None)
 
 
 def _client() -> TestClient:
@@ -94,7 +94,7 @@ def test_switch_idempotent_via_load_predictor_noop(monkeypatch) -> None:
     We verify the endpoint still returns 200 and the env reflects the value.
     """
     monkeypatch.setenv("SAM_MODEL", "sam2.1-tiny")
-    p_mod._PREDICTOR = object()  # type: ignore[attr-defined]
+    p_mod._set_test_session(object())
 
     # No monkeypatch on load_predictor — use the real one. It should
     # short-circuit (variant matches current AND a predictor exists).

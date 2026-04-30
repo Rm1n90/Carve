@@ -20,13 +20,11 @@ from carve_model.sam import tracker as t_mod
 def _reset(monkeypatch):
     monkeypatch.delenv("SAM_IDLE_TIMEOUT_S", raising=False)
     p_mod.set_test_predictor(None)
-    p_mod._PREDICTOR = None  # type: ignore[attr-defined]
-    p_mod._PREDICTOR_LAST_USED = 0.0  # type: ignore[attr-defined]
+    p_mod._set_test_session(None)
     t_mod.reset_for_test()
     yield
     p_mod.set_test_predictor(None)
-    p_mod._PREDICTOR = None  # type: ignore[attr-defined]
-    p_mod._PREDICTOR_LAST_USED = 0.0  # type: ignore[attr-defined]
+    p_mod._set_test_session(None)
     t_mod.reset_for_test()
 
 
@@ -63,22 +61,20 @@ def test_evict_predictor_if_idle_returns_false_when_not_loaded():
 
 def test_evict_predictor_when_loaded_and_idle_long_enough(monkeypatch):
     monkeypatch.setenv("SAM_IDLE_TIMEOUT_S", "1")
-    p_mod._PREDICTOR = object()  # type: ignore[attr-defined]
-    p_mod._PREDICTOR_LAST_USED = time.monotonic() - 5  # 5s ago, exceeds 1s timeout
+    p_mod._set_test_session(object(), last_used_at=time.monotonic() - 5)  # 5s ago, exceeds 1s timeout
     assert p_mod.evict_predictor_if_idle() is True
     assert p_mod._PREDICTOR is None  # type: ignore[attr-defined]
 
 
 def test_no_evict_when_recently_used(monkeypatch):
     monkeypatch.setenv("SAM_IDLE_TIMEOUT_S", "60")
-    p_mod._PREDICTOR = object()  # type: ignore[attr-defined]
-    p_mod._PREDICTOR_LAST_USED = time.monotonic() - 5  # 5s < 60s
+    p_mod._set_test_session(object(), last_used_at=time.monotonic() - 5)  # 5s < 60s
     assert p_mod.evict_predictor_if_idle() is False
     assert p_mod._PREDICTOR is not None  # type: ignore[attr-defined]
 
 
 def test_force_evict_predictor_works_anytime():
-    p_mod._PREDICTOR = object()  # type: ignore[attr-defined]
+    p_mod._set_test_session(object())
     assert p_mod.force_evict_predictor() is True
     assert p_mod._PREDICTOR is None  # type: ignore[attr-defined]
 
@@ -90,13 +86,14 @@ def test_force_evict_predictor_idempotent():
 
 def test_idle_timeout_zero_disables_eviction(monkeypatch):
     monkeypatch.setenv("SAM_IDLE_TIMEOUT_S", "0")
-    p_mod._PREDICTOR = object()  # type: ignore[attr-defined]
-    p_mod._PREDICTOR_LAST_USED = time.monotonic() - 10000
+    p_mod._set_test_session(object(), last_used_at=time.monotonic() - 10000)
     assert p_mod.evict_predictor_if_idle() is False
     assert p_mod._PREDICTOR is not None  # type: ignore[attr-defined]
 
 
 def test_touch_predictor_updates_clock():
+    # touch_predictor only acts when a session exists; install one first.
+    p_mod._set_test_session(object(), last_used_at=0.0)
     before = time.monotonic()
     p_mod.touch_predictor()
     after = time.monotonic()

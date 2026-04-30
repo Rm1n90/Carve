@@ -17,6 +17,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Protocol
 
 log = logging.getLogger(__name__)
@@ -196,7 +197,44 @@ TextPredictor = Callable[..., list[dict]]
 BoxPredictor = Callable[..., list[dict]]
 
 
-_PREDICTOR: SamPredictor | None = None
+# --- SamSession ------------------------------------------------------------
+#
+# v3.5 Phase A1 — the SAM image predictor + the metadata for the most
+# recently encoded image (hash + shape) live together in a single
+# ``SamSession`` object. Lifecycle ops (evict, force-evict, variant
+# switch) replace ``_SESSION`` atomically, so the loaded_hash field is
+# guaranteed to clear whenever the predictor is reset. Previously the
+# predictor was a module global and ``_LOADED_HASH`` lived in router.py
+# as a separate global; that split caused the v3.4 desync where
+# ``/sam/decode`` passed the hash gate but called a fresh predictor whose
+# ``set_image`` had not been called yet — a 500 with
+# ``set_image must be called before predict``.
+#
+# ``_PREDICTOR`` and ``_PREDICTOR_LAST_USED`` are kept as compatibility
+# shims for existing tests that poke them directly; both proxy through
+# the session via the ``_get_predictor_compat`` / ``_set_predictor_compat``
+# pair below.
+
+
+@dataclass
+class SamSession:
+    """Atomic bundle of (predictor, encoded-image metadata, last-used clock).
+
+    A single session represents "the SAM image predictor with this image
+    loaded into it". Replacing the session — eviction, idle sweep,
+    variant switch — drops both the predictor reference and any
+    associated image-hash bookkeeping in one step, eliminating the v3.4
+    desync where the router believed an image was loaded but the
+    predictor's internal ``_raw_image`` had been cleared.
+    """
+
+    predictor: Any
+    loaded_hash: str | None = None
+    loaded_shape: list[int] = field(default_factory=list)
+    last_used_at: float = 0.0
+
+
+_SESSION: SamSession | None = None
 _TEST_PREDICTOR: SamPredictor | None = None
 _TEXT_PREDICTOR_FACTORY: TextPredictor | None = None
 _BOX_PREDICTOR_FACTORY: BoxPredictor | None = None
@@ -208,8 +246,71 @@ _BOX_PREDICTOR_FACTORY: BoxPredictor | None = None
 # workloads (YOLO training, video encode jobs) can use the GPU. The
 # sweep runs every 60s in main.py's lifespan thread.
 
-_PREDICTOR_LAST_USED: float = 0.0  # epoch seconds (monotonic clock)
 _PREDICTOR_LOCK = threading.Lock()
+
+
+def get_session() -> SamSession | None:
+    """Return the current session, or ``None`` if no predictor is loaded.
+
+    Used by the router to read the loaded image's hash and shape. The
+    return value is the live session — callers should treat it as
+    read-only. Mutate session metadata via ``set_loaded_image`` only.
+    """
+    return _SESSION
+
+
+def _set_test_session(predictor: Any, *, last_used_at: float | None = None) -> None:
+    """Test-only helper: install a session with the given predictor.
+
+    Replaces the ``_PREDICTOR = object()`` pattern that the pre-v3.5
+    tests used. Allows callers to override ``last_used_at`` for idle
+    eviction tests.
+    """
+    global _SESSION
+    if predictor is None:
+        _SESSION = None
+        return
+    _SESSION = SamSession(
+        predictor=predictor,
+        last_used_at=time.monotonic() if last_used_at is None else last_used_at,
+    )
+
+
+def __getattr__(name: str) -> Any:
+    """Backward-compat read access to the legacy module globals.
+
+    The pre-v3.5 tests inspect ``p_mod._PREDICTOR`` and
+    ``p_mod._PREDICTOR_LAST_USED`` directly. Reads still work via this
+    fallback hook (PEP 562) — writes go through ``_set_test_session``.
+    """
+    if name == "_PREDICTOR":
+        return _SESSION.predictor if _SESSION is not None else None
+    if name == "_PREDICTOR_LAST_USED":
+        return _SESSION.last_used_at if _SESSION is not None else 0.0
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def set_loaded_image(image_hash: str, shape: list[int]) -> None:
+    """Record the image hash + shape on the active session.
+
+    Called by ``/sam/encode`` after ``predictor.set_image`` succeeds, so
+    a subsequent ``/sam/decode`` can verify the cached hash matches.
+    Raises ``RuntimeError`` if no session is active (caller bug — encode
+    must have built the session via ``get_predictor()`` first).
+
+    Preserves ``last_used_at`` — encode is itself an inference touch
+    (``get_predictor`` already updated the clock); resetting again here
+    would break the idle eviction tests that backdate the timestamp.
+    """
+    global _SESSION
+    if _SESSION is None:
+        raise RuntimeError("no active SAM session; call get_predictor() first")
+    _SESSION = SamSession(
+        predictor=_SESSION.predictor,
+        loaded_hash=image_hash,
+        loaded_shape=list(shape),
+        last_used_at=_SESSION.last_used_at,
+    )
 
 DEFAULT_SAM_IDLE_TIMEOUT_S = 15 * 60  # 15 minutes
 
@@ -229,9 +330,21 @@ def _idle_timeout_s() -> int:
 
 
 def touch_predictor() -> None:
-    """Update the predictor's last-used timestamp. Called on every inference."""
-    global _PREDICTOR_LAST_USED
-    _PREDICTOR_LAST_USED = time.monotonic()
+    """Update the predictor's last-used timestamp. Called on every inference.
+
+    No-op when no session is loaded. The session is replaced with a copy
+    that has a fresh ``last_used_at`` so the idle sweeper can decide
+    when to evict.
+    """
+    global _SESSION
+    if _SESSION is None:
+        return
+    _SESSION = SamSession(
+        predictor=_SESSION.predictor,
+        loaded_hash=_SESSION.loaded_hash,
+        loaded_shape=list(_SESSION.loaded_shape),
+        last_used_at=time.monotonic(),
+    )
 
 
 def _empty_cuda_cache() -> None:
@@ -251,37 +364,39 @@ def _empty_cuda_cache() -> None:
 
 
 def evict_predictor_if_idle() -> bool:
-    """Free the singleton + GPU memory if idle longer than ``SAM_IDLE_TIMEOUT_S``.
+    """Free the session + GPU memory if idle longer than ``SAM_IDLE_TIMEOUT_S``.
 
-    Returns ``True`` when eviction happened. No-op when the predictor isn't
+    Returns ``True`` when eviction happened. No-op when no session is
     loaded, the timeout is 0 (disabled), or the last-used timestamp is
-    within the timeout window.
+    within the timeout window. Clearing the session drops the predictor
+    AND the loaded-image bookkeeping in one atomic step (Phase A1).
     """
     timeout = _idle_timeout_s()
     if timeout == 0:
         return False
     with _PREDICTOR_LOCK:
-        global _PREDICTOR
-        if _PREDICTOR is None:
+        global _SESSION
+        if _SESSION is None:
             return False
-        if (time.monotonic() - _PREDICTOR_LAST_USED) < timeout:
+        if (time.monotonic() - _SESSION.last_used_at) < timeout:
             return False
-        _PREDICTOR = None
+        _SESSION = None
     _empty_cuda_cache()
     return True
 
 
 def force_evict_predictor() -> bool:
-    """Unconditionally free the singleton + GPU memory.
+    """Unconditionally free the session + GPU memory.
 
     Returns ``True`` when something was actually evicted, ``False`` when
-    the predictor wasn't loaded (idempotent — safe to call repeatedly).
+    no session was loaded (idempotent — safe to call repeatedly). Drops
+    the predictor and the loaded-image hash + shape in one atomic step.
     """
     with _PREDICTOR_LOCK:
-        global _PREDICTOR
-        if _PREDICTOR is None:
+        global _SESSION
+        if _SESSION is None:
             return False
-        _PREDICTOR = None
+        _SESSION = None
     _empty_cuda_cache()
     return True
 
@@ -326,18 +441,22 @@ def load_predictor(variant: str) -> None:
     # tests don't have to special-case this path. We still update
     # ``SAM_MODEL`` so ``get_sam_model()`` reflects the requested variant
     # for any subsequent assertions.
+    global _SESSION
     if _TEST_PREDICTOR is not None:
         os.environ["SAM_MODEL"] = variant
+        # Clear any prior session so the test fake's loaded-image state
+        # doesn't leak across switches.
+        with _PREDICTOR_LOCK:
+            _SESSION = None
         return
 
     current = get_sam_model()
     with _PREDICTOR_LOCK:
-        global _PREDICTOR
-        if variant == current and _PREDICTOR is not None:
-            # Already on the requested variant with a loaded predictor.
+        if variant == current and _SESSION is not None:
+            # Already on the requested variant with a loaded session.
             return
-        # Drop the existing singleton; we'll rebuild below.
-        _PREDICTOR = None
+        # Drop the existing session (predictor + loaded_hash together).
+        _SESSION = None
 
     # Free GPU memory outside the lock so other threads can read state.
     _empty_cuda_cache()
@@ -351,21 +470,25 @@ def load_predictor(variant: str) -> None:
     # Eagerly build the new predictor so load failures surface here
     # rather than on the next inference request.
     with _PREDICTOR_LOCK:
-        _PREDICTOR = _default_factory()
-        touch_predictor()
+        _SESSION = SamSession(
+            predictor=_default_factory(),
+            last_used_at=time.monotonic(),
+        )
 
 
 def set_test_predictor(p: SamPredictor | None) -> None:
     """Inject a stub for tests; pass None to clear."""
     global _TEST_PREDICTOR
     _TEST_PREDICTOR = p
-    # Reset the production singleton too so subsequent tests don't see a stale state
+    # Reset the production session too so subsequent tests don't see a
+    # stale predictor or stale loaded-image state.
     _reset_singleton()
 
 
 def _reset_singleton() -> None:
-    global _PREDICTOR
-    _PREDICTOR = None
+    """Reset the production session. Used by tests."""
+    global _SESSION
+    _SESSION = None
 
 
 def _default_factory() -> SamPredictor:
@@ -413,18 +536,38 @@ def get_predictor() -> SamPredictor:
     """Return the active predictor: test-injected if set, otherwise the lazily
     loaded production singleton.
 
-    Updates the last-used timestamp for the production path so the idle
-    sweeper can decide when to evict. The test-injected predictor skips
-    the touch — tests don't care about idle bookkeeping.
+    Always ensures ``_SESSION`` reflects the active predictor so the
+    router can read/write session metadata (the loaded image hash) via
+    ``get_session`` / ``set_loaded_image`` regardless of whether we're
+    in a test (with ``_TEST_PREDICTOR``) or production code path.
+
+    Updates the last-used timestamp on the session so the idle sweeper
+    can decide when to evict.
     """
+    global _SESSION
     if _TEST_PREDICTOR is not None:
+        # Make the session reflect the test predictor so the router's
+        # set_loaded_image / get_session calls work uniformly.
+        if _SESSION is None or _SESSION.predictor is not _TEST_PREDICTOR:
+            _SESSION = SamSession(
+                predictor=_TEST_PREDICTOR,
+                last_used_at=time.monotonic(),
+            )
         return _TEST_PREDICTOR
     with _PREDICTOR_LOCK:
-        global _PREDICTOR
-        if _PREDICTOR is None:
-            _PREDICTOR = _default_factory()
-        touch_predictor()
-        return _PREDICTOR
+        if _SESSION is None:
+            _SESSION = SamSession(
+                predictor=_default_factory(),
+                last_used_at=time.monotonic(),
+            )
+        else:
+            _SESSION = SamSession(
+                predictor=_SESSION.predictor,
+                loaded_hash=_SESSION.loaded_hash,
+                loaded_shape=list(_SESSION.loaded_shape),
+                last_used_at=time.monotonic(),
+            )
+        return _SESSION.predictor
 
 
 def set_text_predictor(fn: TextPredictor | None) -> None:
