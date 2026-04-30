@@ -80,6 +80,10 @@ def init_progress(redis_client, job_id: str, total: int) -> None:
     v3.7.2 — adds ``total_annotations_created`` and ``total_skipped_detections``
     so the polling endpoint can surface aggregate counts (e.g. "Created 0
     annotations across 80 assets — check class mapping").
+
+    v3.7.4 — adds ``skipped_by_class_json`` so the post-batch toast can
+    name the most-skipped weight classes (e.g. "person (412), boat (305)")
+    instead of just a count. Stored as a JSON-encoded ``dict[str, int]``.
     """
     if redis_client is None:
         return
@@ -94,6 +98,7 @@ def init_progress(redis_client, job_id: str, total: int) -> None:
                 "errors": "[]",
                 "total_annotations_created": "0",
                 "total_skipped_detections": "0",
+                "skipped_by_class_json": "{}",
             },
         )
         redis_client.expire(progress_key(job_id), _PROGRESS_TTL_SECONDS)
@@ -110,12 +115,17 @@ def update_progress(
     errors: list[str],
     total_annotations_created: int = 0,
     total_skipped_detections: int = 0,
+    skipped_by_class: dict[str, int] | None = None,
 ) -> None:
     """v3.7.2 — extended with aggregate created/skipped counts so the
     frontend can surface a clear post-batch summary toast.
 
     The new args default to 0 so any external caller that doesn't
     track counts keeps working; the worker always passes them.
+
+    v3.7.4 — also persists ``skipped_by_class`` (per-class skip counts)
+    as a JSON-encoded hash field so the polling endpoint and the toast
+    can name the unmapped classes.
     """
     if redis_client is None:
         return
@@ -128,6 +138,7 @@ def update_progress(
                 "errors": json.dumps(errors[-50:]),  # keep last 50 errors
                 "total_annotations_created": str(total_annotations_created),
                 "total_skipped_detections": str(total_skipped_detections),
+                "skipped_by_class_json": json.dumps(skipped_by_class or {}),
             },
         )
     except Exception:
@@ -158,6 +169,7 @@ def read_progress(redis_client, job_id: str) -> dict:
         "errors": [],
         "total_annotations_created": 0,
         "total_skipped_detections": 0,
+        "skipped_by_class": {},
     }
     if redis_client is None:
         return default
@@ -176,6 +188,23 @@ def read_progress(redis_client, job_id: str) -> dict:
         errors = json.loads(parsed.get("errors", "[]"))
     except json.JSONDecodeError:
         errors = []
+    # v3.7.4 — surface per-class skip counts so the post-batch toast can
+    # name the most common unmapped weight classes. Decode defensively;
+    # a malformed value falls back to {} so polling never crashes.
+    try:
+        skipped_by_class_raw = json.loads(
+            parsed.get("skipped_by_class_json", "{}")
+        )
+    except json.JSONDecodeError:
+        skipped_by_class_raw = {}
+    if not isinstance(skipped_by_class_raw, dict):
+        skipped_by_class_raw = {}
+    skipped_by_class: dict[str, int] = {}
+    for k, v in skipped_by_class_raw.items():
+        try:
+            skipped_by_class[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
     return {
         "status": parsed.get("status", "pending"),
         "done": int(parsed.get("done", 0)),
@@ -188,6 +217,7 @@ def read_progress(redis_client, job_id: str) -> dict:
         "total_skipped_detections": int(
             parsed.get("total_skipped_detections", 0)
         ),
+        "skipped_by_class": skipped_by_class,
     }
 
 
@@ -259,7 +289,14 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
 
     SessionLocal = get_session_factory()
     counts = {"done": 0, "failed": 0}
-    aggregates = {"total_annotations_created": 0, "total_skipped_detections": 0}
+    # v3.7.4 — also track per-class skip counts so the post-batch toast
+    # can name the dominant unmapped classes (e.g. "person (412), boat (305)")
+    # instead of just an opaque "Skipped N detections" number.
+    aggregates: dict = {
+        "total_annotations_created": 0,
+        "total_skipped_detections": 0,
+        "skipped_by_class": {},
+    }
     errors: list[str] = []
 
     log.info(
@@ -380,6 +417,21 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
             skipped = int(getattr(aa_result, "skipped_count", 0) or 0)
             aggregates["total_annotations_created"] += created
             aggregates["total_skipped_detections"] += skipped
+            # v3.7.4 — merge per-class skip counts into the batch-level
+            # aggregate so the toast can name them. Defensive: tolerate
+            # missing/garbage values (e.g. older test stubs).
+            per_asset_skipped = getattr(aa_result, "skipped_by_class", None)
+            if isinstance(per_asset_skipped, dict):
+                bucket: dict[str, int] = aggregates["skipped_by_class"]
+                for class_name, count in per_asset_skipped.items():
+                    try:
+                        n = int(count)
+                    except (TypeError, ValueError):
+                        continue
+                    if n <= 0:
+                        continue
+                    name = str(class_name)
+                    bucket[name] = bucket.get(name, 0) + n
 
             if created == 0:
                 log.warning(

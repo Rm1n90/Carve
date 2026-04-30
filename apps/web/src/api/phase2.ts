@@ -333,6 +333,11 @@ export interface BatchPredictProgress {
   /** v3.7.2 — sum of detections skipped (typically due to unmapped
    * weight classes) across every asset in the batch. */
   total_skipped_detections: number;
+  /** v3.7.4 — per-class skip counts merged across every asset. The
+   * post-batch toast names the top-N entries (e.g. "person (412),
+   * boat (305)") so users can see which classes still need mapping
+   * instead of just an opaque "Skipped N detections" number. */
+  skipped_by_class: Record<string, number>;
 }
 
 export const inferenceApi = {
@@ -439,6 +444,27 @@ export const inferenceApi = {
         typeof d?.total_skipped_detections === "number"
           ? d.total_skipped_detections
           : 0,
+      // v3.7.4 — defensively normalise. The wire shape is dict[str, int]
+      // but a pre-v3.7.4 worker (or a momentary Redis decode failure)
+      // could return missing/garbage; fall back to {} so the toast UI
+      // never renders ``[object Object]`` or undefined.
+      skipped_by_class:
+        d?.skipped_by_class && typeof d.skipped_by_class === "object"
+          ? Object.fromEntries(
+              Object.entries(
+                d.skipped_by_class as Record<string, unknown>,
+              )
+                .map(([k, v]): [string, number] => [
+                  String(k),
+                  typeof v === "number"
+                    ? v
+                    : Number.isFinite(Number(v))
+                      ? Number(v)
+                      : 0,
+                ])
+                .filter(([, v]) => v > 0),
+            )
+          : {},
     };
   },
 };

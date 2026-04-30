@@ -280,6 +280,11 @@ class BatchAutoAnnotateProgress(BaseModel):
     with ``total_annotations_created`` and ``total_skipped_detections``
     so the frontend can show a clear post-batch toast such as
     "Created N annotations across M of K assets. Skipped Q detections."
+
+    v3.7.4 — adds ``skipped_by_class`` so the toast can name the most
+    common unmapped weight classes (e.g. "person (412), boat (305)")
+    instead of just an opaque count. Empty dict when the batch path
+    was never run or the worker emitted no skips.
     """
 
     status: str = "pending"
@@ -289,6 +294,7 @@ class BatchAutoAnnotateProgress(BaseModel):
     errors: list[str] = Field(default_factory=list)
     total_annotations_created: int = 0
     total_skipped_detections: int = 0
+    skipped_by_class: dict[str, int] = Field(default_factory=dict)
 
 
 @task_inference_router.get(

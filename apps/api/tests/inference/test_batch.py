@@ -120,6 +120,7 @@ def test_init_and_read_progress_with_fake_redis() -> None:
         errors=["x:err"],
         total_annotations_created=7,
         total_skipped_detections=3,
+        skipped_by_class={"person": 2, "boat": 1},
     )
     snap = batch_mod.read_progress(r, "j1")
     assert snap["total"] == 5
@@ -130,6 +131,8 @@ def test_init_and_read_progress_with_fake_redis() -> None:
     # v3.7.2 — aggregate counts surfaced
     assert snap["total_annotations_created"] == 7
     assert snap["total_skipped_detections"] == 3
+    # v3.7.4 — per-class skip counts surfaced so the toast can name them.
+    assert snap["skipped_by_class"] == {"person": 2, "boat": 1}
 
     batch_mod.finalize_progress(r, "j1", status="completed")
     final = batch_mod.read_progress(r, "j1")
@@ -139,6 +142,7 @@ def test_init_and_read_progress_with_fake_redis() -> None:
 def test_read_progress_without_redis_returns_pending() -> None:
     snap = batch_mod.read_progress(None, "missing")
     # v3.7.2 — default snapshot now includes aggregate-count fields.
+    # v3.7.4 — also includes ``skipped_by_class`` (default empty).
     assert snap == {
         "status": "pending",
         "done": 0,
@@ -147,6 +151,7 @@ def test_read_progress_without_redis_returns_pending() -> None:
         "errors": [],
         "total_annotations_created": 0,
         "total_skipped_detections": 0,
+        "skipped_by_class": {},
     }
 
 
@@ -838,6 +843,195 @@ def test_run_batch_aggregates_persist_to_progress_hash(db_session, monkeypatch) 
     )
     assert snap["total_annotations_created"] == 4
     assert snap["total_skipped_detections"] == 2
+
+
+# ---------------------------------------------------------------------------
+# v3.7.4 — batch worker aggregates per-class skip counts (named classes)
+# ---------------------------------------------------------------------------
+
+
+def test_run_batch_aggregates_skipped_by_class_across_assets(
+    db_session, monkeypatch
+) -> None:
+    """v3.7.4 — the batch worker must merge each asset's
+    ``skipped_by_class`` dict into a batch-level dict so the post-batch
+    toast can name the most common unmapped classes (e.g. "person (5),
+    boat (1)") instead of just an opaque "Skipped 6 detections".
+
+    Setup: 2 assets — first returns ``{person: 3}``, second returns
+    ``{person: 2, boat: 1}``. Aggregate must be ``{person: 5, boat: 1}``.
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+
+    for i in range(2):
+        a = Asset(
+            task_id=t.id,
+            kind=AssetKind.image,
+            xxh3_128=f"v374_{i}",
+            mime="image/png",
+            size_bytes=1,
+            width=10,
+            height=10,
+            frames=1,
+            original_name=f"v374_{i}.png",
+        )
+        db_session.add(a)
+        db_session.flush()
+        db_session.add(Frame(asset_id=a.id, idx=0, pts_ms=0))
+        db_session.flush()
+    db_session.commit()
+
+    call_idx = {"n": 0}
+
+    def fake_auto_annotate_asset(**_kwargs):
+        call_idx["n"] += 1
+        if call_idx["n"] == 1:
+            sbc = {"person": 3}
+            skipped = 3
+        else:
+            sbc = {"person": 2, "boat": 1}
+            skipped = 3
+
+        class _Result:
+            annotations: list = []
+            annotations_created = 0
+            skipped_count = skipped
+            skipped_by_class: dict = sbc
+            overwrite_skipped = False
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    result = batch_mod.run_batch_auto_annotate(payload)
+
+    assert result["status"] == "completed"
+    assert result["total_skipped_detections"] == 6
+    # v3.7.4 — names the unmapped classes for the toast to highlight.
+    assert result["skipped_by_class"] == {"person": 5, "boat": 1}
+
+
+def test_run_batch_skipped_by_class_persists_to_progress_hash(
+    db_session, monkeypatch
+) -> None:
+    """v3.7.4 — the worker must JSON-encode ``skipped_by_class`` into the
+    Redis progress hash so polling clients (the frontend overlay) see
+    the named classes, not just the count.
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+    a = Asset(
+        task_id=t.id,
+        kind=AssetKind.image,
+        xxh3_128="v374_persist",
+        mime="image/png",
+        size_bytes=1,
+        width=10,
+        height=10,
+        frames=1,
+        original_name="v374_persist.png",
+    )
+    db_session.add(a)
+    db_session.flush()
+    db_session.add(Frame(asset_id=a.id, idx=0, pts_ms=0))
+    db_session.flush()
+    db_session.commit()
+
+    fake = _FakeRedis()
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "redis":
+            class StubModule:
+                class Redis:
+                    def __init__(self, *_a, **_k):
+                        pass
+
+                    def hset(self, *a, **k):
+                        return fake.hset(*a, **k)
+
+                    def expire(self, *a, **k):
+                        return fake.expire(*a, **k)
+
+                    def hgetall(self, *a, **k):
+                        return fake.hgetall(*a, **k)
+
+            return StubModule
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    def fake_auto_annotate_asset(**_kwargs):
+        class _Result:
+            annotations: list = []
+            annotations_created = 0
+            skipped_count = 4
+            skipped_by_class: dict = {"motorcycle": 3, "person": 1}
+            overwrite_skipped = False
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    batch_mod.run_batch_auto_annotate(payload)
+
+    snap = batch_mod.read_progress(
+        type("R", (), {
+            "hgetall": lambda self, key: fake.hgetall(key),
+        })(),
+        payload.job_id,
+    )
+    assert snap["skipped_by_class"] == {"motorcycle": 3, "person": 1}
 
 
 # ---------------------------------------------------------------------------

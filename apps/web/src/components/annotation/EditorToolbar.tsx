@@ -1160,19 +1160,43 @@ const YoloPredictButton = forwardRef<
               // weight classes mapped) from a successful one.
               const created = progress.total_annotations_created ?? 0;
               const skipped = progress.total_skipped_detections ?? 0;
+              // v3.7.4 — name the top unmapped classes so the user knows
+              // *which* classes need mapping instead of just a count.
+              const sbc = progress.skipped_by_class ?? {};
+              const sortedSkipped = Object.entries(sbc)
+                .filter(([, n]) => Number(n) > 0)
+                .sort((a, b) => Number(b[1]) - Number(a[1]));
+              const TOP_N = 5;
+              const top = sortedSkipped.slice(0, TOP_N);
+              const remainder = sortedSkipped.length - top.length;
+              const topLabel = top
+                .map(([name, count]) => `${name} (${count})`)
+                .join(", ");
+              const moreLabel =
+                remainder > 0 ? ` + ${remainder} more` : "";
+              // v3.7.4 — variant rules:
+              //   - error    if any asset failed (or job-level "failed")
+              //   - success  if created>0 AND skipped==0
+              //   - warning  otherwise (created>0 + skipped>0, or created==0)
               const variant: "success" | "warning" | "error" =
-                progress.status === "failed"
+                failed > 0 || progress.status === "failed"
                   ? "error"
-                  : failed > 0 || created === 0
-                    ? "warning"
-                    : "success";
-              const skippedLine =
-                skipped > 0
-                  ? ` Skipped ${skipped} detections (unmapped classes).`
-                  : "";
+                  : created > 0 && skipped === 0
+                    ? "success"
+                    : "warning";
+              let skippedLine = "";
+              if (skipped > 0 && top.length > 0) {
+                skippedLine =
+                  ` Skipped ${skipped} detections — top unmapped classes: ${topLabel}${moreLabel}.` +
+                  ` Open Class mapping to add these.`;
+              } else if (skipped > 0) {
+                // No named breakdown — fall back to v3.7.2 wording.
+                skippedLine = ` Skipped ${skipped} detections (unmapped classes).`;
+              }
+              const duration = top.length > 0 ? 8000 : 6000;
               showToast(
                 `Created ${created} annotations across ${successes} of ${total} assets.${skippedLine}`,
-                { variant, duration: 6000 },
+                { variant, duration },
               );
             }
           }}

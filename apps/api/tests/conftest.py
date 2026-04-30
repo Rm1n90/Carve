@@ -52,6 +52,23 @@ def engine():
     import carve_api.api_keys.models  # noqa: F401
     import carve_api.workspace.models  # noqa: F401
 
+    # SAFETY GUARD (added 2026-04-30): the next lines call
+    # `Base.metadata.drop_all(eng)` which permanently destroys every
+    # table. An automation agent previously ran pytest with
+    # `POSTGRES_DB=carve` (the dev DB name) overriding this fixture's
+    # default, and the drop_all wiped real workspace data. Refuse to
+    # proceed if the DB name does not look like a test DB.
+    db_name = os.environ.get("POSTGRES_DB", "")
+    allowed_test_names = {"vaa_test", "carve_test", "test", "test_db"}
+    if db_name not in allowed_test_names and not db_name.endswith("_test"):
+        raise RuntimeError(
+            f"REFUSING TO RUN TESTS: POSTGRES_DB='{db_name}' is not a "
+            f"recognised test database name. Allowed: {sorted(allowed_test_names)} "
+            "or any name ending in '_test'. This guard prevents pytest's "
+            "drop_all from destroying dev/prod data. Set POSTGRES_DB=vaa_test "
+            "(or run pytest inside a CI image with the test DB pre-provisioned)."
+        )
+
     url = (
         f"postgresql+psycopg://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}"
         f"@{os.environ['POSTGRES_HOST']}:{os.environ['POSTGRES_PORT']}/{os.environ['POSTGRES_DB']}"
