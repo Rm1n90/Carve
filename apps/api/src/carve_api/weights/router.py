@@ -6,11 +6,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from carve_api.annotations.router import _require_visible_task
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.projects.models import Class
-from carve_api.projects.service import ProjectService
+from carve_api.projects.service import ProjectService, TaskService
 from carve_api.ratelimit import limiter
 from carve_api.weights.models import Weight, WeightClassMapping, WeightTaskKind
 from carve_api.weights.schemas import WeightOut
@@ -261,6 +262,87 @@ def update_weight_mapping(
     db.flush()
     db.commit()
     return WeightClassMappingOut.from_orm_mapping(mapping)
+
+
+# ---------------------------------------------------------------------------
+# v3.5 Phase F1 — predict-time class mapping suggestions (read-only)
+# ---------------------------------------------------------------------------
+
+
+class MappingSuggestionAlternative(BaseModel):
+    """A single project class option (used for the dropdown in the UI)."""
+
+    id: str
+    name: str
+
+
+class MappingSuggestion(BaseModel):
+    """One suggestion per weight class for a given task.
+
+    ``suggested_project_class_id`` is filled by case-insensitive name match
+    against the task's effective allowed classes; null when no project class
+    has the same name. ``alternatives`` lists every option the user can
+    choose from in the predict popover (always the task's allowed classes).
+    """
+
+    weight_class_idx: int
+    weight_class_name: str
+    suggested_project_class_id: str | None
+    alternatives: list[MappingSuggestionAlternative]
+
+
+class MappingSuggestionsOut(BaseModel):
+    suggestions: list[MappingSuggestion]
+
+
+@router.get(
+    "/weights/{weight_id}/mapping-suggestions",
+    response_model=MappingSuggestionsOut,
+)
+def mapping_suggestions(
+    weight_id: uuid.UUID,
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MappingSuggestionsOut:
+    """Suggest how to map this weight's classes to the task's allowed classes.
+
+    Auto-name-match (case-insensitive). Returns one entry per weight class
+    with the suggested project class id (or ``null`` when no name match
+    exists) and the full list of alternatives the user can pick from in
+    the predict popover. Read-only — no DB writes.
+
+    v3.5 Phase F replaces the persistent ``weight_class_mappings`` table
+    with this transient helper because mapping is intrinsically per-task,
+    not per-weight (one weight can be predicted into many tasks, each with
+    its own ``allowed_class_ids``).
+    """
+    weight = db.get(Weight, weight_id)
+    if weight is None:
+        raise HTTPException(status_code=404, detail="weight_not_found")
+    task = _require_visible_task(db, user, task_id)
+    project = ProjectService(db).get(actor=user, project_id=task.project_id)
+    project_classes, _allowed = TaskService(db).get_effective_classes(
+        project=project, task=task
+    )
+    by_lower_name: dict[str, Class] = {c.name.lower(): c for c in project_classes}
+
+    suggestions: list[MappingSuggestion] = []
+    for idx, raw_name in enumerate(weight.class_names or []):
+        name = str(raw_name)
+        match = by_lower_name.get(name.lower())
+        suggestions.append(
+            MappingSuggestion(
+                weight_class_idx=idx,
+                weight_class_name=name,
+                suggested_project_class_id=str(match.id) if match else None,
+                alternatives=[
+                    MappingSuggestionAlternative(id=str(c.id), name=c.name)
+                    for c in project_classes
+                ],
+            )
+        )
+    return MappingSuggestionsOut(suggestions=suggestions)
 
 
 @router.post(

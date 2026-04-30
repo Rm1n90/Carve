@@ -68,12 +68,28 @@ class AutoAnnotateResponse(BaseModel):
     skipped_by_class: dict[str, int]
 
 
+class AutoAnnotateBody(BaseModel):
+    """Optional JSON body for ``POST /assets/{aid}/auto-annotate``.
+
+    v3.5 Phase F2 — ``class_overrides`` is a per-weight-class binding
+    decided at predict time (sent from the predict popover). Keys are
+    weight-class indices (string-encoded for JSON safety; values are
+    project-class ids). A value of ``None`` means "skip this weight class
+    for this predict run". When the overrides map is empty/omitted, the
+    autoannotate pipeline falls back to case-insensitive name-match
+    against the project's classes.
+    """
+
+    class_overrides: dict[str, str | None] | None = Field(default=None)
+
+
 @router.post("/{asset_id}/auto-annotate", response_model=AutoAnnotateResponse)
 def auto_annotate(
     asset_id: uuid.UUID,
     weight_id: uuid.UUID | None = None,
     overwrite: bool = False,
     min_confidence: float = 0.0,
+    body: AutoAnnotateBody | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AutoAnnotateResponse:
@@ -101,8 +117,28 @@ def auto_annotate(
     # Clamp incoming `min_confidence` so a misbehaving client can't bypass
     # the bounds. The slider in the UI is 0..1; anything else is a bug.
     min_confidence = max(0.0, min(1.0, float(min_confidence)))
+    # v3.5 Phase F2 — coerce the wire ``{"3": "<uuid>"}`` map into
+    # ``{int: UUID | None}`` for the autoannotate pipeline. Invalid keys /
+    # values are dropped silently; the user can re-pick from the popover.
+    overrides: dict[int, uuid.UUID | None] | None = None
+    if body is not None and body.class_overrides is not None:
+        overrides = {}
+        for k, v in body.class_overrides.items():
+            try:
+                idx = int(k)
+            except (TypeError, ValueError):
+                continue
+            if v is None:
+                overrides[idx] = None
+                continue
+            try:
+                overrides[idx] = uuid.UUID(str(v))
+            except (TypeError, ValueError):
+                # Bad uuid — treat as "no override for this idx" rather than
+                # 422-ing the whole call; the predict popover guarantees uuids.
+                continue
     try:
-        body = fetch_asset_bytes(asset)
+        image_bytes = fetch_asset_bytes(asset)
         url = presigned_url_for_weight(weight)
         result = auto_annotate_asset(
             session=db,
@@ -112,8 +148,9 @@ def auto_annotate(
             weight=weight,
             overwrite=overwrite,
             presigned_url_for_weight=url,
-            image_bytes=body,
+            image_bytes=image_bytes,
             min_confidence=min_confidence,
+            class_overrides=overrides,
         )
     except AppError as exc:
         raise _http(exc) from exc

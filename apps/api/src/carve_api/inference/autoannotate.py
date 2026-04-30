@@ -14,7 +14,7 @@ from carve_api.errors import AppError
 from carve_api.inference.model_client import ModelServiceError, yolo_load, yolo_predict
 from carve_api.projects.models import Class, Task
 from carve_api.storage.client import MinioClient
-from carve_api.weights.models import Weight, WeightClassMapping
+from carve_api.weights.models import Weight
 
 
 @dataclass
@@ -83,49 +83,65 @@ def auto_annotate_asset(
     presigned_url_for_weight: str,
     image_bytes: bytes,
     min_confidence: float = 0.0,
+    class_overrides: dict[int, uuid.UUID | None] | None = None,
 ) -> AutoAnnotateResult:
     """Run the model service on a single asset and persist the detections.
 
-    v3.3 Issue 3c — class id lookup now consults the explicit
-    ``weight_class_mappings`` table first (built at upload time), and falls
-    back to a case-insensitive name match against project classes for
-    legacy weights that pre-date the mapping. Unmapped detections are no
-    longer silently dropped — they're tallied per-class so the endpoint
-    can surface a "skipped M (unmapped: …)" summary.
+    v3.5 Phase F2 — class binding moved from the persistent
+    ``weight_class_mappings`` table to a transient per-call
+    ``class_overrides`` map (decided in the predict popover). Lookup
+    order:
+
+    1. ``class_overrides[weight_class_idx]`` — explicit user pick. A
+       value of ``None`` means "skip this weight class on this run".
+    2. Fall back to case-insensitive name match against the project's
+       classes for any weight class without an override entry.
+
+    Unmapped detections are tallied per-class so the endpoint surfaces a
+    "Created N · skipped M (unmapped: …)" summary.
     """
-    if weight.project_id != task.project_id:
+    if weight.project_id is not None and weight.project_id != task.project_id:
+        # v3.5 Phase F5 — workspace-wide weights (project_id is null) work
+        # for any task; project-scoped weights must match the task's project.
         raise AutoAnnotateMismatch("weight does not belong to this project")
 
-    # v3.3 Issue 3c — primary lookup is the mapping table; only rows with
-    # a non-null project_class_id contribute. Fall back to project class
-    # name lookup for weights that predate 0016 (no mapping rows yet) or
-    # for weight classes added after upload that the user wired manually.
-    mappings = list(
-        session.execute(
-            select(WeightClassMapping).where(WeightClassMapping.weight_id == weight.id)
-        ).scalars()
-    )
-    name_to_project_class_id: dict[str, uuid.UUID] = {
-        m.weight_class_name.lower(): m.project_class_id
-        for m in mappings
-        if m.project_class_id is not None
-    }
     project_classes = list(
         session.execute(select(Class).where(Class.project_id == task.project_id)).scalars()
     )
     classes_by_name = _index_classes_by_lower_name(project_classes)
+    valid_class_ids = {c.id for c in project_classes}
+
+    # v3.5 Phase F2 — per-weight-class index → project-class-id map. Empty
+    # / None means "no overrides; use name-match for everything". An
+    # explicit None value for an index marks that weight class as "skip".
+    overrides_by_idx: dict[int, uuid.UUID | None] = {}
+    if class_overrides:
+        for idx, cid in class_overrides.items():
+            # Drop ids that don't belong to the task's project — defensive
+            # against a stale popover state where the user picked a class
+            # that's been deleted between fetch and predict.
+            if cid is not None and cid not in valid_class_ids:
+                continue
+            overrides_by_idx[idx] = cid
+
+    # ``class_names`` is ordered by weight-class idx; build a lower-name
+    # lookup so we can fall back to name-match when an override entry is
+    # missing for a given idx.
+    weight_class_names = list(weight.class_names or [])
+    weight_idx_by_lower_name: dict[str, int] = {}
+    for i, n in enumerate(weight_class_names):
+        weight_idx_by_lower_name.setdefault(str(n).lower(), i)
 
     def _resolve_class_id(class_name: str) -> uuid.UUID | None:
         key = class_name.lower()
-        cid = name_to_project_class_id.get(key)
-        if cid is not None:
-            return cid
-        # Fallback for legacy weights with no mapping rows (e.g. uploaded
-        # before this migration ran) or for weights whose mapping table
-        # was wiped — keep the historical behavior so predict still works.
-        if not mappings:
-            return classes_by_name.get(key)
-        return None
+        # First: locate this detection's weight-class idx by name and
+        # honour any override (including the explicit "skip" sentinel).
+        idx = weight_idx_by_lower_name.get(key)
+        if idx is not None and idx in overrides_by_idx:
+            return overrides_by_idx[idx]  # may be None → skip
+        # Second: name-match fallback. Same case-insensitive logic the
+        # pre-F2 path used for legacy weights.
+        return classes_by_name.get(key)
 
     # Load weight on the model service (idempotent via LRU)
     try:
