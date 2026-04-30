@@ -1126,6 +1126,110 @@ def test_run_batch_continues_after_per_asset_failure(db_session, monkeypatch) ->
     assert any("RuntimeError" in e for e in result["errors"]), result["errors"]
 
 
+# ---------------------------------------------------------------------------
+# v3.7.6 — single shared session for the whole batch (no pool thrashing)
+# ---------------------------------------------------------------------------
+
+
+def test_run_batch_uses_single_shared_session_across_assets(
+    db_session, monkeypatch
+) -> None:
+    """v3.7.6 — the batch worker must use ONE shared session for the
+    entire loop (with per-asset commit/rollback) instead of opening a
+    fresh ``SessionLocal()`` per asset.
+
+    The v3.7.3 per-asset-session pattern caused connection pool
+    thrashing on real batches (545+ assets): each iteration acquired
+    a connection, held it idle across the multi-second HTTPX call to
+    the model service, then released it — surfacing as
+    ``OperationalError: another command is already in progress`` when
+    the pool started returning the same physical connection while a
+    previous handle was still mid-query. v3.7.6 keeps a single session
+    open for the whole batch.
+
+    Strategy: capture the ``session`` kwarg the worker passes to
+    ``auto_annotate_asset`` for every asset, then assert all calls saw
+    the SAME session instance.
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+
+    for i in range(4):
+        a = Asset(
+            task_id=t.id,
+            kind=AssetKind.image,
+            xxh3_128=f"shared{i}",
+            mime="image/png",
+            size_bytes=1,
+            width=10,
+            height=10,
+            frames=1,
+            original_name=f"shared{i}.png",
+        )
+        db_session.add(a)
+        db_session.flush()
+        db_session.add(Frame(asset_id=a.id, idx=0, pts_ms=0))
+        db_session.flush()
+    db_session.commit()
+
+    captured_sessions: list = []
+
+    def fake_auto_annotate_asset(*, session, **_kwargs):
+        captured_sessions.append(session)
+
+        class _Result:
+            annotations: list = []
+            annotations_created = 1
+            skipped_count = 0
+            skipped_by_class: dict = {}
+            overwrite_skipped = False
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    result = batch_mod.run_batch_auto_annotate(payload)
+
+    assert result["status"] == "completed"
+    assert result["done"] == 4
+    assert len(captured_sessions) == 4, (
+        f"expected 4 captured session refs, got {len(captured_sessions)}"
+    )
+    # All 4 calls must have seen the SAME session instance — that's the
+    # contract that prevents pool thrashing in production.
+    first = captured_sessions[0]
+    for idx, s in enumerate(captured_sessions[1:], start=1):
+        assert s is first, (
+            f"asset {idx} got a different session instance — "
+            "the worker is opening a fresh SessionLocal() per asset, "
+            "which causes the v3.7.5 OperationalError pool thrashing"
+        )
+
+
 def test_run_batch_returns_per_asset_error_reasons(db_session, monkeypatch) -> None:
     """v3.7.3 — the final return dict must include a populated ``errors``
     list with per-asset reason strings so the polling endpoint can show
