@@ -272,7 +272,29 @@ def enqueue_batch_auto_annotate(
     return {"job_id": payload.job_id}
 
 
-@task_inference_router.get("/{task_id}/auto-annotate/{job_id}")
+class BatchAutoAnnotateProgress(BaseModel):
+    """v3.7.2 — Pydantic schema for the batch progress polling endpoint.
+
+    Mirrors the Redis hash written by ``run_batch_auto_annotate`` and
+    extends the legacy shape ({status, done, total, failed, errors})
+    with ``total_annotations_created`` and ``total_skipped_detections``
+    so the frontend can show a clear post-batch toast such as
+    "Created N annotations across M of K assets. Skipped Q detections."
+    """
+
+    status: str = "pending"
+    done: int = 0
+    total: int = 0
+    failed: int = 0
+    errors: list[str] = Field(default_factory=list)
+    total_annotations_created: int = 0
+    total_skipped_detections: int = 0
+
+
+@task_inference_router.get(
+    "/{task_id}/auto-annotate/{job_id}",
+    response_model=BatchAutoAnnotateProgress,
+)
 def get_batch_progress(
     task_id: uuid.UUID,
     job_id: str,

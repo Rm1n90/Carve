@@ -109,13 +109,24 @@ def test_build_job_payload(db_session) -> None:
 def test_init_and_read_progress_with_fake_redis() -> None:
     r = _FakeRedis()
     batch_mod.init_progress(r, "j1", total=5)
-    batch_mod.update_progress(r, "j1", done=2, failed=1, errors=["x:err"])
+    batch_mod.update_progress(
+        r,
+        "j1",
+        done=2,
+        failed=1,
+        errors=["x:err"],
+        total_annotations_created=7,
+        total_skipped_detections=3,
+    )
     snap = batch_mod.read_progress(r, "j1")
     assert snap["total"] == 5
     assert snap["done"] == 2
     assert snap["failed"] == 1
     assert snap["errors"] == ["x:err"]
     assert snap["status"] == "running"
+    # v3.7.2 — aggregate counts surfaced
+    assert snap["total_annotations_created"] == 7
+    assert snap["total_skipped_detections"] == 3
 
     batch_mod.finalize_progress(r, "j1", status="completed")
     final = batch_mod.read_progress(r, "j1")
@@ -124,7 +135,16 @@ def test_init_and_read_progress_with_fake_redis() -> None:
 
 def test_read_progress_without_redis_returns_pending() -> None:
     snap = batch_mod.read_progress(None, "missing")
-    assert snap == {"status": "pending", "done": 0, "total": 0, "failed": 0, "errors": []}
+    # v3.7.2 — default snapshot now includes aggregate-count fields.
+    assert snap == {
+        "status": "pending",
+        "done": 0,
+        "total": 0,
+        "failed": 0,
+        "errors": [],
+        "total_annotations_created": 0,
+        "total_skipped_detections": 0,
+    }
 
 
 def _patch_redis_to_raise(monkeypatch) -> None:
@@ -631,3 +651,187 @@ def test_run_batch_commits_per_asset(db_session, monkeypatch) -> None:
         f"expected 5 annotations persisted, got {len(rows)} — earlier "
         "asset annotations were lost"
     )
+
+
+# ---------------------------------------------------------------------------
+# v3.7.2 — batch worker aggregates created/skipped counts across assets
+# ---------------------------------------------------------------------------
+
+
+def test_run_batch_aggregates_created_and_skipped_counts(
+    db_session, monkeypatch
+) -> None:
+    """v3.7.2 — the batch worker must sum per-asset created + skipped
+    counts and surface them on the final return dict (and in the
+    Redis-progress hash) so the frontend can render a clear post-batch
+    toast like "Created 0 annotations across 3 of 3 assets — skipped 9
+    detections (unmapped)".
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+
+    # 3 assets — per-asset stub returns: (2 created, 1 skipped) each, so
+    # the aggregates should be (6 created, 3 skipped).
+    for i in range(3):
+        a = Asset(
+            task_id=t.id,
+            kind=AssetKind.image,
+            xxh3_128=f"agg{i}",
+            mime="image/png",
+            size_bytes=1,
+            width=10,
+            height=10,
+            frames=1,
+            original_name=f"agg{i}.png",
+        )
+        db_session.add(a)
+        db_session.flush()
+        db_session.add(Frame(asset_id=a.id, idx=0, pts_ms=0))
+        db_session.flush()
+    db_session.commit()
+
+    def fake_auto_annotate_asset(**_kwargs):
+        class _Result:
+            annotations: list = []
+            annotations_created = 2
+            skipped_count = 1
+            skipped_by_class: dict = {"unknown": 1}
+            overwrite_skipped = False
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    result = batch_mod.run_batch_auto_annotate(payload)
+
+    assert result["status"] == "completed"
+    assert result["done"] == 3
+    assert result["failed"] == 0
+    assert result["total"] == 3
+    # v3.7.2 — aggregate counts surfaced on the final return dict.
+    assert result["total_annotations_created"] == 6
+    assert result["total_skipped_detections"] == 3
+
+
+def test_run_batch_aggregates_persist_to_progress_hash(db_session, monkeypatch) -> None:
+    """v3.7.2 — the worker writes the aggregate counts to the Redis
+    progress hash on every iteration so a polling client (the frontend
+    overlay) sees them grow as the batch runs.
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+    a = Asset(
+        task_id=t.id,
+        kind=AssetKind.image,
+        xxh3_128="agg_p",
+        mime="image/png",
+        size_bytes=1,
+        width=10,
+        height=10,
+        frames=1,
+        original_name="agg_p.png",
+    )
+    db_session.add(a)
+    db_session.flush()
+    db_session.add(Frame(asset_id=a.id, idx=0, pts_ms=0))
+    db_session.flush()
+    db_session.commit()
+
+    fake = _FakeRedis()
+
+    # Stub out the inner Redis() so the worker uses our fake.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "redis":
+            class StubModule:
+                class Redis:
+                    def __init__(self, *_a, **_k):
+                        pass
+
+                    def hset(self, *a, **k):
+                        return fake.hset(*a, **k)
+
+                    def expire(self, *a, **k):
+                        return fake.expire(*a, **k)
+
+                    def hgetall(self, *a, **k):
+                        return fake.hgetall(*a, **k)
+
+            return StubModule
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    def fake_auto_annotate_asset(**_kwargs):
+        class _Result:
+            annotations: list = []
+            annotations_created = 4
+            skipped_count = 2
+            skipped_by_class: dict = {"unknown": 2}
+            overwrite_skipped = False
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    batch_mod.run_batch_auto_annotate(payload)
+
+    snap = batch_mod.read_progress(
+        # Use the same fake redis to read what the worker wrote.
+        type("R", (), {
+            "hgetall": lambda self, key: fake.hgetall(key),
+        })(),
+        payload.job_id,
+    )
+    assert snap["total_annotations_created"] == 4
+    assert snap["total_skipped_detections"] == 2

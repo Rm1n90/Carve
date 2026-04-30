@@ -71,7 +71,12 @@ def build_job_payload(
 
 
 def init_progress(redis_client, job_id: str, total: int) -> None:
-    """Best-effort write of initial progress; swallow Redis errors."""
+    """Best-effort write of initial progress; swallow Redis errors.
+
+    v3.7.2 — adds ``total_annotations_created`` and ``total_skipped_detections``
+    so the polling endpoint can surface aggregate counts (e.g. "Created 0
+    annotations across 80 assets — check class mapping").
+    """
     if redis_client is None:
         return
     try:
@@ -83,6 +88,8 @@ def init_progress(redis_client, job_id: str, total: int) -> None:
                 "total": str(total),
                 "failed": "0",
                 "errors": "[]",
+                "total_annotations_created": "0",
+                "total_skipped_detections": "0",
             },
         )
         redis_client.expire(progress_key(job_id), _PROGRESS_TTL_SECONDS)
@@ -91,8 +98,21 @@ def init_progress(redis_client, job_id: str, total: int) -> None:
 
 
 def update_progress(
-    redis_client, job_id: str, *, done: int, failed: int, errors: list[str]
+    redis_client,
+    job_id: str,
+    *,
+    done: int,
+    failed: int,
+    errors: list[str],
+    total_annotations_created: int = 0,
+    total_skipped_detections: int = 0,
 ) -> None:
+    """v3.7.2 — extended with aggregate created/skipped counts so the
+    frontend can surface a clear post-batch summary toast.
+
+    The new args default to 0 so any external caller that doesn't
+    track counts keeps working; the worker always passes them.
+    """
     if redis_client is None:
         return
     try:
@@ -102,6 +122,8 @@ def update_progress(
                 "done": str(done),
                 "failed": str(failed),
                 "errors": json.dumps(errors[-50:]),  # keep last 50 errors
+                "total_annotations_created": str(total_annotations_created),
+                "total_skipped_detections": str(total_skipped_detections),
             },
         )
     except Exception:
@@ -118,8 +140,21 @@ def finalize_progress(redis_client, job_id: str, *, status: str) -> None:
 
 
 def read_progress(redis_client, job_id: str) -> dict:
-    """Read progress; if Redis unavailable or key missing, return a default 'pending' payload."""
-    default = {"status": "pending", "done": 0, "total": 0, "failed": 0, "errors": []}
+    """Read progress; if Redis unavailable or key missing, return a default 'pending' payload.
+
+    v3.7.2 — surfaces ``total_annotations_created`` and
+    ``total_skipped_detections`` so the frontend can show a clear
+    "Created N annotations across M of K assets" toast.
+    """
+    default = {
+        "status": "pending",
+        "done": 0,
+        "total": 0,
+        "failed": 0,
+        "errors": [],
+        "total_annotations_created": 0,
+        "total_skipped_detections": 0,
+    }
     if redis_client is None:
         return default
     try:
@@ -143,6 +178,12 @@ def read_progress(redis_client, job_id: str) -> dict:
         "total": int(parsed.get("total", 0)),
         "failed": int(parsed.get("failed", 0)),
         "errors": errors,
+        "total_annotations_created": int(
+            parsed.get("total_annotations_created", 0)
+        ),
+        "total_skipped_detections": int(
+            parsed.get("total_skipped_detections", 0)
+        ),
     }
 
 
@@ -170,7 +211,11 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
         redis_client = None
 
     SessionLocal = get_session_factory()
+    # v3.7.2 — also track aggregate created/skipped detection counts so
+    # the polling endpoint can surface "Created N · skipped M" without
+    # the frontend having to re-read each asset's annotations.
     counts = {"done": 0, "failed": 0}
+    aggregates = {"total_annotations_created": 0, "total_skipped_detections": 0}
     errors: list[str] = []
 
     # v3.7.1 — per-asset commits. The previous version wrapped the whole
@@ -242,11 +287,21 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                     aa_kwargs["min_confidence"] = clamped_conf
                 if coerced_overrides is not None:
                     aa_kwargs["class_overrides"] = coerced_overrides
-                auto_annotate_asset(**aa_kwargs)
+                aa_result = auto_annotate_asset(**aa_kwargs)
                 # v3.7.1 — commit this asset's annotations immediately so
                 # crashes / later failures cannot roll them back.
                 session.commit()
                 counts["done"] += 1
+                # v3.7.2 — accumulate per-asset created/skipped tallies.
+                # ``aa_result`` may be a real ``AutoAnnotateResult`` or a
+                # test stub — read defensively (getattr) so test doubles
+                # without these attrs don't blow up.
+                aggregates["total_annotations_created"] += int(
+                    getattr(aa_result, "annotations_created", 0) or 0
+                )
+                aggregates["total_skipped_detections"] += int(
+                    getattr(aa_result, "skipped_count", 0) or 0
+                )
             except AppError as exc:
                 # Drop any uncommitted changes for the failed asset so the
                 # next iteration starts from a clean slate.
@@ -257,8 +312,19 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                 session.rollback()
                 counts["failed"] += 1
                 errors.append(f"{asset.original_name}: {type(exc).__name__}")
-            update_progress(redis_client, payload.job_id, **counts, errors=errors)
+            update_progress(
+                redis_client,
+                payload.job_id,
+                **counts,
+                errors=errors,
+                **aggregates,
+            )
 
     final_status = "completed" if counts["failed"] == 0 else "completed_with_errors"
     finalize_progress(redis_client, payload.job_id, status=final_status)
-    return {"status": final_status, **counts, "total": len(assets)}
+    return {
+        "status": final_status,
+        **counts,
+        "total": len(assets),
+        **aggregates,
+    }
