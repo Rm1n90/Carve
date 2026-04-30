@@ -31,6 +31,7 @@ import {
 import { showToast } from "@/lib/toast";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
 import { AnnotationContextMenu } from "@/components/annotation/AnnotationContextMenu";
+import { ModelLoadingOverlay } from "@/components/annotation/ModelLoadingOverlay";
 import {
   centeredOffset,
   clampScale,
@@ -207,6 +208,12 @@ export function AnnotationCanvas({
   // texture-swap effect waits on this so a fast first-paint imageUrl
   // change still lands on a ready renderer.
   const [pixiReady, setPixiReady] = useState(false);
+  // v3.5 Phase C — when SAM activate() takes longer than the threshold
+  // (typical first-encode after a model load), surface a progress
+  // overlay polling /models/sam-status. ``samLoadOverlayOpen`` is the
+  // single source of truth; we open on a 2s timer and close on activate
+  // resolve so quick activations (warm session) never flash the overlay.
+  const [samLoadOverlayOpen, setSamLoadOverlayOpen] = useState(false);
   const shapeGfxByIdRef = useRef<Map<string, unknown>>(new Map());
   // Per-annotation mask sprites (for `geometry.kind === "mask_rle"`).
   // Stored separately from `shapeGfxByIdRef` so the bbox/polygon path
@@ -1271,12 +1278,29 @@ export function AnnotationCanvas({
       // (audit bug 8a), the api now returns 503 model_service_unreachable.
       // Surface that to the user as a toast — without it the failed promise
       // would just become an unhandled rejection in the console.
-      void samTool.activate().catch((err: unknown) => {
-        const message = describeSamError(err);
-        showToast(message, { variant: "error", duration: 5000 });
-      });
+      //
+      // v3.5 Phase C — first-encode after a model load can block 5-30s.
+      // Open a status-polling overlay if activate() hasn't resolved
+      // within 2 seconds; the warm-session path (well under 2s) never
+      // sees the overlay flash. The overlay polls /models/sam-status
+      // and dismisses itself when state→ready/error.
+      const overlayDelayMs = 2000;
+      const overlayTimer = window.setTimeout(() => {
+        setSamLoadOverlayOpen(true);
+      }, overlayDelayMs);
+      void samTool
+        .activate()
+        .catch((err: unknown) => {
+          const message = describeSamError(err);
+          showToast(message, { variant: "error", duration: 5000 });
+        })
+        .finally(() => {
+          window.clearTimeout(overlayTimer);
+          setSamLoadOverlayOpen(false);
+        });
     } else {
       samTool.reset();
+      setSamLoadOverlayOpen(false);
     }
 
     function pointerXY(e: PointerEvent): Point {
@@ -1794,6 +1818,15 @@ export function AnnotationCanvas({
         hitTest={hitTestClient}
         vertexHitTest={vertexHitTestClient}
         classes={classesProp}
+      />
+      <ModelLoadingOverlay
+        open={samLoadOverlayOpen}
+        onClose={() => setSamLoadOverlayOpen(false)}
+        onError={(detail) => {
+          if (detail && detail !== "model_load_failed") {
+            showToast(`SAM load failed: ${detail}`, { variant: "error" });
+          }
+        }}
       />
     </div>
   );

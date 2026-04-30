@@ -26,6 +26,7 @@ import { Card } from "@/components/ui/Card";
 import { modelsApi } from "@/api/phase2";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { ModelLoadingOverlay } from "./ModelLoadingOverlay";
 
 const SAM_VARIANT_LABEL: Record<string, string> = {
   "sam2.1-tiny": "SAM 2.1 — Tiny (39MB · fastest)",
@@ -70,13 +71,23 @@ export function SamVariantSwitcher({
   // region copy can name the variant currently loading.
   const [pendingVariant, setPendingVariant] = useState<string | null>(null);
 
+  // v3.5 Phase C — overlay state moved up here so onMutate can open it
+  // immediately (before the 202 response comes back) and onSuccess can
+  // keep it open for status polling.
+  const [overlayOpen, setOverlayOpen] = useState(false);
+
   const switchM = useMutation({
     mutationFn: (next: string) => modelsApi.samSetActive(next),
     onMutate: (next) => {
       setPendingVariant(next);
+      setOverlayOpen(true);
     },
     onSuccess: (result) => {
-      showToast(`Active SAM variant: ${result.active_variant}`, {
+      // 202 — the load is now happening in the background. The overlay
+      // (polling /models/sam-status) will close itself when state→ready.
+      // The toast fires here so users see immediate feedback that the
+      // switch was accepted.
+      showToast(`Switching to ${result.active_variant}…`, {
         variant: "success",
       });
       void qc.invalidateQueries({ queryKey: ["sam-active"] });
@@ -84,6 +95,7 @@ export function SamVariantSwitcher({
     },
     onError: () => {
       showToast("Failed to switch SAM variant", { variant: "error" });
+      setOverlayOpen(false);
     },
     onSettled: () => {
       setPendingVariant(null);
@@ -114,9 +126,31 @@ export function SamVariantSwitcher({
     switchM.mutate(next);
   }
 
+  // v3.5 Phase C — full-screen progress overlay while the variant is
+  // switching. The overlay polls /models/sam-status itself and dismisses
+  // automatically when the load finishes (state→ready or error). The
+  // mutation's onMutate opens it (synchronous w/ user click); onError
+  // closes it. ``overlayOpen`` lives at the top of the component (above
+  // the mutation declaration) so onMutate can flip it immediately.
+  const overlayHint = pendingVariant ?? undefined;
+
+  const overlay = (
+    <ModelLoadingOverlay
+      open={overlayOpen}
+      onClose={() => setOverlayOpen(false)}
+      onError={(detail) => {
+        if (detail && detail !== "model_load_failed") {
+          showToast(`SAM load failed: ${detail}`, { variant: "error" });
+        }
+      }}
+      variantHint={overlayHint}
+    />
+  );
+
   if (variant === "compact") {
     return (
       <div data-testid="sam-variant-switcher-compact">
+        {overlay}
         <p className="px-2 py-1.5 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
           SAM model
         </p>
@@ -204,6 +238,7 @@ export function SamVariantSwitcher({
   // ------------------------------ "full" ------------------------------
   return (
     <div className="grid gap-6" data-testid="sam-variant-switcher-full">
+      {overlay}
       <Card variant="surface" radius="lg" className="p-6 grid gap-4">
         <div className="flex items-center gap-3">
           <span className="grid h-10 w-10 place-items-center rounded-[var(--radius-md)] bg-[var(--accent-bg)] text-[color:var(--accent)]">

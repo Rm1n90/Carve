@@ -48,6 +48,19 @@ vi.mock("@/api/phase2", () => ({
   modelsApi: {
     samActive: vi.fn(),
     samSetActive: vi.fn(),
+    // v3.5 Phase C — overlay polls /models/sam-status; default to a
+    // perpetual ``loading`` state so the overlay stays open during
+    // tests that exercise the switcher's loading affordances. Tests
+    // that need ``ready`` can override per-test.
+    samStatus: vi.fn().mockResolvedValue({
+      state: "loading",
+      variant: "sam2.1-large",
+      progress_bytes: null,
+      progress_total: null,
+      loaded_at: null,
+      error: null,
+      job_id: null,
+    }),
   },
 }));
 
@@ -157,7 +170,12 @@ describe("SamVariantSwitcher — full variant", () => {
 
   it("shows a spinner while the switch mutation is pending", async () => {
     // Hold the switch promise open so the pending state stays visible.
-    let resolveSwitch: (v: { active_variant: string }) => void = () => {};
+    let resolveSwitch: (v: {
+      active_variant: string;
+      variant: string;
+      job_id: string;
+      state: string;
+    }) => void = () => {};
     (modelsApi.samSetActive as ReturnType<typeof vi.fn>).mockImplementation(
       () =>
         new Promise((resolve) => {
@@ -178,10 +196,36 @@ describe("SamVariantSwitcher — full variant", () => {
     await screen.findByTestId("sam-switching-status");
 
     // Resolve the mutation so the test cleans up cleanly.
-    resolveSwitch({ active_variant: "sam2.1-small" });
+    resolveSwitch({
+      active_variant: "sam2.1-small",
+      variant: "sam2.1-small",
+      job_id: "abc",
+      state: "loading",
+    });
     await waitFor(() => {
       expect(showToastMock).toHaveBeenCalled();
     });
+  });
+
+  it("renders the ModelLoadingOverlay once a switch is confirmed", async () => {
+    // The 202 response resolves immediately; the overlay then polls
+    // /models/sam-status (mocked to ``loading``) so it stays mounted.
+    (modelsApi.samSetActive as ReturnType<typeof vi.fn>).mockResolvedValue({
+      active_variant: "sam2.1-small",
+      variant: "sam2.1-small",
+      job_id: "abc",
+      state: "loading",
+    });
+
+    render(wrap(<SamVariantSwitcher variant="full" />));
+    const small = await screen.findByTestId<HTMLInputElement>(
+      "sam-variant-radio-sam2.1-small",
+    );
+    fireEvent.click(small);
+    const confirmBtn = await screen.findByTestId("confirm-dialog-confirm");
+    fireEvent.click(confirmBtn);
+
+    await screen.findByTestId("model-loading-overlay");
   });
 });
 

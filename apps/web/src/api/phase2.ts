@@ -36,22 +36,68 @@ export interface SamActive {
   reachable?: boolean;
 }
 
-/** Response from POST /models/sam-active — the active variant after the
- * model service finished loading. */
+/** Response from POST /models/sam-active.
+ *
+ * v3.5 Phase C — the endpoint is now non-blocking. ``active_variant`` is
+ * preserved as an alias for ``variant`` so legacy callers keep working.
+ * The frontend polls ``GET /models/sam-status`` to learn when the load
+ * actually completes. */
 export interface SamSwitchResult {
+  job_id: string;
+  state: SamLoadStateKind;
+  variant: string;
+  /** Alias of ``variant``. Kept for backward compat. */
   active_variant: string;
+}
+
+/** Load-state machine kinds returned by ``GET /models/sam-status``. */
+export type SamLoadStateKind = "idle" | "loading" | "ready" | "error";
+
+/** Response from GET /models/sam-status.
+ *
+ * v3.5 Phase C — surfaces the predictor's load lifecycle so the editor
+ * can show a "Loading SAM…" overlay during the 5-30s HF weight
+ * download / build. Polled every ~1.5s while the overlay is open. */
+export interface SamLoadStatus {
+  state: SamLoadStateKind;
+  variant: string | null;
+  /** Bytes downloaded so far. Null when HF doesn't expose progress. */
+  progress_bytes: number | null;
+  /** Total bytes expected. Null when HF doesn't expose progress. */
+  progress_total: number | null;
+  /** ISO8601 timestamp of the last successful load (state="ready"). */
+  loaded_at: string | null;
+  /** Error detail when state="error". */
+  error: string | null;
+  /** Correlation token from the most recent switch, if any. */
+  job_id?: string | null;
 }
 
 export const modelsApi = {
   samActive: async (): Promise<SamActive> =>
     (await api.get<SamActive>("/models/sam-active")).data,
   /**
-   * Hot-swap the active SAM variant. Blocks for the full model load
-   * (5-30s typical). Throws on 422 (unknown variant) or 503
-   * (model service unavailable).
+   * Hot-swap the active SAM variant (non-blocking).
+   *
+   * Returns 202 + ``{job_id, state, variant}`` immediately. The model
+   * service performs the actual 5-30s load in the background; the
+   * frontend polls ``samStatus()`` until state transitions to ``ready``
+   * (or ``error``). Throws on 422 (unknown variant), 409
+   * (switch_in_progress), or 503 (model service unavailable).
    */
   samSetActive: async (variant: string): Promise<SamSwitchResult> =>
     (await api.post<SamSwitchResult>("/models/sam-active", { variant })).data,
+  /**
+   * Read the SAM predictor's current load state.
+   *
+   * Use with TanStack Query's ``refetchInterval`` to drive a loading
+   * overlay (see ``ModelLoadingOverlay``). Returns a synthetic
+   * ``state="error"`` with ``error="model_service_unreachable"`` when
+   * the model container is unreachable so the overlay can dismiss
+   * cleanly instead of spinning.
+   */
+  samStatus: async (): Promise<SamLoadStatus> =>
+    (await api.get<SamLoadStatus>("/models/sam-status")).data,
 };
 
 // --------------------------- /weights (workspace) ---------------------------
