@@ -135,10 +135,23 @@ services:
     restart: unless-stopped
     profiles:
       - inference
+    # v3.7.8 — pass through all NVIDIA GPUs to the model container.
+    # Without this the YOLO + SAM models fall back to CPU which is
+    # ~30-40x slower (yolov8n at ~2.7s/asset CPU vs ~70ms/asset GPU).
+    # Requires nvidia-container-toolkit on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     environment:
       MODEL_HOST: 0.0.0.0
       MODEL_PORT: 8100
       HF_TOKEN: ${HF_TOKEN:-}
+      # Optional: pin a specific GPU index. Default = use all visible GPUs.
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
     volumes:
       - hf_cache:/root/.cache/huggingface
     healthcheck:
