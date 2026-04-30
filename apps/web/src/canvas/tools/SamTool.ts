@@ -7,6 +7,25 @@ interface ToolButton {
   pointer: number; // 0=left, 2=right
 }
 
+/** Optional UI hook fired when SamTool auto-recovers from a 409. */
+export type SamResyncNotifier = (message: string) => void;
+
+/**
+ * Read the HTTP status code off a thrown decode error.
+ *
+ * Axios surfaces failures as ``AxiosError`` with ``response.status`` —
+ * we treat anything else as "no status" (returns ``null``) so the
+ * retry path is opt-in to genuine server responses, not network
+ * faults / cancellation / programmer errors.
+ */
+function getStatusCode(err: unknown): number | null {
+  if (typeof err !== "object" || err === null) return null;
+  const e = err as { response?: { status?: unknown }; status?: unknown };
+  if (e.response && typeof e.response.status === "number") return e.response.status;
+  if (typeof e.status === "number") return e.status;
+  return null;
+}
+
 /**
  * Click-driven SAM tool.
  *
@@ -34,6 +53,7 @@ export class SamTool {
     private getFrameId: () => string | null,
     private generateTempId: () => string = () =>
       `t-${Math.random().toString(36).slice(2)}`,
+    private onResync: SamResyncNotifier | null = null,
   ) {}
 
   isReady(): boolean {
@@ -59,6 +79,16 @@ export class SamTool {
     }
   }
 
+  /**
+   * Force a re-encode by clearing the cached image_hash and calling
+   * ``activate()`` again. Used on a 409 from ``/sam/decode`` so the
+   * model worker re-runs ``set_image`` for the current asset.
+   */
+  private async reencode(): Promise<void> {
+    this.imageHash = null;
+    await this.activate();
+  }
+
   /** v1.1 hook: returns whether a local in-browser decode is provisioned. */
   isLocalDecodeReady(): boolean {
     return this.localDecodeReady;
@@ -70,7 +100,18 @@ export class SamTool {
     this.lastResult = null;
   }
 
-  /** Add a point and refresh the mask. Returns the latest decode result. */
+  /**
+   * Add a point and refresh the mask. Returns the latest decode result.
+   *
+   * v3.5 Phase A3: if the server returns 409 (the model worker's
+   * ``embedding_not_loaded`` gate — typically because the predictor
+   * was evicted, the variant was switched, or the worker restarted
+   * since the last encode), automatically re-encode the asset and
+   * retry the decode ONCE. The re-sync notifier (passed at
+   * construction) is invoked so the UI can flash a "Re-syncing SAM"
+   * toast. If the retry also fails, the error is re-thrown for the
+   * caller's normal error handling.
+   */
   async addClick(p: Point, button: ToolButton): Promise<SamDecodeResult | null> {
     if (this.imageHash === null) return null;
     if (button.pointer === 2) {
@@ -87,8 +128,35 @@ export class SamTool {
       this.lastResult = null;
       return null;
     }
-    this.lastResult = await samApi.decode(this.assetId, this.imageHash, points, labels);
-    return this.lastResult;
+
+    try {
+      this.lastResult = await samApi.decode(
+        this.assetId,
+        this.imageHash,
+        points,
+        labels,
+      );
+      return this.lastResult;
+    } catch (err) {
+      const status = getStatusCode(err);
+      if (status !== 409) throw err;
+      // 409 = the model worker no longer has this image's embedding.
+      // Notify the UI, re-encode, and retry the decode once.
+      this.onResync?.("Re-syncing SAM — try again");
+      await this.reencode();
+      if (this.imageHash === null) {
+        // Re-encode failed (network error, etc.) — bubble the
+        // original 409 so the caller sees a consistent error path.
+        throw err;
+      }
+      this.lastResult = await samApi.decode(
+        this.assetId,
+        this.imageHash,
+        points,
+        labels,
+      );
+      return this.lastResult;
+    }
   }
 
   /** Commit the current best mask as a mask annotation. Returns true if committed. */

@@ -110,4 +110,96 @@ describe("SamTool", () => {
     await tool.activate(); // second call should be a no-op once cached
     expect(calls).toBe(1);
   });
+
+  it("addClick re-encodes and retries decode once on a 409 hash_mismatch", async () => {
+    // First encode → "stale" hash. Second encode (after re-sync) → "fresh".
+    let encodeCalls = 0;
+    (samApi.encode as any).mockImplementation(async () => {
+      encodeCalls += 1;
+      return {
+        image_hash:
+          encodeCalls === 1 ? "stale".padEnd(32, "0") : "fresh".padEnd(32, "0"),
+        shape: [10, 10],
+      };
+    });
+
+    let decodeCalls = 0;
+    (samApi.decode as any).mockImplementation(async () => {
+      decodeCalls += 1;
+      if (decodeCalls === 1) {
+        // Server returns 409 — model worker no longer has the embedding.
+        const err: any = new Error("embedding_not_loaded");
+        err.response = { status: 409, data: { error: "sam_embedding_missing" } };
+        throw err;
+      }
+      // Retry: succeed.
+      return { counts: "ok", size: [10, 10], score: 0.9 };
+    });
+
+    const resyncMessages: string[] = [];
+    const tool = new SamTool(
+      "a",
+      () => "c-1",
+      () => null,
+      undefined,
+      (msg) => resyncMessages.push(msg),
+    );
+    await tool.activate();
+
+    const result = await tool.addClick({ x: 1, y: 1 }, { pointer: 0 });
+    expect(result).not.toBeNull();
+    expect(encodeCalls).toBe(2); // initial + auto re-encode
+    expect(decodeCalls).toBe(2); // failing call + retry
+    expect(resyncMessages).toEqual(["Re-syncing SAM — try again"]);
+
+    // Retry decode used the freshly-encoded hash, not the stale one.
+    const lastDecodeCall = (samApi.decode as any).mock.calls.at(-1);
+    expect(lastDecodeCall[1]).toBe("fresh".padEnd(32, "0"));
+  });
+
+  it("addClick re-throws when the retry decode also fails", async () => {
+    (samApi.encode as any).mockResolvedValue({
+      image_hash: "h".repeat(32),
+      shape: [10, 10],
+    });
+    let decodeCalls = 0;
+    (samApi.decode as any).mockImplementation(async () => {
+      decodeCalls += 1;
+      const err: any = new Error("embedding_not_loaded");
+      err.response = { status: 409, data: { error: "sam_embedding_missing" } };
+      throw err;
+    });
+
+    const tool = new SamTool("a", () => "c-1", () => null);
+    await tool.activate();
+
+    await expect(
+      tool.addClick({ x: 1, y: 1 }, { pointer: 0 }),
+    ).rejects.toMatchObject({ response: { status: 409 } });
+    // Exactly one retry — the failing call plus the re-sync attempt.
+    expect(decodeCalls).toBe(2);
+  });
+
+  it("addClick does NOT retry on non-409 errors", async () => {
+    (samApi.encode as any).mockResolvedValue({
+      image_hash: "h".repeat(32),
+      shape: [10, 10],
+    });
+    let decodeCalls = 0;
+    (samApi.decode as any).mockImplementation(async () => {
+      decodeCalls += 1;
+      const err: any = new Error("upstream");
+      err.response = { status: 502, data: { error: "sam_model_failed" } };
+      throw err;
+    });
+
+    const tool = new SamTool("a", () => "c-1", () => null);
+    await tool.activate();
+
+    await expect(
+      tool.addClick({ x: 1, y: 1 }, { pointer: 0 }),
+    ).rejects.toMatchObject({ response: { status: 502 } });
+    // No retry path for 502 — single decode call.
+    expect(decodeCalls).toBe(1);
+  });
 });
