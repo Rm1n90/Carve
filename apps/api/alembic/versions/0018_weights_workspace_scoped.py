@@ -45,14 +45,14 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # On dev DBs that were stamped at a later revision against an
-    # empty schema, the ``weight_task_kind`` enum + ``weights`` /
-    # ``projects`` tables that this migration depends on may not
-    # exist. In that case there's nothing to migrate from — skip the
-    # body and let the running app create the new schema from scratch.
-    bind = op.get_bind()
-    if not bind.dialect.has_table(bind, "weights"):
-        return
+    # NOTE: previous versions had a defensive ``if not has_table('weights'):
+    # return`` escape clause here. That allowed alembic to silently stamp
+    # this revision as applied on an empty DB whose ``alembic_version`` had
+    # been hand-stamped past 0017, causing every subsequent
+    # ``alembic upgrade head`` to no-op and the schema to stay empty.
+    # If you reach this migration and ``weights`` does not exist, the DB is
+    # corrupt — run ``alembic stamp base && alembic upgrade head`` to
+    # rebuild from scratch.
 
     # 1. Create the new defaults table first so the backfill can write
     #    into it before we drop the source ``is_default`` column.
