@@ -34,7 +34,14 @@ import { Tooltip } from "@/components/ui/Tooltip";
 import { Kbd } from "@/components/ui/Kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/Popover";
 import { SaveIndicator } from "@/components/annotation/SaveIndicator";
-import { modelsApi, weightsApi, inferenceApi, type Weight } from "@/api/phase2";
+import {
+  modelsApi,
+  weightsApi,
+  inferenceApi,
+  type Weight,
+  type MappingSuggestion,
+  type ClassOverrides,
+} from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
@@ -44,6 +51,15 @@ const DEFAULT_PREDICT_CONFIDENCE = 0.4;
 // v3.3 Issue 4 — last-used YOLO weight per project. Keyed so switching
 // projects shows the right preselection without leaking across boundaries.
 const LAST_WEIGHT_KEY_PREFIX = "carve.editor.lastWeight.";
+// v3.5 Phase F3 — last-used class overrides per (weight, task) pair.
+// Mapping is intrinsically per-task, so the key includes both ids and
+// pre-fills the dropdowns the next time the user re-opens the popover
+// in the same task with the same weight.
+const OVERRIDES_KEY_PREFIX = "carve.editor.overrides.";
+// Sentinel for the "None / skip" option in the per-weight-class dropdown.
+// Radix Select disallows empty-string values; we translate this token to
+// `null` at the API boundary.
+const OVERRIDE_SKIP = "__skip__";
 
 function lastWeightKey(projectId: string): string {
   return `${LAST_WEIGHT_KEY_PREFIX}${projectId}`;
@@ -60,6 +76,42 @@ function loadLastWeight(projectId: string): string | null {
 function saveLastWeight(projectId: string, weightId: string): void {
   try {
     window.localStorage.setItem(lastWeightKey(projectId), weightId);
+  } catch {
+    /* localStorage may be unavailable (private mode) — non-fatal */
+  }
+}
+
+function overridesKey(weightId: string, taskId: string): string {
+  return `${OVERRIDES_KEY_PREFIX}${weightId}.${taskId}`;
+}
+
+function loadOverrides(
+  weightId: string,
+  taskId: string,
+): Record<string, string | null> | null {
+  try {
+    const raw = window.localStorage.getItem(overridesKey(weightId, taskId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, string | null>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveOverrides(
+  weightId: string,
+  taskId: string,
+  overrides: Record<string, string | null>,
+): void {
+  try {
+    window.localStorage.setItem(
+      overridesKey(weightId, taskId),
+      JSON.stringify(overrides),
+    );
   } catch {
     /* localStorage may be unavailable (private mode) — non-fatal */
   }
@@ -108,6 +160,7 @@ interface EditorToolbarProps {
   zoomPct?: number;
   /** Only present when an asset is open. */
   projectId?: string;
+  taskId?: string;
   assetId?: string;
   /**
    * v3.5 Phase E — true when the open asset is a multi-frame video.
@@ -195,10 +248,12 @@ function SamModelPicker() {
 
 function YoloPredictButton({
   projectId,
+  taskId,
   assetId,
   onAfter,
 }: {
   projectId?: string;
+  taskId?: string;
   assetId?: string;
   onAfter?: () => void;
 }) {
@@ -206,6 +261,11 @@ function YoloPredictButton({
   const [selected, setSelected] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
   const [confidence, setConfidence] = useState<number>(() => loadStoredConfidence());
+  // v3.5 Phase F3 — per-weight-class binding picked by the user in the
+  // disclosure. Keyed by `weight_class_idx` (string) so the wire shape
+  // matches the API. `null` means "skip this weight class on predict".
+  const [overrides, setOverrides] = useState<Record<string, string | null>>({});
+  const [overridesExpanded, setOverridesExpanded] = useState(false);
 
   // Persist confidence so the user's preferred threshold sticks across
   // sessions. Plain string-encoded float 0..1.
@@ -276,11 +336,77 @@ function YoloPredictButton({
     }
   }, [open, selected, wq.data, projectId]);
 
+  // v3.5 Phase F3 — fetch class-mapping suggestions once the user picks
+  // a weight. Read-only on the API; computed per `(weight, task)` from
+  // case-insensitive name match against the task's allowed classes.
+  const sugQ = useQuery({
+    queryKey: ["mapping-suggestions", selected, taskId],
+    queryFn: () =>
+      selected && taskId
+        ? weightsApi.getMappingSuggestions(selected, taskId)
+        : Promise.resolve({ suggestions: [] }),
+    enabled: open && !!selected && !!taskId,
+  });
+  const suggestions: MappingSuggestion[] = sugQ.data?.suggestions ?? [];
+
+  // v3.5 Phase F3 — once suggestions land, seed the override state:
+  // first check the per-`(weight, task)` localStorage cache (so the
+  // user's last picks pre-fill), otherwise fall back to the auto-name
+  // matched suggestion. Skipping (None) is represented by `null`.
+  useEffect(() => {
+    if (!open) return;
+    if (!selected || !taskId) return;
+    if (suggestions.length === 0) {
+      setOverrides({});
+      return;
+    }
+    const stored = loadOverrides(selected, taskId);
+    const next: Record<string, string | null> = {};
+    for (const s of suggestions) {
+      const key = String(s.weight_class_idx);
+      if (stored && key in stored) {
+        next[key] = stored[key];
+      } else {
+        next[key] = s.suggested_project_class_id;
+      }
+    }
+    setOverrides(next);
+    // Reset the disclosure expansion when the weight changes so the
+    // popover starts collapsed every time.
+    setOverridesExpanded(false);
+    // Only re-run when the meaningful inputs change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, selected, taskId, sugQ.data]);
+
+  const matchedCount = suggestions.reduce((acc, s) => {
+    const v = overrides[String(s.weight_class_idx)];
+    return acc + (v !== null && v !== undefined ? 1 : 0);
+  }, 0);
+
   const m = useMutation({
-    mutationFn: (weightId: string) =>
-      assetId
-        ? inferenceApi.predictYolo(assetId, weightId, overwrite, confidence)
-        : Promise.reject(new Error("no asset")),
+    mutationFn: (weightId: string) => {
+      if (!assetId) return Promise.reject(new Error("no asset"));
+      // v3.5 Phase F3 — only send overrides when they actually differ
+      // from the auto-suggested mapping, so legacy callers keep their
+      // pure name-match behavior on the wire and tests don't see noise.
+      const wireOverrides: ClassOverrides = {};
+      for (const s of suggestions) {
+        const key = String(s.weight_class_idx);
+        const picked = overrides[key];
+        // Treat undefined as "no entry" — let backend name-match handle it.
+        if (picked === undefined) continue;
+        if (picked !== s.suggested_project_class_id) {
+          wireOverrides[key] = picked;
+        }
+      }
+      return inferenceApi.predictYolo(
+        assetId,
+        weightId,
+        overwrite,
+        confidence,
+        Object.keys(wireOverrides).length > 0 ? wireOverrides : undefined,
+      );
+    },
     onSuccess: (res, weightId) => {
       const created = res?.annotations_created ?? res?.count ?? 0;
       const skipped = res?.skipped_count ?? 0;
@@ -311,6 +437,12 @@ function YoloPredictButton({
       // next predict in this project pre-selects it.
       if (projectId) {
         saveLastWeight(projectId, weightId);
+      }
+      // v3.5 Phase F3 — persist the user's class-override picks per
+      // (weight, task) so the next predict in this same task pre-fills
+      // the dropdowns from the cache instead of from auto-name match.
+      if (taskId && Object.keys(overrides).length > 0) {
+        saveOverrides(weightId, taskId, overrides);
       }
       setOpen(false);
       onAfter?.();
@@ -474,6 +606,98 @@ function YoloPredictButton({
             </button>
           ))}
         </div>
+        {/* v3.5 Phase F3 — class overrides disclosure. Visible once a
+            weight is selected and the task is known. Collapsed by default;
+            shows "X of Y matched" so the user sees coverage at a glance. */}
+        {selected && taskId && suggestions.length > 0 && (
+          <div
+            data-testid="yolo-class-overrides"
+            className="px-2 pt-2 pb-1 grid gap-1.5 border-t border-[var(--border-subtle)] mt-1"
+          >
+            <button
+              type="button"
+              onClick={() => setOverridesExpanded((v) => !v)}
+              data-testid="yolo-class-overrides-toggle"
+              aria-expanded={overridesExpanded}
+              className={cn(
+                "w-full flex items-center justify-between gap-2 px-1 py-1",
+                "text-[11.5px] tracking-tight",
+                "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]",
+              )}
+            >
+              <span className="flex items-center gap-1.5">
+                <ChevronDown
+                  className={cn(
+                    "h-3 w-3 transition-transform",
+                    overridesExpanded ? "rotate-180" : "rotate-0",
+                  )}
+                />
+                Class mapping
+              </span>
+              <span
+                data-testid="yolo-class-overrides-summary"
+                className="font-mono tabular-nums text-[10.5px] text-[color:var(--text-tertiary)]"
+              >
+                {matchedCount} of {suggestions.length} matched
+              </span>
+            </button>
+            {overridesExpanded && (
+              <div className="grid gap-1.5 max-h-[180px] overflow-y-auto pr-1 pb-1">
+                {suggestions.map((s) => {
+                  const key = String(s.weight_class_idx);
+                  const current = overrides[key];
+                  const value =
+                    current === null
+                      ? OVERRIDE_SKIP
+                      : (current ?? "");
+                  return (
+                    <label
+                      key={key}
+                      data-testid={`yolo-class-overrides-row-${s.weight_class_idx}`}
+                      className="grid grid-cols-[80px_1fr] gap-1.5 items-center text-[11.5px]"
+                    >
+                      <span
+                        className="font-mono text-[10.5px] text-[color:var(--text-tertiary)] truncate"
+                        title={s.weight_class_name}
+                      >
+                        #{s.weight_class_idx} {s.weight_class_name}
+                      </span>
+                      <select
+                        value={value}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setOverrides((prev) => ({
+                            ...prev,
+                            [key]:
+                              next === OVERRIDE_SKIP
+                                ? null
+                                : next === ""
+                                  ? null
+                                  : next,
+                          }));
+                        }}
+                        data-testid={`yolo-class-overrides-select-${s.weight_class_idx}`}
+                        aria-label={`Project class for ${s.weight_class_name}`}
+                        className={cn(
+                          "h-7 px-2 rounded-[var(--radius-xs)]",
+                          "border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
+                          "text-[11.5px] outline-none focus:border-[var(--accent)]",
+                        )}
+                      >
+                        <option value={OVERRIDE_SKIP}>None / skip</option>
+                        {s.alternatives.map((alt) => (
+                          <option key={alt.id} value={alt.id}>
+                            {alt.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
         <div className="px-2 pt-3 pb-2 grid gap-1.5 border-t border-[var(--border-subtle)] mt-1">
           <div className="flex items-center justify-between">
             <span className="text-[11.5px] text-[color:var(--text-secondary)] font-medium tracking-tight">
@@ -1057,6 +1281,7 @@ export function EditorToolbar({
   onRedo,
   zoomPct,
   projectId,
+  taskId,
   assetId,
   isVideo = false,
   onAfterYoloPredict,
@@ -1218,6 +1443,7 @@ export function EditorToolbar({
 
       <YoloPredictButton
         projectId={projectId}
+        taskId={taskId}
         assetId={assetId}
         onAfter={onAfterYoloPredict}
       />

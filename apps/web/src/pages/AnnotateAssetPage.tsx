@@ -700,6 +700,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         <div className="flex flex-1 min-w-0 flex-col">
           <EditorToolbar
             projectId={projectId}
+            taskId={taskId}
             assetId={assetId}
             isVideo={isVideo}
             onSave={saveNow}

@@ -160,15 +160,35 @@ export const weightsApi = {
   setDefault: async (weightId: string): Promise<Weight> =>
     (await api.post<Weight>(`/weights/${weightId}/default`)).data,
   /**
+   * v3.5 Phase F1 — read-only predict-time mapping suggestions for a
+   * `(weight, task)` pair. Returns one entry per weight class with a
+   * suggested project class id (case-insensitive name match) and the
+   * full list of alternatives the predict popover lets the user pick
+   * from. Replaces the v3.3 persistent `weight_class_mappings` table.
+   */
+  getMappingSuggestions: async (
+    weightId: string,
+    taskId: string,
+  ): Promise<MappingSuggestionsResponse> =>
+    (
+      await api.get<MappingSuggestionsResponse>(
+        `/weights/${weightId}/mapping-suggestions?task_id=${encodeURIComponent(taskId)}`,
+      )
+    ).data,
+  /**
    * v3.3 Issue 3c — list every weight-class → project-class mapping row
    * for a weight. Returned in `weight_class_idx` order.
+   *
+   * @deprecated Phase F4 removes this — the persistent mapping table is
+   * dropped and replaced with the transient `getMappingSuggestions` API.
    */
   getMappings: async (weightId: string): Promise<WeightClassMapping[]> =>
     (await api.get<WeightClassMapping[]>(`/weights/${weightId}/mappings`)).data,
   /**
    * v3.3 Issue 3c — update a single mapping row's `project_class_id`.
-   * Pass `null` to disconnect (the auto-annotate path will then skip
-   * detections for that weight class and surface them in the toast).
+   *
+   * @deprecated Phase F4 removes this. Use `class_overrides` on the
+   * predict body via `inferenceApi.predictYolo`.
    */
   updateMapping: async (
     weightId: string,
@@ -187,6 +207,8 @@ export const weightsApi = {
  * v3.3 Issue 3c — single mapping row exposed by
  * `GET /weights/{wid}/mappings`. `project_class_id` is null when the
  * weight class doesn't (yet) bind to a project class.
+ *
+ * @deprecated Phase F4 removes this — see `MappingSuggestion` instead.
  */
 export interface WeightClassMapping {
   id: string;
@@ -194,6 +216,29 @@ export interface WeightClassMapping {
   weight_class_idx: number;
   weight_class_name: string;
   project_class_id: string | null;
+}
+
+/**
+ * v3.5 Phase F1 — single mapping suggestion for a `(weight, task)` pair.
+ * Computed on the fly by `GET /weights/{wid}/mapping-suggestions?task_id=…`.
+ * `suggested_project_class_id` is null when no project class shares the
+ * weight class's name. `alternatives` lists every project class the user
+ * can pick from in the predict popover.
+ */
+export interface MappingSuggestionAlternative {
+  id: string;
+  name: string;
+}
+
+export interface MappingSuggestion {
+  weight_class_idx: number;
+  weight_class_name: string;
+  suggested_project_class_id: string | null;
+  alternatives: MappingSuggestionAlternative[];
+}
+
+export interface MappingSuggestionsResponse {
+  suggestions: MappingSuggestion[];
 }
 
 // --------------------------- /assets/{aid}/auto-annotate ---------------------------
@@ -218,12 +263,20 @@ interface AutoAnnotateApiResponse {
   skipped_by_class: Record<string, number>;
 }
 
+/**
+ * v3.5 Phase F2 — predict-time class binding overrides. Keys are
+ * weight-class indices (string-encoded for JSON safety); values are
+ * project-class ids OR `null` to skip that weight class for this run.
+ */
+export type ClassOverrides = Record<string, string | null>;
+
 export const inferenceApi = {
   predictYolo: async (
     assetId: string,
     weightId: string,
     overwrite = false,
     minConfidence = 0.0,
+    classOverrides?: ClassOverrides,
   ): Promise<YoloPredictResult> => {
     const params = new URLSearchParams({
       weight_id: weightId,
@@ -231,7 +284,13 @@ export const inferenceApi = {
       min_confidence: String(minConfidence),
     });
     const url = `/assets/${assetId}/auto-annotate?${params.toString()}`;
-    const r = await api.post<AutoAnnotateApiResponse>(url);
+    // The body is optional. When the popover passes overrides we POST a
+    // JSON body; otherwise the legacy POST-no-body shape keeps working.
+    const body =
+      classOverrides && Object.keys(classOverrides).length > 0
+        ? { class_overrides: classOverrides }
+        : undefined;
+    const r = await api.post<AutoAnnotateApiResponse>(url, body);
     const data = r.data;
     const created =
       typeof data?.annotations_created === "number"
