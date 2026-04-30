@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -35,3 +36,25 @@ class WeightOut(BaseModel):
             created_at=w.created_at,
             is_default=is_default,
         )
+
+
+class WeightAssignmentOut(BaseModel):
+    """v3.7 Phase 3 Issue 4 — one row of the weight ↔ project membership join.
+
+    ``project_name`` is denormalized into the response so the UI can
+    render the assigned-projects chip list without a follow-up call.
+    """
+
+    weight_id: UUID
+    project_id: UUID
+    project_name: str
+    created_at: datetime
+
+
+class WeightAssignmentCreate(BaseModel):
+    """Body of ``POST /weights/{weight_id}/assignments`` — assign the
+    weight to one project. Idempotent: re-posting an existing
+    (weight, project) pair returns the existing row.
+    """
+
+    project_id: UUID

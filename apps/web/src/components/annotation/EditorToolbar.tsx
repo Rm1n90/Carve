@@ -1,5 +1,13 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   MousePointer2,
@@ -22,6 +30,7 @@ import {
   Loader2,
   AlertTriangle,
   Settings,
+  X,
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
@@ -41,6 +50,7 @@ import {
   type Weight,
   type MappingSuggestion,
   type ClassOverrides,
+  type BatchPredictProgress,
 } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
@@ -246,17 +256,32 @@ function SamModelPicker() {
   );
 }
 
-function YoloPredictButton({
-  projectId,
-  taskId,
-  assetId,
-  onAfter,
-}: {
-  projectId?: string;
-  taskId?: string;
-  assetId?: string;
-  onAfter?: () => void;
-}) {
+/**
+ * v3.7 Phase 2 Issue 2 — imperative API exposed by ``YoloPredictButton``
+ * so the toolbar's Cmd/Ctrl+Enter shortcut can fire a quick predict
+ * without the user opening the popover. The predict button owns the
+ * weight / overrides / confidence state, so the toolbar delegates the
+ * pre-flight + fire decision to ``quickPredict``.
+ */
+export interface YoloPredictHandle {
+  /** Fire a predict with the currently active scope ("asset" by
+   *  default). Falls back to opening the popover when prerequisites
+   *  (weight / class mapping) are missing — and emits a contextual
+   *  toast so the user understands why nothing happened. */
+  quickPredict: () => void;
+  /** Open the popover programmatically (used by missing-config UX). */
+  openPopover: () => void;
+}
+
+const YoloPredictButton = forwardRef<
+  YoloPredictHandle,
+  {
+    projectId?: string;
+    taskId?: string;
+    assetId?: string;
+    onAfter?: () => void;
+  }
+>(function YoloPredictButton({ projectId, taskId, assetId, onAfter }, ref) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
@@ -266,6 +291,14 @@ function YoloPredictButton({
   // matches the API. `null` means "skip this weight class on predict".
   const [overrides, setOverrides] = useState<Record<string, string | null>>({});
   const [overridesExpanded, setOverridesExpanded] = useState(false);
+  // v3.7 Phase 2 Issue 1 — predict scope. "asset" is the existing flow
+  // (single asset). "task" enqueues the RQ batch over every asset in
+  // the task and opens the progress overlay below.
+  const [scope, setScope] = useState<"asset" | "task">("asset");
+  // v3.7 Phase 2 Issue 1 — active batch job. Null when no batch is in
+  // flight. Renders the <BatchPredictProgressOverlay/> when set.
+  const [batchJobId, setBatchJobId] = useState<string | null>(null);
+  const qc = useQueryClient();
 
   // Persist confidence so the user's preferred threshold sticks across
   // sessions. Plain string-encoded float 0..1.
@@ -282,10 +315,15 @@ function YoloPredictButton({
     return () => window.clearTimeout(t);
   }, [confidence]);
 
+  // v3.7 Phase 2 Issue 2 — weight list is now eager (not gated on
+  // ``open``) so the Cmd/Ctrl+Enter shortcut can pre-flight the
+  // "weight selected?" check without forcing the popover to open
+  // first. `staleTime` keeps the network footprint low.
   const wq = useQuery<Weight[]>({
     queryKey: ["weights", projectId],
     queryFn: () => (projectId ? weightsApi.listForProject(projectId) : Promise.resolve([])),
-    enabled: !!projectId && open,
+    enabled: !!projectId,
+    staleTime: 30_000,
   });
 
   // v3.3 Issue 3b — workspace-wide weights, used to populate the empty
@@ -313,13 +351,14 @@ function YoloPredictButton({
     return m;
   })();
 
-  // v3.3 Issue 4 — when the popover opens, pre-select the project's
+  // v3.3 Issue 4 / v3.7 Phase 2 Issue 2 — pre-select the project's
   // last-used weight (if still present) or fall back to the project
-  // default. Runs once per open transition and only when nothing is
-  // currently selected so reopening after a manual choice doesn't
-  // overwrite the user's pick.
+  // default. Now runs as soon as the weight list lands (no longer
+  // gated on ``open``) so the Cmd/Ctrl+Enter shortcut can find a
+  // default without forcing the user to open the popover first.
+  // Only fires when nothing is currently selected so a manual pick
+  // is never overwritten.
   useEffect(() => {
-    if (!open) return;
     if (selected !== null) return;
     const weights = wq.data ?? [];
     if (weights.length === 0) return;
@@ -334,27 +373,33 @@ function YoloPredictButton({
     if (def) {
       setSelected(def.id);
     }
-  }, [open, selected, wq.data, projectId]);
+  }, [selected, wq.data, projectId]);
 
-  // v3.5 Phase F3 — fetch class-mapping suggestions once the user picks
-  // a weight. Read-only on the API; computed per `(weight, task)` from
-  // case-insensitive name match against the task's allowed classes.
+  // v3.5 Phase F3 / v3.7 Phase 2 Issue 2 — fetch class-mapping
+  // suggestions once the user picks a weight. Now eager (not gated on
+  // ``open``) so the Cmd/Ctrl+Enter shortcut can pre-flight the
+  // "any classes mapped?" check without opening the popover. Read-only
+  // on the API; computed per `(weight, task)` from case-insensitive
+  // name match against the task's allowed classes.
   const sugQ = useQuery({
     queryKey: ["mapping-suggestions", selected, taskId],
     queryFn: () =>
       selected && taskId
         ? weightsApi.getMappingSuggestions(selected, taskId)
         : Promise.resolve({ suggestions: [] }),
-    enabled: open && !!selected && !!taskId,
+    enabled: !!selected && !!taskId,
+    staleTime: 30_000,
   });
   const suggestions: MappingSuggestion[] = sugQ.data?.suggestions ?? [];
 
-  // v3.5 Phase F3 — once suggestions land, seed the override state:
-  // first check the per-`(weight, task)` localStorage cache (so the
-  // user's last picks pre-fill), otherwise fall back to the auto-name
-  // matched suggestion. Skipping (None) is represented by `null`.
+  // v3.5 Phase F3 / v3.7 Phase 2 Issue 2 — once suggestions land, seed
+  // the override state: first check the per-`(weight, task)`
+  // localStorage cache (so the user's last picks pre-fill), otherwise
+  // fall back to the auto-name matched suggestion. Skipping (None) is
+  // represented by `null`. No longer gated on ``open`` so the
+  // Cmd/Ctrl+Enter quick-predict path can read overrides immediately
+  // after the user lands on the page.
   useEffect(() => {
-    if (!open) return;
     if (!selected || !taskId) return;
     if (suggestions.length === 0) {
       setOverrides({});
@@ -376,7 +421,7 @@ function YoloPredictButton({
     setOverridesExpanded(false);
     // Only re-run when the meaningful inputs change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, selected, taskId, sugQ.data]);
+  }, [selected, taskId, sugQ.data]);
 
   const matchedCount = suggestions.reduce((acc, s) => {
     const v = overrides[String(s.weight_class_idx)];
@@ -472,9 +517,96 @@ function YoloPredictButton({
     },
   });
 
+  // v3.7 Phase 2 Issue 1 — build the wire-shape ``class_overrides`` map
+  // shared by single-asset and batch paths. Only includes entries that
+  // diverge from the auto-suggestion so we don't pollute the wire with
+  // redundant data.
+  const buildWireOverrides = useCallback((): ClassOverrides | undefined => {
+    const wireOverrides: ClassOverrides = {};
+    for (const s of suggestions) {
+      const key = String(s.weight_class_idx);
+      const picked = overrides[key];
+      if (picked === undefined) continue;
+      if (picked !== s.suggested_project_class_id) {
+        wireOverrides[key] = picked;
+      }
+    }
+    return Object.keys(wireOverrides).length > 0 ? wireOverrides : undefined;
+  }, [overrides, suggestions]);
+
+  // v3.7 Phase 2 Issue 1 — batch path mutation. Returns the ``job_id``
+  // on success; the caller stores it in ``batchJobId`` to surface the
+  // progress overlay. Errors fall back to a single toast — the same
+  // shape as the single-asset error branch.
+  const batchM = useMutation({
+    mutationFn: (weightId: string) => {
+      if (!taskId) return Promise.reject(new Error("no task"));
+      return inferenceApi.predictYoloBatch(
+        taskId,
+        weightId,
+        overwrite,
+        confidence,
+        buildWireOverrides(),
+      );
+    },
+    onSuccess: (res, weightId) => {
+      // Persist last-used weight + overrides identically to the
+      // single-asset path so the next predict (any scope) pre-fills.
+      if (projectId) saveLastWeight(projectId, weightId);
+      if (taskId && Object.keys(overrides).length > 0) {
+        saveOverrides(weightId, taskId, overrides);
+      }
+      setOpen(false);
+      const jobId = res?.job_id;
+      if (jobId) {
+        setBatchJobId(jobId);
+      } else {
+        // Backend was reachable but didn't return a job_id (shouldn't
+        // happen in production; defensive fallback for local Redis-down
+        // setups). Surface a warning so the user doesn't think the
+        // predict actually ran.
+        showToast(
+          "Batch predict enqueue did not return a job id — check Redis.",
+          { variant: "warning", duration: 5000 },
+        );
+      }
+    },
+    onError: (err: unknown) => {
+      const errObj = err as {
+        response?: {
+          status?: number;
+          data?: { detail?: string; error?: string };
+        };
+      };
+      const status = errObj?.response?.status;
+      const detail =
+        errObj?.response?.data?.detail ?? errObj?.response?.data?.error;
+      if (status === 503 || detail === "model_service_unreachable") {
+        showToast("Model service is not running.", {
+          variant: "error",
+          duration: 5000,
+        });
+      } else if (status === 404 && detail === "weight_not_found") {
+        showToast("Select a weight first.", { variant: "error" });
+      } else {
+        showToast("Batch predict failed — please try again.", {
+          variant: "error",
+        });
+      }
+    },
+  });
+
   function handlePredict() {
     if (!selected) {
       showToast("Select a weight first.", { variant: "error" });
+      return;
+    }
+    if (scope === "task") {
+      if (!taskId) {
+        showToast("No task open.", { variant: "error" });
+        return;
+      }
+      batchM.mutate(selected);
       return;
     }
     if (!assetId) {
@@ -484,8 +616,94 @@ function YoloPredictButton({
     m.mutate(selected);
   }
 
+  // v3.7 Phase 2 Issue 2 — quick-predict path used by the
+  // Cmd/Ctrl+Enter keyboard shortcut. Mirrors handlePredict but with
+  // contextual missing-config UX so the user lands directly on the
+  // popover (with the right disclosure expanded) when prerequisites
+  // aren't met. Reads from the same cached queries as the popover.
+  const quickPredict = useCallback(() => {
+    if (!projectId) {
+      showToast("Open a project to predict.", { variant: "error" });
+      return;
+    }
+    const weightsList = wq.data ?? [];
+    if (weightsList.length === 0) {
+      showToast(
+        "No YOLO weight available — upload one in YOLO Models.",
+        { variant: "error", duration: 5000 },
+      );
+      setOpen(true);
+      return;
+    }
+    if (!selected) {
+      showToast("Pick a weight first", { variant: "error" });
+      setOpen(true);
+      return;
+    }
+    if (taskId && suggestions.length > 0) {
+      // matchedCount excludes nulls (skipped weight classes). When zero,
+      // there is no class binding for this predict run — the backend
+      // would silently skip everything.
+      const matched = suggestions.reduce((acc, s) => {
+        const v = overrides[String(s.weight_class_idx)];
+        return acc + (v !== null && v !== undefined ? 1 : 0);
+      }, 0);
+      if (matched === 0) {
+        showToast("No classes mapped — open class mapping", {
+          variant: "error",
+          duration: 5000,
+        });
+        setOpen(true);
+        setOverridesExpanded(true);
+        return;
+      }
+    }
+    if (scope === "task" && !taskId) {
+      showToast("No task open.", { variant: "error" });
+      return;
+    }
+    if (scope === "asset" && !assetId) {
+      showToast("No asset open.", { variant: "error" });
+      return;
+    }
+    // All prerequisites met — fire the predict directly.
+    if (scope === "task") {
+      batchM.mutate(selected);
+    } else {
+      m.mutate(selected);
+    }
+  }, [
+    projectId,
+    wq.data,
+    selected,
+    taskId,
+    assetId,
+    suggestions,
+    overrides,
+    scope,
+    batchM,
+    m,
+  ]);
+
+  // v3.7 Phase 2 Issue 2 — expose ``quickPredict`` + ``openPopover`` to
+  // the parent toolbar so its keyboard handler can fire a predict
+  // without owning weight/overrides/scope state itself.
+  useImperativeHandle(
+    ref,
+    () => ({
+      quickPredict,
+      openPopover: () => setOpen(true),
+    }),
+    [quickPredict],
+  );
+
   const weights = wq.data ?? [];
-  const disabled = !projectId || !assetId;
+  // v3.7 Phase 2 Issue 1 — single-asset scope still needs an open
+  // asset, but the batch ("All assets in task") scope only needs a
+  // project context. Don't grey out the trigger when ``scope === "task"``
+  // and the user happens to be on a project page without an asset yet.
+  const disabled = !projectId || (scope === "asset" && !assetId);
+  const isPredicting = m.isPending || batchM.isPending;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -495,7 +713,7 @@ function YoloPredictButton({
           data-testid="yolo-predict-trigger"
           aria-label="Open YOLO predict"
           title="Predict with YOLO weight"
-          disabled={disabled || m.isPending}
+          disabled={disabled || isPredicting}
           className={cn(
             "inline-flex h-8 items-center gap-1.5 px-3 rounded-full",
             "bg-[var(--success)] text-white text-[12.5px] font-medium tracking-tight",
@@ -503,12 +721,12 @@ function YoloPredictButton({
             "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
           )}
         >
-          {m.isPending ? (
+          {isPredicting ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
             <Sparkles className="h-3.5 w-3.5" />
           )}
-          {m.isPending ? "Predicting…" : "Predict"}
+          {isPredicting ? "Predicting…" : "Predict"}
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="min-w-[320px] p-2">
@@ -606,6 +824,58 @@ function YoloPredictButton({
               </span>
             </button>
           ))}
+        </div>
+        {/* v3.7 Phase 2 Issue 1 — predict scope picker. Defaults to
+            "asset" (existing single-asset flow). Switching to "task"
+            routes the predict through the RQ batch endpoint and opens
+            the progress overlay. */}
+        <div
+          role="radiogroup"
+          aria-label="Predict scope"
+          data-testid="yolo-predict-scope"
+          className="px-2 pt-2 pb-1 grid gap-1 border-t border-[var(--border-subtle)] mt-1"
+        >
+          <p className="px-1 pt-0.5 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
+            Predict on
+          </p>
+          <label
+            data-testid="yolo-predict-scope-asset"
+            className={cn(
+              "flex items-center gap-2 px-1.5 py-1 rounded-[var(--radius-xs)] cursor-pointer text-[12px]",
+              scope === "asset"
+                ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
+                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            <input
+              type="radio"
+              name="yolo-predict-scope"
+              value="asset"
+              checked={scope === "asset"}
+              onChange={() => setScope("asset")}
+              className="accent-[var(--accent)]"
+            />
+            <span>Current asset</span>
+          </label>
+          <label
+            data-testid="yolo-predict-scope-task"
+            className={cn(
+              "flex items-center gap-2 px-1.5 py-1 rounded-[var(--radius-xs)] cursor-pointer text-[12px]",
+              scope === "task"
+                ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
+                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            <input
+              type="radio"
+              name="yolo-predict-scope"
+              value="task"
+              checked={scope === "task"}
+              onChange={() => setScope("task")}
+              className="accent-[var(--accent)]"
+            />
+            <span>All assets in task</span>
+          </label>
         </div>
         {/* v3.5 Phase F3 — class overrides disclosure. Visible once a
             weight is selected and the task is known. Collapsed by default;
@@ -734,10 +1004,22 @@ function YoloPredictButton({
           />
           Overwrite existing annotations
         </label>
-        <div className="flex justify-end gap-1.5 pt-1">
-          {m.isError && (
+        <div className="flex items-center justify-end gap-1.5 pt-1">
+          {(m.isError || batchM.isError) && (
             <span className="inline-flex items-center gap-1 text-[11px] text-[color:var(--danger)] mr-auto">
               <AlertTriangle className="h-3 w-3" /> Failed
+            </span>
+          )}
+          {/* v3.7 Phase 2 Issue 2 — surface the keyboard shortcut so
+              users learn the Cmd/Ctrl+Enter quick-predict path. Only
+              renders the hint when no error is currently displayed so
+              the failure indicator stays visible without crowding. */}
+          {!m.isError && !batchM.isError && (
+            <span
+              data-testid="yolo-predict-shortcut-hint"
+              className="text-[10.5px] text-[color:var(--text-tertiary)] mr-auto font-mono tabular-nums"
+            >
+              ⌘+Enter to predict
             </span>
           )}
           <button
@@ -749,7 +1031,7 @@ function YoloPredictButton({
           </button>
           <button
             type="button"
-            disabled={!selected || m.isPending}
+            disabled={!selected || isPredicting}
             onClick={handlePredict}
             data-testid="yolo-predict-go"
             className={cn(
@@ -759,16 +1041,229 @@ function YoloPredictButton({
               "enabled:hover:bg-[var(--success-hover)]",
             )}
           >
-            {m.isPending ? (
+            {isPredicting ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
               <Sparkles className="h-3 w-3" />
             )}
-            {m.isPending ? "Predicting…" : "Predict"}
+            {isPredicting ? "Predicting…" : "Predict"}
           </button>
         </div>
       </PopoverContent>
+      {/* v3.7 Phase 2 Issue 1 — RQ batch progress overlay. Polls
+          ``GET /tasks/{taskId}/auto-annotate/{job_id}`` every 1.5s
+          until the worker reaches a terminal state, then refetches
+          annotations + asset queries so the new annotations appear. */}
+      {batchJobId && taskId && (
+        <BatchPredictProgressOverlay
+          taskId={taskId}
+          jobId={batchJobId}
+          onClose={(progress) => {
+            setBatchJobId(null);
+            // Always refetch — even on partial success the user has new
+            // annotations to see. We invalidate the same set the
+            // single-asset path's onAfter would (annotations + assets).
+            qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+            qc.invalidateQueries({ queryKey: ["task-annotations", taskId] });
+            qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
+            onAfter?.();
+            if (progress) {
+              const total = progress.total;
+              const done = progress.done;
+              const failed = progress.failed;
+              const successes = Math.max(0, done - failed);
+              const variant: "success" | "warning" | "error" =
+                progress.status === "failed"
+                  ? "error"
+                  : failed > 0
+                    ? "warning"
+                    : "success";
+              showToast(
+                `Predicted on ${total} assets, ${successes} succeeded, ${failed} failed`,
+                { variant, duration: 5000 },
+              );
+            }
+          }}
+        />
+      )}
     </Popover>
+  );
+});
+
+/**
+ * v3.7 Phase 2 Issue 1 — RQ batch predict progress overlay.
+ *
+ * Polls ``GET /tasks/{taskId}/auto-annotate/{job_id}`` every 1500ms
+ * while ``open`` (i.e. ``jobId`` is non-null). Auto-dismisses when the
+ * job reaches a terminal state ("completed" / "completed_with_errors"
+ * / "failed") and fires ``onClose`` with the final progress snapshot
+ * so the parent can toast the summary line.
+ *
+ * Cancel is best-effort UI: it simply unmounts the overlay. There is
+ * no server-side cancel endpoint today (the worker keeps going until
+ * the asset list is exhausted). Users can re-open the editor and the
+ * new annotations show up regardless.
+ */
+function BatchPredictProgressOverlay({
+  taskId,
+  jobId,
+  onClose,
+}: {
+  taskId: string;
+  jobId: string;
+  onClose: (final: BatchPredictProgress | null) => void;
+}) {
+  const POLL_INTERVAL_MS = 1500;
+  const statusQ = useQuery<BatchPredictProgress>({
+    queryKey: ["batch-predict-progress", taskId, jobId],
+    queryFn: () => inferenceApi.pollBatchProgress(taskId, jobId),
+    refetchInterval: (q) => {
+      const s = q.state.data?.status;
+      if (
+        s === "completed" ||
+        s === "completed_with_errors" ||
+        s === "failed"
+      ) {
+        return false;
+      }
+      return POLL_INTERVAL_MS;
+    },
+    refetchIntervalInBackground: false,
+    staleTime: 0,
+  });
+
+  const data = statusQ.data;
+  const status = data?.status;
+
+  // Auto-dismiss on terminal states.
+  useEffect(() => {
+    if (
+      status === "completed" ||
+      status === "completed_with_errors" ||
+      status === "failed"
+    ) {
+      onClose(data ?? null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  const total = data?.total ?? 0;
+  const done = data?.done ?? 0;
+  const failed = data?.failed ?? 0;
+  const hasRealProgress = total > 0;
+  const pct = hasRealProgress
+    ? Math.min(100, Math.round((done / total) * 100))
+    : null;
+  const subtitle = hasRealProgress
+    ? `Predicting on ${done} of ${total} assets…`
+    : "Predicting on assets…";
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="batch-predict-title"
+      data-testid="batch-predict-overlay"
+      className="fixed inset-0 z-[900] flex items-center justify-center"
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0 bg-[rgba(15,23,42,0.32)]"
+      />
+      <div
+        className={cn(
+          "relative z-[901] w-[min(92vw,460px)]",
+          "rounded-[var(--radius-lg)]",
+          "glass-surface-strong glass-specular",
+          "p-6 outline-none",
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => onClose(data ?? null)}
+          aria-label="Close batch predict overlay"
+          data-testid="batch-predict-close"
+          className={cn(
+            "absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center",
+            "rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)]",
+            "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+          )}
+        >
+          <X className="h-4 w-4" />
+        </button>
+
+        <div className="grid gap-1 mb-4">
+          <h2
+            id="batch-predict-title"
+            data-testid="batch-predict-title"
+            className="text-[16px] font-medium tracking-tight text-[color:var(--text-primary)] flex items-center gap-2"
+          >
+            <Loader2 className="h-4 w-4 animate-spin text-[color:var(--accent)]" />
+            Predicting on all assets
+          </h2>
+          <p
+            data-testid="batch-predict-subtitle"
+            className="text-[13px] text-[color:var(--text-secondary)]"
+          >
+            {subtitle}
+          </p>
+          {failed > 0 && (
+            <p
+              data-testid="batch-predict-failed-line"
+              className="text-[11.5px] text-[color:var(--danger)]"
+            >
+              {failed} failed so far.
+            </p>
+          )}
+        </div>
+
+        <div
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={pct ?? undefined}
+          aria-label={subtitle}
+          data-testid={
+            hasRealProgress
+              ? "batch-predict-bar-determinate"
+              : "batch-predict-bar-indeterminate"
+          }
+          className={cn(
+            "relative h-1.5 w-full overflow-hidden rounded-full",
+            "bg-[var(--bg-subtle)]",
+          )}
+        >
+          {hasRealProgress ? (
+            <div
+              className="absolute inset-y-0 left-0 bg-[var(--accent)] transition-[width] duration-300 ease-out"
+              style={{ width: `${pct}%` }}
+            />
+          ) : (
+            <div className="absolute inset-y-0 -left-1/3 w-1/3 bg-[var(--accent)] animate-[modelLoadingShimmer_1.4s_ease-in-out_infinite]" />
+          )}
+        </div>
+
+        <p className="mt-3 text-[11.5px] text-[color:var(--text-tertiary)] leading-snug">
+          The model is running auto-annotate over every asset in the
+          task. You can keep working — the new annotations will appear
+          on each asset once they are ready.
+        </p>
+
+        <div className="mt-6 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => onClose(null)}
+            data-testid="batch-predict-cancel"
+            className={cn(
+              "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px]",
+              "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1297,8 +1792,15 @@ export function EditorToolbar({
   // even when the dialog is closed.
   const filterActive = useFilter((s) => hasMeaningfulRules(s.filter));
 
+  // v3.7 Phase 2 Issue 2 — imperative handle to the YOLO predict
+  // button so the global Cmd/Ctrl+Enter shortcut can fire a quick
+  // predict (or fall back to opening the popover) without owning the
+  // weight/overrides/scope state itself.
+  const predictRef = useRef<YoloPredictHandle | null>(null);
+
   // Single-letter hotkeys (V/B/P/M/T/S/A/F) trigger tool selection,
   // plus zoom-related keys: + / - / 0 / 1 / Cmd|Ctrl + + / -. v2.6 zoom.
+  // v3.7 Phase 2 Issue 2 — Cmd/Ctrl+Enter fires the YOLO quick predict.
   useEffect(() => {
     function handler(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
@@ -1307,6 +1809,14 @@ export function EditorToolbar({
       // them through the canvas instead of letting the page zoom. The
       // user expects ⌘+ to zoom the image, not the whole tab.
       if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+        // v3.7 Phase 2 Issue 2 — Cmd/Ctrl+Enter quick predict. ``P``
+        // would collide with the Polygon tool, so we use Enter (which
+        // is otherwise unbound at the editor level) instead.
+        if (e.key === "Enter") {
+          e.preventDefault();
+          predictRef.current?.quickPredict();
+          return;
+        }
         if (e.key === "+" || e.key === "=") {
           e.preventDefault();
           onZoomIn?.();
@@ -1443,6 +1953,7 @@ export function EditorToolbar({
       />
 
       <YoloPredictButton
+        ref={predictRef}
         projectId={projectId}
         taskId={taskId}
         assetId={assetId}

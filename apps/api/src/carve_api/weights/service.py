@@ -12,7 +12,12 @@ from carve_api.projects.models import Project
 from carve_api.projects.service import _can_modify
 from carve_api.storage.client import MinioClient
 from carve_api.storage.hashing import stream_xxh3_128
-from carve_api.weights.models import Weight, WeightProjectDefault, WeightTaskKind
+from carve_api.weights.models import (
+    Weight,
+    WeightAssignment,
+    WeightProjectDefault,
+    WeightTaskKind,
+)
 
 log = logging.getLogger(__name__)
 
@@ -131,9 +136,17 @@ class WeightService:
 
         v3.5 Phase F5 — both workspace-wide weights (``project_id IS
         NULL``) and project-scoped weights (``project_id == project.id``)
-        are returned, newest first. Predict popovers and the project
-        weights table both consume this list.
+        are returned, newest first.
+
+        v3.7 Phase 3 Issue 4 — also unions weights joined via
+        ``weight_assignments`` so a weight explicitly assigned to this
+        project is visible regardless of its ``Weight.project_id``.
         """
+        assigned_ids_subq = (
+            select(WeightAssignment.weight_id)
+            .where(WeightAssignment.project_id == project.id)
+            .scalar_subquery()
+        )
         return list(
             self.session.execute(
                 select(Weight)
@@ -141,11 +154,71 @@ class WeightService:
                     or_(
                         Weight.project_id.is_(None),
                         Weight.project_id == project.id,
+                        Weight.id.in_(assigned_ids_subq),
                     )
                 )
                 .order_by(Weight.created_at.desc())
             ).scalars()
         )
+
+    def list_assignments(self, *, weight_id: uuid.UUID) -> list[tuple[WeightAssignment, str]]:
+        """v3.7 Phase 3 Issue 4 — list ``(assignment_row, project_name)``
+        pairs for the given weight, newest assignment first.
+
+        The router serialises this into ``WeightAssignmentOut`` so the UI
+        gets ``project_name`` without an extra round-trip.
+        """
+        from carve_api.projects.models import Project as _Project
+
+        rows = self.session.execute(
+            select(WeightAssignment, _Project.name)
+            .join(_Project, _Project.id == WeightAssignment.project_id)
+            .where(WeightAssignment.weight_id == weight_id)
+            .order_by(WeightAssignment.created_at.desc())
+        ).all()
+        return [(row[0], row[1]) for row in rows]
+
+    def add_assignment(
+        self, *, weight_id: uuid.UUID, project_id: uuid.UUID
+    ) -> WeightAssignment:
+        """v3.7 Phase 3 Issue 4 — assign ``weight_id`` to ``project_id``.
+
+        Idempotent: when the (weight, project) pair already exists, the
+        existing row is returned unchanged. Validates that both the
+        weight and the project exist; raises :class:`WeightNotFound` on
+        a missing weight (the project existence is enforced by the FK
+        ``ON DELETE CASCADE`` constraint at write time).
+        """
+        # Touch the weight first so missing-weight errors stay 404.
+        _ = self.get(weight_id=weight_id)
+        existing = self.session.get(WeightAssignment, (weight_id, project_id))
+        if existing is not None:
+            return existing
+        row = WeightAssignment(weight_id=weight_id, project_id=project_id)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def remove_assignment(
+        self, *, weight_id: uuid.UUID, project_id: uuid.UUID
+    ) -> None:
+        """v3.7 Phase 3 Issue 4 — remove the (weight, project) assignment
+        if present. Idempotent: a missing row is a no-op.
+        """
+        existing = self.session.get(WeightAssignment, (weight_id, project_id))
+        if existing is None:
+            return
+        self.session.delete(existing)
+        self.session.flush()
+
+    def is_assigned(
+        self, *, weight_id: uuid.UUID, project_id: uuid.UUID
+    ) -> bool:
+        """v3.7 Phase 3 Issue 4 — does ``weight_id`` have an assignment
+        row for ``project_id``? Used by the auto-annotate access check.
+        """
+        row = self.session.get(WeightAssignment, (weight_id, project_id))
+        return row is not None
 
     def list_workspace(self) -> list[Weight]:
         """All weights in the workspace, newest first."""

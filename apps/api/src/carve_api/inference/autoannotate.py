@@ -14,7 +14,7 @@ from carve_api.errors import AppError
 from carve_api.inference.model_client import ModelServiceError, yolo_load, yolo_predict
 from carve_api.projects.models import Class, Task
 from carve_api.storage.client import MinioClient
-from carve_api.weights.models import Weight
+from carve_api.weights.models import Weight, WeightAssignment
 
 
 @dataclass
@@ -100,9 +100,28 @@ def auto_annotate_asset(
     Unmapped detections are tallied per-class so the endpoint surfaces a
     "Created N · skipped M (unmapped: …)" summary.
     """
-    if weight.project_id is not None and weight.project_id != task.project_id:
-        # v3.5 Phase F5 — workspace-wide weights (project_id is null) work
-        # for any task; project-scoped weights must match the task's project.
+    # v3.5 Phase F5 — workspace-wide weights (project_id is null) work for any task.
+    # v3.7 Phase 3 Issue 4 — explicit assignments via ``weight_assignments``
+    # let the user make a single weight available to a curated set of
+    # projects without making it workspace-wide. Three accept paths:
+    #   1. workspace-wide (Weight.project_id IS NULL)
+    #   2. legacy direct scope (Weight.project_id == task.project_id)
+    #   3. explicit assignment row for (weight, task.project_id)
+    project_id = task.project_id
+    is_workspace_wide = weight.project_id is None
+    is_legacy_scoped = weight.project_id == project_id
+    is_assigned = False
+    if not (is_workspace_wide or is_legacy_scoped):
+        is_assigned = (
+            session.execute(
+                select(WeightAssignment).where(
+                    WeightAssignment.weight_id == weight.id,
+                    WeightAssignment.project_id == project_id,
+                )
+            ).scalar_one_or_none()
+            is not None
+        )
+    if not (is_workspace_wide or is_legacy_scoped or is_assigned):
         raise AutoAnnotateMismatch("weight does not belong to this project")
 
     project_classes = list(

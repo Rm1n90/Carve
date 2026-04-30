@@ -274,3 +274,213 @@ def test_run_batch_with_missing_actor_returns_failed(db_session, monkeypatch) ->
     )
     result = batch_mod.run_batch_auto_annotate(payload)
     assert result["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# v3.7 Phase 2 Issue 1 — batch worker forwards min_confidence + class_overrides
+# ---------------------------------------------------------------------------
+
+
+def test_build_job_payload_threads_confidence_and_overrides(db_session) -> None:
+    """``build_job_payload`` must round-trip the new fields onto the
+    BatchJobPayload so the RQ worker sees them. v3.7 Phase 2 Issue 1.
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+
+    overrides = {0: str(uuid.uuid4()), 1: None}
+    payload = batch_mod.build_job_payload(
+        actor=u,
+        task=t,
+        weight=w,
+        overwrite=False,
+        min_confidence=0.42,
+        class_overrides=overrides,
+    )
+    assert payload.min_confidence == 0.42
+    assert payload.class_overrides == overrides
+    # Defaults still hold when the caller omits the new args.
+    payload2 = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    assert payload2.min_confidence is None
+    assert payload2.class_overrides is None
+
+
+def test_run_batch_forwards_min_confidence_and_class_overrides(
+    db_session, monkeypatch
+) -> None:
+    """The RQ worker must forward both new fields into
+    ``auto_annotate_asset(...)`` so the batch path matches the
+    single-asset path. v3.7 Phase 2 Issue 1.
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    car = Class(project_id=p.id, idx=0, name="car", color="#ff0000")
+    db_session.add(car)
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+
+    a = Asset(
+        task_id=t.id,
+        kind=AssetKind.image,
+        xxh3_128="aa",
+        mime="image/png",
+        size_bytes=1,
+        width=10,
+        height=10,
+        frames=1,
+        original_name="aa.png",
+    )
+    db_session.add(a)
+    db_session.flush()
+    f = Frame(asset_id=a.id, idx=0, pts_ms=0)
+    db_session.add(f)
+    db_session.flush()
+    db_session.commit()
+
+    # Capture the kwargs the worker passes to ``auto_annotate_asset``.
+    captured: list[dict] = []
+
+    def fake_auto_annotate_asset(**kwargs):
+        captured.append(kwargs)
+
+        class _Result:
+            annotations: list = []
+            annotations_created = 0
+            skipped_count = 0
+            skipped_by_class: dict = {}
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+
+    # Stub fetch_asset_bytes so we don't hit MinIO from the test path.
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    project_class_id = str(uuid.uuid4())
+    payload = batch_mod.build_job_payload(
+        actor=u,
+        task=t,
+        weight=w,
+        overwrite=False,
+        min_confidence=0.65,
+        class_overrides={0: project_class_id, 1: None},
+    )
+    result = batch_mod.run_batch_auto_annotate(payload)
+    assert result["status"] == "completed"
+    assert len(captured) == 1
+    kw = captured[0]
+    # The worker must thread both fields through.
+    assert kw["min_confidence"] == 0.65
+    assert kw["class_overrides"] == {
+        0: uuid.UUID(project_class_id),
+        1: None,
+    }
+
+
+def test_run_batch_omits_new_fields_when_payload_has_defaults(
+    db_session, monkeypatch
+) -> None:
+    """Legacy payloads (no min_confidence / class_overrides) must not
+    pass spurious kwargs to ``auto_annotate_asset`` — that would force
+    the single-asset code path to receive ``min_confidence=None`` /
+    ``class_overrides=None`` even when the caller never specified them.
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+    a = Asset(
+        task_id=t.id,
+        kind=AssetKind.image,
+        xxh3_128="bb",
+        mime="image/png",
+        size_bytes=1,
+        width=10,
+        height=10,
+        frames=1,
+        original_name="bb.png",
+    )
+    db_session.add(a)
+    db_session.flush()
+    db_session.add(Frame(asset_id=a.id, idx=0, pts_ms=0))
+    db_session.flush()
+    db_session.commit()
+
+    captured: list[dict] = []
+
+    def fake_auto_annotate_asset(**kwargs):
+        captured.append(kwargs)
+
+        class _Result:
+            annotations: list = []
+            annotations_created = 0
+            skipped_count = 0
+            skipped_by_class: dict = {}
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    batch_mod.run_batch_auto_annotate(payload)
+    assert len(captured) == 1
+    assert "min_confidence" not in captured[0]
+    assert "class_overrides" not in captured[0]

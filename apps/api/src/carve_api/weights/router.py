@@ -14,7 +14,11 @@ from carve_api.projects.models import Class
 from carve_api.projects.service import ProjectService, TaskService
 from carve_api.ratelimit import limiter
 from carve_api.weights.models import Weight, WeightTaskKind
-from carve_api.weights.schemas import WeightOut
+from carve_api.weights.schemas import (
+    WeightAssignmentCreate,
+    WeightAssignmentOut,
+    WeightOut,
+)
 from carve_api.weights.service import WeightInvalid, WeightService
 
 router = APIRouter(tags=["weights"])
@@ -376,3 +380,115 @@ def set_weight_default(
         raise _http(exc) from exc
     db.commit()
     return WeightOut.from_orm_weight(updated, is_default=True)
+
+
+# ---------------------------------------------------------------------------
+# v3.7 Phase 3 Issue 4 — many-to-many weight ↔ project assignments
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/weights/{weight_id}/assignments",
+    response_model=list[WeightAssignmentOut],
+)
+def list_weight_assignments(
+    weight_id: uuid.UUID,
+    user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
+    db: Session = Depends(get_db),
+) -> list[WeightAssignmentOut]:
+    """List every project the weight is assigned to.
+
+    v3.7 Phase 3 Issue 4 — read-only view of ``weight_assignments``
+    rows joined to ``projects.name`` for UI convenience. Auth required;
+    no further gating because membership is not sensitive (the weight
+    is already visible workspace-wide via the listing endpoints).
+    """
+    svc = WeightService(db)
+    try:
+        svc.get(weight_id=weight_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    rows = svc.list_assignments(weight_id=weight_id)
+    return [
+        WeightAssignmentOut(
+            weight_id=row.weight_id,
+            project_id=row.project_id,
+            project_name=project_name,
+            created_at=row.created_at,
+        )
+        for row, project_name in rows
+    ]
+
+
+@router.post(
+    "/weights/{weight_id}/assignments",
+    response_model=WeightAssignmentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_weight_assignment(
+    weight_id: uuid.UUID,
+    payload: WeightAssignmentCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WeightAssignmentOut:
+    """Assign ``weight_id`` to a project. Idempotent.
+
+    v3.7 Phase 3 Issue 4 — re-posting an existing (weight, project)
+    pair returns the existing row with HTTP 201 (the resource is
+    "present" either way). The caller must be admin or the target
+    project's owner; same gate as ``set_weight_default``.
+    """
+    from carve_api.projects.models import Project as _Project
+    from carve_api.projects.service import _can_modify
+
+    svc = WeightService(db)
+    try:
+        svc.get(weight_id=weight_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    project = ProjectService(db).get(actor=user, project_id=payload.project_id)
+    if not _can_modify(user, project):
+        raise HTTPException(status_code=403, detail="weight_forbidden")
+
+    row = svc.add_assignment(weight_id=weight_id, project_id=payload.project_id)
+    db.commit()
+
+    project_name = db.execute(
+        select(_Project.name).where(_Project.id == row.project_id)
+    ).scalar_one()
+    return WeightAssignmentOut(
+        weight_id=row.weight_id,
+        project_id=row.project_id,
+        project_name=project_name,
+        created_at=row.created_at,
+    )
+
+
+@router.delete(
+    "/weights/{weight_id}/assignments/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def remove_weight_assignment(
+    weight_id: uuid.UUID,
+    project_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    """Remove the (weight, project) assignment if present. Idempotent.
+
+    v3.7 Phase 3 Issue 4 — same admin-or-owner gate as ``add_weight_assignment``.
+    A missing row is a no-op (still returns 204).
+    """
+    from carve_api.projects.service import _can_modify
+
+    svc = WeightService(db)
+    try:
+        svc.get(weight_id=weight_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    project = ProjectService(db).get(actor=user, project_id=project_id)
+    if not _can_modify(user, project):
+        raise HTTPException(status_code=403, detail="weight_forbidden")
+    svc.remove_assignment(weight_id=weight_id, project_id=project_id)
+    db.commit()

@@ -188,6 +188,28 @@ export const weightsApi = {
   ): Promise<Weight> =>
     (await api.post<Weight>(`/weights/${weightId}/default`, body)).data,
   /**
+   * v3.7 Phase 3 Issue 4 — many-to-many weight ↔ project assignments.
+   * `getAssignments` lists assigned projects (with names) for the UI
+   * details panel; `addAssignment` is idempotent server-side; `removeAssignment`
+   * is also idempotent (a missing row still returns 204).
+   */
+  getAssignments: async (weightId: string): Promise<WeightAssignment[]> =>
+    (
+      await api.get<WeightAssignment[]>(`/weights/${weightId}/assignments`)
+    ).data,
+  addAssignment: async (
+    weightId: string,
+    projectId: string,
+  ): Promise<WeightAssignment> =>
+    (
+      await api.post<WeightAssignment>(`/weights/${weightId}/assignments`, {
+        project_id: projectId,
+      })
+    ).data,
+  removeAssignment: async (weightId: string, projectId: string): Promise<void> => {
+    await api.delete(`/weights/${weightId}/assignments/${projectId}`);
+  },
+  /**
    * v3.5 Phase F1 — read-only predict-time mapping suggestions for a
    * `(weight, task)` pair. Returns one entry per weight class with a
    * suggested project class id (case-insensitive name match) and the
@@ -204,6 +226,18 @@ export const weightsApi = {
       )
     ).data,
 };
+
+/**
+ * v3.7 Phase 3 Issue 4 — one row of the weight ↔ project membership
+ * join. The backend joins `projects.name` so the chip list can render
+ * a human-readable label without an extra round-trip.
+ */
+export interface WeightAssignment {
+  weight_id: string;
+  project_id: string;
+  project_name: string;
+  created_at: string;
+}
 
 /**
  * v3.5 Phase F1 — single mapping suggestion for a `(weight, task)` pair.
@@ -257,6 +291,38 @@ interface AutoAnnotateApiResponse {
  */
 export type ClassOverrides = Record<string, string | null>;
 
+/**
+ * v3.7 Phase 2 Issue 1 — batch predict response. Returned synchronously
+ * by ``POST /tasks/{taskId}/auto-annotate`` once the RQ job has been
+ * enqueued. Callers poll progress via :func:`pollBatchProgress`.
+ */
+export interface BatchPredictResult {
+  job_id: string;
+}
+
+/**
+ * v3.7 Phase 2 Issue 1 — batch predict progress snapshot. Mirrors the
+ * Redis hash written by the RQ worker (see ``apps/api/src/carve_api/inference/batch.py``).
+ *
+ *  - ``status``: pending | running | completed | completed_with_errors | failed
+ *  - ``done``: assets processed successfully so far
+ *  - ``total``: total asset count for the job (0 until init_progress fires)
+ *  - ``failed``: count of asset-level failures
+ *  - ``errors``: last 50 per-asset error strings ("<original_name>: <code>")
+ */
+export interface BatchPredictProgress {
+  status:
+    | "pending"
+    | "running"
+    | "completed"
+    | "completed_with_errors"
+    | "failed";
+  done: number;
+  total: number;
+  failed: number;
+  errors: string[];
+}
+
 export const inferenceApi = {
   predictYolo: async (
     assetId: string,
@@ -294,6 +360,61 @@ export const inferenceApi = {
         data?.skipped_by_class && typeof data.skipped_by_class === "object"
           ? data.skipped_by_class
           : {},
+    };
+  },
+  /**
+   * v3.7 Phase 2 Issue 1 — enqueue a batch predict over every asset in a
+   * task. Returns ``{job_id}`` synchronously; the worker runs in RQ.
+   * Poll :func:`pollBatchProgress` every ~1.5s until ``status`` is one
+   * of ``completed | completed_with_errors | failed``.
+   */
+  predictYoloBatch: async (
+    taskId: string,
+    weightId: string,
+    overwrite = false,
+    minConfidence = 0.0,
+    classOverrides?: ClassOverrides,
+  ): Promise<BatchPredictResult> => {
+    const params = new URLSearchParams({
+      weight_id: weightId,
+      overwrite: overwrite ? "true" : "false",
+    });
+    const url = `/tasks/${taskId}/auto-annotate?${params.toString()}`;
+    const body: {
+      min_confidence?: number;
+      class_overrides?: ClassOverrides;
+    } = {};
+    if (Number.isFinite(minConfidence)) {
+      body.min_confidence = Math.max(0, Math.min(1, minConfidence));
+    }
+    if (classOverrides && Object.keys(classOverrides).length > 0) {
+      body.class_overrides = classOverrides;
+    }
+    const wireBody = Object.keys(body).length > 0 ? body : undefined;
+    const r = await api.post<BatchPredictResult>(url, wireBody);
+    return { job_id: r.data?.job_id ?? "" };
+  },
+  /**
+   * v3.7 Phase 2 Issue 1 — read RQ-batch progress for the supplied
+   * ``job_id``. Always returns a default ``"pending"`` snapshot when
+   * the key is missing (e.g. Redis was momentarily unavailable when
+   * the worker tried to ``init_progress``); the caller can keep
+   * polling without crashing.
+   */
+  pollBatchProgress: async (
+    taskId: string,
+    jobId: string,
+  ): Promise<BatchPredictProgress> => {
+    const r = await api.get<BatchPredictProgress>(
+      `/tasks/${taskId}/auto-annotate/${jobId}`,
+    );
+    const d = r.data;
+    return {
+      status: (d?.status ?? "pending") as BatchPredictProgress["status"],
+      done: typeof d?.done === "number" ? d.done : 0,
+      total: typeof d?.total === "number" ? d.total : 0,
+      failed: typeof d?.failed === "number" ? d.failed : 0,
+      errors: Array.isArray(d?.errors) ? d.errors : [],
     };
   },
 };

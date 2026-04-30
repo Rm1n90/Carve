@@ -29,13 +29,25 @@ def progress_key(job_id: str) -> str:
 
 @dataclass
 class BatchJobPayload:
-    """Serialisable args for the RQ job. RQ pickles these per call."""
+    """Serialisable args for the RQ job. RQ pickles these per call.
+
+    v3.7 Phase 2 Issue 1 — ``min_confidence`` and ``class_overrides`` are
+    threaded through so the batch path mirrors the single-asset path
+    (``router.auto_annotate``). Keys in ``class_overrides`` are
+    weight-class indices (int); values are project-class id UUID strings
+    or ``None`` for "skip this weight class for this run". Both fields
+    default to ``None`` so older queued payloads (without these fields)
+    still deserialise — RQ pickles dataclasses, and adding fields with
+    defaults is backward-compatible for any in-flight pickled jobs.
+    """
 
     job_id: str
     actor_id: str
     task_id: str
     weight_id: str
     overwrite: bool
+    min_confidence: float | None = None
+    class_overrides: dict[int, str | None] | None = None
 
 
 def build_job_payload(
@@ -44,6 +56,8 @@ def build_job_payload(
     task: Task,
     weight: Weight,
     overwrite: bool,
+    min_confidence: float | None = None,
+    class_overrides: dict[int, str | None] | None = None,
 ) -> BatchJobPayload:
     return BatchJobPayload(
         job_id=str(uuid.uuid4()),
@@ -51,6 +65,8 @@ def build_job_payload(
         task_id=str(task.id),
         weight_id=str(weight.id),
         overwrite=overwrite,
+        min_confidence=min_confidence,
+        class_overrides=class_overrides,
     )
 
 
@@ -171,10 +187,37 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
         init_progress(redis_client, payload.job_id, len(assets))
 
         url = presigned_url_for_weight(weight)
+        # v3.7 Phase 2 Issue 1 — coerce override values back into UUIDs
+        # for the autoannotate pipeline. The wire / payload form keeps
+        # values as strings (or None) so RQ-pickled payloads stay
+        # JSON-friendly; the autoannotate layer wants real UUID objects.
+        coerced_overrides: dict[int, uuid.UUID | None] | None = None
+        if payload.class_overrides is not None:
+            coerced_overrides = {}
+            for idx_key, val in payload.class_overrides.items():
+                try:
+                    idx = int(idx_key)
+                except (TypeError, ValueError):
+                    continue
+                if val is None:
+                    coerced_overrides[idx] = None
+                    continue
+                try:
+                    coerced_overrides[idx] = uuid.UUID(str(val))
+                except (TypeError, ValueError):
+                    # Bad UUID — drop this override; falls through to
+                    # name-match in the autoannotate pipeline.
+                    continue
+        # Clamp confidence the same way the single-asset path does.
+        clamped_conf: float | None
+        if payload.min_confidence is None:
+            clamped_conf = None
+        else:
+            clamped_conf = max(0.0, min(1.0, float(payload.min_confidence)))
         for asset in assets:
             try:
                 body = fetch_asset_bytes(asset)
-                auto_annotate_asset(
+                aa_kwargs: dict = dict(
                     session=session,
                     actor=actor,
                     task=task,
@@ -184,6 +227,11 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                     presigned_url_for_weight=url,
                     image_bytes=body,
                 )
+                if clamped_conf is not None:
+                    aa_kwargs["min_confidence"] = clamped_conf
+                if coerced_overrides is not None:
+                    aa_kwargs["class_overrides"] = coerced_overrides
+                auto_annotate_asset(**aa_kwargs)
                 counts["done"] += 1
             except AppError as exc:
                 counts["failed"] += 1

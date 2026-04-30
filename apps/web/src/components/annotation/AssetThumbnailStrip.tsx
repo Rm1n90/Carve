@@ -10,8 +10,10 @@ interface Props {
   activeAssetId: string;
 }
 
-const MAX_THUMBS = 50;
-
+// v3.7 Issue 3: previously capped at 50 thumbnails which silently dropped
+// assets in mid-sized tasks. The strip is horizontally scrollable, so
+// rendering all assets is fine — CSS auto-fill handles wrap and the
+// browser keeps offscreen <img loading="lazy"> tiles cheap.
 function ThumbItem({
   asset,
   projectId,
@@ -65,7 +67,7 @@ export function AssetThumbnailStrip({ taskId, projectId, activeAssetId }: Props)
     queryKey: ["task-assets", taskId],
     queryFn: () => assetsApi.listForTask(taskId),
   });
-  const assets = (q.data ?? []).slice(-MAX_THUMBS);
+  const assets = q.data ?? [];
   if (assets.length <= 1) return null;
   function onWheel(e: WheelEvent<HTMLDivElement>) {
     if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {

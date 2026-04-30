@@ -300,9 +300,17 @@ export function ExportDialog({ projectId, taskId }: Props) {
                       <td className="px-3 py-2">
                         <input
                           type="number"
+                          // v3.7 Issue 7: clamp to 0 so negative typing
+                          // never produces a negative class id, which the
+                          // exporter cannot serialise to YOLO/COCO formats.
+                          min={0}
+                          inputMode="numeric"
                           value={row.export_id}
                           disabled={row.skip}
-                          onChange={(e) => updateRow(c.id, { export_id: Number(e.target.value) })}
+                          onChange={(e) => {
+                            const v = Math.max(0, Number(e.target.value) || 0);
+                            updateRow(c.id, { export_id: v });
+                          }}
                           aria-label={`export-id-${c.id}`}
                           className={numInput}
                         />
