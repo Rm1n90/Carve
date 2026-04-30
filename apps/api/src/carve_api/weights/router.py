@@ -28,13 +28,65 @@ def list_workspace_weights(
 ) -> list[WeightOut]:
     """List every YOLO custom weight uploaded to this workspace.
 
-    v1 simplification: a single workspace, so no per-workspace filter is
-    applied. Returned in newest-first order for display in /models/yolo.
+    v3.5 Phase F5 — workspace listing has no project context, so the
+    ``is_default`` flag on each row is always ``false``. Per-project
+    default mappings are surfaced by the project-scoped listing.
     """
     rows = list(
         db.execute(select(Weight).order_by(Weight.created_at.desc())).scalars()
     )
     return [WeightOut.from_orm_weight(w) for w in rows]
+
+
+@router.post(
+    "/weights",
+    response_model=WeightOut,
+    status_code=status.HTTP_201_CREATED,
+)
+@limiter.limit("30/minute")
+async def upload_workspace_weight(
+    request: Request,  # noqa: ARG001 — required by slowapi limiter
+    name: str = Form(...),
+    task_kind: WeightTaskKind = Form(...),
+    class_names: str | None = Form(
+        None,
+        description="Optional JSON-encoded list of class names; auto-extracted from the .pt when the model service is reachable",
+    ),
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WeightOut:
+    """Upload a workspace-wide weight (``project_id = NULL``).
+
+    v3.5 Phase F5 — the new default upload path. The weight is visible
+    from every project in the workspace; the user can pin it as a
+    project default via ``POST /weights/{wid}/default`` when desired.
+    """
+    if class_names is None or class_names == "":
+        names: list = []
+    else:
+        try:
+            names = json.loads(class_names)
+        except json.JSONDecodeError as exc:
+            raise _http(WeightInvalid("class_names must be valid JSON")) from exc
+        if not isinstance(names, list):
+            raise _http(WeightInvalid("class_names must be a list"))
+
+    body = await file.read()
+    try:
+        w = WeightService(db).upload(
+            project=None,
+            name=name,
+            task_kind=task_kind,
+            class_names=names,
+            original_name=file.filename or "",
+            body=body,
+            actor=user,
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+    return WeightOut.from_orm_weight(w)
 
 
 def _http(err: AppError) -> HTTPException:
@@ -102,8 +154,41 @@ def list_weights(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[WeightOut]:
+    """List every weight visible from ``project_id``.
+
+    v3.5 Phase F5 — returns workspace-wide weights (``project_id IS
+    NULL``) and project-scoped weights (``project_id == project_id``).
+    The ``is_default`` flag on each row reflects the project's defaults
+    in ``weight_project_defaults`` for the matching ``task_kind``.
+    """
     project = ProjectService(db).get(actor=user, project_id=project_id)
-    return [WeightOut.from_orm_weight(w) for w in WeightService(db).list_for_project(project=project)]
+    svc = WeightService(db)
+    weights = svc.list_for_project(project=project)
+    defaults_by_kind = svc.list_default_weight_ids_for_project(
+        project_id=project.id
+    )
+    out: list[WeightOut] = []
+    for w in weights:
+        is_default = defaults_by_kind.get(w.task_kind.value) == w.id
+        out.append(WeightOut.from_orm_weight(w, is_default=is_default))
+    return out
+
+
+def _weight_can_modify(user: User, w: Weight, db: Session) -> bool:
+    """Permission check for delete / rename on a weight.
+
+    Workspace-wide weights (``project_id IS NULL``) require admin role.
+    Project-scoped weights use the existing per-project owner/admin
+    gate. Centralising the rule here so the router endpoints don't
+    drift apart.
+    """
+    from carve_api.auth.models import UserRole
+    from carve_api.projects.service import _can_modify
+
+    if w.project_id is None:
+        return user.role == UserRole.admin
+    project = ProjectService(db).get(actor=user, project_id=w.project_id)
+    return _can_modify(user, project)
 
 
 @router.delete(
@@ -120,9 +205,10 @@ def delete_weight(
         w = svc.get(weight_id=weight_id)
     except AppError as exc:
         raise _http(exc) from exc
-    project = ProjectService(db).get(actor=user, project_id=w.project_id)
+    if not _weight_can_modify(user, w, db):
+        raise HTTPException(status_code=403, detail="weight_forbidden")
     try:
-        svc.delete(actor=user, project=project, weight_id=weight_id)
+        svc.delete(weight_id=weight_id)
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
@@ -150,11 +236,7 @@ def update_weight(
         w = svc.get(weight_id=weight_id)
     except AppError as exc:
         raise _http(exc) from exc
-    project = ProjectService(db).get(actor=user, project_id=w.project_id)
-    # Reuse the project-modify check used by `delete` to guard the rename.
-    from carve_api.projects.service import _can_modify
-
-    if not _can_modify(user, project):
+    if not _weight_can_modify(user, w, db):
         raise HTTPException(status_code=403, detail="weight_forbidden")
     w.name = payload.name.strip()
     db.flush()
@@ -243,18 +325,33 @@ def mapping_suggestions(
     return MappingSuggestionsOut(suggestions=suggestions)
 
 
+class SetDefaultIn(BaseModel):
+    """Body for ``POST /weights/{wid}/default`` (v3.5 Phase F5).
+
+    The default is per-(project, task_kind), not per-weight. The user
+    must specify which project + task_kind slot to pin this weight to.
+    """
+
+    project_id: uuid.UUID
+    task_kind: WeightTaskKind
+
+
 @router.post(
     "/weights/{weight_id}/default",
     response_model=WeightOut,
 )
 def set_weight_default(
     weight_id: uuid.UUID,
+    payload: SetDefaultIn,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WeightOut:
-    """Mark a weight as the default for its `(project, task_kind)` slot.
+    """Pin a weight as the default for ``(project_id, task_kind)``.
 
-    v3.3 Issue 4 — admin-or-owner gated, mirrors the rename guard.
+    v3.5 Phase F5 — writes to ``weight_project_defaults``. The
+    ``payload.task_kind`` must match the weight's own ``task_kind``;
+    the weight must be visible from the target project (workspace-wide
+    or scoped to that same project).
     """
     from carve_api.projects.service import _can_modify
 
@@ -263,12 +360,19 @@ def set_weight_default(
         w = svc.get(weight_id=weight_id)
     except AppError as exc:
         raise _http(exc) from exc
-    project = ProjectService(db).get(actor=user, project_id=w.project_id)
+    # Permission check uses the *target* project, not the weight's
+    # project, because workspace weights have no project_id of their
+    # own. Owner/admin of the target project may pin any visible weight.
+    project = ProjectService(db).get(actor=user, project_id=payload.project_id)
     if not _can_modify(user, project):
         raise HTTPException(status_code=403, detail="weight_forbidden")
     try:
-        updated = svc.set_default(weight_id=weight_id, project_id=project.id)
+        updated = svc.set_default(
+            weight_id=weight_id,
+            project_id=payload.project_id,
+            task_kind=payload.task_kind,
+        )
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
-    return WeightOut.from_orm_weight(updated)
+    return WeightOut.from_orm_weight(updated, is_default=True)

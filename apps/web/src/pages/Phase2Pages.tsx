@@ -13,6 +13,13 @@ import {
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/Dialog";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import {
@@ -21,6 +28,7 @@ import {
   type TrashItem,
   type Weight,
 } from "@/api/phase2";
+import { projectsApi, type Project } from "@/api/projects";
 import { useAuth } from "@/auth/store";
 import { showToast } from "@/lib/toast";
 import { UploadWeightDialog } from "@/pages/UploadWeightDialog";
@@ -191,10 +199,19 @@ export function ModelsYoloPage() {
     },
   });
 
-  // v3.3 Issue 4 — flip a weight to "default" for its (project, task_kind).
-  // The backend clears any sibling default in the same slot atomically.
+  // v3.5 Phase F5 — pin a weight as the default for a `(project, task_kind)`
+  // slot. The body now carries the project + task_kind explicitly; one
+  // workspace weight can be pinned in many projects.
   const setDefaultM = useMutation({
-    mutationFn: (id: string) => weightsApi.setDefault(id),
+    mutationFn: (args: {
+      weightId: string;
+      project_id: string;
+      task_kind: Weight["task_kind"];
+    }) =>
+      weightsApi.setDefault(args.weightId, {
+        project_id: args.project_id,
+        task_kind: args.task_kind,
+      }),
     onSuccess: () => {
       showToast("Default weight updated", { variant: "success" });
       qc.invalidateQueries({ queryKey: ["weights"] });
@@ -204,6 +221,17 @@ export function ModelsYoloPage() {
       showToast(err?.message ?? "Failed to set default", { variant: "error" });
     },
   });
+
+  // v3.5 Phase F5 — when the user clicks "Set as default" for a workspace
+  // weight, prompt them for which project to pin it in. Project-scoped
+  // weights skip the dialog and pin to their own project automatically.
+  const projectsQ = useQuery<Project[]>({
+    queryKey: ["projects"],
+    queryFn: () => projectsApi.list(),
+    staleTime: 60_000,
+  });
+  const [setDefaultDialog, setSetDefaultDialog] = useState<Weight | null>(null);
+  const [setDefaultProject, setSetDefaultProject] = useState<string>("");
 
   const canDelete = me?.role === "admin";
 
@@ -477,7 +505,20 @@ export function ModelsYoloPage() {
                     leftIcon={<Star className="h-3.5 w-3.5" />}
                     disabled={!canDelete || setDefaultM.isPending}
                     data-testid="yolo-details-set-default"
-                    onClick={() => setDefaultM.mutate(selectedWeight.id)}
+                    onClick={() => {
+                      // v3.5 Phase F5 — workspace weights need a target
+                      // project; project-scoped weights pin to their own.
+                      if (selectedWeight.project_id) {
+                        setDefaultM.mutate({
+                          weightId: selectedWeight.id,
+                          project_id: selectedWeight.project_id,
+                          task_kind: selectedWeight.task_kind,
+                        });
+                      } else {
+                        setSetDefaultProject("");
+                        setSetDefaultDialog(selectedWeight);
+                      }
+                    }}
                   >
                     Set as default
                   </Button>
@@ -506,6 +547,80 @@ export function ModelsYoloPage() {
           )}
         </Card>
       </div>
+
+      {/* v3.5 Phase F5 — workspace-weight default dialog. Asks the user
+          which project to pin a workspace weight as the default for. */}
+      <Dialog
+        open={setDefaultDialog !== null}
+        onOpenChange={(o) => {
+          if (!o) setSetDefaultDialog(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Pin as project default</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 px-1 py-2 text-[13px]">
+            <p className="text-[color:var(--text-secondary)]">
+              Pick which project should use{" "}
+              <span className="font-medium text-[color:var(--text-primary)]">
+                {setDefaultDialog?.name}
+              </span>{" "}
+              as the default for{" "}
+              <Badge variant="accent">{setDefaultDialog?.task_kind}</Badge>.
+            </p>
+            <label className="grid gap-1">
+              <span className="text-[11.5px] text-[color:var(--text-tertiary)] uppercase tracking-tight">
+                Project
+              </span>
+              <select
+                value={setDefaultProject}
+                onChange={(e) => setSetDefaultProject(e.target.value)}
+                data-testid="yolo-set-default-project-select"
+                className="h-8 px-2 rounded-[var(--radius-xs)] border border-[var(--border-strong)] bg-[var(--bg-elev)] text-[13px] outline-none focus:border-[var(--accent)]"
+              >
+                <option value="">— Choose a project —</option>
+                {(projectsQ.data ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setSetDefaultDialog(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!setDefaultProject || setDefaultM.isPending}
+              data-testid="yolo-set-default-confirm"
+              onClick={() => {
+                if (setDefaultDialog && setDefaultProject) {
+                  setDefaultM.mutate(
+                    {
+                      weightId: setDefaultDialog.id,
+                      project_id: setDefaultProject,
+                      task_kind: setDefaultDialog.task_kind,
+                    },
+                    {
+                      onSuccess: () => setSetDefaultDialog(null),
+                    },
+                  );
+                }
+              }}
+            >
+              Pin as default
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

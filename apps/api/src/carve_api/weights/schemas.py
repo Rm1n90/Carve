@@ -7,7 +7,8 @@ from carve_api.weights.models import WeightTaskKind
 
 class WeightOut(BaseModel):
     id: str
-    project_id: str
+    # v3.5 Phase F5 — nullable. None means workspace-wide weight.
+    project_id: str | None
     name: str
     task_kind: WeightTaskKind
     minio_key: str
@@ -15,14 +16,16 @@ class WeightOut(BaseModel):
     class_names: list[str]
     created_by: str | None
     created_at: datetime
-    # v3.3 Issue 4 — exposes the per-project default flag to the client.
+    # v3.5 Phase F5 — per-project default flag, computed by callers
+    # against ``weight_project_defaults``. ``False`` when there's no
+    # project context (e.g. workspace listing).
     is_default: bool = False
 
     @classmethod
-    def from_orm_weight(cls, w) -> "WeightOut":
+    def from_orm_weight(cls, w, *, is_default: bool = False) -> "WeightOut":
         return cls(
             id=str(w.id),
-            project_id=str(w.project_id),
+            project_id=str(w.project_id) if w.project_id is not None else None,
             name=w.name,
             task_kind=w.task_kind,
             minio_key=w.minio_key,
@@ -30,5 +33,5 @@ class WeightOut(BaseModel):
             class_names=list(w.class_names or []),
             created_by=str(w.created_by) if w.created_by else None,
             created_at=w.created_at,
-            is_default=bool(getattr(w, "is_default", False)),
+            is_default=is_default,
         )

@@ -541,8 +541,9 @@ function YoloPredictButton({
                     Available in other projects
                   </p>
                   {(wsWq.data ?? []).slice(0, 5).map((w) => {
-                    const projName =
-                      projectNameById.get(w.project_id) ?? "another project";
+                    const projName = w.project_id
+                      ? (projectNameById.get(w.project_id) ?? "another project")
+                      : "workspace";
                     return (
                       <div
                         key={w.id}

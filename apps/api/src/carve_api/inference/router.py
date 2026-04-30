@@ -97,14 +97,19 @@ def auto_annotate(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     task = _require_visible_task(db, user, asset.task_id)
-    # v3.3 Issue 4 — `weight_id` is now optional. When omitted, fall back to
-    # the project's default weight (any task_kind). Tasks don't carry a
-    # YOLO-task-kind themselves (their `kind` is image/video), so we pick the
-    # newest default in the project — typically users only ever set one.
+    # v3.5 Phase F5 — `weight_id` is now optional. When omitted, fall
+    # back to the project's default for any task_kind by joining
+    # ``weight_project_defaults``. Workspace-wide weights are eligible.
     if weight_id is None:
+        from carve_api.weights.models import WeightProjectDefault
+
         weight = db.execute(
             select(Weight)
-            .where(Weight.project_id == task.project_id, Weight.is_default.is_(True))
+            .join(
+                WeightProjectDefault,
+                WeightProjectDefault.weight_id == Weight.id,
+            )
+            .where(WeightProjectDefault.project_id == task.project_id)
             .order_by(Weight.created_at.desc())
             .limit(1)
         ).scalar_one_or_none()
@@ -175,7 +180,9 @@ def enqueue_batch_auto_annotate(
     weight = db.get(Weight, weight_id)
     if weight is None:
         raise HTTPException(status_code=404, detail="weight_not_found")
-    if weight.project_id != task.project_id:
+    # v3.5 Phase F5 — workspace-wide weights (project_id IS NULL) are
+    # valid for any task; project-scoped weights still must match.
+    if weight.project_id is not None and weight.project_id != task.project_id:
         raise HTTPException(status_code=400, detail="weight_project_mismatch")
 
     payload = build_job_payload(actor=user, task=task, weight=weight, overwrite=overwrite)

@@ -102,27 +102,33 @@ export const modelsApi = {
 
 // --------------------------- /weights (workspace) ---------------------------
 
+export type WeightTaskKind = "detect" | "segment" | "classify" | "pose";
+
 export interface Weight {
   id: string;
-  project_id: string;
+  /**
+   * v3.5 Phase F5 — `null` for workspace-wide weights (visible from
+   * every project); a project id for project-scoped weights.
+   */
+  project_id: string | null;
   name: string;
-  task_kind: "detect" | "segment" | "classify" | "pose";
+  task_kind: WeightTaskKind;
   minio_key: string;
   size_bytes: number;
   class_names: string[];
   created_by: string | null;
   created_at: string;
   /**
-   * v3.3 Issue 4 — true when this weight is the project default for its
-   * `task_kind`. The backend enforces at most one default per
-   * (project_id, task_kind) via a partial unique index.
+   * v3.5 Phase F5 — per-project default flag. Computed by the backend
+   * against `weight_project_defaults` for the requesting project
+   * context. `false` on the workspace listing (no project context).
    */
   is_default: boolean;
 }
 
 export interface UploadWeightInput {
   name: string;
-  task_kind: "detect" | "segment" | "classify" | "pose";
+  task_kind: WeightTaskKind;
   /** Class names extracted from the YOLO model. Backend can also auto-detect. */
   class_names: string[];
   file: File;
@@ -133,6 +139,23 @@ export const weightsApi = {
     (await api.get<Weight[]>("/weights")).data,
   listForProject: async (projectId: string): Promise<Weight[]> =>
     (await api.get<Weight[]>(`/projects/${projectId}/weights`)).data,
+  /**
+   * v3.5 Phase F5 — upload a workspace-wide weight (`project_id` is
+   * null). The new default upload path; the legacy `upload(projectId,
+   * ...)` form is preserved for project-scoped uploads.
+   */
+  uploadWorkspace: async (input: UploadWeightInput): Promise<Weight> => {
+    const fd = new FormData();
+    fd.append("name", input.name);
+    fd.append("task_kind", input.task_kind);
+    fd.append("class_names", JSON.stringify(input.class_names));
+    fd.append("file", input.file);
+    return (
+      await api.post<Weight>("/weights", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+    ).data;
+  },
   upload: async (projectId: string, input: UploadWeightInput): Promise<Weight> => {
     const fd = new FormData();
     fd.append("name", input.name);
@@ -154,11 +177,16 @@ export const weightsApi = {
     await api.delete(`/weights/${weightId}`);
   },
   /**
-   * v3.3 Issue 4 — mark this weight as the default for its
-   * `(project_id, task_kind)` slot. Admin-or-owner gated server-side.
+   * v3.5 Phase F5 — pin a weight as the project's default for the
+   * given `task_kind`. Writes to `weight_project_defaults`. The
+   * weight's own `project_id` is unchanged (workspace weights stay
+   * workspace-wide and can serve as defaults in many projects).
    */
-  setDefault: async (weightId: string): Promise<Weight> =>
-    (await api.post<Weight>(`/weights/${weightId}/default`)).data,
+  setDefault: async (
+    weightId: string,
+    body: { project_id: string; task_kind: WeightTaskKind },
+  ): Promise<Weight> =>
+    (await api.post<Weight>(`/weights/${weightId}/default`, body)).data,
   /**
    * v3.5 Phase F1 — read-only predict-time mapping suggestions for a
    * `(weight, task)` pair. Returns one entry per weight class with a
