@@ -24,8 +24,10 @@ from carve_api.inference.batch import (
     run_batch_auto_annotate,
 )
 from carve_api.inference.sam import (
+    sam_box_prompt_for_asset,
     sam_decode_with_hash,
     sam_encode_for_asset,
+    sam_text_prompt_for_asset,
 )
 from carve_api.inference.sam_track import (
     add_object as _track_add_object,
@@ -172,6 +174,32 @@ class SamDecodeIn(BaseModel):
     labels: list[int] = Field(min_length=1)
 
 
+class SamTextIn(BaseModel):
+    """Body for POST /assets/{id}/sam/text-prompt — SAM 3 only.
+
+    A single positive text concept describing the object (e.g. "person").
+    Matches the model service's TextPromptIn — see
+    ``apps/model/src/carve_model/sam/router.py``.
+    """
+
+    text: str = Field(..., min_length=1, max_length=200)
+
+
+class SamBoxIn(BaseModel):
+    """Body for POST /assets/{id}/sam/box-prompt — SAM 3 only.
+
+    ``boxes`` are xyxy floats; ``box_labels`` are 1 (positive include)
+    or 0 (negative exclude). ``text`` optionally combines a concept
+    with the boxes for refinement (e.g. text + a negative box that
+    crops out a sibling instance). Mirrors the model service's
+    BoxPromptIn.
+    """
+
+    boxes: list[list[float]] = Field(..., min_length=1)
+    box_labels: list[int] = Field(..., min_length=1)
+    text: str | None = Field(default=None, max_length=200)
+
+
 @router.post("/{asset_id}/sam/encode")
 def sam_encode_endpoint(
     asset_id: uuid.UUID,
@@ -201,6 +229,62 @@ def sam_decode_endpoint(
     _require_visible_task(db, user, asset.task_id)
     try:
         return sam_decode_with_hash(payload.image_hash, payload.points, payload.labels)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/{asset_id}/sam/text-prompt")
+def sam_text_prompt_endpoint(
+    asset_id: uuid.UUID,
+    payload: SamTextIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """SAM 3 text concept prompt — returns mask candidates for ``text``.
+
+    Returns 409 ``sam3_not_enabled`` when the active SAM variant is not
+    SAM 3, 503 ``model_service_unreachable`` when the model service is
+    down, and 502 ``sam_model_failed`` for other upstream errors.
+    """
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    try:
+        return sam_text_prompt_for_asset(asset, payload.text)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/{asset_id}/sam/box-prompt")
+def sam_box_prompt_endpoint(
+    asset_id: uuid.UUID,
+    payload: SamBoxIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """SAM 3 box prompt — returns the refined mask for the supplied boxes.
+
+    Same upstream error mapping as the text-prompt endpoint. The
+    backend additionally validates ``boxes``/``box_labels`` length
+    parity and label values via the SAM service layer.
+    """
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    if len(payload.boxes) != len(payload.box_labels):
+        raise HTTPException(
+            status_code=422,
+            detail="boxes and box_labels must have equal length",
+        )
+    try:
+        return sam_box_prompt_for_asset(
+            asset,
+            payload.boxes,
+            payload.box_labels,
+            text=payload.text,
+        )
     except AppError as exc:
         raise _http(exc) from exc
 

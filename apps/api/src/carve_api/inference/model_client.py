@@ -151,6 +151,49 @@ def sam_decode(image_hash: str, points: list[list[int]], labels: list[int]) -> d
         return r.json()
 
 
+def sam_text_prompt(image_b64: str, text: str) -> list[dict]:
+    """POST /sam/text-prompt — SAM 3 only.
+
+    Returns a list of candidate masks for the supplied text concept.
+    The model service answers 409 ``sam3_not_enabled`` when the configured
+    SAM model is not SAM 3 (we re-raise as a 409 ModelServiceError so the
+    proxy maps it to a UI-friendly response). 503 means the predictor
+    factory hasn't been registered yet.
+    """
+    with _wrap_unreachable("sam_text_prompt"), _client() as c:
+        r = c.post("/sam/text-prompt", json={"image_b64": image_b64, "text": text})
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def sam_box_prompt(
+    image_b64: str,
+    boxes: list[list[float]],
+    box_labels: list[int],
+    text: str | None = None,
+) -> list[dict]:
+    """POST /sam/box-prompt — SAM 3 only (one-shot).
+
+    ``boxes`` are xyxy floats. ``box_labels`` are 1 (positive include)
+    or 0 (negative exclude). ``text`` optionally combines a concept with
+    the boxes for refinement. 409 ``sam3_box_prompt_requires_sam3`` is
+    returned by the model service when SAM 3 is not the active model.
+    """
+    body: dict = {
+        "image_b64": image_b64,
+        "boxes": boxes,
+        "box_labels": box_labels,
+    }
+    if text is not None:
+        body["text"] = text
+    with _wrap_unreachable("sam_box_prompt"), _client() as c:
+        r = c.post("/sam/box-prompt", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
 def sam_track_start(
     video_url: str,
     frame_idx: int,

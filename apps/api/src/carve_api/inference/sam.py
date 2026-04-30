@@ -21,7 +21,13 @@ import base64
 from carve_api.assets.models import Asset
 from carve_api.errors import AppError
 from carve_api.inference.autoannotate import fetch_asset_bytes
-from carve_api.inference.model_client import ModelServiceError, sam_decode, sam_encode
+from carve_api.inference.model_client import (
+    ModelServiceError,
+    sam_box_prompt,
+    sam_decode,
+    sam_encode,
+    sam_text_prompt,
+)
 
 
 class SamModelFailed(AppError):
@@ -46,6 +52,20 @@ class SamModelUnreachable(AppError):
 class SamEmbeddingMissing(AppError):
     http_status = 409
     code = "sam_embedding_missing"
+
+
+class Sam3NotEnabled(AppError):
+    """Active SAM variant is not SAM 3 — text/box prompts require SAM 3.
+
+    The model service's /sam/text-prompt and /sam/box-prompt endpoints
+    return 409 when ``get_sam_variant() != "sam3"``. The carve api maps
+    that to this error so the editor's mode picker can disable text +
+    box modes (or surface a "switch to SAM 3" hint) instead of letting
+    the user click into a guaranteed-fail flow.
+    """
+
+    http_status = 409
+    code = "sam3_not_enabled"
 
 
 def sam_encode_for_asset(asset: Asset) -> dict:
@@ -76,3 +96,52 @@ def sam_decode_with_hash(image_hash: str, points: list[list[int]], labels: list[
         if exc.status_code == 503:
             raise SamModelUnreachable(f"decode: {exc.body!r}") from exc
         raise SamModelFailed(f"decode: {exc.body!r}") from exc
+
+
+def sam_text_prompt_for_asset(asset: Asset, text: str) -> list[dict]:
+    """SAM 3 text-prompt entry point.
+
+    Encodes the asset's bytes once and forwards them to the model
+    service alongside the supplied text concept. Maps the model
+    service's 409 (sam3_not_enabled) and 503 (unreachable / predictor
+    not loaded) onto AppErrors so the router/web layer can render a
+    consistent error envelope.
+    """
+    body = fetch_asset_bytes(asset)
+    b64 = base64.b64encode(body).decode("ascii")
+    try:
+        return sam_text_prompt(b64, text)
+    except ModelServiceError as exc:
+        if exc.status_code == 409:
+            raise Sam3NotEnabled(f"text-prompt: {exc.body!r}") from exc
+        if exc.status_code == 503:
+            raise SamModelUnreachable(f"text-prompt: {exc.body!r}") from exc
+        raise SamModelFailed(f"text-prompt: {exc.body!r}") from exc
+
+
+def sam_box_prompt_for_asset(
+    asset: Asset,
+    boxes: list[list[float]],
+    box_labels: list[int],
+    text: str | None = None,
+) -> list[dict]:
+    """SAM 3 box-prompt entry point.
+
+    ``boxes`` are xyxy floats and ``box_labels`` are 1=include, 0=exclude.
+    Optionally combines with a text concept. Maps the same 409 / 503
+    upstream signals onto the SAM AppErrors used elsewhere in the proxy.
+    """
+    if len(boxes) != len(box_labels):
+        raise SamModelFailed("boxes and box_labels must have equal length")
+    if any(label not in (0, 1) for label in box_labels):
+        raise SamModelFailed("box_labels must be 0 or 1")
+    body = fetch_asset_bytes(asset)
+    b64 = base64.b64encode(body).decode("ascii")
+    try:
+        return sam_box_prompt(b64, boxes, box_labels, text=text)
+    except ModelServiceError as exc:
+        if exc.status_code == 409:
+            raise Sam3NotEnabled(f"box-prompt: {exc.body!r}") from exc
+        if exc.status_code == 503:
+            raise SamModelUnreachable(f"box-prompt: {exc.body!r}") from exc
+        raise SamModelFailed(f"box-prompt: {exc.body!r}") from exc
