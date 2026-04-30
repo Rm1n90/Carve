@@ -173,7 +173,18 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
     counts = {"done": 0, "failed": 0}
     errors: list[str] = []
 
-    with SessionLocal.begin() as session:
+    # v3.7.1 — per-asset commits. The previous version wrapped the whole
+    # batch in a single ``with SessionLocal.begin():`` block, which meant:
+    #   1) Annotations from earlier iterations were buffered until the
+    #      with-block exited, so a worker kill mid-batch persisted
+    #      nothing.
+    #   2) Any later constraint violation rolled the whole transaction
+    #      back, losing every prior asset's annotations.
+    # We use a plain ``Session()`` (no auto-begin/commit) and call
+    # ``session.commit()`` after each successful asset, so progress is
+    # durable even if the worker dies. SQLAlchemy auto-begins a fresh
+    # transaction on the next statement after each commit.
+    with SessionLocal() as session:
         # Resolve actor / task / weight via the session
         actor = session.get(User, uuid.UUID(payload.actor_id))
         task = session.get(Task, uuid.UUID(payload.task_id))
@@ -232,11 +243,18 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                 if coerced_overrides is not None:
                     aa_kwargs["class_overrides"] = coerced_overrides
                 auto_annotate_asset(**aa_kwargs)
+                # v3.7.1 — commit this asset's annotations immediately so
+                # crashes / later failures cannot roll them back.
+                session.commit()
                 counts["done"] += 1
             except AppError as exc:
+                # Drop any uncommitted changes for the failed asset so the
+                # next iteration starts from a clean slate.
+                session.rollback()
                 counts["failed"] += 1
                 errors.append(f"{asset.original_name}: {exc.code}")
             except Exception as exc:  # noqa: BLE001
+                session.rollback()
                 counts["failed"] += 1
                 errors.append(f"{asset.original_name}: {type(exc).__name__}")
             update_progress(redis_client, payload.job_id, **counts, errors=errors)

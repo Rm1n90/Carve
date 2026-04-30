@@ -484,3 +484,150 @@ def test_run_batch_omits_new_fields_when_payload_has_defaults(
     assert len(captured) == 1
     assert "min_confidence" not in captured[0]
     assert "class_overrides" not in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# v3.7.1 — batch worker commits per asset so partial progress is durable
+# ---------------------------------------------------------------------------
+
+
+def test_run_batch_commits_per_asset(db_session, monkeypatch) -> None:
+    """v3.7.1 regression — the batch worker must commit each asset's
+    annotations as it goes, not buffer them all until the end. The v3.7
+    implementation wrapped the whole loop in ``SessionLocal.begin()``,
+    so a worker kill mid-batch (or any later failure) lost every prior
+    asset's annotations and only asset 1 ever appeared persisted.
+
+    Strategy: stub ``auto_annotate_asset`` to write a real Annotation row
+    via the session it receives, count session.commit() calls, and at
+    the end verify all 5 annotations are in the DB.
+    """
+    from carve_api.annotations.models import Annotation, AnnotationKind
+
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    car = Class(project_id=p.id, idx=0, name="car", color="#ff0000")
+    db_session.add(car)
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+
+    # 5 assets, each with one frame.
+    asset_to_frame: dict = {}
+    for i in range(5):
+        a = Asset(
+            task_id=t.id,
+            kind=AssetKind.image,
+            xxh3_128=f"hash{i}",
+            mime="image/png",
+            size_bytes=1,
+            width=10,
+            height=10,
+            frames=1,
+            original_name=f"img{i}.png",
+        )
+        db_session.add(a)
+        db_session.flush()
+        f = Frame(asset_id=a.id, idx=0, pts_ms=0)
+        db_session.add(f)
+        db_session.flush()
+        asset_to_frame[a.id] = f.id
+    db_session.commit()
+
+    captured_task_id = t.id  # capture before session changes
+
+    def fake_auto_annotate_asset(*, session, asset, actor, task, weight, **_kwargs):
+        # Write a real Annotation row for this asset via the worker's
+        # session. If the worker buffers commits to the end, all 5 rows
+        # would still appear at the end — but if the v3.7 transaction
+        # rolled back due to a later failure, none would. We test the
+        # commit semantics by counting per-iteration commits below.
+        ann = Annotation(
+            task_id=task.id,
+            frame_id=asset_to_frame[asset.id],
+            class_id=car.id,
+            kind=AnnotationKind.bbox,
+            geometry={"x": 0, "y": 0, "w": 1, "h": 1},
+            created_by=actor.id,
+        )
+        session.add(ann)
+        session.flush()
+
+        class _Result:
+            annotations: list = []
+            annotations_created = 1
+            skipped_count = 0
+            skipped_by_class: dict = {}
+
+        return _Result()
+
+    # Wrap Session.commit so we can count how many times the worker committed.
+    from sqlalchemy.orm import Session as _Session, sessionmaker
+
+    commit_count = {"n": 0}
+    real_commit = _Session.commit
+
+    def counting_commit(self, *a, **kw):
+        commit_count["n"] += 1
+        return real_commit(self, *a, **kw)
+
+    monkeypatch.setattr(_Session, "commit", counting_commit)
+
+    bind = db_session.get_bind()
+    SessionLocal = sessionmaker(
+        bind=bind,
+        autoflush=False,
+        expire_on_commit=False,
+        future=True,
+        join_transaction_mode="create_savepoint",
+    )
+    from carve_api import db as db_mod
+
+    monkeypatch.setattr(db_mod, "get_session_factory", lambda: SessionLocal)
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _patch_redis_to_raise(monkeypatch)
+
+    pre_commits = commit_count["n"]
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    result = batch_mod.run_batch_auto_annotate(payload)
+
+    assert result["status"] == "completed"
+    assert result["done"] == 5
+    assert result["failed"] == 0
+    assert result["total"] == 5
+
+    # The worker should have called commit() once per asset (≥5 commits).
+    # The v3.7 implementation called .commit() exactly once at end-of-with.
+    delta = commit_count["n"] - pre_commits
+    assert delta >= 5, (
+        f"expected ≥5 per-asset commits, got {delta} — batch is still "
+        "buffering all rows in a single transaction"
+    )
+
+    # All 5 annotations must be persisted in the DB.
+    rows = (
+        db_session.query(Annotation)
+        .filter(Annotation.task_id == captured_task_id)
+        .all()
+    )
+    assert len(rows) == 5, (
+        f"expected 5 annotations persisted, got {len(rows)} — earlier "
+        "asset annotations were lost"
+    )

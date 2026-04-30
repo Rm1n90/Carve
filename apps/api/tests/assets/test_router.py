@@ -60,6 +60,25 @@ def test_list_assets_for_task(db_session, monkeypatch) -> None:
     assert len(body["items"]) == 1
 
 
+def test_list_assets_accepts_limit_5000(db_session, monkeypatch) -> None:
+    """v3.7.1 — backend page-limit cap must accept limit=5000 to match the
+    frontend assetsApi.listForTask bump in v3.7. Previously the cap was
+    500, causing 422s and breaking thumbnails / count / keyboard nav for
+    tasks with >500 assets."""
+    from carve_api.assets import service as svc_mod
+    from carve_api.assets.router import _MAX_PAGE_LIMIT
+
+    assert _MAX_PAGE_LIMIT >= 5000, (
+        f"expected _MAX_PAGE_LIMIT >= 5000, got {_MAX_PAGE_LIMIT}"
+    )
+
+    monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
+    client = _client(db_session)
+    token, _pid, tid = _setup(client)
+    r = client.get(f"/tasks/{tid}/assets?limit=5000", headers=_hdr(token))
+    assert r.status_code == 200, r.text
+
+
 def test_duplicate_asset_returns_409(db_session, monkeypatch) -> None:
     from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)

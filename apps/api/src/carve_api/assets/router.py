@@ -22,7 +22,11 @@ asset_router = APIRouter(prefix="/assets", tags=["assets"])
 # Hard upper bound on how many assets the API will return for a single
 # page. Keeps response payloads predictable even if a client requests
 # limit=999999 in the URL.
-_MAX_PAGE_LIMIT = 500
+# v3.7.1: bumped 500 → 5000 to match the frontend assetsApi.listForTask
+# bump shipped in v3.7. The previous mismatch caused 422s and broke
+# thumbnail rendering, asset count, and keyboard navigation for tasks
+# with >500 assets.
+_MAX_PAGE_LIMIT = 5000
 
 # v2.6: raised from "100/minute" so an authenticated user can drop a
 # typical batch of a few hundred images without tripping a 429 mid-loop.
