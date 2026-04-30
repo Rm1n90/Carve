@@ -1,4 +1,6 @@
 import io
+import sys
+import types
 import uuid
 
 from PIL import Image
@@ -77,6 +79,49 @@ def test_generate_image_thumbnail_persists_key_when_asset_id(monkeypatch) -> Non
     thumbs_mod.generate_image_thumbnail("hashy", "png", asset_id=aid)
 
     assert persisted == {"asset_id": aid, "key": "assets/hashy/thumb-200.jpg"}
+
+
+def test_probe_video_metadata_uses_internal_presigned_url(monkeypatch) -> None:
+    """probe_video_metadata runs in the RQ worker container and feeds the URL
+    to ffmpeg.probe / ffmpeg.input. It MUST use presigned_get_internal so the
+    Docker DNS hostname (``minio``) is resolvable inside the worker network —
+    presigned_get returns a public URL pointing at ``localhost:9000`` which
+    fails to resolve from inside Docker.
+    """
+    calls: dict[str, object] = {"used_internal": False, "used_public": False, "url": None}
+
+    class _FakeStorage:
+        @classmethod
+        def from_settings(cls): return cls()
+        def presigned_get(self, key, expires_seconds=600):
+            calls["used_public"] = True
+            return f"http://localhost:9000/{key}"
+        def presigned_get_internal(self, key, expires_seconds=600):
+            calls["used_internal"] = True
+            calls["url"] = f"http://minio:9000/{key}"
+            return calls["url"]
+
+    monkeypatch.setattr(thumbs_mod, "MinioClient", _FakeStorage)
+
+    # Stub ffmpeg.probe / ffmpeg.input so we can assert the URL passed to them.
+    fake_ffmpeg = types.ModuleType("ffmpeg")
+
+    def _probe(url, *a, **k):
+        calls["probe_url"] = url
+        # Return zero video streams so the function exits early without DB writes.
+        return {"streams": [], "format": {}}
+
+    fake_ffmpeg.probe = _probe  # type: ignore[attr-defined]
+    fake_ffmpeg.input = lambda *a, **k: None  # not reached when streams empty
+    monkeypatch.setitem(sys.modules, "ffmpeg", fake_ffmpeg)
+
+    thumbs_mod.probe_video_metadata(
+        asset_id=str(uuid.uuid4()), asset_hash="vidhash", ext="mp4"
+    )
+
+    assert calls["used_internal"] is True
+    assert calls["used_public"] is False
+    assert calls["probe_url"] == "http://minio:9000/assets/vidhash/original.mp4"
 
 
 def test_generate_image_thumbnail_handles_rgba(monkeypatch) -> None:

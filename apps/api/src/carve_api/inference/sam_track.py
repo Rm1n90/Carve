@@ -30,9 +30,14 @@ class SamTrackSessionMissing(AppError):
 
 
 def _video_url_for(asset: Asset) -> str:
+    """Video URL handed to the MODEL SERVICE for SAM video tracking; uses
+    the internal minio endpoint so the model service container can
+    resolve it via Docker DNS."""
     storage = MinioClient.from_settings()
     ext = asset.original_name.rsplit(".", 1)[-1] if "." in asset.original_name else "bin"
-    return storage.presigned_get(f"assets/{asset.xxh3_128}/original.{ext}", expires_seconds=600)
+    return storage.presigned_get_internal(
+        f"assets/{asset.xxh3_128}/original.{ext}", expires_seconds=600
+    )
 
 
 def start(

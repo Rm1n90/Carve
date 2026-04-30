@@ -305,6 +305,39 @@ def _reset_load_state() -> None:
     with _LOAD_STATE_LOCK:
         _LOAD_STATE = LoadState()
 
+
+def _set_load_progress(
+    progress_bytes: int | None,
+    progress_total: int | None,
+) -> None:
+    """Patch only the progress fields on the current ``_LOAD_STATE``.
+
+    Unlike ``_set_load_state``, callers don't need to pass the full
+    snapshot — kind/variant/job_id/etc. are preserved. Used by the SAM 2
+    / SAM 3 adapters at the start and end of ``from_pretrained`` so the
+    overlay can show a "downloading" indicator.
+
+    v3.6 MVP: we set the indeterminate sentinel (``progress_bytes=0`` +
+    ``progress_total=-1``) at the start of a build and clear both back
+    to ``None`` when the build completes. The overlay treats
+    ``progress_total <= 0`` as "indeterminate", so the shimmer keeps
+    going without claiming a fake percentage. Real byte progress can
+    replace this once a HF tqdm callback hook is wired in (see C3 audit
+    note in the v3.6 ship summary).
+    """
+    global _LOAD_STATE
+    with _LOAD_STATE_LOCK:
+        current = _LOAD_STATE
+        _LOAD_STATE = LoadState(
+            kind=current.kind,
+            variant=current.variant,
+            progress_bytes=progress_bytes,
+            progress_total=progress_total,
+            loaded_at=current.loaded_at,
+            error=current.error,
+            job_id=current.job_id,
+        )
+
 # --- idle eviction state ----------------------------------------------------
 #
 # The SAM image predictor pins ~1-3 GB of GPU memory. When the operator

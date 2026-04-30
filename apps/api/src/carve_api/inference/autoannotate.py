@@ -235,5 +235,8 @@ def fetch_asset_bytes(asset: Asset) -> bytes:
 
 
 def presigned_url_for_weight(weight: Weight) -> str:
+    """URL handed to the MODEL SERVICE for downloading a weight; uses
+    the internal minio endpoint so the model service container can
+    resolve it via Docker DNS."""
     storage = MinioClient.from_settings()
-    return storage.presigned_get(weight.minio_key, expires_seconds=600)
+    return storage.presigned_get_internal(weight.minio_key, expires_seconds=600)

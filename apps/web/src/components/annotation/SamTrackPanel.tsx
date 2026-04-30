@@ -4,6 +4,10 @@ import { Loader2, Play, Plus, X } from "lucide-react";
 import { TrackPropagateTool } from "@/canvas/tools/TrackPropagateTool";
 import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
+import {
+  useSamTrackBridge,
+  type SamTrackMarker,
+} from "@/state/samTrackBridge";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
@@ -69,6 +73,25 @@ export function SamTrackPanel({
   const [framesPropagated, setFramesPropagated] = useState(0);
 
   const toolRef = useRef<TrackPropagateTool | null>(null);
+  const [markers, setMarkersLocal] = useState<SamTrackMarker[]>([]);
+  const setBridgeMarkers = useSamTrackBridge((s) => s.setMarkers);
+  const setBridgeHandler = useSamTrackBridge((s) => s.setHandler);
+  const clearBridge = useSamTrackBridge((s) => s.clear);
+  // Refs let the canvas-click handler — registered once on mount —
+  // read live values without needing to re-register on every state
+  // change (which would defeat the pub/sub).
+  const sessionOpenRef = useRef(sessionOpen);
+  const startingRef = useRef(starting);
+  const currentFrameIdxRef = useRef(currentFrameIdx);
+  useEffect(() => {
+    sessionOpenRef.current = sessionOpen;
+  }, [sessionOpen]);
+  useEffect(() => {
+    startingRef.current = starting;
+  }, [starting]);
+  useEffect(() => {
+    currentFrameIdxRef.current = currentFrameIdx;
+  }, [currentFrameIdx]);
 
   // Re-build the tool whenever the asset changes; the tool internally
   // releases server-side state via release() but we also drop our
@@ -84,6 +107,7 @@ export function SamTrackPanel({
       }
       setSessionOpen(false);
       setObjects([]);
+      setMarkersLocal([]);
       setStepsCollected(0);
       setFramesPropagated(0);
     };
@@ -93,42 +117,78 @@ export function SamTrackPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assetId]);
 
+  // Mirror local markers into the bridge slice so <AnnotationCanvas>
+  // can paint numbered teach-back markers at each prompted point.
+  useEffect(() => {
+    setBridgeMarkers(markers);
+  }, [markers, setBridgeMarkers]);
+
+  // Register the canvas-click handler once per mount. The handler reads
+  // live ``sessionOpen`` / ``starting`` state via refs so we don't need
+  // to re-register on every render — re-registration would race with
+  // canvas-click events that fire mid-state-update.
+  useEffect(() => {
+    const handler = (point: [number, number]) => {
+      // If a start is mid-flight, drop the click — the user can re-click
+      // once the session is open. Re-entrancy here would create two
+      // server-side sessions.
+      if (startingRef.current) return;
+      // Auto-start: a click in track mode is the friendliest UX —
+      // it opens the session AND adds the first object.
+      const proceed = sessionOpenRef.current
+        ? Promise.resolve(true)
+        : handleStartSession();
+      void proceed.then((ok) => {
+        if (!ok) return;
+        void addObjectWithPoint(point);
+      });
+    };
+    setBridgeHandler(handler);
+    return () => {
+      clearBridge();
+    };
+    // The handler closes over component scope but reads live values via
+    // refs; re-registering on every state change is unnecessary.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const classNameForActive = useMemo(() => {
     return activeClassId ?? "(no class selected)";
   }, [activeClassId]);
 
-  async function handleStartSession() {
+  async function handleStartSession(): Promise<boolean> {
     const tool = toolRef.current;
-    if (!tool) return;
+    if (!tool) return false;
     setStarting(true);
     try {
       await tool.startEmpty({ frameIdx: currentFrameIdx });
       setSessionOpen(true);
       setObjects([]);
+      setMarkersLocal([]);
       setStepsCollected(0);
       setFramesPropagated(0);
+      return true;
     } catch {
       showToast("Failed to start tracking session.", { variant: "error" });
+      return false;
     } finally {
       setStarting(false);
     }
   }
 
-  async function handleAddObject() {
+  async function addObjectWithPoint(
+    point: [number, number],
+  ): Promise<void> {
     const tool = toolRef.current;
     if (!tool) return;
     if (!activeClassId) {
       showToast("Pick a class first.", { variant: "warning" });
       return;
     }
-    // MVP: a single positive prompt at the centre of the frame. The
-    // canvas-click-to-add-object flow is a follow-up — for now this
-    // demonstrates the wiring end-to-end and is good enough for many
-    // single-target videos.
     try {
       const objId = await tool.addObjectAtFrame(
         currentFrameIdx,
-        [[0, 0]],
+        [point],
         [1],
         activeClassId,
       );
@@ -136,9 +196,21 @@ export function SamTrackPanel({
         ...prev,
         { objId, classId: activeClassId, className: activeClassId },
       ]);
+      setMarkersLocal((prev) => [
+        ...prev,
+        { objId, x: point[0], y: point[1] },
+      ]);
     } catch {
       showToast("Failed to add tracked object.", { variant: "error" });
     }
+  }
+
+  async function handleAddObject() {
+    // Button click without a canvas point — keep the legacy MVP behaviour
+    // of seeding at (0, 0) so the wiring works without a class+canvas
+    // click. The canvas teach-back flow is preferred and goes through
+    // ``addObjectWithPoint`` directly.
+    await addObjectWithPoint([0, 0]);
   }
 
   async function handlePropagate() {
@@ -202,6 +274,7 @@ export function SamTrackPanel({
     }
     setSessionOpen(false);
     setObjects([]);
+    setMarkersLocal([]);
     setStepsCollected(0);
     setFramesPropagated(0);
   }

@@ -98,7 +98,12 @@ def probe_video_metadata(asset_id: str, asset_hash: str, ext: str) -> None:
     from carve_api.db import get_session_factory
 
     storage = MinioClient.from_settings()
-    url = storage.presigned_get(f"assets/{asset_hash}/original.{ext}", expires_seconds=300)
+    # Worker (RQ) runs inside Docker — must use the internal MinIO endpoint
+    # because ffmpeg resolves the host over Docker DNS, not localhost.
+    # Browser-facing flows still use presigned_get (public endpoint).
+    url = storage.presigned_get_internal(
+        f"assets/{asset_hash}/original.{ext}", expires_seconds=300
+    )
     probe = ffmpeg.probe(url)
     video_streams = [s for s in probe["streams"] if s["codec_type"] == "video"]
     if not video_streams:

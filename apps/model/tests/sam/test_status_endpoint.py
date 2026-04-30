@@ -164,3 +164,77 @@ def test_switch_409_on_concurrent_attempt(monkeypatch) -> None:
     assert r2.json()["detail"] == "switch_in_progress"
 
     blocker.set()
+
+
+def test_status_progress_fields_populated_during_download(monkeypatch) -> None:
+    """v3.6 — while build_sam2_image_predictor is mid-flight (HF download),
+    /sam/status reports the indeterminate progress sentinel
+    (progress_bytes=0, progress_total=-1) so the editor overlay can show
+    a "downloading" shimmer instead of "loading…" text alone.
+    """
+    blocker = threading.Event()
+    started = threading.Event()
+
+    def slow_load(variant: str) -> None:
+        # Simulate what the real load_predictor does: flips to loading,
+        # then build_sam2_image_predictor sets the progress sentinel,
+        # blocks on HF for ~30s, then clears it.
+        p_mod._set_load_state(kind="loading", variant=variant)
+        p_mod._set_load_progress(progress_bytes=0, progress_total=-1)
+        started.set()
+        blocker.wait(timeout=2.0)
+        p_mod._set_load_progress(progress_bytes=None, progress_total=None)
+
+    monkeypatch.setattr(r_mod, "load_predictor", slow_load)
+
+    client = _client()
+    r = client.post("/sam/switch", json={"variant": "sam2.1-tiny"})
+    assert r.status_code == 202
+    assert started.wait(timeout=1.0)
+
+    # While the worker is blocked, status should show the progress sentinel.
+    body = client.get("/sam/status").json()
+    assert body["state"] == "loading"
+    assert body["progress_bytes"] == 0
+    assert body["progress_total"] == -1
+
+    # Release worker; the progress fields clear back to None.
+    blocker.set()
+    # Small busy-wait for the worker to clear. The status_endpoint test
+    # already validates the ready-transition path; here we only need the
+    # post-clear assertion to pass.
+    deadline = time.monotonic() + 1.0
+    body = {}
+    while time.monotonic() < deadline:
+        body = client.get("/sam/status").json()
+        if body["progress_bytes"] is None and body["progress_total"] is None:
+            break
+        time.sleep(0.02)
+    assert body["progress_bytes"] is None
+    assert body["progress_total"] is None
+
+
+def test_set_load_progress_preserves_other_state_fields() -> None:
+    """``_set_load_progress`` is a partial-update — kind, variant,
+    job_id, etc. must survive a progress write.
+    """
+    p_mod._set_load_state(
+        kind="loading",
+        variant="sam2.1-large",
+        job_id="job-abc",
+    )
+    p_mod._set_load_progress(progress_bytes=0, progress_total=-1)
+    state = p_mod.get_load_state()
+    assert state.kind == "loading"
+    assert state.variant == "sam2.1-large"
+    assert state.job_id == "job-abc"
+    assert state.progress_bytes == 0
+    assert state.progress_total == -1
+    p_mod._set_load_progress(progress_bytes=None, progress_total=None)
+    state = p_mod.get_load_state()
+    assert state.progress_bytes is None
+    assert state.progress_total is None
+    # Other fields untouched.
+    assert state.kind == "loading"
+    assert state.variant == "sam2.1-large"
+    assert state.job_id == "job-abc"

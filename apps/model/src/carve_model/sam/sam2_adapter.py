@@ -219,6 +219,13 @@ def build_sam2_image_predictor(
     ``sam2.1-tiny``). Raises ``ValueError`` for unknown SAM 2 model
     names; the caller (``predictor._default_factory``) is responsible
     for routing ``sam3`` elsewhere.
+
+    v3.6 — brackets the HF ``from_pretrained`` calls with
+    ``_set_load_progress`` so ``GET /sam/status`` reports a "downloading"
+    indicator. The MVP indicator is indeterminate (``progress_total=-1``);
+    the overlay's shimmer keeps going without claiming a fake percent.
+    Real byte progress requires a custom HF tqdm callback — gap noted
+    in the v3.6 ship summary.
     """
     if model_name not in _HF_REPO_BY_MODEL:
         raise ValueError(
@@ -233,10 +240,21 @@ def build_sam2_image_predictor(
         Sam2Processor,
     )
 
+    # Local import keeps the module import-light for the test path that
+    # stubs torch + transformers via ``sys.modules``. predictor.py is
+    # always available — the adapters live alongside it.
+    from carve_model.sam.predictor import _set_load_progress
+
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16 if (dev == "cuda" and _use_bf16()) else torch.float32
-    model = Sam2Model.from_pretrained(repo).to(dev, dtype=dtype)
-    processor = Sam2Processor.from_pretrained(repo)
+    _set_load_progress(progress_bytes=0, progress_total=-1)
+    try:
+        model = Sam2Model.from_pretrained(repo).to(dev, dtype=dtype)
+        processor = Sam2Processor.from_pretrained(repo)
+    finally:
+        # Clear progress fields whether the build succeeds or raises;
+        # the kind=ready / kind=error transition is owned by the caller.
+        _set_load_progress(progress_bytes=None, progress_total=None)
     return Sam2ImagePredictorAdapter(model=model, processor=processor, device=dev)
 
 
@@ -394,6 +412,10 @@ def build_sam2_video_tracker(
 
     Loads ``Sam2VideoModel`` + ``Sam2VideoProcessor`` from the HF repo for
     ``model_name``. Raises ``ValueError`` for unknown SAM 2 model names.
+
+    v3.6 — brackets the HF ``from_pretrained`` calls with
+    ``_set_load_progress`` so ``GET /sam/status`` shows a "downloading"
+    indicator (indeterminate; see ``build_sam2_image_predictor``).
     """
     if model_name not in _HF_REPO_BY_MODEL:
         raise ValueError(
@@ -408,8 +430,14 @@ def build_sam2_video_tracker(
         Sam2VideoProcessor,
     )
 
+    from carve_model.sam.predictor import _set_load_progress
+
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16 if (dev == "cuda" and _use_bf16()) else torch.float32
-    model = Sam2VideoModel.from_pretrained(repo).to(dev, dtype=dtype)
-    processor = Sam2VideoProcessor.from_pretrained(repo)
+    _set_load_progress(progress_bytes=0, progress_total=-1)
+    try:
+        model = Sam2VideoModel.from_pretrained(repo).to(dev, dtype=dtype)
+        processor = Sam2VideoProcessor.from_pretrained(repo)
+    finally:
+        _set_load_progress(progress_bytes=None, progress_total=None)
     return Sam2VideoTrackerAdapter(model=model, processor=processor, device=dev)

@@ -84,6 +84,16 @@ class MinioClient:
             ExpiresIn=expires_seconds,
         )
 
+    def presigned_get_internal(self, key: str, expires_seconds: int = 600) -> str:
+        """Presigned URL using INTERNAL minio endpoint, for service-to-service download
+        (e.g. model service downloading a YOLO weight from MinIO over Docker DNS).
+        Browser-facing flows MUST use presigned_get() (public endpoint)."""
+        return self._s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": key},
+            ExpiresIn=expires_seconds,
+        )
+
     def presigned_put(
         self, key: str, expires_seconds: int = 600, content_type: str | None = None
     ) -> str:
