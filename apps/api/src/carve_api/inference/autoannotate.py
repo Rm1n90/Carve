@@ -25,10 +25,16 @@ class AutoAnnotateResult:
     summary the endpoint can surface to the user. Iterating the dataclass'
     ``annotations`` keeps the batch worker (which only counts) unchanged
     while letting the single-asset endpoint relay the skipped tally.
+
+    v3.7.2 — adds ``overwrite_skipped`` so the API/UI can tell when an
+    overwrite was requested but suppressed because the new prediction
+    yielded zero annotations. This is the data-loss-prevention signal:
+    when ``True``, the existing annotations were intentionally preserved.
     """
 
     annotations: list[Annotation] = field(default_factory=list)
     skipped_by_class: dict[str, int] = field(default_factory=dict)
+    overwrite_skipped: bool = False
 
     @property
     def annotations_created(self) -> int:
@@ -179,15 +185,13 @@ def auto_annotate_asset(
         raise AutoAnnotateModelFailed(f"yolo/predict: {exc.body!r}") from exc
 
     frame_id = _resolve_frame_id(session, asset)
-    if overwrite and frame_id is not None:
-        session.execute(
-            sa_delete(Annotation).where(
-                Annotation.task_id == task.id,
-                Annotation.frame_id == frame_id,
-            )
-        )
 
-    created: list[Annotation] = []
+    # v3.7.2 SAFETY: compute all new annotations FIRST (without persisting)
+    # so we can decide whether to honour the ``overwrite`` flag. The previous
+    # implementation deleted existing rows before checking detections, which
+    # destroyed the user's work whenever zero detections matched the project's
+    # classes (e.g. yolov8n COCO classes vs. a 3-class custom project).
+    new_anns: list[Annotation] = []
     skipped_by_class: dict[str, int] = {}
 
     def _bump_skipped(class_name: str) -> None:
@@ -205,17 +209,17 @@ def auto_annotate_asset(
         if score < min_confidence:
             continue
         b = det["bbox"]
-        ann = Annotation(
-            task_id=task.id,
-            frame_id=frame_id,
-            class_id=cls_id,
-            kind=AnnotationKind.bbox,
-            geometry={"kind": "bbox", "x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]},
-            track_id=None,
-            created_by=actor.id,
+        new_anns.append(
+            Annotation(
+                task_id=task.id,
+                frame_id=frame_id,
+                class_id=cls_id,
+                kind=AnnotationKind.bbox,
+                geometry={"kind": "bbox", "x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]},
+                track_id=None,
+                created_by=actor.id,
+            )
         )
-        session.add(ann)
-        created.append(ann)
 
     for poly in result.get("polygons", []):
         class_name = str(poly.get("class_name", ""))
@@ -229,20 +233,43 @@ def auto_annotate_asset(
         pts = [[float(p[0]), float(p[1])] for p in poly.get("points", [])]
         if len(pts) < 3:
             continue
-        ann = Annotation(
-            task_id=task.id,
-            frame_id=frame_id,
-            class_id=cls_id,
-            kind=AnnotationKind.polygon,
-            geometry={"kind": "polygon", "points": pts},
-            track_id=None,
-            created_by=actor.id,
+        new_anns.append(
+            Annotation(
+                task_id=task.id,
+                frame_id=frame_id,
+                class_id=cls_id,
+                kind=AnnotationKind.polygon,
+                geometry={"kind": "polygon", "points": pts},
+                track_id=None,
+                created_by=actor.id,
+            )
         )
+
+    # v3.7.2 SAFETY: only delete existing annotations when we have at
+    # least one new annotation to add. Otherwise overwrite=true with
+    # zero detections (or zero matching classes) would destroy the
+    # user's existing work and replace it with nothing.
+    overwrite_skipped = False
+    if overwrite and frame_id is not None:
+        if len(new_anns) > 0:
+            session.execute(
+                sa_delete(Annotation).where(
+                    Annotation.task_id == task.id,
+                    Annotation.frame_id == frame_id,
+                )
+            )
+        else:
+            overwrite_skipped = True
+
+    for ann in new_anns:
         session.add(ann)
-        created.append(ann)
 
     session.flush()
-    return AutoAnnotateResult(annotations=created, skipped_by_class=skipped_by_class)
+    return AutoAnnotateResult(
+        annotations=new_anns,
+        skipped_by_class=skipped_by_class,
+        overwrite_skipped=overwrite_skipped,
+    )
 
 
 def fetch_asset_bytes(asset: Asset) -> bytes:

@@ -60,12 +60,19 @@ def _http(err: AppError) -> HTTPException:
 class AutoAnnotateResponse(BaseModel):
     """v3.3 Issue 3c — predict response now includes a skipped-by-class
     summary so the editor can surface "Created N · skipped M (unmapped: …)"
-    instead of silently dropping unmapped detections."""
+    instead of silently dropping unmapped detections.
+
+    v3.7.2 — adds ``overwrite_skipped`` so the UI can warn when the user
+    requested overwrite=true but the existing annotations were
+    intentionally preserved (because the new prediction yielded zero
+    annotations). Defaults to ``False`` for backward compatibility.
+    """
 
     annotations: list[AnnotationOut]
     annotations_created: int
     skipped_count: int
     skipped_by_class: dict[str, int]
+    overwrite_skipped: bool = False
 
 
 class AutoAnnotateBody(BaseModel):
@@ -165,6 +172,7 @@ def auto_annotate(
         annotations_created=result.annotations_created,
         skipped_count=result.skipped_count,
         skipped_by_class=dict(result.skipped_by_class),
+        overwrite_skipped=bool(result.overwrite_skipped),
     )
 
 
@@ -264,7 +272,29 @@ def enqueue_batch_auto_annotate(
     return {"job_id": payload.job_id}
 
 
-@task_inference_router.get("/{task_id}/auto-annotate/{job_id}")
+class BatchAutoAnnotateProgress(BaseModel):
+    """v3.7.2 — Pydantic schema for the batch progress polling endpoint.
+
+    Mirrors the Redis hash written by ``run_batch_auto_annotate`` and
+    extends the legacy shape ({status, done, total, failed, errors})
+    with ``total_annotations_created`` and ``total_skipped_detections``
+    so the frontend can show a clear post-batch toast such as
+    "Created N annotations across M of K assets. Skipped Q detections."
+    """
+
+    status: str = "pending"
+    done: int = 0
+    total: int = 0
+    failed: int = 0
+    errors: list[str] = Field(default_factory=list)
+    total_annotations_created: int = 0
+    total_skipped_detections: int = 0
+
+
+@task_inference_router.get(
+    "/{task_id}/auto-annotate/{job_id}",
+    response_model=BatchAutoAnnotateProgress,
+)
 def get_batch_progress(
     task_id: uuid.UUID,
     job_id: str,

@@ -138,6 +138,7 @@ beforeEach(() => {
     annotations_created: 1,
     skipped_count: 0,
     skipped_by_class: {},
+    overwrite_skipped: false,
   });
   predictYoloBatchMock.mockResolvedValue({ job_id: "job-1" });
   pollBatchProgressMock.mockResolvedValue({
@@ -146,6 +147,8 @@ beforeEach(() => {
     total: 3,
     failed: 0,
     errors: [],
+    total_annotations_created: 0,
+    total_skipped_detections: 0,
   });
   useAnnotations.setState({
     history: { past: [], future: [] },
@@ -276,6 +279,8 @@ describe("v3.7 Phase 2 Issue 1 — predict scope picker + batch overlay", () => 
         total: 3,
         failed: 0,
         errors: [],
+        total_annotations_created: 2,
+        total_skipped_detections: 0,
       })
       .mockResolvedValue({
         status: "completed",
@@ -283,6 +288,8 @@ describe("v3.7 Phase 2 Issue 1 — predict scope picker + batch overlay", () => 
         total: 3,
         failed: 0,
         errors: [],
+        total_annotations_created: 7,
+        total_skipped_detections: 0,
       });
 
     const toasts: { message: string; variant: string }[] = [];
@@ -317,9 +324,11 @@ describe("v3.7 Phase 2 Issue 1 — predict scope picker + batch overlay", () => 
       },
       { timeout: 5000 },
     );
-    // Summary toast fired.
+    // Summary toast fired. v3.7.2 — text now reflects aggregate
+    // created counts so the user can distinguish "completed but
+    // produced nothing" from a successful batch.
     const summary = toasts.find((t) =>
-      /Predicted on .* assets, .* succeeded, .* failed/i.test(t.message),
+      /Created \d+ annotations across \d+ of \d+ assets/i.test(t.message),
     );
     expect(summary).toBeTruthy();
     expect(summary?.variant).toBe("success");

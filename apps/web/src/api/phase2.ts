@@ -275,6 +275,10 @@ export interface YoloPredictResult {
   annotations_created: number;
   skipped_count: number;
   skipped_by_class: Record<string, number>;
+  /** v3.7.2 — true when overwrite=true was requested but the predict
+   * yielded zero annotations, so existing annotations were intentionally
+   * preserved (data-loss prevention). UI surfaces a warning toast. */
+  overwrite_skipped: boolean;
 }
 
 interface AutoAnnotateApiResponse {
@@ -282,6 +286,7 @@ interface AutoAnnotateApiResponse {
   annotations_created: number;
   skipped_count: number;
   skipped_by_class: Record<string, number>;
+  overwrite_skipped?: boolean;
 }
 
 /**
@@ -321,6 +326,13 @@ export interface BatchPredictProgress {
   total: number;
   failed: number;
   errors: string[];
+  /** v3.7.2 — sum of annotations created across every asset in the
+   * batch. Surfaces in the post-batch toast so the user knows whether
+   * the predict actually produced anything. */
+  total_annotations_created: number;
+  /** v3.7.2 — sum of detections skipped (typically due to unmapped
+   * weight classes) across every asset in the batch. */
+  total_skipped_detections: number;
 }
 
 export const inferenceApi = {
@@ -360,6 +372,10 @@ export const inferenceApi = {
         data?.skipped_by_class && typeof data.skipped_by_class === "object"
           ? data.skipped_by_class
           : {},
+      overwrite_skipped:
+        typeof data?.overwrite_skipped === "boolean"
+          ? data.overwrite_skipped
+          : false,
     };
   },
   /**
@@ -415,6 +431,14 @@ export const inferenceApi = {
       total: typeof d?.total === "number" ? d.total : 0,
       failed: typeof d?.failed === "number" ? d.failed : 0,
       errors: Array.isArray(d?.errors) ? d.errors : [],
+      total_annotations_created:
+        typeof d?.total_annotations_created === "number"
+          ? d.total_annotations_created
+          : 0,
+      total_skipped_detections:
+        typeof d?.total_skipped_detections === "number"
+          ? d.total_skipped_detections
+          : 0,
     };
   },
 };
