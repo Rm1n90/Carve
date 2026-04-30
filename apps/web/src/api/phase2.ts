@@ -347,11 +347,16 @@ export const inferenceApi = {
     overwrite = false,
     minConfidence = 0.0,
     classOverrides?: ClassOverrides,
+    iou = 0.7,
   ): Promise<YoloPredictResult> => {
     const params = new URLSearchParams({
       weight_id: weightId,
       overwrite: overwrite ? "true" : "false",
       min_confidence: String(minConfidence),
+      // v3.7.5 — IOU (NMS) threshold. Server clamps via Pydantic Query
+      // validator (ge=0, le=1); we still string-encode the clamped
+      // value here so a stray non-finite caller can't break the URL.
+      iou: String(Math.max(0, Math.min(1, Number.isFinite(iou) ? iou : 0.7))),
     });
     const url = `/assets/${assetId}/auto-annotate?${params.toString()}`;
     // The body is optional. When the popover passes overrides we POST a
@@ -395,6 +400,7 @@ export const inferenceApi = {
     overwrite = false,
     minConfidence = 0.0,
     classOverrides?: ClassOverrides,
+    iou = 0.7,
   ): Promise<BatchPredictResult> => {
     const params = new URLSearchParams({
       weight_id: weightId,
@@ -403,10 +409,17 @@ export const inferenceApi = {
     const url = `/tasks/${taskId}/auto-annotate?${params.toString()}`;
     const body: {
       min_confidence?: number;
+      iou?: number;
       class_overrides?: ClassOverrides;
     } = {};
     if (Number.isFinite(minConfidence)) {
       body.min_confidence = Math.max(0, Math.min(1, minConfidence));
+    }
+    // v3.7.5 — include IOU (NMS) threshold in the body when finite.
+    // Server clamps via Pydantic Field(ge=0, le=1); we mirror that on
+    // the wire so non-finite values never reach the queue worker.
+    if (Number.isFinite(iou)) {
+      body.iou = Math.max(0, Math.min(1, iou));
     }
     if (classOverrides && Object.keys(classOverrides).length > 0) {
       body.class_overrides = classOverrides;

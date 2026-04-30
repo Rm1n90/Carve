@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from redis import Redis
 from sqlalchemy import select
@@ -96,6 +96,9 @@ def auto_annotate(
     weight_id: uuid.UUID | None = None,
     overwrite: bool = False,
     min_confidence: float = 0.0,
+    # v3.7.5 — IOU threshold (NMS) is now a per-call dial. Default mirrors
+    # the Ultralytics default. Pydantic/FastAPI clamps via the Query validator.
+    iou: float = Query(0.7, ge=0.0, le=1.0),
     body: AutoAnnotateBody | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -162,6 +165,7 @@ def auto_annotate(
             presigned_url_for_weight=url,
             image_bytes=image_bytes,
             min_confidence=min_confidence,
+            iou=iou,
             class_overrides=overrides,
         )
     except AppError as exc:
@@ -184,9 +188,14 @@ class BatchAutoAnnotateBody(BaseModel):
 
     Both fields are optional; an empty body keeps the legacy
     "name-match + zero confidence floor" defaults.
+
+    v3.7.5 — adds optional ``iou`` (NMS threshold) so the batch path
+    matches the single-asset path. ``None`` means "use the autoannotate
+    default (0.7)".
     """
 
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    iou: float | None = Field(default=None, ge=0.0, le=1.0)
     class_overrides: dict[str, str | None] | None = Field(default=None)
 
 
@@ -227,10 +236,15 @@ def enqueue_batch_auto_annotate(
     # keys / values are dropped silently rather than 422-ing the call.
     overrides_for_payload: dict[int, str | None] | None = None
     min_conf: float | None = None
+    iou_value: float | None = None
     if body is not None:
         if body.min_confidence is not None:
             # Pydantic already enforced 0..1 via Field(ge=0, le=1).
             min_conf = float(body.min_confidence)
+        if body.iou is not None:
+            # v3.7.5 — Pydantic enforces 0..1 above; coerce for the
+            # RQ payload so a stray int slips through cleanly.
+            iou_value = float(body.iou)
         if body.class_overrides is not None:
             overrides_for_payload = {}
             for k, v in body.class_overrides.items():
@@ -255,6 +269,7 @@ def enqueue_batch_auto_annotate(
         weight=weight,
         overwrite=overwrite,
         min_confidence=min_conf,
+        iou=iou_value,
         class_overrides=overrides_for_payload,
     )
 

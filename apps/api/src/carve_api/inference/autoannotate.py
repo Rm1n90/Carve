@@ -89,6 +89,7 @@ def auto_annotate_asset(
     presigned_url_for_weight: str,
     image_bytes: bytes,
     min_confidence: float = 0.0,
+    iou: float = 0.7,
     class_overrides: dict[int, uuid.UUID | None] | None = None,
 ) -> AutoAnnotateResult:
     """Run the model service on a single asset and persist the detections.
@@ -178,7 +179,16 @@ def auto_annotate_asset(
 
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
     try:
-        result = yolo_predict(str(weight.id), image_b64)
+        # v3.7.5 — thread the per-call IOU threshold through to the model
+        # service. ``min_confidence`` is also a model-side filter; passing
+        # it as ``conf`` lets Ultralytics drop low-score detections before
+        # the box/mask transfer instead of relying on the post-filter loop.
+        result = yolo_predict(
+            str(weight.id),
+            image_b64,
+            conf=min_confidence,
+            iou=iou,
+        )
     except ModelServiceError as exc:
         if exc.status_code == 503:
             raise AutoAnnotateModelUnreachable(f"yolo/predict: {exc.body!r}") from exc

@@ -51,6 +51,11 @@ class BatchJobPayload:
     weight_id: str
     overwrite: bool
     min_confidence: float | None = None
+    # v3.7.5 — IOU (NMS) threshold, optional. ``None`` means "use the
+    # autoannotate default (0.7)". Stored as Optional[float] so older
+    # pickled payloads (without this field) still deserialise via the
+    # dataclass default.
+    iou: float | None = None
     class_overrides: dict[int, str | None] | None = None
 
 
@@ -61,6 +66,7 @@ def build_job_payload(
     weight: Weight,
     overwrite: bool,
     min_confidence: float | None = None,
+    iou: float | None = None,
     class_overrides: dict[int, str | None] | None = None,
 ) -> BatchJobPayload:
     return BatchJobPayload(
@@ -70,6 +76,7 @@ def build_job_payload(
         weight_id=str(weight.id),
         overwrite=overwrite,
         min_confidence=min_confidence,
+        iou=iou,
         class_overrides=class_overrides,
     )
 
@@ -404,6 +411,11 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
             )
             if clamped_conf is not None:
                 aa_kwargs["min_confidence"] = clamped_conf
+            # v3.7.5 — only forward iou when the caller actually supplied
+            # it; the autoannotate default (0.7) holds otherwise. Keeps
+            # the kwargs symmetric with the legacy-payload omission test.
+            if payload.iou is not None:
+                aa_kwargs["iou"] = float(payload.iou)
             if coerced_overrides is not None:
                 aa_kwargs["class_overrides"] = coerced_overrides
             aa_result = auto_annotate_asset(**aa_kwargs)

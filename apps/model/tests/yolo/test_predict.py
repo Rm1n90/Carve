@@ -35,8 +35,13 @@ class _FakeModel:
         self._results = results
         self.last_call: dict = {}
 
-    def predict(self, img, conf=0.25, iou=0.7, verbose=False):
-        self.last_call = {"shape": img.shape, "conf": conf, "iou": iou}
+    def predict(self, img, conf=0.25, iou=0.7, half=True, verbose=False):
+        self.last_call = {
+            "shape": img.shape,
+            "conf": conf,
+            "iou": iou,
+            "half": half,
+        }
         return [self._results]
 
 
@@ -67,6 +72,18 @@ def test_predict_returns_detections_and_polygons() -> None:
     assert len(out["polygons"]) == 2
     assert out["polygons"][1]["class_name"] == "bike"
     assert model.last_call["conf"] == 0.3 and model.last_call["iou"] == 0.6
+    # v3.7.5 — half defaults to True so callers get FP16 on CUDA without
+    # opting in. Ultralytics auto-falls-back to FP32 on CPU.
+    assert model.last_call["half"] is True
+
+
+def test_predict_threads_half_through() -> None:
+    """v3.7.5 — explicit ``half=False`` must reach the underlying model."""
+    boxes = _FakeBoxes(xyxy=[[1, 2, 3, 4]], conf=[0.5], cls=[0])
+    results = _FakeResults(boxes=boxes, masks=None, names={0: "x"})
+    model = _FakeModel(results)
+    predict_image(model, _png_bytes(), half=False)
+    assert model.last_call["half"] is False
 
 
 def test_predict_no_masks_returns_empty_polygons() -> None:

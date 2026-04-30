@@ -31,7 +31,7 @@ class _FakeResults:
 
 
 class _FakeModel:
-    def predict(self, _img, conf=0.25, iou=0.7, verbose=False):
+    def predict(self, _img, conf=0.25, iou=0.7, half=True, verbose=False):
         return [_FakeResults()]
 
 

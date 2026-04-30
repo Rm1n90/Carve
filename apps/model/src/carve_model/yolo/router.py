@@ -14,6 +14,7 @@ path so it can persist the real class names instead of an empty list).
 
 import base64
 import logging
+import os
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -52,6 +53,21 @@ class PredictIn(BaseModel):
     image_b64: str
     conf: float = Field(default=0.25, ge=0.0, le=1.0)
     iou: float = Field(default=0.7, ge=0.0, le=1.0)
+    # v3.7.5 — optional FP16 toggle. When ``None`` the endpoint falls
+    # back to the ``YOLO_HALF`` env default (1=enabled). Explicit
+    # ``False`` is honoured for accuracy debugging.
+    half: bool | None = None
+
+
+def _env_half_default() -> bool:
+    """Resolve the YOLO half-precision default from ``YOLO_HALF``.
+
+    Defaults to enabled. Recognised disable strings: ``"0"``, ``"false"``,
+    ``"False"``. Anything else (including ``"1"``, ``"true"``) is treated
+    as enabled. Ultralytics auto-falls-back to FP32 on CPU so the
+    default is safe regardless of device.
+    """
+    return os.getenv("YOLO_HALF", "1") not in ("0", "false", "False")
 
 
 # Indirection so tests can monkeypatch
@@ -107,7 +123,15 @@ def predict(payload: PredictIn) -> dict:
         image_bytes = base64.b64decode(payload.image_b64)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail="bad_image_b64") from exc
-    return predict_image(model, image_bytes, conf=payload.conf, iou=payload.iou)
+    # v3.7.5 — explicit body field wins; otherwise fall back to env default.
+    half = payload.half if payload.half is not None else _env_half_default()
+    return predict_image(
+        model,
+        image_bytes,
+        conf=payload.conf,
+        iou=payload.iou,
+        half=half,
+    )
 
 
 class InspectOut(BaseModel):

@@ -6,10 +6,13 @@ returning a ``Results``-like object with ``boxes``, optional ``masks``, and
 """
 
 import io
+import logging
 from typing import Any
 
 import numpy as np
 from PIL import Image
+
+log = logging.getLogger(__name__)
 
 
 def predict_image(
@@ -18,9 +21,17 @@ def predict_image(
     *,
     conf: float = 0.25,
     iou: float = 0.7,
+    half: bool = True,
 ) -> dict:
+    """Run YOLO predict on a single image.
+
+    v3.7.5 — ``half=True`` enables FP16 inference on CUDA (typically ~2x
+    faster). Ultralytics auto-falls-back to FP32 on CPU, so the default
+    is safe for both deployment shapes. Callers can pass ``half=False``
+    to force FP32 (e.g. when comparing accuracy against an FP32 baseline).
+    """
     img = np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
-    results = model.predict(img, conf=conf, iou=iou, verbose=False)[0]
+    results = model.predict(img, conf=conf, iou=iou, half=half, verbose=False)[0]
 
     detections: list[dict] = []
     polygons: list[dict] = []

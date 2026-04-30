@@ -98,6 +98,43 @@ def _make_mock_transport(predict_response: dict[str, Any]) -> httpx.MockTranspor
     return httpx.MockTransport(handler)
 
 
+def test_auto_annotate_threads_iou_to_model_service(db_session, monkeypatch) -> None:
+    """v3.7.5 — the ``iou`` query param on /assets/{aid}/auto-annotate
+    must reach /yolo/predict on the model service. Without this the
+    new IOU slider in the editor toolbar would silently no-op.
+    """
+    client = _client(db_session)
+    token, _pid, _tid, aid, wid, _car_id, _truck_id = _setup_full_world(client, monkeypatch)
+
+    captured: list[dict[str, Any]] = []
+
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/yolo/load":
+            return httpx.Response(200, json={"loaded": "ok"})
+        if request.url.path == "/yolo/predict":
+            try:
+                captured.append(_json.loads(request.content))
+            except Exception:
+                captured.append({})
+            return httpx.Response(200, json={"detections": [], "polygons": []})
+        return httpx.Response(404)
+
+    model_client_mod.set_test_transport(httpx.MockTransport(handler))
+    try:
+        r = client.post(
+            f"/assets/{aid}/auto-annotate?weight_id={wid}&iou=0.42",
+            headers=_hdr(token),
+        )
+        assert r.status_code == 200, r.text
+        assert len(captured) == 1
+        body = captured[0]
+        assert body.get("iou") == 0.42
+    finally:
+        model_client_mod.set_test_transport(None)
+
+
 def test_auto_annotate_creates_bbox_annotations(db_session, monkeypatch) -> None:
     client = _client(db_session)
     token, pid, tid, aid, wid, car_id, truck_id = _setup_full_world(client, monkeypatch)

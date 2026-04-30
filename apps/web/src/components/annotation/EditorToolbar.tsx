@@ -59,6 +59,11 @@ import { useOptionalConfirm } from "@/components/ui/ConfirmDialog";
 
 const PREDICT_CONF_KEY = "carve.predict.minConfidence";
 const DEFAULT_PREDICT_CONFIDENCE = 0.4;
+// v3.7.5 — IOU (NMS) threshold persisted alongside confidence so the user's
+// preferred dial sticks across sessions. Default mirrors the Ultralytics
+// default of 0.7.
+const PREDICT_IOU_KEY = "carve.predict.iou";
+const DEFAULT_PREDICT_IOU = 0.7;
 // v3.3 Issue 4 — last-used YOLO weight per project. Keyed so switching
 // projects shows the right preselection without leaking across boundaries.
 const LAST_WEIGHT_KEY_PREFIX = "carve.editor.lastWeight.";
@@ -137,6 +142,20 @@ function loadStoredConfidence(): number {
     return Math.max(0, Math.min(1, n));
   } catch {
     return DEFAULT_PREDICT_CONFIDENCE;
+  }
+}
+
+// v3.7.5 — same shape as loadStoredConfidence; falls back to 0.7 when
+// localStorage is unavailable or the value is non-finite.
+function loadStoredIou(): number {
+  try {
+    const raw = window.localStorage.getItem(PREDICT_IOU_KEY);
+    if (!raw) return DEFAULT_PREDICT_IOU;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return DEFAULT_PREDICT_IOU;
+    return Math.max(0, Math.min(1, n));
+  } catch {
+    return DEFAULT_PREDICT_IOU;
   }
 }
 
@@ -287,6 +306,9 @@ const YoloPredictButton = forwardRef<
   const [selected, setSelected] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
   const [confidence, setConfidence] = useState<number>(() => loadStoredConfidence());
+  // v3.7.5 — IOU (NMS) threshold dial. Same persistence shape as
+  // confidence so the user's preferred value sticks across sessions.
+  const [iou, setIou] = useState<number>(() => loadStoredIou());
   // v3.5 Phase F3 — per-weight-class binding picked by the user in the
   // disclosure. Keyed by `weight_class_idx` (string) so the wire shape
   // matches the API. `null` means "skip this weight class on predict".
@@ -315,6 +337,19 @@ const YoloPredictButton = forwardRef<
     }, 200);
     return () => window.clearTimeout(t);
   }, [confidence]);
+
+  // v3.7.5 — persist IOU threshold the same way confidence is persisted.
+  // Debounced 200ms so dragging the slider doesn't write on every step.
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(PREDICT_IOU_KEY, String(iou));
+      } catch {
+        /* localStorage may be unavailable (private mode) — non-fatal */
+      }
+    }, 200);
+    return () => window.clearTimeout(t);
+  }, [iou]);
 
   // v3.7 Phase 2 Issue 2 — weight list is now eager (not gated on
   // ``open``) so the Cmd/Ctrl+Enter shortcut can pre-flight the
@@ -472,6 +507,7 @@ const YoloPredictButton = forwardRef<
         overwrite,
         confidence,
         Object.keys(wireOverrides).length > 0 ? wireOverrides : undefined,
+        iou,
       );
     },
     onSuccess: (res, weightId) => {
@@ -577,6 +613,7 @@ const YoloPredictButton = forwardRef<
         overwrite,
         confidence,
         buildWireOverrides(),
+        iou,
       );
     },
     onSuccess: (res, weightId) => {
@@ -1038,6 +1075,33 @@ const YoloPredictButton = forwardRef<
             }
             data-testid="yolo-confidence-slider"
             aria-label="Minimum confidence"
+            className="w-full accent-[var(--accent)]"
+          />
+          {/* v3.7.5 — IOU (NMS) threshold dial, identical styling to the
+              confidence slider above. Range 0..1 step 0.05. Lower IOU =
+              fewer overlapping boxes; higher IOU = more permissive NMS. */}
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-[11.5px] text-[color:var(--text-secondary)] font-medium tracking-tight">
+              IOU threshold
+            </span>
+            <span
+              data-testid="yolo-iou-value"
+              className="text-[11.5px] font-mono tabular-nums text-[color:var(--text-primary)]"
+            >
+              {(iou * 100).toFixed(0)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={Math.round(iou * 100)}
+            onChange={(e) =>
+              setIou(Math.max(0, Math.min(1, Number(e.target.value) / 100)))
+            }
+            data-testid="yolo-iou-slider"
+            aria-label="IOU threshold"
             className="w-full accent-[var(--accent)]"
           />
         </div>
