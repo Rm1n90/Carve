@@ -92,7 +92,11 @@ def test_set_default_marks_weight_as_default(db_session, monkeypatch) -> None:
     token, pid = _setup(client, monkeypatch)
     wid = _upload_weight(client, token, pid, "first")
 
-    r = client.post(f"/weights/{wid}/default", headers=_hdr(token))
+    r = client.post(
+        f"/weights/{wid}/default",
+        json={"project_id": pid, "task_kind": "detect"},
+        headers=_hdr(token),
+    )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["is_default"] is True
@@ -105,13 +109,21 @@ def test_set_default_on_second_clears_first(db_session, monkeypatch) -> None:
     wid_a = _upload_weight(client, token, pid, "a")
     wid_b = _upload_weight(client, token, pid, "b")
 
-    # First, mark A as default.
-    r = client.post(f"/weights/{wid_a}/default", headers=_hdr(token))
+    # First, mark A as default for (project, detect).
+    r = client.post(
+        f"/weights/{wid_a}/default",
+        json={"project_id": pid, "task_kind": "detect"},
+        headers=_hdr(token),
+    )
     assert r.status_code == 200, r.text
     assert r.json()["is_default"] is True
 
     # Now switch default to B — A must flip back to is_default=false.
-    r = client.post(f"/weights/{wid_b}/default", headers=_hdr(token))
+    r = client.post(
+        f"/weights/{wid_b}/default",
+        json={"project_id": pid, "task_kind": "detect"},
+        headers=_hdr(token),
+    )
     assert r.status_code == 200, r.text
     assert r.json()["is_default"] is True
 
@@ -123,16 +135,24 @@ def test_set_default_on_second_clears_first(db_session, monkeypatch) -> None:
 
 
 def test_two_kinds_can_each_have_a_default(db_session, monkeypatch) -> None:
-    """Partial unique index keys on (project_id, task_kind) — different kinds
-    coexist as defaults in the same project."""
+    """Different task kinds coexist as defaults in the same project —
+    keyed on (project_id, task_kind) in the new defaults table."""
     client = _client(db_session)
     token, pid = _setup(client, monkeypatch)
     wid_det = _upload_weight(client, token, pid, "det", task_kind="detect")
     wid_seg = _upload_weight(client, token, pid, "seg", task_kind="segment")
 
-    r1 = client.post(f"/weights/{wid_det}/default", headers=_hdr(token))
+    r1 = client.post(
+        f"/weights/{wid_det}/default",
+        json={"project_id": pid, "task_kind": "detect"},
+        headers=_hdr(token),
+    )
     assert r1.status_code == 200
-    r2 = client.post(f"/weights/{wid_seg}/default", headers=_hdr(token))
+    r2 = client.post(
+        f"/weights/{wid_seg}/default",
+        json={"project_id": pid, "task_kind": "segment"},
+        headers=_hdr(token),
+    )
     assert r2.status_code == 200
 
     rows = client.get(f"/projects/{pid}/weights", headers=_hdr(token)).json()
@@ -177,7 +197,11 @@ def test_auto_annotate_without_weight_id_uses_default(db_session, monkeypatch) -
         headers=_hdr(token),
     )
     wid = _upload_weight(client, token, pid, "yolo")
-    r = client.post(f"/weights/{wid}/default", headers=_hdr(token))
+    r = client.post(
+        f"/weights/{wid}/default",
+        json={"project_id": pid, "task_kind": "detect"},
+        headers=_hdr(token),
+    )
     assert r.status_code == 200, r.text
 
     transport = _make_mock_transport(

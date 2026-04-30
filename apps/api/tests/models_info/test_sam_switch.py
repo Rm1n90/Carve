@@ -105,13 +105,20 @@ def test_sam_active_post_rejects_unknown_variant(db_session) -> None:
 def test_sam_active_post_proxies_to_model_and_updates_get(
     db_session, monkeypatch
 ) -> None:
-    """Happy path: model service returns 200; GET reflects the new active variant."""
+    """Happy path: model service returns 202 + job_id; GET reflects the new variant."""
     client = _client(db_session)
     token = _bootstrap_admin(client)
 
     def handler(req: httpx.Request) -> httpx.Response:
         assert req.url.path == "/sam/switch"
-        return httpx.Response(200, json={"active_variant": "sam2.1-large"})
+        return httpx.Response(
+            202,
+            json={
+                "job_id": "abc123",
+                "state": "loading",
+                "variant": "sam2.1-large",
+            },
+        )
 
     captured = _install_mock_transport(monkeypatch, handler)
 
@@ -120,8 +127,12 @@ def test_sam_active_post_proxies_to_model_and_updates_get(
         json={"variant": "sam2.1-large"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert r.status_code == 200
-    assert r.json() == {"active_variant": "sam2.1-large"}
+    assert r.status_code == 202
+    body_out = r.json()
+    assert body_out["variant"] == "sam2.1-large"
+    assert body_out["active_variant"] == "sam2.1-large"
+    assert body_out["job_id"] == "abc123"
+    assert body_out["state"] == "loading"
     assert len(captured) == 1
     import json
 
@@ -148,7 +159,14 @@ def test_sam_active_post_translates_base_plus_naming(
 
         body = json.loads(req.content)
         assert body == {"variant": "sam2.1-base-plus"}
-        return httpx.Response(200, json={"active_variant": "sam2.1-base-plus"})
+        return httpx.Response(
+            202,
+            json={
+                "job_id": "deadbeef",
+                "state": "loading",
+                "variant": "sam2.1-base-plus",
+            },
+        )
 
     _install_mock_transport(monkeypatch, handler)
 
@@ -157,9 +175,11 @@ def test_sam_active_post_translates_base_plus_naming(
         json={"variant": "sam2.1-base+"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert r.status_code == 200
+    assert r.status_code == 202
     # API returns the API-side spelling (so GET stays consistent)
-    assert r.json() == {"active_variant": "sam2.1-base+"}
+    body_out = r.json()
+    assert body_out["variant"] == "sam2.1-base+"
+    assert body_out["active_variant"] == "sam2.1-base+"
 
 
 def test_sam_active_post_503_when_model_service_down(
@@ -180,8 +200,9 @@ def test_sam_active_post_503_when_model_service_down(
     )
     assert r.status_code == 503
     body = r.json()
-    # FastAPI wraps the dict detail in {"detail": {...}}
-    assert body["detail"] == {"error": "model_service_unavailable"}
+    # The HTTPException handler in main.py unwraps a dict ``detail``
+    # directly into the response body, so the envelope is the dict.
+    assert body == {"error": "model_service_unavailable"}
 
 
 def test_sam_active_post_503_when_model_service_503(
@@ -201,7 +222,7 @@ def test_sam_active_post_503_when_model_service_503(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 503
-    assert r.json()["detail"] == {"error": "model_service_unavailable"}
+    assert r.json() == {"error": "model_service_unavailable"}
 
 
 def test_sam_active_post_422_when_model_service_422(

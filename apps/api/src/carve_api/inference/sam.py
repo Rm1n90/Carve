@@ -1,23 +1,33 @@
 """App-side SAM proxy.
 
 The api fetches the asset's bytes from MinIO and forwards a base64-encoded
-copy to the model service. The model service returns ``{image_hash, shape,
-embedding_b64?}``. The api caches that dict in Redis under
-``sam:embed:<image_hash>`` with a 30-minute TTL so repeated SAM activations
-on the same image skip the model round-trip and the embedding extraction.
+copy to the model service. The model service returns
+``{image_hash, shape, embedding_b64?}`` and is the *single* source of
+truth for whether an embedding is currently loaded.
 
-Redis is best-effort: a missing/down Redis simply falls through to the
-model. Mirrors the pattern in ``carve_api/io/import_job.py``.
+v3.5 Phase A2: the previous Redis ``sam:embed:<hash>`` cache (30-minute
+TTL) was dropped because it could return a "successful" encode result
+to the client without the model service ever performing one — which
+caused the next ``/sam/decode`` to 409 (or worse, 500 pre-A1) because
+the model worker didn't actually have the image loaded. SAM2 encode is
+~hundreds of ms on a single image and the click-driven SAM tool caches
+the ``image_hash`` on the SamTool, so repeated activations on the same
+image are amortised by the tool itself; an API-layer cache traded
+latency for correctness.
 """
 
 import base64
-import json
 
 from carve_api.assets.models import Asset
-from carve_api.config import get_settings
 from carve_api.errors import AppError
 from carve_api.inference.autoannotate import fetch_asset_bytes
-from carve_api.inference.model_client import ModelServiceError, sam_decode, sam_encode
+from carve_api.inference.model_client import (
+    ModelServiceError,
+    sam_box_prompt,
+    sam_decode,
+    sam_encode,
+    sam_text_prompt,
+)
 
 
 class SamModelFailed(AppError):
@@ -44,67 +54,35 @@ class SamEmbeddingMissing(AppError):
     code = "sam_embedding_missing"
 
 
-_SAM_EMBED_TTL_SECONDS = 30 * 60  # 30 minutes
+class Sam3NotEnabled(AppError):
+    """Active SAM variant is not SAM 3 — text/box prompts require SAM 3.
 
-
-def _redis_or_none():
-    """Return a live Redis client or ``None`` if Redis isn't reachable.
-
-    Best-effort — never raises. Tests monkeypatch this module attribute to
-    inject a fake or to simulate "Redis is down".
+    The model service's /sam/text-prompt and /sam/box-prompt endpoints
+    return 409 when ``get_sam_variant() != "sam3"``. The carve api maps
+    that to this error so the editor's mode picker can disable text +
+    box modes (or surface a "switch to SAM 3" hint) instead of letting
+    the user click into a guaranteed-fail flow.
     """
-    from redis import Redis
 
-    s = get_settings()
-    try:
-        client = Redis(host=s.redis_host, port=s.redis_port, socket_connect_timeout=1)
-        client.ping()
-        return client
-    except Exception:
-        return None
-
-
-def _cache_key(image_hash: str) -> str:
-    return f"sam:embed:{image_hash}"
+    http_status = 409
+    code = "sam3_not_enabled"
 
 
 def sam_encode_for_asset(asset: Asset) -> dict:
-    """Encode the asset on the model service. Cache the result in Redis.
+    """Encode the asset on the model service.
 
-    The asset's pre-computed ``xxh3_128`` matches the hash the model service
-    derives from the same bytes (both use xxh3_128), so we can probe Redis
-    before fetching bytes from MinIO. If Redis is unavailable, the existing
-    fetch + model invoke path runs unchanged.
+    Always round-trips to the model service so the returned ``image_hash``
+    corresponds to a predictor that has actually called ``set_image()``.
+    No API-side cache — see module docstring for rationale.
     """
-    redis_client = _redis_or_none()
-    cache_key = _cache_key(asset.xxh3_128)
-    if redis_client is not None:
-        try:
-            cached = redis_client.get(cache_key)
-            if cached:
-                return json.loads(cached)
-        except Exception:
-            # Fall through on any cache read failure.
-            pass
-
     body = fetch_asset_bytes(asset)
     b64 = base64.b64encode(body).decode("ascii")
     try:
-        result = sam_encode(b64)
+        return sam_encode(b64)
     except ModelServiceError as exc:
         if exc.status_code == 503:
             raise SamModelUnreachable(f"encode: {exc.body!r}") from exc
         raise SamModelFailed(f"encode: {exc.body!r}") from exc
-
-    if redis_client is not None:
-        try:
-            redis_client.setex(
-                cache_key, _SAM_EMBED_TTL_SECONDS, json.dumps(result)
-            )
-        except Exception:
-            # Best-effort write — never fail the request because Redis hiccuped.
-            pass
-    return result
 
 
 def sam_decode_with_hash(image_hash: str, points: list[list[int]], labels: list[int]) -> dict:
@@ -118,3 +96,52 @@ def sam_decode_with_hash(image_hash: str, points: list[list[int]], labels: list[
         if exc.status_code == 503:
             raise SamModelUnreachable(f"decode: {exc.body!r}") from exc
         raise SamModelFailed(f"decode: {exc.body!r}") from exc
+
+
+def sam_text_prompt_for_asset(asset: Asset, text: str) -> list[dict]:
+    """SAM 3 text-prompt entry point.
+
+    Encodes the asset's bytes once and forwards them to the model
+    service alongside the supplied text concept. Maps the model
+    service's 409 (sam3_not_enabled) and 503 (unreachable / predictor
+    not loaded) onto AppErrors so the router/web layer can render a
+    consistent error envelope.
+    """
+    body = fetch_asset_bytes(asset)
+    b64 = base64.b64encode(body).decode("ascii")
+    try:
+        return sam_text_prompt(b64, text)
+    except ModelServiceError as exc:
+        if exc.status_code == 409:
+            raise Sam3NotEnabled(f"text-prompt: {exc.body!r}") from exc
+        if exc.status_code == 503:
+            raise SamModelUnreachable(f"text-prompt: {exc.body!r}") from exc
+        raise SamModelFailed(f"text-prompt: {exc.body!r}") from exc
+
+
+def sam_box_prompt_for_asset(
+    asset: Asset,
+    boxes: list[list[float]],
+    box_labels: list[int],
+    text: str | None = None,
+) -> list[dict]:
+    """SAM 3 box-prompt entry point.
+
+    ``boxes`` are xyxy floats and ``box_labels`` are 1=include, 0=exclude.
+    Optionally combines with a text concept. Maps the same 409 / 503
+    upstream signals onto the SAM AppErrors used elsewhere in the proxy.
+    """
+    if len(boxes) != len(box_labels):
+        raise SamModelFailed("boxes and box_labels must have equal length")
+    if any(label not in (0, 1) for label in box_labels):
+        raise SamModelFailed("box_labels must be 0 or 1")
+    body = fetch_asset_bytes(asset)
+    b64 = base64.b64encode(body).decode("ascii")
+    try:
+        return sam_box_prompt(b64, boxes, box_labels, text=text)
+    except ModelServiceError as exc:
+        if exc.status_code == 409:
+            raise Sam3NotEnabled(f"box-prompt: {exc.body!r}") from exc
+        if exc.status_code == 503:
+            raise SamModelUnreachable(f"box-prompt: {exc.body!r}") from exc
+        raise SamModelFailed(f"box-prompt: {exc.body!r}") from exc

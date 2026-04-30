@@ -62,7 +62,43 @@ class SamActiveIn(BaseModel):
 
 
 class SamSwitchOut(BaseModel):
-    active_variant: str
+    """Response from ``POST /models/sam-active``.
+
+    v3.5 Phase C — the model service's ``/sam/switch`` is non-blocking
+    and returns 202 + ``{job_id, state, variant}``. The API mirrors that
+    contract so the frontend can poll ``/models/sam-status`` for
+    completion. ``active_variant`` is preserved as an alias of
+    ``variant`` so legacy callers keep working.
+    """
+
+    job_id: str
+    state: str
+    variant: str
+    active_variant: str  # alias of `variant` for legacy clients
+
+
+class SamStatusOut(BaseModel):
+    """Mirror of the model service's ``GET /sam/status`` response.
+
+    State machine:
+      idle    — no predictor loaded
+      loading — predictor is being initialised (HF download or build)
+      ready   — predictor loaded and ready
+      error   — last load attempt failed; ``error`` carries the detail
+
+    ``model_service_unreachable`` is surfaced as ``state="error"`` with
+    ``error="model_service_unreachable"`` when the model container is
+    unreachable, so the frontend overlay can dismiss without a network
+    spinner that never resolves.
+    """
+
+    state: str
+    variant: str | None = None
+    progress_bytes: int | None = None
+    progress_total: int | None = None
+    loaded_at: str | None = None
+    error: str | None = None
+    job_id: str | None = None
 
 
 def _probe_model_service() -> bool:
@@ -92,21 +128,23 @@ def sam_active(
     )
 
 
-@router.post("/sam-active", response_model=SamSwitchOut)
+@router.post("/sam-active", response_model=SamSwitchOut, status_code=202)
 def sam_set_active(
     payload: SamActiveIn,
     user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
 ) -> SamSwitchOut:
-    """Hot-swap the active SAM variant.
+    """Hot-swap the active SAM variant (non-blocking).
 
     Validates the variant against the API's allow-list (returns 422 on
-    miss), proxies to the model service's ``POST /sam/switch`` (60s
-    timeout — loading a SAM variant takes 5-30s), and updates the
-    in-memory ``_active_sam_variant`` so the matching GET reflects the
-    change.
+    miss), proxies to the model service's ``POST /sam/switch`` (which is
+    itself non-blocking since v3.5 Phase C), and updates the in-memory
+    ``_active_sam_variant`` so the matching GET reflects the requested
+    target. The frontend polls ``GET /models/sam-status`` until the load
+    state machine settles.
 
     Returns 503 ``model_service_unavailable`` when the model service is
-    down or returns 5xx; 422 when the model service rejects the variant.
+    down or returns 5xx; 422 when the model service rejects the variant;
+    409 when another switch is already in flight on the model service.
     """
     if payload.variant not in _AVAILABLE_SAM_VARIANTS:
         raise HTTPException(
@@ -118,7 +156,10 @@ def sam_set_active(
     base = settings.model_base_url.rstrip("/")
     model_variant = _api_to_model(payload.variant)
     try:
-        with httpx.Client(timeout=60.0) as c:
+        # Short timeout — the model service returns 202 immediately, so
+        # 5s is more than enough headroom. Loading still happens in the
+        # background and the frontend polls /models/sam-status.
+        with httpx.Client(timeout=5.0) as c:
             r = c.post(f"{base}/sam/switch", json={"variant": model_variant})
     except (httpx.TimeoutException, httpx.HTTPError):
         raise HTTPException(
@@ -131,24 +172,72 @@ def sam_set_active(
             status_code=422,
             detail=f"unknown_variant; rejected by model service: {payload.variant}",
         )
+    if r.status_code == 409:
+        raise HTTPException(
+            status_code=409,
+            detail="switch_in_progress",
+        )
     if r.status_code >= 500:
         raise HTTPException(
             status_code=503,
             detail={"error": "model_service_unavailable"},
         )
-    if r.status_code != 200:
+    if r.status_code not in (200, 202):
         raise HTTPException(
             status_code=502,
             detail=f"model_service_unexpected_status: {r.status_code}",
         )
 
     body = r.json()
-    raw_active = body.get("active_variant", model_variant)
-    api_active = _model_to_api(raw_active)
+    raw_variant = body.get("variant") or body.get("active_variant") or model_variant
+    api_variant = _model_to_api(raw_variant)
 
     # Update the module-level cache so the matching GET reflects the
-    # successful switch on this API instance.
+    # requested switch on this API instance.
     global _active_sam_variant
-    _active_sam_variant = api_active
+    _active_sam_variant = api_variant
 
-    return SamSwitchOut(active_variant=api_active)
+    return SamSwitchOut(
+        job_id=body.get("job_id", ""),
+        state=body.get("state", "loading"),
+        variant=api_variant,
+        active_variant=api_variant,
+    )
+
+
+@router.get("/sam-status", response_model=SamStatusOut)
+def sam_status_endpoint(
+    user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
+) -> SamStatusOut:
+    """Proxy ``GET /sam/status`` from the model service.
+
+    The frontend polls this every ~1.5s while the variant-switch overlay
+    is open. When the model service is unreachable we synthesise an
+    ``error`` state so the overlay can dismiss instead of spinning.
+    """
+    settings = get_settings()
+    base = settings.model_base_url.rstrip("/")
+    try:
+        with httpx.Client(timeout=5.0) as c:
+            r = c.get(f"{base}/sam/status")
+            r.raise_for_status()
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError):
+        return SamStatusOut(
+            state="error",
+            variant=None,
+            error="model_service_unreachable",
+        )
+    body = r.json()
+    raw_variant = body.get("variant")
+    api_variant = (
+        _model_to_api(raw_variant) if isinstance(raw_variant, str) else None
+    )
+    return SamStatusOut(
+        state=body.get("state", "idle"),
+        variant=api_variant,
+        progress_bytes=body.get("progress_bytes"),
+        progress_total=body.get("progress_total"),
+        loaded_at=body.get("loaded_at"),
+        error=body.get("error"),
+        job_id=body.get("job_id"),
+    )

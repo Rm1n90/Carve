@@ -24,8 +24,10 @@ from carve_api.inference.batch import (
     run_batch_auto_annotate,
 )
 from carve_api.inference.sam import (
+    sam_box_prompt_for_asset,
     sam_decode_with_hash,
     sam_encode_for_asset,
+    sam_text_prompt_for_asset,
 )
 from carve_api.inference.sam_track import (
     add_object as _track_add_object,
@@ -66,12 +68,28 @@ class AutoAnnotateResponse(BaseModel):
     skipped_by_class: dict[str, int]
 
 
+class AutoAnnotateBody(BaseModel):
+    """Optional JSON body for ``POST /assets/{aid}/auto-annotate``.
+
+    v3.5 Phase F2 — ``class_overrides`` is a per-weight-class binding
+    decided at predict time (sent from the predict popover). Keys are
+    weight-class indices (string-encoded for JSON safety; values are
+    project-class ids). A value of ``None`` means "skip this weight class
+    for this predict run". When the overrides map is empty/omitted, the
+    autoannotate pipeline falls back to case-insensitive name-match
+    against the project's classes.
+    """
+
+    class_overrides: dict[str, str | None] | None = Field(default=None)
+
+
 @router.post("/{asset_id}/auto-annotate", response_model=AutoAnnotateResponse)
 def auto_annotate(
     asset_id: uuid.UUID,
     weight_id: uuid.UUID | None = None,
     overwrite: bool = False,
     min_confidence: float = 0.0,
+    body: AutoAnnotateBody | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AutoAnnotateResponse:
@@ -79,14 +97,19 @@ def auto_annotate(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     task = _require_visible_task(db, user, asset.task_id)
-    # v3.3 Issue 4 — `weight_id` is now optional. When omitted, fall back to
-    # the project's default weight (any task_kind). Tasks don't carry a
-    # YOLO-task-kind themselves (their `kind` is image/video), so we pick the
-    # newest default in the project — typically users only ever set one.
+    # v3.5 Phase F5 — `weight_id` is now optional. When omitted, fall
+    # back to the project's default for any task_kind by joining
+    # ``weight_project_defaults``. Workspace-wide weights are eligible.
     if weight_id is None:
+        from carve_api.weights.models import WeightProjectDefault
+
         weight = db.execute(
             select(Weight)
-            .where(Weight.project_id == task.project_id, Weight.is_default.is_(True))
+            .join(
+                WeightProjectDefault,
+                WeightProjectDefault.weight_id == Weight.id,
+            )
+            .where(WeightProjectDefault.project_id == task.project_id)
             .order_by(Weight.created_at.desc())
             .limit(1)
         ).scalar_one_or_none()
@@ -99,8 +122,28 @@ def auto_annotate(
     # Clamp incoming `min_confidence` so a misbehaving client can't bypass
     # the bounds. The slider in the UI is 0..1; anything else is a bug.
     min_confidence = max(0.0, min(1.0, float(min_confidence)))
+    # v3.5 Phase F2 — coerce the wire ``{"3": "<uuid>"}`` map into
+    # ``{int: UUID | None}`` for the autoannotate pipeline. Invalid keys /
+    # values are dropped silently; the user can re-pick from the popover.
+    overrides: dict[int, uuid.UUID | None] | None = None
+    if body is not None and body.class_overrides is not None:
+        overrides = {}
+        for k, v in body.class_overrides.items():
+            try:
+                idx = int(k)
+            except (TypeError, ValueError):
+                continue
+            if v is None:
+                overrides[idx] = None
+                continue
+            try:
+                overrides[idx] = uuid.UUID(str(v))
+            except (TypeError, ValueError):
+                # Bad uuid — treat as "no override for this idx" rather than
+                # 422-ing the whole call; the predict popover guarantees uuids.
+                continue
     try:
-        body = fetch_asset_bytes(asset)
+        image_bytes = fetch_asset_bytes(asset)
         url = presigned_url_for_weight(weight)
         result = auto_annotate_asset(
             session=db,
@@ -110,8 +153,9 @@ def auto_annotate(
             weight=weight,
             overwrite=overwrite,
             presigned_url_for_weight=url,
-            image_bytes=body,
+            image_bytes=image_bytes,
             min_confidence=min_confidence,
+            class_overrides=overrides,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -136,7 +180,9 @@ def enqueue_batch_auto_annotate(
     weight = db.get(Weight, weight_id)
     if weight is None:
         raise HTTPException(status_code=404, detail="weight_not_found")
-    if weight.project_id != task.project_id:
+    # v3.5 Phase F5 — workspace-wide weights (project_id IS NULL) are
+    # valid for any task; project-scoped weights still must match.
+    if weight.project_id is not None and weight.project_id != task.project_id:
         raise HTTPException(status_code=400, detail="weight_project_mismatch")
 
     payload = build_job_payload(actor=user, task=task, weight=weight, overwrite=overwrite)
@@ -172,6 +218,32 @@ class SamDecodeIn(BaseModel):
     labels: list[int] = Field(min_length=1)
 
 
+class SamTextIn(BaseModel):
+    """Body for POST /assets/{id}/sam/text-prompt — SAM 3 only.
+
+    A single positive text concept describing the object (e.g. "person").
+    Matches the model service's TextPromptIn — see
+    ``apps/model/src/carve_model/sam/router.py``.
+    """
+
+    text: str = Field(..., min_length=1, max_length=200)
+
+
+class SamBoxIn(BaseModel):
+    """Body for POST /assets/{id}/sam/box-prompt — SAM 3 only.
+
+    ``boxes`` are xyxy floats; ``box_labels`` are 1 (positive include)
+    or 0 (negative exclude). ``text`` optionally combines a concept
+    with the boxes for refinement (e.g. text + a negative box that
+    crops out a sibling instance). Mirrors the model service's
+    BoxPromptIn.
+    """
+
+    boxes: list[list[float]] = Field(..., min_length=1)
+    box_labels: list[int] = Field(..., min_length=1)
+    text: str | None = Field(default=None, max_length=200)
+
+
 @router.post("/{asset_id}/sam/encode")
 def sam_encode_endpoint(
     asset_id: uuid.UUID,
@@ -201,6 +273,62 @@ def sam_decode_endpoint(
     _require_visible_task(db, user, asset.task_id)
     try:
         return sam_decode_with_hash(payload.image_hash, payload.points, payload.labels)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/{asset_id}/sam/text-prompt")
+def sam_text_prompt_endpoint(
+    asset_id: uuid.UUID,
+    payload: SamTextIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """SAM 3 text concept prompt — returns mask candidates for ``text``.
+
+    Returns 409 ``sam3_not_enabled`` when the active SAM variant is not
+    SAM 3, 503 ``model_service_unreachable`` when the model service is
+    down, and 502 ``sam_model_failed`` for other upstream errors.
+    """
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    try:
+        return sam_text_prompt_for_asset(asset, payload.text)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/{asset_id}/sam/box-prompt")
+def sam_box_prompt_endpoint(
+    asset_id: uuid.UUID,
+    payload: SamBoxIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """SAM 3 box prompt — returns the refined mask for the supplied boxes.
+
+    Same upstream error mapping as the text-prompt endpoint. The
+    backend additionally validates ``boxes``/``box_labels`` length
+    parity and label values via the SAM service layer.
+    """
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, asset.task_id)
+    if len(payload.boxes) != len(payload.box_labels):
+        raise HTTPException(
+            status_code=422,
+            detail="boxes and box_labels must have equal length",
+        )
+    try:
+        return sam_box_prompt_for_asset(
+            asset,
+            payload.boxes,
+            payload.box_labels,
+            text=payload.text,
+        )
     except AppError as exc:
         raise _http(exc) from exc
 

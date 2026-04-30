@@ -36,47 +36,99 @@ export interface SamActive {
   reachable?: boolean;
 }
 
-/** Response from POST /models/sam-active — the active variant after the
- * model service finished loading. */
+/** Response from POST /models/sam-active.
+ *
+ * v3.5 Phase C — the endpoint is now non-blocking. ``active_variant`` is
+ * preserved as an alias for ``variant`` so legacy callers keep working.
+ * The frontend polls ``GET /models/sam-status`` to learn when the load
+ * actually completes. */
 export interface SamSwitchResult {
+  job_id: string;
+  state: SamLoadStateKind;
+  variant: string;
+  /** Alias of ``variant``. Kept for backward compat. */
   active_variant: string;
+}
+
+/** Load-state machine kinds returned by ``GET /models/sam-status``. */
+export type SamLoadStateKind = "idle" | "loading" | "ready" | "error";
+
+/** Response from GET /models/sam-status.
+ *
+ * v3.5 Phase C — surfaces the predictor's load lifecycle so the editor
+ * can show a "Loading SAM…" overlay during the 5-30s HF weight
+ * download / build. Polled every ~1.5s while the overlay is open. */
+export interface SamLoadStatus {
+  state: SamLoadStateKind;
+  variant: string | null;
+  /** Bytes downloaded so far. Null when HF doesn't expose progress. */
+  progress_bytes: number | null;
+  /** Total bytes expected. Null when HF doesn't expose progress. */
+  progress_total: number | null;
+  /** ISO8601 timestamp of the last successful load (state="ready"). */
+  loaded_at: string | null;
+  /** Error detail when state="error". */
+  error: string | null;
+  /** Correlation token from the most recent switch, if any. */
+  job_id?: string | null;
 }
 
 export const modelsApi = {
   samActive: async (): Promise<SamActive> =>
     (await api.get<SamActive>("/models/sam-active")).data,
   /**
-   * Hot-swap the active SAM variant. Blocks for the full model load
-   * (5-30s typical). Throws on 422 (unknown variant) or 503
-   * (model service unavailable).
+   * Hot-swap the active SAM variant (non-blocking).
+   *
+   * Returns 202 + ``{job_id, state, variant}`` immediately. The model
+   * service performs the actual 5-30s load in the background; the
+   * frontend polls ``samStatus()`` until state transitions to ``ready``
+   * (or ``error``). Throws on 422 (unknown variant), 409
+   * (switch_in_progress), or 503 (model service unavailable).
    */
   samSetActive: async (variant: string): Promise<SamSwitchResult> =>
     (await api.post<SamSwitchResult>("/models/sam-active", { variant })).data,
+  /**
+   * Read the SAM predictor's current load state.
+   *
+   * Use with TanStack Query's ``refetchInterval`` to drive a loading
+   * overlay (see ``ModelLoadingOverlay``). Returns a synthetic
+   * ``state="error"`` with ``error="model_service_unreachable"`` when
+   * the model container is unreachable so the overlay can dismiss
+   * cleanly instead of spinning.
+   */
+  samStatus: async (): Promise<SamLoadStatus> =>
+    (await api.get<SamLoadStatus>("/models/sam-status")).data,
 };
 
 // --------------------------- /weights (workspace) ---------------------------
 
+export type WeightTaskKind = "detect" | "segment" | "classify" | "pose";
+
 export interface Weight {
   id: string;
-  project_id: string;
+  /**
+   * v3.5 Phase F5 — `null` for workspace-wide weights (visible from
+   * every project); a project id for project-scoped weights.
+   */
+  project_id: string | null;
   name: string;
-  task_kind: "detect" | "segment" | "classify" | "pose";
+  task_kind: WeightTaskKind;
   minio_key: string;
   size_bytes: number;
   class_names: string[];
   created_by: string | null;
   created_at: string;
   /**
-   * v3.3 Issue 4 — true when this weight is the project default for its
-   * `task_kind`. The backend enforces at most one default per
-   * (project_id, task_kind) via a partial unique index.
+   * v3.5 Phase F5 — per-project default flag. Computed by the backend
+   * against `weight_project_defaults` for the requesting project
+   * context. `false` on the workspace listing (no project context).
    */
   is_default: boolean;
 }
 
 export interface UploadWeightInput {
   name: string;
-  task_kind: "detect" | "segment" | "classify" | "pose";
+  task_kind: WeightTaskKind;
   /** Class names extracted from the YOLO model. Backend can also auto-detect. */
   class_names: string[];
   file: File;
@@ -87,6 +139,23 @@ export const weightsApi = {
     (await api.get<Weight[]>("/weights")).data,
   listForProject: async (projectId: string): Promise<Weight[]> =>
     (await api.get<Weight[]>(`/projects/${projectId}/weights`)).data,
+  /**
+   * v3.5 Phase F5 — upload a workspace-wide weight (`project_id` is
+   * null). The new default upload path; the legacy `upload(projectId,
+   * ...)` form is preserved for project-scoped uploads.
+   */
+  uploadWorkspace: async (input: UploadWeightInput): Promise<Weight> => {
+    const fd = new FormData();
+    fd.append("name", input.name);
+    fd.append("task_kind", input.task_kind);
+    fd.append("class_names", JSON.stringify(input.class_names));
+    fd.append("file", input.file);
+    return (
+      await api.post<Weight>("/weights", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+    ).data;
+  },
   upload: async (projectId: string, input: UploadWeightInput): Promise<Weight> => {
     const fd = new FormData();
     fd.append("name", input.name);
@@ -108,46 +177,55 @@ export const weightsApi = {
     await api.delete(`/weights/${weightId}`);
   },
   /**
-   * v3.3 Issue 4 — mark this weight as the default for its
-   * `(project_id, task_kind)` slot. Admin-or-owner gated server-side.
+   * v3.5 Phase F5 — pin a weight as the project's default for the
+   * given `task_kind`. Writes to `weight_project_defaults`. The
+   * weight's own `project_id` is unchanged (workspace weights stay
+   * workspace-wide and can serve as defaults in many projects).
    */
-  setDefault: async (weightId: string): Promise<Weight> =>
-    (await api.post<Weight>(`/weights/${weightId}/default`)).data,
-  /**
-   * v3.3 Issue 3c — list every weight-class → project-class mapping row
-   * for a weight. Returned in `weight_class_idx` order.
-   */
-  getMappings: async (weightId: string): Promise<WeightClassMapping[]> =>
-    (await api.get<WeightClassMapping[]>(`/weights/${weightId}/mappings`)).data,
-  /**
-   * v3.3 Issue 3c — update a single mapping row's `project_class_id`.
-   * Pass `null` to disconnect (the auto-annotate path will then skip
-   * detections for that weight class and surface them in the toast).
-   */
-  updateMapping: async (
+  setDefault: async (
     weightId: string,
-    mappingId: string,
-    patch: { project_class_id: string | null },
-  ): Promise<WeightClassMapping> =>
+    body: { project_id: string; task_kind: WeightTaskKind },
+  ): Promise<Weight> =>
+    (await api.post<Weight>(`/weights/${weightId}/default`, body)).data,
+  /**
+   * v3.5 Phase F1 — read-only predict-time mapping suggestions for a
+   * `(weight, task)` pair. Returns one entry per weight class with a
+   * suggested project class id (case-insensitive name match) and the
+   * full list of alternatives the predict popover lets the user pick
+   * from. Replaces the v3.3 persistent `weight_class_mappings` table.
+   */
+  getMappingSuggestions: async (
+    weightId: string,
+    taskId: string,
+  ): Promise<MappingSuggestionsResponse> =>
     (
-      await api.put<WeightClassMapping>(
-        `/weights/${weightId}/mappings/${mappingId}`,
-        patch,
+      await api.get<MappingSuggestionsResponse>(
+        `/weights/${weightId}/mapping-suggestions?task_id=${encodeURIComponent(taskId)}`,
       )
     ).data,
 };
 
 /**
- * v3.3 Issue 3c — single mapping row exposed by
- * `GET /weights/{wid}/mappings`. `project_class_id` is null when the
- * weight class doesn't (yet) bind to a project class.
+ * v3.5 Phase F1 — single mapping suggestion for a `(weight, task)` pair.
+ * Computed on the fly by `GET /weights/{wid}/mapping-suggestions?task_id=…`.
+ * `suggested_project_class_id` is null when no project class shares the
+ * weight class's name. `alternatives` lists every project class the user
+ * can pick from in the predict popover.
  */
-export interface WeightClassMapping {
+export interface MappingSuggestionAlternative {
   id: string;
-  weight_id: string;
+  name: string;
+}
+
+export interface MappingSuggestion {
   weight_class_idx: number;
   weight_class_name: string;
-  project_class_id: string | null;
+  suggested_project_class_id: string | null;
+  alternatives: MappingSuggestionAlternative[];
+}
+
+export interface MappingSuggestionsResponse {
+  suggestions: MappingSuggestion[];
 }
 
 // --------------------------- /assets/{aid}/auto-annotate ---------------------------
@@ -172,12 +250,20 @@ interface AutoAnnotateApiResponse {
   skipped_by_class: Record<string, number>;
 }
 
+/**
+ * v3.5 Phase F2 — predict-time class binding overrides. Keys are
+ * weight-class indices (string-encoded for JSON safety); values are
+ * project-class ids OR `null` to skip that weight class for this run.
+ */
+export type ClassOverrides = Record<string, string | null>;
+
 export const inferenceApi = {
   predictYolo: async (
     assetId: string,
     weightId: string,
     overwrite = false,
     minConfidence = 0.0,
+    classOverrides?: ClassOverrides,
   ): Promise<YoloPredictResult> => {
     const params = new URLSearchParams({
       weight_id: weightId,
@@ -185,7 +271,13 @@ export const inferenceApi = {
       min_confidence: String(minConfidence),
     });
     const url = `/assets/${assetId}/auto-annotate?${params.toString()}`;
-    const r = await api.post<AutoAnnotateApiResponse>(url);
+    // The body is optional. When the popover passes overrides we POST a
+    // JSON body; otherwise the legacy POST-no-body shape keeps working.
+    const body =
+      classOverrides && Object.keys(classOverrides).length > 0
+        ? { class_overrides: classOverrides }
+        : undefined;
+    const r = await api.post<AutoAnnotateApiResponse>(url, body);
     const data = r.data;
     const created =
       typeof data?.annotations_created === "number"

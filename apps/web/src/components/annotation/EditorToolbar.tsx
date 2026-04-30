@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
+import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
 import { useTool, type ToolName, type VisibilityFlags } from "@/state/tool";
@@ -33,7 +34,14 @@ import { Tooltip } from "@/components/ui/Tooltip";
 import { Kbd } from "@/components/ui/Kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/Popover";
 import { SaveIndicator } from "@/components/annotation/SaveIndicator";
-import { modelsApi, weightsApi, inferenceApi, type Weight } from "@/api/phase2";
+import {
+  modelsApi,
+  weightsApi,
+  inferenceApi,
+  type Weight,
+  type MappingSuggestion,
+  type ClassOverrides,
+} from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
@@ -43,6 +51,15 @@ const DEFAULT_PREDICT_CONFIDENCE = 0.4;
 // v3.3 Issue 4 — last-used YOLO weight per project. Keyed so switching
 // projects shows the right preselection without leaking across boundaries.
 const LAST_WEIGHT_KEY_PREFIX = "carve.editor.lastWeight.";
+// v3.5 Phase F3 — last-used class overrides per (weight, task) pair.
+// Mapping is intrinsically per-task, so the key includes both ids and
+// pre-fills the dropdowns the next time the user re-opens the popover
+// in the same task with the same weight.
+const OVERRIDES_KEY_PREFIX = "carve.editor.overrides.";
+// Sentinel for the "None / skip" option in the per-weight-class dropdown.
+// Radix Select disallows empty-string values; we translate this token to
+// `null` at the API boundary.
+const OVERRIDE_SKIP = "__skip__";
 
 function lastWeightKey(projectId: string): string {
   return `${LAST_WEIGHT_KEY_PREFIX}${projectId}`;
@@ -59,6 +76,42 @@ function loadLastWeight(projectId: string): string | null {
 function saveLastWeight(projectId: string, weightId: string): void {
   try {
     window.localStorage.setItem(lastWeightKey(projectId), weightId);
+  } catch {
+    /* localStorage may be unavailable (private mode) — non-fatal */
+  }
+}
+
+function overridesKey(weightId: string, taskId: string): string {
+  return `${OVERRIDES_KEY_PREFIX}${weightId}.${taskId}`;
+}
+
+function loadOverrides(
+  weightId: string,
+  taskId: string,
+): Record<string, string | null> | null {
+  try {
+    const raw = window.localStorage.getItem(overridesKey(weightId, taskId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, string | null>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveOverrides(
+  weightId: string,
+  taskId: string,
+  overrides: Record<string, string | null>,
+): void {
+  try {
+    window.localStorage.setItem(
+      overridesKey(weightId, taskId),
+      JSON.stringify(overrides),
+    );
   } catch {
     /* localStorage may be unavailable (private mode) — non-fatal */
   }
@@ -92,14 +145,6 @@ const TOOLS: ToolDef[] = [
   { name: "tag", label: "Tag", hotkey: "T", icon: <Tag className="h-[18px] w-[18px]" /> },
 ];
 
-const VARIANT_NOTES: Record<string, string> = {
-  "sam2.1-tiny": "Tiny — fastest",
-  "sam2.1-small": "Small — balanced",
-  "sam2.1-base+": "Base+ — accurate",
-  "sam2.1-large": "Large — best quality",
-  sam3: "SAM 3 — preview",
-};
-
 interface EditorToolbarProps {
   onSave: () => void;
   isSaving: boolean;
@@ -115,7 +160,15 @@ interface EditorToolbarProps {
   zoomPct?: number;
   /** Only present when an asset is open. */
   projectId?: string;
+  taskId?: string;
   assetId?: string;
+  /**
+   * v3.5 Phase E — true when the open asset is a multi-frame video.
+   * Gates the SAM "Track" mode chip; tracking has no meaning on a
+   * single-frame image asset because the predictor needs more than one
+   * frame to propagate masks across.
+   */
+  isVideo?: boolean;
   /** Called when YOLO predict completes; lets the page reload annotations. */
   onAfterYoloPredict?: () => void;
 }
@@ -153,22 +206,19 @@ function ToolButton({
   );
 }
 
+/**
+ * Compact SAM variant picker for the editor toolbar. The trigger shows
+ * the currently active variant; the popover wraps the shared
+ * `<SamVariantSwitcher variant="compact" />` which handles the real
+ * runtime switch (POST /models/sam-active). v3.5 Phase B — was
+ * previously read-only; now actually swaps.
+ */
 function SamModelPicker() {
   const q = useQuery({
     queryKey: ["sam-active"],
     queryFn: () => modelsApi.samActive(),
   });
   const active = q.data?.active ?? "sam2.1-base+";
-  const available = q.data?.available ?? [];
-  // The picker has no runtime mutation — switching SAM_MODEL requires a
-  // service restart. We treat any of: query error, empty available list,
-  // or explicit reachable=false as "model service is not reachable" and
-  // show a banner. (audit bug 8b; v2.3 phase B refines with the explicit
-  // `reachable` field returned by the API.)
-  const unreachable =
-    !!q.error ||
-    (q.isFetched && available.length === 0) ||
-    (q.isFetched && q.data?.reachable === false);
 
   return (
     <Popover>
@@ -190,70 +240,7 @@ function SamModelPicker() {
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="min-w-[300px] p-1">
-        <p className="px-2 py-1.5 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
-          SAM model
-        </p>
-        {unreachable && (
-          <div
-            data-testid="sam-picker-unreachable-banner"
-            className="mx-1 mb-1 px-2 py-2 text-[11.5px] rounded-[var(--radius-xs)] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)] flex items-start gap-1.5"
-          >
-            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 text-[color:var(--danger)] shrink-0" />
-            <span>
-              Model service is not running. Start it with
-              <code className="mx-1 px-1 py-0.5 rounded bg-[var(--bg-app)] text-[10.5px] font-mono">
-                docker compose --profile inference up -d
-              </code>
-              .
-            </span>
-          </div>
-        )}
-        {q.isLoading && !unreachable ? (
-          <p className="px-2 py-2 text-[12px] text-[color:var(--text-tertiary)] italic">
-            Loading…
-          </p>
-        ) : (
-          available.map((name) => (
-            <div
-              key={name}
-              role="listitem"
-              aria-label={`${name}${name === active ? " (active)" : ""}`}
-              data-testid={`sam-variant-${name}`}
-              data-active={name === active ? "true" : undefined}
-              className={cn(
-                "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
-                "text-[12.5px] tracking-tight outline-none",
-                name === active ? "bg-[var(--accent-bg)]" : "",
-              )}
-            >
-              {name === active ? (
-                <Check className="h-3.5 w-3.5 text-[color:var(--accent)]" />
-              ) : (
-                <span className="h-3.5 w-3.5" aria-hidden />
-              )}
-              <span className="flex-1">{name}</span>
-              <span className="text-[10.5px] text-[color:var(--text-tertiary)]">
-                {VARIANT_NOTES[name] ?? ""}
-              </span>
-              {name === active && (
-                <span className="text-[9.5px] uppercase tracking-[0.10em] px-1.5 py-0.5 rounded bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium">
-                  active
-                </span>
-              )}
-            </div>
-          ))
-        )}
-        <p className="px-2 py-2 mt-1 border-t border-[var(--border-subtle)] text-[11px] text-[color:var(--text-tertiary)] leading-snug">
-          To change the active SAM variant, set{" "}
-          <code className="px-1 py-0.5 rounded bg-[var(--bg-subtle)] text-[10.5px] font-mono">
-            SAM_MODEL
-          </code>{" "}
-          in your model service{" "}
-          <code className="px-1 py-0.5 rounded bg-[var(--bg-subtle)] text-[10.5px] font-mono">
-            .env
-          </code>{" "}
-          and restart it.
-        </p>
+        <SamVariantSwitcher variant="compact" />
       </PopoverContent>
     </Popover>
   );
@@ -261,10 +248,12 @@ function SamModelPicker() {
 
 function YoloPredictButton({
   projectId,
+  taskId,
   assetId,
   onAfter,
 }: {
   projectId?: string;
+  taskId?: string;
   assetId?: string;
   onAfter?: () => void;
 }) {
@@ -272,6 +261,11 @@ function YoloPredictButton({
   const [selected, setSelected] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
   const [confidence, setConfidence] = useState<number>(() => loadStoredConfidence());
+  // v3.5 Phase F3 — per-weight-class binding picked by the user in the
+  // disclosure. Keyed by `weight_class_idx` (string) so the wire shape
+  // matches the API. `null` means "skip this weight class on predict".
+  const [overrides, setOverrides] = useState<Record<string, string | null>>({});
+  const [overridesExpanded, setOverridesExpanded] = useState(false);
 
   // Persist confidence so the user's preferred threshold sticks across
   // sessions. Plain string-encoded float 0..1.
@@ -342,11 +336,77 @@ function YoloPredictButton({
     }
   }, [open, selected, wq.data, projectId]);
 
+  // v3.5 Phase F3 — fetch class-mapping suggestions once the user picks
+  // a weight. Read-only on the API; computed per `(weight, task)` from
+  // case-insensitive name match against the task's allowed classes.
+  const sugQ = useQuery({
+    queryKey: ["mapping-suggestions", selected, taskId],
+    queryFn: () =>
+      selected && taskId
+        ? weightsApi.getMappingSuggestions(selected, taskId)
+        : Promise.resolve({ suggestions: [] }),
+    enabled: open && !!selected && !!taskId,
+  });
+  const suggestions: MappingSuggestion[] = sugQ.data?.suggestions ?? [];
+
+  // v3.5 Phase F3 — once suggestions land, seed the override state:
+  // first check the per-`(weight, task)` localStorage cache (so the
+  // user's last picks pre-fill), otherwise fall back to the auto-name
+  // matched suggestion. Skipping (None) is represented by `null`.
+  useEffect(() => {
+    if (!open) return;
+    if (!selected || !taskId) return;
+    if (suggestions.length === 0) {
+      setOverrides({});
+      return;
+    }
+    const stored = loadOverrides(selected, taskId);
+    const next: Record<string, string | null> = {};
+    for (const s of suggestions) {
+      const key = String(s.weight_class_idx);
+      if (stored && key in stored) {
+        next[key] = stored[key];
+      } else {
+        next[key] = s.suggested_project_class_id;
+      }
+    }
+    setOverrides(next);
+    // Reset the disclosure expansion when the weight changes so the
+    // popover starts collapsed every time.
+    setOverridesExpanded(false);
+    // Only re-run when the meaningful inputs change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, selected, taskId, sugQ.data]);
+
+  const matchedCount = suggestions.reduce((acc, s) => {
+    const v = overrides[String(s.weight_class_idx)];
+    return acc + (v !== null && v !== undefined ? 1 : 0);
+  }, 0);
+
   const m = useMutation({
-    mutationFn: (weightId: string) =>
-      assetId
-        ? inferenceApi.predictYolo(assetId, weightId, overwrite, confidence)
-        : Promise.reject(new Error("no asset")),
+    mutationFn: (weightId: string) => {
+      if (!assetId) return Promise.reject(new Error("no asset"));
+      // v3.5 Phase F3 — only send overrides when they actually differ
+      // from the auto-suggested mapping, so legacy callers keep their
+      // pure name-match behavior on the wire and tests don't see noise.
+      const wireOverrides: ClassOverrides = {};
+      for (const s of suggestions) {
+        const key = String(s.weight_class_idx);
+        const picked = overrides[key];
+        // Treat undefined as "no entry" — let backend name-match handle it.
+        if (picked === undefined) continue;
+        if (picked !== s.suggested_project_class_id) {
+          wireOverrides[key] = picked;
+        }
+      }
+      return inferenceApi.predictYolo(
+        assetId,
+        weightId,
+        overwrite,
+        confidence,
+        Object.keys(wireOverrides).length > 0 ? wireOverrides : undefined,
+      );
+    },
     onSuccess: (res, weightId) => {
       const created = res?.annotations_created ?? res?.count ?? 0;
       const skipped = res?.skipped_count ?? 0;
@@ -377,6 +437,12 @@ function YoloPredictButton({
       // next predict in this project pre-selects it.
       if (projectId) {
         saveLastWeight(projectId, weightId);
+      }
+      // v3.5 Phase F3 — persist the user's class-override picks per
+      // (weight, task) so the next predict in this same task pre-fills
+      // the dropdowns from the cache instead of from auto-name match.
+      if (taskId && Object.keys(overrides).length > 0) {
+        saveOverrides(weightId, taskId, overrides);
       }
       setOpen(false);
       onAfter?.();
@@ -475,8 +541,9 @@ function YoloPredictButton({
                     Available in other projects
                   </p>
                   {(wsWq.data ?? []).slice(0, 5).map((w) => {
-                    const projName =
-                      projectNameById.get(w.project_id) ?? "another project";
+                    const projName = w.project_id
+                      ? (projectNameById.get(w.project_id) ?? "another project")
+                      : "workspace";
                     return (
                       <div
                         key={w.id}
@@ -540,6 +607,98 @@ function YoloPredictButton({
             </button>
           ))}
         </div>
+        {/* v3.5 Phase F3 — class overrides disclosure. Visible once a
+            weight is selected and the task is known. Collapsed by default;
+            shows "X of Y matched" so the user sees coverage at a glance. */}
+        {selected && taskId && suggestions.length > 0 && (
+          <div
+            data-testid="yolo-class-overrides"
+            className="px-2 pt-2 pb-1 grid gap-1.5 border-t border-[var(--border-subtle)] mt-1"
+          >
+            <button
+              type="button"
+              onClick={() => setOverridesExpanded((v) => !v)}
+              data-testid="yolo-class-overrides-toggle"
+              aria-expanded={overridesExpanded}
+              className={cn(
+                "w-full flex items-center justify-between gap-2 px-1 py-1",
+                "text-[11.5px] tracking-tight",
+                "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]",
+              )}
+            >
+              <span className="flex items-center gap-1.5">
+                <ChevronDown
+                  className={cn(
+                    "h-3 w-3 transition-transform",
+                    overridesExpanded ? "rotate-180" : "rotate-0",
+                  )}
+                />
+                Class mapping
+              </span>
+              <span
+                data-testid="yolo-class-overrides-summary"
+                className="font-mono tabular-nums text-[10.5px] text-[color:var(--text-tertiary)]"
+              >
+                {matchedCount} of {suggestions.length} matched
+              </span>
+            </button>
+            {overridesExpanded && (
+              <div className="grid gap-1.5 max-h-[180px] overflow-y-auto pr-1 pb-1">
+                {suggestions.map((s) => {
+                  const key = String(s.weight_class_idx);
+                  const current = overrides[key];
+                  const value =
+                    current === null
+                      ? OVERRIDE_SKIP
+                      : (current ?? "");
+                  return (
+                    <label
+                      key={key}
+                      data-testid={`yolo-class-overrides-row-${s.weight_class_idx}`}
+                      className="grid grid-cols-[80px_1fr] gap-1.5 items-center text-[11.5px]"
+                    >
+                      <span
+                        className="font-mono text-[10.5px] text-[color:var(--text-tertiary)] truncate"
+                        title={s.weight_class_name}
+                      >
+                        #{s.weight_class_idx} {s.weight_class_name}
+                      </span>
+                      <select
+                        value={value}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setOverrides((prev) => ({
+                            ...prev,
+                            [key]:
+                              next === OVERRIDE_SKIP
+                                ? null
+                                : next === ""
+                                  ? null
+                                  : next,
+                          }));
+                        }}
+                        data-testid={`yolo-class-overrides-select-${s.weight_class_idx}`}
+                        aria-label={`Project class for ${s.weight_class_name}`}
+                        className={cn(
+                          "h-7 px-2 rounded-[var(--radius-xs)]",
+                          "border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
+                          "text-[11.5px] outline-none focus:border-[var(--accent)]",
+                        )}
+                      >
+                        <option value={OVERRIDE_SKIP}>None / skip</option>
+                        {s.alternatives.map((alt) => (
+                          <option key={alt.id} value={alt.id}>
+                            {alt.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
         <div className="px-2 pt-3 pb-2 grid gap-1.5 border-t border-[var(--border-subtle)] mt-1">
           <div className="flex items-center justify-between">
             <span className="text-[11.5px] text-[color:var(--text-secondary)] font-medium tracking-tight">
@@ -728,6 +887,104 @@ function MaskBrushSizeControl() {
           </button>
         ))}
       </span>
+    </div>
+  );
+}
+
+/**
+ * v3.5 Phase D/E — SAM mode picker. Inline 4-chip strip (Point / Box /
+ * Text / Track) shown only while the SAM tool is active.
+ *
+ *   - Point — both SAM 2 and SAM 3.
+ *   - Box / Text — SAM 3 only; on SAM 2 variants those chips render
+ *     disabled with a tooltip directing the user to the SAM picker.
+ *   - Track — both SAM 2 and SAM 3, but only when the active asset is
+ *     a multi-frame video (gated by ``isVideo``). Switches the right
+ *     rail to the dedicated <SamTrackPanel>.
+ *
+ * The picker writes into the ``samMode`` field of the tool store; the
+ * canvas + SamTool subscribe and reset their in-flight state on
+ * transitions.
+ */
+function SamModePicker({ isVideo }: { isVideo: boolean }) {
+  const active = useTool((s) => s.active);
+  const samMode = useTool((s) => s.samMode);
+  const setSamMode = useTool((s) => s.setSamMode);
+  const samQ = useQuery({
+    queryKey: ["sam-active"],
+    queryFn: () => modelsApi.samActive(),
+  });
+  const variant = samQ.data?.active ?? "sam2.1-base+";
+  // Anything starting with "sam3" gates text + box prompting on. The
+  // model-service API has the canonical check (get_sam_variant()), but
+  // gating on the variant string in the UI prevents a guaranteed-409
+  // round-trip for SAM 2 users.
+  const isSam3 = variant.toLowerCase().startsWith("sam3");
+
+  if (active !== "sam") return null;
+
+  const modes: {
+    id: import("@/canvas/tools/SamTool").SamMode;
+    label: string;
+    sam3Only: boolean;
+    videoOnly: boolean;
+  }[] = [
+    { id: "point", label: "Point", sam3Only: false, videoOnly: false },
+    { id: "box", label: "Box", sam3Only: true, videoOnly: false },
+    { id: "text", label: "Text", sam3Only: true, videoOnly: false },
+    { id: "track", label: "Track", sam3Only: false, videoOnly: true },
+  ];
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="SAM input mode"
+      data-testid="sam-mode-picker"
+      className="inline-flex items-center gap-0.5 h-8 px-1 rounded-[var(--radius-sm)] bg-[var(--bg-subtle)]"
+    >
+      {modes.map((m) => {
+        const sam3Disabled = m.sam3Only && !isSam3;
+        const videoDisabled = m.videoOnly && !isVideo;
+        const disabled = sam3Disabled || videoDisabled;
+        const isActive = samMode === m.id;
+        const tooltipText = videoDisabled
+          ? "Open a video asset to enable tracking"
+          : "Switch to SAM 3 for text/box prompting";
+        const button = (
+          <button
+            key={m.id}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            aria-disabled={disabled}
+            disabled={disabled}
+            onClick={() => {
+              if (disabled) return;
+              setSamMode(m.id);
+            }}
+            data-testid={`sam-mode-${m.id}`}
+            data-active={isActive ? "true" : undefined}
+            data-disabled={disabled ? "true" : undefined}
+            className={cn(
+              "h-6 px-2 rounded-[var(--radius-xs)] text-[11.5px] font-medium tracking-tight transition-colors",
+              isActive
+                ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
+                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+              disabled && "opacity-40 cursor-not-allowed hover:bg-transparent",
+            )}
+          >
+            {m.label}
+          </button>
+        );
+        if (disabled) {
+          return (
+            <Tooltip key={m.id} content={tooltipText}>
+              {button}
+            </Tooltip>
+          );
+        }
+        return button;
+      })}
     </div>
   );
 }
@@ -1025,7 +1282,9 @@ export function EditorToolbar({
   onRedo,
   zoomPct,
   projectId,
+  taskId,
   assetId,
+  isVideo = false,
   onAfterYoloPredict,
 }: EditorToolbarProps) {
   const active = useTool((s) => s.active);
@@ -1138,6 +1397,7 @@ export function EditorToolbar({
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
       <SamModelPicker />
+      <SamModePicker isVideo={isVideo} />
       <AutoApplyToggle />
       <MaskBrushSizeControl />
 
@@ -1184,6 +1444,7 @@ export function EditorToolbar({
 
       <YoloPredictButton
         projectId={projectId}
+        taskId={taskId}
         assetId={assetId}
         onAfter={onAfterYoloPredict}
       />

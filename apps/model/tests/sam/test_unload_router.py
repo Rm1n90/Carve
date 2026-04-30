@@ -19,11 +19,11 @@ from carve_model.sam import tracker as t_mod
 @pytest.fixture(autouse=True)
 def _reset():
     p_mod.set_test_predictor(None)
-    p_mod._PREDICTOR = None  # type: ignore[attr-defined]
+    p_mod._set_test_session(None)
     t_mod.reset_for_test()
     yield
     p_mod.set_test_predictor(None)
-    p_mod._PREDICTOR = None  # type: ignore[attr-defined]
+    p_mod._set_test_session(None)
     t_mod.reset_for_test()
 
 
@@ -49,7 +49,7 @@ def test_unload_all_default_body():
 
 
 def test_unload_image_only_releases_image():
-    p_mod._PREDICTOR = object()  # type: ignore[attr-defined]
+    p_mod._set_test_session(object())
     t_mod._SESSIONS["x"] = object()  # type: ignore[assignment]
     r = _client().post("/sam/unload", json={"which": "image"})
     assert r.status_code == 200
@@ -63,7 +63,7 @@ def test_unload_image_only_releases_image():
 
 
 def test_unload_tracker_only_releases_sessions():
-    p_mod._PREDICTOR = object()  # type: ignore[attr-defined]
+    p_mod._set_test_session(object())
     t_mod._SESSIONS["x"] = object()  # type: ignore[assignment]
     r = _client().post("/sam/unload", json={"which": "tracker"})
     assert r.status_code == 200
@@ -77,7 +77,7 @@ def test_unload_tracker_only_releases_sessions():
 
 
 def test_unload_all_releases_both():
-    p_mod._PREDICTOR = object()  # type: ignore[attr-defined]
+    p_mod._set_test_session(object())
     t_mod._SESSIONS["a"] = object()  # type: ignore[assignment]
     t_mod._SESSIONS["b"] = object()  # type: ignore[assignment]
     r = _client().post("/sam/unload", json={"which": "all"})
@@ -91,7 +91,7 @@ def test_unload_all_releases_both():
 
 def test_unload_idempotent_when_already_evicted():
     """Second call returns evicted=[] — no error, no double-free."""
-    p_mod._PREDICTOR = object()  # type: ignore[attr-defined]
+    p_mod._set_test_session(object())
     client = _client()
     first = client.post("/sam/unload", json={"which": "all"}).json()
     assert "image" in first["evicted"]

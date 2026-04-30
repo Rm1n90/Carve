@@ -176,80 +176,20 @@ def test_sam_unknown_asset_returns_404(db_session, monkeypatch) -> None:
     assert r.status_code == 404
 
 
-# --- SAM encode Redis cache ------------------------------------------------
+# --- v3.5 Phase A2: encode always round-trips to the model service ---------
+#
+# The Redis ``sam:embed:<hash>`` cache was removed because it could
+# return a successful encode result without the model service actually
+# loading the image — which caused subsequent decodes to 409/500 when
+# the predictor's set_image had not been invoked.
 
 
-class _FakeRedis:
-    """In-memory stand-in for redis.Redis used by the SAM encode cache.
-
-    Mirrors patterns in tests/io/test_import_job.py and
-    tests/inference/test_batch.py. Supports get/setex/ping with TTL
-    bookkeeping that the cache layer relies on.
-    """
-
-    def __init__(self) -> None:
-        self.store: dict[str, bytes] = {}
-        self.ttls: dict[str, int] = {}
-        self.ping_calls = 0
-        self.get_calls = 0
-
-    def ping(self) -> bool:
-        self.ping_calls += 1
-        return True
-
-    def get(self, key: str):
-        self.get_calls += 1
-        return self.store.get(key)
-
-    def setex(self, key: str, ttl: int, value) -> bool:
-        self.store[key] = value if isinstance(value, bytes) else value.encode()
-        self.ttls[key] = ttl
-        return True
-
-
-def test_sam_encode_caches_in_redis(db_session, monkeypatch) -> None:
+def test_sam_encode_always_calls_model_service(db_session, monkeypatch) -> None:
+    """Repeat encode requests on the same asset must each round-trip
+    to the model service. Pre-v3.5 this was cached in Redis; the cache
+    has been dropped to keep the API in sync with the model worker."""
     client = _client(db_session)
     token, aid = _setup_asset(client, monkeypatch)
-
-    from carve_api.inference import sam as sam_mod
-    fake = _FakeRedis()
-    monkeypatch.setattr(sam_mod, "_redis_or_none", lambda: fake)
-
-    call_count = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/sam/encode":
-            call_count["n"] += 1
-            return httpx.Response(200, json={
-                "image_hash": "cafebabe" * 4,
-                "shape": [12, 34],
-                "embedding_b64": "AAA=",
-            })
-        return httpx.Response(404)
-
-    model_client_mod.set_test_transport(httpx.MockTransport(handler))
-    try:
-        r = client.post(f"/assets/{aid}/sam/encode", headers=_hdr(token))
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["image_hash"] == "cafebabe" * 4
-        assert body["embedding_b64"] == "AAA="
-        # Cache was written with a 30-min TTL
-        assert call_count["n"] == 1
-        assert any(k.startswith("sam:embed:") for k in fake.store)
-        cache_key = next(k for k in fake.store if k.startswith("sam:embed:"))
-        assert fake.ttls[cache_key] == 30 * 60
-    finally:
-        model_client_mod.set_test_transport(None)
-
-
-def test_sam_encode_returns_cached_on_repeat(db_session, monkeypatch) -> None:
-    client = _client(db_session)
-    token, aid = _setup_asset(client, monkeypatch)
-
-    from carve_api.inference import sam as sam_mod
-    fake = _FakeRedis()
-    monkeypatch.setattr(sam_mod, "_redis_or_none", lambda: fake)
 
     call_count = {"n": 0}
 
@@ -268,8 +208,8 @@ def test_sam_encode_returns_cached_on_repeat(db_session, monkeypatch) -> None:
         r1 = client.post(f"/assets/{aid}/sam/encode", headers=_hdr(token))
         r2 = client.post(f"/assets/{aid}/sam/encode", headers=_hdr(token))
         assert r1.status_code == 200 and r2.status_code == 200
-        # Second call hits the cache — no second model invocation
-        assert call_count["n"] == 1
+        # Both calls reached the model service — no API-side caching.
+        assert call_count["n"] == 2
         assert r1.json() == r2.json()
         assert r2.json()["embedding_b64"] == "BBB="
     finally:
@@ -296,30 +236,5 @@ def test_sam_encode_raises_503_when_model_service_down(db_session, monkeypatch) 
         r = client.post(f"/assets/{aid}/sam/encode", headers=_hdr(token))
         assert r.status_code == 503, r.text
         assert r.json()["error"] == "model_service_unreachable"
-    finally:
-        model_client_mod.set_test_transport(None)
-
-
-def test_sam_encode_falls_back_when_redis_unavailable(db_session, monkeypatch) -> None:
-    client = _client(db_session)
-    token, aid = _setup_asset(client, monkeypatch)
-
-    from carve_api.inference import sam as sam_mod
-    monkeypatch.setattr(sam_mod, "_redis_or_none", lambda: None)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/sam/encode":
-            return httpx.Response(200, json={
-                "image_hash": "ab" * 16,
-                "shape": [4, 4],
-                "embedding_b64": None,
-            })
-        return httpx.Response(404)
-
-    model_client_mod.set_test_transport(httpx.MockTransport(handler))
-    try:
-        r = client.post(f"/assets/{aid}/sam/encode", headers=_hdr(token))
-        assert r.status_code == 200, r.text
-        assert r.json()["image_hash"] == "ab" * 16
     finally:
         model_client_mod.set_test_transport(None)

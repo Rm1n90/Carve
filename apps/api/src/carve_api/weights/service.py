@@ -2,17 +2,17 @@ import logging
 import uuid
 from io import BytesIO
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from carve_api.auth.models import User
 from carve_api.errors import AppError
 from carve_api.inference.model_client import ModelServiceError, yolo_inspect
-from carve_api.projects.models import Class, Project
+from carve_api.projects.models import Project
 from carve_api.projects.service import _can_modify
 from carve_api.storage.client import MinioClient
 from carve_api.storage.hashing import stream_xxh3_128
-from carve_api.weights.models import Weight, WeightClassMapping, WeightTaskKind
+from carve_api.weights.models import Weight, WeightProjectDefault, WeightTaskKind
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class WeightService:
     def upload(
         self,
         *,
-        project: Project,
+        project: Project | None,
         name: str,
         task_kind: WeightTaskKind,
         class_names: list[str],
@@ -61,6 +61,15 @@ class WeightService:
         body: bytes,
         actor: User,
     ) -> Weight:
+        """Upload a new YOLO weight.
+
+        v3.5 Phase F5 — ``project`` is optional. When ``None`` the
+        weight is workspace-wide (visible/usable from every project);
+        legacy callers that pass a project keep the per-project
+        scoping. The upload endpoint decides which mode to use based
+        on whether the request hits the project-scoped or the
+        workspace-scoped URL.
+        """
         if len(body) > _MAX_BYTES:
             raise WeightTooLarge("weight exceeds 2 GiB")
         if not original_name.lower().endswith(".pt"):
@@ -100,7 +109,7 @@ class WeightService:
 
         w = Weight(
             id=weight_id,
-            project_id=project.id,
+            project_id=project.id if project is not None else None,
             name=name,
             task_kind=final_task_kind,
             minio_key=key,
@@ -110,42 +119,57 @@ class WeightService:
         )
         self.session.add(w)
         self.session.flush()
-
-        # v3.3 Issue 3c — seed the WeightClassMapping rows. Name match is
-        # case-insensitive against ``classes.name`` for this project. We
-        # insert one row per ``(idx, name)`` pair so unmapped weight classes
-        # are still represented (with ``project_class_id=NULL``) and the UI
-        # can offer a manual override. Same transaction as the weight insert
-        # so a failure rolls everything back.
-        if final_class_names:
-            project_classes = list(
-                self.session.execute(
-                    select(Class).where(Class.project_id == project.id)
-                ).scalars()
-            )
-            classes_by_name: dict[str, uuid.UUID] = {
-                c.name.lower(): c.id for c in project_classes
-            }
-            for idx, cls_name in enumerate(final_class_names):
-                self.session.add(
-                    WeightClassMapping(
-                        weight_id=w.id,
-                        weight_class_idx=idx,
-                        weight_class_name=cls_name,
-                        project_class_id=classes_by_name.get(cls_name.lower()),
-                    )
-                )
-            self.session.flush()
+        # v3.5 Phase F4 — historical name-match seeding into
+        # ``weight_class_mappings`` is gone (the table is dropped in
+        # migration 0017). The predict popover now fetches per-task
+        # mapping suggestions on demand and persists user picks via
+        # ``class_overrides`` on the auto-annotate request body.
         return w
 
     def list_for_project(self, *, project: Project) -> list[Weight]:
+        """Return weights visible from this project.
+
+        v3.5 Phase F5 — both workspace-wide weights (``project_id IS
+        NULL``) and project-scoped weights (``project_id == project.id``)
+        are returned, newest first. Predict popovers and the project
+        weights table both consume this list.
+        """
         return list(
             self.session.execute(
                 select(Weight)
-                .where(Weight.project_id == project.id)
+                .where(
+                    or_(
+                        Weight.project_id.is_(None),
+                        Weight.project_id == project.id,
+                    )
+                )
                 .order_by(Weight.created_at.desc())
             ).scalars()
         )
+
+    def list_workspace(self) -> list[Weight]:
+        """All weights in the workspace, newest first."""
+        return list(
+            self.session.execute(
+                select(Weight).order_by(Weight.created_at.desc())
+            ).scalars()
+        )
+
+    def list_default_weight_ids_for_project(
+        self, *, project_id: uuid.UUID
+    ) -> dict[str, uuid.UUID]:
+        """Return ``{task_kind_value: weight_id}`` for the project's
+        defaults. Used by the listing endpoints to flag which weights
+        currently serve as a default for the given project.
+        """
+        rows = list(
+            self.session.execute(
+                select(WeightProjectDefault).where(
+                    WeightProjectDefault.project_id == project_id
+                )
+            ).scalars()
+        )
+        return {row.task_kind.value: row.weight_id for row in rows}
 
     def get(self, *, weight_id: uuid.UUID) -> Weight:
         w = self.session.get(Weight, weight_id)
@@ -153,12 +177,15 @@ class WeightService:
             raise WeightNotFound("weight not found")
         return w
 
-    def delete(self, *, actor: User, project: Project, weight_id: uuid.UUID) -> None:
-        if not _can_modify(actor, project):
-            raise WeightForbidden("only project owner or admin can delete weights")
+    def delete(self, *, weight_id: uuid.UUID) -> None:
+        """Delete a weight + its blob.
+
+        v3.5 Phase F5 — caller is responsible for the permission check
+        (workspace-wide weights need admin; project-scoped weights use
+        the per-project owner/admin gate). Centralised in the router's
+        ``_weight_can_modify`` helper.
+        """
         w = self.get(weight_id=weight_id)
-        if w.project_id != project.id:
-            raise WeightNotFound("weight not found")
         try:
             self.storage.remove_object(w.minio_key)
         except Exception:
@@ -166,31 +193,46 @@ class WeightService:
         self.session.delete(w)
         self.session.flush()
 
-    def set_default(self, *, weight_id: uuid.UUID, project_id: uuid.UUID) -> Weight:
-        """Mark `weight_id` as the default for its `(project_id, task_kind)` slot.
+    def set_default(
+        self,
+        *,
+        weight_id: uuid.UUID,
+        project_id: uuid.UUID,
+        task_kind: WeightTaskKind,
+    ) -> Weight:
+        """Pin ``weight_id`` as the project's default for ``task_kind``.
 
-        v3.3 Issue 4 — clears any sibling default in the same project + task
-        kind first, then flips this one to default. Both writes happen in the
-        same SQLAlchemy session; the partial unique index added in migration
-        ``0015_weight_is_default`` guards against any race that would otherwise
-        leave two defaults for the same slot.
+        v3.5 Phase F5 — writes to ``weight_project_defaults``. The
+        ``(project_id, task_kind)`` primary key replaces v3.3's partial
+        unique index on ``weights.is_default``. The weight's own
+        ``project_id`` is unchanged so a workspace-wide weight can serve
+        as a default in many projects without losing its workspace
+        scope.
+
+        Validates that the weight is visible from this project (either
+        workspace-wide or scoped to this same project) and that its
+        ``task_kind`` matches the slot.
         """
         w = self.get(weight_id=weight_id)
-        if w.project_id != project_id:
+        if w.project_id is not None and w.project_id != project_id:
             raise WeightNotFound("weight not found")
-        # Clear sibling default first so the partial unique index doesn't see
-        # two `is_default=true` rows mid-transaction.
-        self.session.execute(
-            update(Weight)
-            .where(
-                Weight.project_id == project_id,
-                Weight.task_kind == w.task_kind,
-                Weight.id != w.id,
-                Weight.is_default.is_(True),
+        if w.task_kind != task_kind:
+            raise WeightInvalid(
+                "weight task_kind does not match the requested default slot"
             )
-            .values(is_default=False)
+        existing = self.session.get(
+            WeightProjectDefault, (project_id, task_kind)
         )
-        w.is_default = True
+        if existing is None:
+            self.session.add(
+                WeightProjectDefault(
+                    project_id=project_id,
+                    task_kind=task_kind,
+                    weight_id=weight_id,
+                )
+            )
+        else:
+            existing.weight_id = weight_id
         self.session.flush()
         return w
 
@@ -198,13 +240,15 @@ class WeightService:
         self, *, project_id: uuid.UUID, task_kind: WeightTaskKind
     ) -> Weight | None:
         """Return the project's default weight for the given task kind, if any."""
-        return self.session.execute(
-            select(Weight).where(
-                Weight.project_id == project_id,
-                Weight.task_kind == task_kind,
-                Weight.is_default.is_(True),
+        row = self.session.execute(
+            select(WeightProjectDefault).where(
+                WeightProjectDefault.project_id == project_id,
+                WeightProjectDefault.task_kind == task_kind,
             )
         ).scalar_one_or_none()
+        if row is None:
+            return None
+        return self.session.get(Weight, row.weight_id)
 
 
 def _inspect_weight(body: bytes, original_name: str) -> tuple[list[str], str | None]:
