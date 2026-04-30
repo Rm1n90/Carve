@@ -28,6 +28,8 @@ RUN pip3 install --no-cache-dir --break-system-packages git+https://github.com/f
 
 COPY src ./src
 ENV PYTHONPATH=/app/src
+ENV HF_HOME=/root/.cache/huggingface \
+    TRANSFORMERS_CACHE=/root/.cache/huggingface
 
 EXPOSE 8100
 

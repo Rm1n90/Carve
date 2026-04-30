@@ -138,6 +138,9 @@ services:
     environment:
       MODEL_HOST: 0.0.0.0
       MODEL_PORT: 8100
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf_cache:/root/.cache/huggingface
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health').read()"]
       interval: 10s
@@ -181,3 +184,5 @@ volumes:
   minio_data:
   caddy_data:
   caddy_config:
+  hf_cache:
+    name: carve-hf-cache
