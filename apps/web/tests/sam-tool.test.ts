@@ -180,6 +180,72 @@ describe("SamTool", () => {
     expect(decodeCalls).toBe(2);
   });
 
+  it("getPositives + getNegatives expose accumulated click prompts (v3.6)", async () => {
+    (samApi.encode as any).mockResolvedValue({
+      image_hash: "h".repeat(32),
+      shape: [10, 10],
+    });
+    (samApi.decode as any).mockResolvedValue({
+      counts: "0,1,1",
+      size: [10, 10],
+      score: 0.9,
+    });
+    const tool = new SamTool("a", () => "c-1", () => null);
+    await tool.activate();
+    expect(tool.getPositives()).toEqual([]);
+    expect(tool.getNegatives()).toEqual([]);
+    await tool.addClick({ x: 4, y: 5 }, { pointer: 0 });
+    await tool.addClick({ x: 7, y: 8 }, { pointer: 2 });
+    await tool.addClick({ x: 9, y: 1 }, { pointer: 0 });
+    // Coordinates are rounded by addClick — assert that here too.
+    expect(tool.getPositives()).toEqual([
+      [4, 5],
+      [9, 1],
+    ]);
+    expect(tool.getNegatives()).toEqual([[7, 8]]);
+  });
+
+  it("commit clears positives, negatives, and lastResult (v3.6)", async () => {
+    (samApi.encode as any).mockResolvedValue({
+      image_hash: "h".repeat(32),
+      shape: [4, 4],
+    });
+    (samApi.decode as any).mockResolvedValue({
+      counts: "0,2,2",
+      size: [4, 4],
+      score: 0.8,
+    });
+    const tool = new SamTool("a", () => "c-1", () => null);
+    await tool.activate();
+    await tool.addClick({ x: 1, y: 1 }, { pointer: 0 });
+    await tool.addClick({ x: 2, y: 2 }, { pointer: 2 });
+    expect(tool.getPositives()).toHaveLength(1);
+    expect(tool.getNegatives()).toHaveLength(1);
+    expect(tool.getLastResult()).not.toBeNull();
+    expect(tool.commit()).toBe(true);
+    expect(tool.getPositives()).toEqual([]);
+    expect(tool.getNegatives()).toEqual([]);
+    expect(tool.getLastResult()).toBeNull();
+  });
+
+  it("getLastResult returns null before any decode and the latest result after (v3.6)", async () => {
+    (samApi.encode as any).mockResolvedValue({
+      image_hash: "h".repeat(32),
+      shape: [4, 4],
+    });
+    (samApi.decode as any)
+      .mockResolvedValueOnce({ counts: "first", size: [4, 4], score: 0.5 })
+      .mockResolvedValueOnce({ counts: "second", size: [4, 4], score: 0.9 });
+    const tool = new SamTool("a", () => "c-1", () => null);
+    expect(tool.getLastResult()).toBeNull();
+    await tool.activate();
+    expect(tool.getLastResult()).toBeNull();
+    await tool.addClick({ x: 1, y: 1 }, { pointer: 0 });
+    expect(tool.getLastResult()?.counts).toBe("first");
+    await tool.addClick({ x: 2, y: 2 }, { pointer: 0 });
+    expect(tool.getLastResult()?.counts).toBe("second");
+  });
+
   it("addClick does NOT retry on non-409 errors", async () => {
     (samApi.encode as any).mockResolvedValue({
       image_hash: "h".repeat(32),

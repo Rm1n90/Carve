@@ -272,9 +272,13 @@ export function AnnotationCanvas({
   useEffect(() => {
     samTool.setMode(samMode);
     // Clear any in-flight box drag / draft text when the user flips
-    // modes mid-interaction.
+    // modes mid-interaction. v3.6 — also drop the live mask preview +
+    // point markers so a stale mask from the previous mode never lingers.
     samBoxDraftRef.current = null;
     if (samMode !== "text") setSamTextDraft("");
+    clearSamPreview();
+    clearSamPoints();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [samMode, samTool]);
   // Empty map fallback so the renderer doesn't depend on prop being provided.
   const classMap = classColorMap ?? EMPTY_CLASS_MAP;
@@ -287,6 +291,17 @@ export function AnnotationCanvas({
   // pointer-move we tell pixi to refresh the texture.
   const maskPreviewSpriteRef = useRef<unknown | null>(null);
   const maskPreviewTextureRef = useRef<unknown | null>(null);
+  // v3.6 SAM live preview — analogous to the mask brush preview but
+  // sourced from the latest decode/box/text RLE result. Held in their
+  // own refs so the mask brush preview cleanup never tears down the SAM
+  // preview and vice-versa. The backing canvas is reused across decodes
+  // when the size matches so we don't churn GPU textures on every click.
+  const samMaskPreviewSpriteRef = useRef<unknown | null>(null);
+  const samMaskPreviewTextureRef = useRef<unknown | null>(null);
+  const samMaskPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Per-click point markers (positives + negatives) drawn on top of the
+  // mask preview so the user can see exactly where they clicked. v3.6.
+  const samPointsGfxRef = useRef<unknown | null>(null);
   // Per-annotation label tag (a Pixi Container holding a fill rect + Text).
   // Rendered above each bbox when the `labels` visibility flag is on.
   // Audit bug O.
@@ -1263,6 +1278,228 @@ export function AnnotationCanvas({
     maskPreviewTextureRef.current = null;
   }
 
+  /**
+   * v3.6 SAM live preview helper — decode the SAM RLE result into a
+   * binary mask, paint white-on-transparent pixels onto an HTML canvas,
+   * then wrap it in a Pixi Sprite (tinted to the active class color)
+   * so the user sees the prospective mask before pressing Enter.
+   *
+   * Mirrors `drawMaskPreview` (mask brush) but the source canvas is
+   * built from the RLE rather than from a MaskRasterizer; we maintain
+   * a single canvas/texture/sprite triple keyed off the SAM ref bag,
+   * recreating it only when the mask size changes.
+   */
+  async function drawSamMaskPreview(
+    counts: string,
+    size: [number, number],
+    color: number,
+    alpha = 0.45,
+  ): Promise<void> {
+    const app = appRef.current;
+    if (!app) return;
+    let pixi: typeof import("pixi.js") | undefined;
+    try {
+      pixi = await import("pixi.js");
+    } catch {
+      return;
+    }
+    if (!pixi) return;
+    const [h, w] = size;
+    if (h <= 0 || w <= 0) return;
+    // Reuse the canvas when its dimensions match — the GPU texture stays
+    // valid across decodes if we mark its source dirty after redrawing.
+    let canvas = samMaskPreviewCanvasRef.current;
+    let recreate = false;
+    if (!canvas || canvas.width !== w || canvas.height !== h) {
+      canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      samMaskPreviewCanvasRef.current = canvas;
+      recreate = true;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    // Decode RLE and paint white-on-transparent.
+    try {
+      const { decodeRLE } = await import("@/canvas/maskio");
+      const mask = decodeRLE(counts, h, w);
+      const img = ctx.createImageData(w, h);
+      const data = img.data;
+      for (let row = 0; row < h; row += 1) {
+        for (let col = 0; col < w; col += 1) {
+          const i = (row * w + col) * 4;
+          if (mask[row * w + col]) {
+            data[i] = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+            data[i + 3] = 255;
+          }
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+    } catch {
+      return;
+    }
+    let sprite = samMaskPreviewSpriteRef.current as
+      | InstanceType<typeof pixi.Sprite>
+      | null;
+    let texture = samMaskPreviewTextureRef.current as
+      | InstanceType<typeof pixi.Texture>
+      | null;
+    if (recreate || !sprite || !texture) {
+      // Tear down any prior sprite/texture; the size changed so the GPU
+      // resources are no longer valid.
+      if (sprite && app) {
+        try {
+          app.overlayLayer.removeChild(sprite as never);
+        } catch {
+          /* ignore */
+        }
+        try {
+          (sprite as { destroy?: (opts?: unknown) => void }).destroy?.({
+            texture: false,
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+      if (texture) {
+        try {
+          (texture as { destroy?: () => void }).destroy?.();
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        const sourceCtor = (
+          pixi as unknown as { CanvasSource?: new (opts: object) => unknown }
+        ).CanvasSource;
+        if (sourceCtor) {
+          const texSource = new sourceCtor({ resource: canvas });
+          texture = new pixi.Texture({ source: texSource as never });
+        } else {
+          texture = pixi.Texture.from(canvas as TexImageSource);
+        }
+        sprite = new pixi.Sprite(texture);
+        app.overlayLayer.addChild(sprite as never);
+        samMaskPreviewSpriteRef.current = sprite;
+        samMaskPreviewTextureRef.current = texture;
+      } catch {
+        return;
+      }
+    }
+    try {
+      (sprite as { tint?: number }).tint = color;
+      (sprite as { alpha?: number }).alpha = alpha;
+      const source = (texture as { source?: { update?: () => void } }).source;
+      source?.update?.();
+    } catch {
+      /* ignore — preview is best-effort */
+    }
+  }
+
+  function clearSamPreview() {
+    const app = appRef.current;
+    const sprite = samMaskPreviewSpriteRef.current as
+      | { destroy?: (opts?: unknown) => void }
+      | null;
+    if (app && sprite) {
+      try {
+        app.overlayLayer.removeChild(sprite as never);
+      } catch {
+        /* ignore */
+      }
+      try {
+        sprite.destroy?.({ texture: false });
+      } catch {
+        /* ignore */
+      }
+    }
+    samMaskPreviewSpriteRef.current = null;
+    const tex = samMaskPreviewTextureRef.current as
+      | { destroy?: () => void }
+      | null;
+    try {
+      tex?.destroy?.();
+    } catch {
+      /* ignore */
+    }
+    samMaskPreviewTextureRef.current = null;
+    samMaskPreviewCanvasRef.current = null;
+  }
+
+  /**
+   * v3.6 — paint per-click point markers on the overlay layer. Reads
+   * positives + negatives directly off the SamTool so the canvas never
+   * has to mirror the tool's coordinate-rounding logic.
+   *
+   * Marker spec (CVAT-style):
+   *   - radius ~6px in image-space (legible at typical zoom).
+   *   - Positives: green fill with white outline.
+   *   - Negatives: red fill with white outline.
+   */
+  async function drawSamPoints(): Promise<void> {
+    const app = appRef.current;
+    if (!app) return;
+    let GraphicsCtor: typeof import("pixi.js").Graphics | undefined;
+    try {
+      const pixi = await import("pixi.js");
+      GraphicsCtor = pixi.Graphics;
+    } catch {
+      return;
+    }
+    // Test environments may stub pixi.js without a Graphics export — bail
+    // quietly so the live preview is a best-effort no-op rather than a
+    // hard crash. Production builds always have Graphics available.
+    if (!GraphicsCtor) return;
+    let g = samPointsGfxRef.current as InstanceType<typeof GraphicsCtor> | null;
+    if (!g) {
+      try {
+        g = new GraphicsCtor();
+      } catch {
+        return;
+      }
+      samPointsGfxRef.current = g;
+      try {
+        app.overlayLayer.addChild(g as never);
+      } catch {
+        /* ignore — overlay layer attach is best-effort */
+      }
+    }
+    try {
+      g.clear();
+    } catch {
+      return;
+    }
+    const positives = samTool.getPositives();
+    const negatives = samTool.getNegatives();
+    const radius = 6;
+    const POSITIVE_GREEN = 0x22c55e;
+    const NEGATIVE_RED = 0xef4444;
+    const OUTLINE_WHITE = 0xffffff;
+    try {
+      for (const [x, y] of positives) {
+        g.circle(x, y, radius);
+        g.fill({ color: POSITIVE_GREEN, alpha: 1 });
+        g.circle(x, y, radius);
+        g.stroke({ color: OUTLINE_WHITE, width: 1.5, alpha: 1 });
+      }
+      for (const [x, y] of negatives) {
+        g.circle(x, y, radius);
+        g.fill({ color: NEGATIVE_RED, alpha: 1 });
+        g.circle(x, y, radius);
+        g.stroke({ color: OUTLINE_WHITE, width: 1.5, alpha: 1 });
+      }
+    } catch {
+      /* ignore — primitive drawing is best-effort under jsdom mocks */
+    }
+  }
+
+  function clearSamPoints() {
+    const g = samPointsGfxRef.current as { clear?: () => void } | null;
+    if (g && typeof g.clear === "function") g.clear();
+  }
+
   // ----- Tool routing — recreate per render-relevant change.
   useEffect(() => {
     const host = hostRef.current;
@@ -1322,6 +1559,11 @@ export function AnnotationCanvas({
     } else {
       samTool.reset();
       setSamLoadOverlayOpen(false);
+      // v3.6 — drop any leftover SAM preview when the user switches
+      // away from the tool so a stale mask never lingers under bbox /
+      // polygon / mask brush.
+      clearSamPreview();
+      clearSamPoints();
     }
 
     function pointerXY(e: PointerEvent): Point {
@@ -1538,7 +1780,29 @@ export function AnnotationCanvas({
             /* setPointerCapture not always available in jsdom */
           }
         } else if (mode === "point") {
-          void samTool.addClick(p, { pointer: e.button });
+          // v3.6 — fire-and-await addClick. The SamTool mutates its
+          // positive/negative arrays *synchronously* before awaiting
+          // /sam/decode, so we kick off the network call, then paint
+          // the click marker (now visible in the tool's arrays) so the
+          // user gets immediate feedback. When decode resolves we
+          // paint the mask overlay live (CVAT-style) — no Enter required.
+          const promise = samTool.addClick(p, { pointer: e.button });
+          // Eager marker paint — addClick has already pushed the point.
+          void drawSamPoints();
+          promise
+            .then((result) => {
+              if (result) {
+                const cls = useTool.getState().activeClassId;
+                const color = hexFromColor(cls ? classMap[cls] : undefined);
+                void drawSamMaskPreview(result.counts, result.size, color);
+              }
+            })
+            .catch((err: unknown) => {
+              showToast(describeSamError(err), {
+                variant: "error",
+                duration: 5000,
+              });
+            });
         }
         // text mode is driven by the floating input — pointer events on
         // the canvas are no-ops so the user can still pan/zoom.
@@ -1698,8 +1962,17 @@ export function AnnotationCanvas({
         // 4px min edge — same threshold the bbox tool uses to filter
         // accidental click-as-drag events.
         if (dx >= 4 && dy >= 4) {
-          void samTool
+          samTool
             .setBox([x1, y1, x2, y2])
+            .then((result) => {
+              // v3.6 — paint the box-prompt mask preview live so the
+              // user sees the segmented region without pressing Enter.
+              if (result) {
+                const cls = useTool.getState().activeClassId;
+                const color = hexFromColor(cls ? classMap[cls] : undefined);
+                void drawSamMaskPreview(result.counts, result.size, color);
+              }
+            })
             .catch((err: unknown) => {
               showToast(describeSamError(err), {
                 variant: "error",
@@ -1773,8 +2046,21 @@ export function AnnotationCanvas({
       }
       else if (tool === "tag" && e.key.toLowerCase() === "t") tag.apply();
       else if (tool === "sam") {
-        if (e.key === "Enter") samTool.commit();
-        else if (e.key === "Escape") samTool.reset();
+        if (e.key === "Enter") {
+          // v3.6 — commit() resets the SamTool's internal state; clear
+          // the live preview + markers so they don't linger over the
+          // newly-committed mask annotation that the normal render path
+          // is about to paint as a regular mask_rle entry.
+          const ok = samTool.commit();
+          if (ok) {
+            clearSamPreview();
+            clearSamPoints();
+          }
+        } else if (e.key === "Escape") {
+          samTool.reset();
+          clearSamPreview();
+          clearSamPoints();
+        }
       }
     }
 
@@ -1799,6 +2085,9 @@ export function AnnotationCanvas({
       // Likewise for in-flight mask brush strokes.
       mask.cancel();
       clearMaskPreview();
+      // v3.6 — drop SAM live preview overlays on tool/asset change.
+      clearSamPreview();
+      clearSamPoints();
       unsubMaskRadius();
     };
   }, [tool, activeClassId, frameId, imageSize, samTool, classMap]);
@@ -1891,6 +2180,15 @@ export function AnnotationCanvas({
     setSamTextPending(true);
     samTool
       .setText(text)
+      .then((result) => {
+        // v3.6 — paint the text-prompt mask preview live so the user
+        // sees the segmented region without pressing Enter.
+        if (result) {
+          const cls = useTool.getState().activeClassId;
+          const color = hexFromColor(cls ? classMap[cls] : undefined);
+          void drawSamMaskPreview(result.counts, result.size, color);
+        }
+      })
       .catch((err: unknown) => {
         showToast(describeSamError(err), {
           variant: "error",

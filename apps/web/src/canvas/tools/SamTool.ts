@@ -153,6 +153,31 @@ export class SamTool {
   }
 
   /**
+   * Read-only views of the click prompts accumulated so far. The canvas
+   * uses these to paint per-click markers (green=positive, red=negative)
+   * directly on the overlay layer — without these accessors the canvas
+   * would have to mirror the same coordinate-rounding logic this class
+   * already runs in addClick. v3.6 SAM live preview.
+   */
+  getPositives(): ReadonlyArray<readonly [number, number]> {
+    return this.positives;
+  }
+
+  getNegatives(): ReadonlyArray<readonly [number, number]> {
+    return this.negatives;
+  }
+
+  /**
+   * Read-only view of the latest decode/prompt result so the canvas can
+   * paint a live mask preview before the user commits. Mirrors the
+   * shape of SamDecodeResult but typed as a generic mask payload to
+   * keep callers decoupled from the exact result class. v3.6.
+   */
+  getLastResult(): SamDecodeResult | null {
+    return this.lastResult;
+  }
+
+  /**
    * Box mode entry point. Stores ``box`` (xyxy image-space) and runs a
    * single /sam/box-prompt call. Returns the best mask candidate, or
    * ``null`` when the model service returns no candidates / the wrong
