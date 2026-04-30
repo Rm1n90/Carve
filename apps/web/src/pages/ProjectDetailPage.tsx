@@ -5,6 +5,7 @@ import * as Tabs from "@radix-ui/react-tabs";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   BarChart3,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Image as ImageIcon,
@@ -782,6 +783,17 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
 
   return (
     <div className="mx-auto grid max-w-[1100px] gap-5">
+      {/* v3.7 Issue 6 — back link to the projects list, mirroring the
+          stats-page pattern from v3.0 so users have a consistent
+          breadcrumb-style return path. */}
+      <Link
+        to="/projects"
+        data-testid="project-detail-back-link"
+        className="inline-flex items-center gap-1 text-[12.5px] tracking-tight text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] transition-colors w-fit"
+      >
+        <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+        Back to projects
+      </Link>
       {/* ---- Header ---- */}
       <header className="flex items-baseline justify-between gap-4 flex-wrap">
         <div className="grid gap-1">

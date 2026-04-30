@@ -73,8 +73,12 @@ export const assetsApi = {
    * Compatibility helper: returns just the items array. Callers that need
    * pagination metadata should use `listPage` directly.
    */
+  // v3.7 Issue 3 follow-up: raised from 500 → 5000 because the thumbnail
+  // strip used to silently truncate tasks larger than 500 assets. TODO
+  // (v3.8): replace with an `useInfiniteQuery` consumer so we don't pull
+  // every Asset row at once for huge tasks.
   listForTask: async (taskId: string): Promise<Asset[]> =>
-    (await assetsApi.listPage(taskId, { limit: 500 })).items,
+    (await assetsApi.listPage(taskId, { limit: 5000 })).items,
   count: async (taskId: string): Promise<AssetCountResponse> =>
     (await api.get<AssetCountResponse>(`/tasks/${taskId}/assets/count`)).data,
   upload: async (taskId: string, file: File): Promise<Asset> => {

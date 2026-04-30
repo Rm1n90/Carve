@@ -98,7 +98,14 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
       }
       setRetryNotice(null);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["assets", taskId] }),
+    // v3.7 Issue 5: previously invalidated ["assets", taskId] which no
+    // consumer actually uses. The grid + count + thumbnail strip key on
+    // ["task-assets", ...] / ["task-assets-count", ...]. Without these
+    // refreshes the user had to manually reload to see new uploads.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
+      qc.invalidateQueries({ queryKey: ["task-assets-count", taskId] });
+    },
   });
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
