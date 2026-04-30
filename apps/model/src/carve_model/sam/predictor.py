@@ -18,7 +18,8 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, Protocol
+from datetime import datetime, timezone
+from typing import Any, Callable, Iterator, Literal, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -239,6 +240,71 @@ _TEST_PREDICTOR: SamPredictor | None = None
 _TEXT_PREDICTOR_FACTORY: TextPredictor | None = None
 _BOX_PREDICTOR_FACTORY: BoxPredictor | None = None
 
+
+# --- load-state machine (v3.5 Phase C) -------------------------------------
+#
+# Surfaces "is the SAM predictor loading right now?" to the editor UI so
+# users see a progress overlay during the 5-30s HF weight download / build.
+# The state is a small dataclass mutated by ``get_predictor`` (lazy build),
+# ``load_predictor`` (variant switch), and ``force_evict_predictor`` (drop).
+# The router exposes a snapshot via ``GET /sam/status``; the API service
+# proxies it via ``GET /models/sam-status`` for the frontend.
+
+LoadStateKind = Literal["idle", "loading", "ready", "error"]
+
+
+@dataclass
+class LoadState:
+    """Snapshot of the predictor's current load lifecycle.
+
+    States:
+      idle    — no predictor loaded, no load in progress
+      loading — predictor is being initialised (HF download or build)
+      ready   — predictor loaded; ``loaded_at`` is the ISO8601 timestamp
+      error   — last load attempt failed; ``error`` carries the detail
+    """
+
+    kind: LoadStateKind = "idle"
+    variant: str | None = None
+    progress_bytes: int | None = None
+    progress_total: int | None = None
+    loaded_at: str | None = None
+    error: str | None = None
+    job_id: str | None = None
+
+
+_LOAD_STATE: LoadState = LoadState()
+_LOAD_STATE_LOCK = threading.Lock()
+
+
+def get_load_state() -> LoadState:
+    """Return a snapshot of the current load state.
+
+    Callers (router) should treat the return value as read-only. Mutate
+    via ``_set_load_state`` only — it serialises on ``_LOAD_STATE_LOCK``.
+    """
+    return _LOAD_STATE
+
+
+def _set_load_state(**kwargs: Any) -> LoadState:
+    """Replace ``_LOAD_STATE`` with a new ``LoadState`` carrying ``kwargs``.
+
+    Any field not passed defaults to the dataclass default, NOT the
+    previous value — callers should pass the full intended snapshot.
+    Returns the new state for convenience.
+    """
+    global _LOAD_STATE
+    with _LOAD_STATE_LOCK:
+        _LOAD_STATE = LoadState(**kwargs)
+        return _LOAD_STATE
+
+
+def _reset_load_state() -> None:
+    """Test helper: drop the load state machine back to idle."""
+    global _LOAD_STATE
+    with _LOAD_STATE_LOCK:
+        _LOAD_STATE = LoadState()
+
 # --- idle eviction state ----------------------------------------------------
 #
 # The SAM image predictor pins ~1-3 GB of GPU memory. When the operator
@@ -382,6 +448,7 @@ def evict_predictor_if_idle() -> bool:
             return False
         _SESSION = None
     _empty_cuda_cache()
+    _set_load_state()
     return True
 
 
@@ -391,13 +458,21 @@ def force_evict_predictor() -> bool:
     Returns ``True`` when something was actually evicted, ``False`` when
     no session was loaded (idempotent — safe to call repeatedly). Drops
     the predictor and the loaded-image hash + shape in one atomic step.
+    Resets the load-state machine to ``idle`` so ``GET /sam/status``
+    reflects the unload.
     """
     with _PREDICTOR_LOCK:
         global _SESSION
         if _SESSION is None:
+            # Still honour an explicit unload of a "ready" state so the
+            # status endpoint flips to idle even when no real session
+            # was tracked (e.g. tests).
+            if _LOAD_STATE.kind == "ready":
+                _set_load_state()
             return False
         _SESSION = None
     _empty_cuda_cache()
+    _set_load_state()
     return True
 
 
@@ -448,12 +523,24 @@ def load_predictor(variant: str) -> None:
         # doesn't leak across switches.
         with _PREDICTOR_LOCK:
             _SESSION = None
+        # Reflect the test-fake "switch complete" in the status machine
+        # so frontend polling tests see a ready state.
+        _set_load_state(
+            kind="ready",
+            variant=variant,
+            loaded_at=datetime.now(timezone.utc).isoformat(),
+        )
         return
 
     current = get_sam_model()
     with _PREDICTOR_LOCK:
         if variant == current and _SESSION is not None:
             # Already on the requested variant with a loaded session.
+            _set_load_state(
+                kind="ready",
+                variant=variant,
+                loaded_at=datetime.now(timezone.utc).isoformat(),
+            )
             return
         # Drop the existing session (predictor + loaded_hash together).
         _SESSION = None
@@ -467,13 +554,29 @@ def load_predictor(variant: str) -> None:
     # their override; ``SAM_MODEL`` wins in ``get_sam_model``.
     os.environ["SAM_MODEL"] = variant
 
+    # Flip the status machine to "loading" before the (potentially long)
+    # build. The router-side worker thread also flips this — but doing it
+    # here as well covers direct in-process callers (tests, internal
+    # helpers) and keeps the contract idempotent.
+    _set_load_state(kind="loading", variant=variant)
+
     # Eagerly build the new predictor so load failures surface here
     # rather than on the next inference request.
-    with _PREDICTOR_LOCK:
-        _SESSION = SamSession(
-            predictor=_default_factory(),
-            last_used_at=time.monotonic(),
-        )
+    try:
+        with _PREDICTOR_LOCK:
+            _SESSION = SamSession(
+                predictor=_default_factory(),
+                last_used_at=time.monotonic(),
+            )
+    except Exception as exc:
+        _set_load_state(kind="error", variant=variant, error=str(exc))
+        raise
+
+    _set_load_state(
+        kind="ready",
+        variant=variant,
+        loaded_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 def set_test_predictor(p: SamPredictor | None) -> None:
@@ -489,6 +592,7 @@ def _reset_singleton() -> None:
     """Reset the production session. Used by tests."""
     global _SESSION
     _SESSION = None
+    _reset_load_state()
 
 
 def _default_factory() -> SamPredictor:
@@ -553,12 +657,40 @@ def get_predictor() -> SamPredictor:
                 predictor=_TEST_PREDICTOR,
                 last_used_at=time.monotonic(),
             )
+            # The test path bypasses the load machinery, so make sure
+            # the status machine still reads "ready" so
+            # ``GET /sam/status`` callers see a consistent picture.
+            _set_load_state(
+                kind="ready",
+                variant=get_sam_model(),
+                loaded_at=datetime.now(timezone.utc).isoformat(),
+            )
         return _TEST_PREDICTOR
     with _PREDICTOR_LOCK:
         if _SESSION is None:
-            _SESSION = SamSession(
-                predictor=_default_factory(),
-                last_used_at=time.monotonic(),
+            # Lazy first build — flip the status to "loading" so the UI
+            # can poll it. Releasing the lock before set_load_state would
+            # leave a brief window where two threads race to build, but
+            # the lock already prevents that — the second waiter spins
+            # here and reads the freshly-built session.
+            current_variant = get_sam_model()
+            _set_load_state(kind="loading", variant=current_variant)
+            try:
+                _SESSION = SamSession(
+                    predictor=_default_factory(),
+                    last_used_at=time.monotonic(),
+                )
+            except Exception as exc:
+                _set_load_state(
+                    kind="error",
+                    variant=current_variant,
+                    error=str(exc),
+                )
+                raise
+            _set_load_state(
+                kind="ready",
+                variant=current_variant,
+                loaded_at=datetime.now(timezone.utc).isoformat(),
             )
         else:
             _SESSION = SamSession(

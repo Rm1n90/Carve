@@ -29,6 +29,9 @@ POST /sam/box-prompt — SAM 3 only (one-shot). Accepts
 """
 
 import base64
+import hashlib
+import threading
+import time
 from io import BytesIO
 from typing import Any, Literal
 
@@ -42,10 +45,12 @@ from carve_model.sam.codec import encode_mask_rle
 from carve_model.sam.predictor import (
     ALLOWED_SAM_MODELS,
     _reset_singleton,
+    _set_load_state,
     autocast_ctx,
     extract_embedding,
     force_evict_predictor,
     get_box_predictor,
+    get_load_state,
     get_predictor,
     get_sam_model,
     get_sam_variant,
@@ -273,12 +278,57 @@ def unload(payload: UnloadIn = Body(default_factory=UnloadIn)) -> UnloadOut:
     return UnloadOut(evicted=evicted, sessions_released=sessions_released)
 
 
+# --- /sam/status (load lifecycle inspection) --------------------------------
+#
+# v3.5 Phase C — surfaces the predictor's load state so the editor UI can
+# show a "Loading SAM…" overlay during the 5-30s HF weight download / build.
+# Mutated by ``predictor.get_predictor`` (lazy build), ``load_predictor``
+# (variant switch), and ``force_evict_predictor`` (drop). The API service
+# proxies this via ``GET /models/sam-status`` for the frontend.
+
+
+class StatusOut(BaseModel):
+    state: Literal["idle", "loading", "ready", "error"]
+    variant: str | None
+    progress_bytes: int | None
+    progress_total: int | None
+    loaded_at: str | None
+    error: str | None
+    job_id: str | None = None
+
+
+@router.get("/status", response_model=StatusOut)
+def sam_status() -> StatusOut:
+    """Return the current load state of the SAM predictor.
+
+    States:
+      idle    — no predictor loaded, no load in progress
+      loading — predictor is being initialised (variant download or build)
+      ready   — predictor is loaded and ready to encode/decode
+      error   — last load attempt failed; ``error`` carries the detail
+    """
+    state = get_load_state()
+    # If the state machine has never been touched but the env already
+    # names a variant (e.g. operator preset SAM_MODEL but nobody hit
+    # encode yet), fall back to that name so the response is informative.
+    return StatusOut(
+        state=state.kind,
+        variant=state.variant or get_sam_model(),
+        progress_bytes=state.progress_bytes,
+        progress_total=state.progress_total,
+        loaded_at=state.loaded_at,
+        error=state.error,
+        job_id=state.job_id,
+    )
+
+
 # --- /sam/switch (variant hot-swap) -----------------------------------------
 #
 # v3.0 Bug 7 — replaces the old "edit SAM_MODEL in .env and restart" flow.
-# Loading a variant takes 5-30s; the endpoint blocks the calling worker
-# for the full duration so failures surface synchronously with the right
-# HTTP status. The API service proxies this with a 60s httpx timeout.
+# v3.5 Phase C — switched from synchronous to non-blocking 202 so the
+# frontend can show a "loading…" overlay polling /sam/status instead of
+# waiting on a 60s HTTP request. The model service serialises switches
+# behind a small lock and returns 409 if a switch is already in flight.
 
 
 class SwitchIn(BaseModel):
@@ -286,26 +336,105 @@ class SwitchIn(BaseModel):
 
 
 class SwitchOut(BaseModel):
-    active_variant: str
+    """202 response body for a non-blocking switch.
+
+    The ``state`` field reflects the load-state machine immediately after
+    the worker thread is spawned. Clients poll ``GET /sam/status`` until
+    the state transitions to ``ready`` or ``error``.
+    """
+
+    job_id: str
+    state: Literal["idle", "loading", "ready", "error"]
+    variant: str
 
 
-@router.post("/switch", response_model=SwitchOut)
+_SWITCH_INFLIGHT_LOCK = threading.Lock()
+_SWITCH_INFLIGHT_JOB: str | None = None
+
+
+def _job_id_for(variant: str) -> str:
+    """Return a short hash correlation token for a switch job."""
+    seed = f"{variant}-{time.time_ns()}".encode()
+    return hashlib.sha1(seed).hexdigest()[:12]
+
+
+def _spawn_switch(variant: str, job_id: str) -> None:
+    """Run ``load_predictor`` in a worker thread; reflect status into machine."""
+
+    def _worker() -> None:
+        global _SWITCH_INFLIGHT_JOB
+        try:
+            # ``load_predictor`` itself updates _LOAD_STATE (idle/loading
+            # → ready/error). We wrap it once more here so the job_id is
+            # exposed via /sam/status while the load is in flight.
+            current = get_load_state()
+            _set_load_state(
+                kind="loading",
+                variant=variant,
+                progress_bytes=current.progress_bytes,
+                progress_total=current.progress_total,
+                job_id=job_id,
+            )
+            load_predictor(variant)
+        except Exception as exc:  # noqa: BLE001
+            # ``load_predictor`` already wrote an error state, but make
+            # absolutely sure the job_id rides along so the client can
+            # correlate.
+            current = get_load_state()
+            _set_load_state(
+                kind="error",
+                variant=variant,
+                error=current.error or str(exc),
+                job_id=job_id,
+            )
+        finally:
+            with _SWITCH_INFLIGHT_LOCK:
+                _SWITCH_INFLIGHT_JOB = None
+
+    t = threading.Thread(target=_worker, name=f"sam-switch-{job_id}", daemon=True)
+    t.start()
+
+
+@router.post("/switch", status_code=202, response_model=SwitchOut)
 def switch(payload: SwitchIn) -> SwitchOut:
-    """Hot-swap the active SAM variant. 422 on unknown variant; 503 on load failure."""
+    """Hot-swap the active SAM variant (non-blocking).
+
+    Returns 202 immediately with a job_id; the client polls
+    ``GET /sam/status`` until the load state transitions to ``ready`` or
+    ``error``. Returns 409 ``switch_in_progress`` if another switch is
+    already running. 422 on unknown variant.
+    """
     if payload.variant not in ALLOWED_SAM_MODELS:
         raise HTTPException(
             status_code=422,
             detail=f"unknown_variant; allowed: {', '.join(ALLOWED_SAM_MODELS)}",
         )
-    try:
-        load_predictor(payload.variant)
-    except ValueError as exc:
-        # Defensive: ALLOWED_SAM_MODELS check above should already cover this,
-        # but ``load_predictor`` re-validates and we want the same 422 response.
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 — model load can fail many ways
-        raise HTTPException(
-            status_code=503,
-            detail="sam_variant_load_failed",
-        ) from exc
-    return SwitchOut(active_variant=get_sam_model())
+
+    global _SWITCH_INFLIGHT_JOB
+    with _SWITCH_INFLIGHT_LOCK:
+        if _SWITCH_INFLIGHT_JOB is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="switch_in_progress",
+            )
+        job_id = _job_id_for(payload.variant)
+        _SWITCH_INFLIGHT_JOB = job_id
+
+    # Pre-flip the state machine so an immediate /sam/status read after
+    # this 202 already reads "loading" (eliminates the race where the
+    # worker thread hasn't started yet).
+    _set_load_state(
+        kind="loading",
+        variant=payload.variant,
+        job_id=job_id,
+    )
+    _spawn_switch(payload.variant, job_id)
+
+    return SwitchOut(job_id=job_id, state="loading", variant=payload.variant)
+
+
+def _reset_switch_inflight_for_test() -> None:
+    """Test helper — drop the in-flight job lock so independent tests don't deadlock."""
+    global _SWITCH_INFLIGHT_JOB
+    with _SWITCH_INFLIGHT_LOCK:
+        _SWITCH_INFLIGHT_JOB = None
