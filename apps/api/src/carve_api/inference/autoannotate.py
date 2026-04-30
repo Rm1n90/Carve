@@ -91,6 +91,7 @@ def auto_annotate_asset(
     min_confidence: float = 0.0,
     iou: float = 0.7,
     class_overrides: dict[int, uuid.UUID | None] | None = None,
+    skip_yolo_load: bool = False,
 ) -> AutoAnnotateResult:
     """Run the model service on a single asset and persist the detections.
 
@@ -169,13 +170,21 @@ def auto_annotate_asset(
         # pre-F2 path used for legacy weights.
         return classes_by_name.get(key)
 
-    # Load weight on the model service (idempotent via LRU)
-    try:
-        yolo_load(str(weight.id), presigned_url_for_weight)
-    except ModelServiceError as exc:
-        if exc.status_code == 503:
-            raise AutoAnnotateModelUnreachable(f"yolo/load: {exc.body!r}") from exc
-        raise AutoAnnotateModelFailed(f"yolo/load: {exc.body!r}") from exc
+    # Load weight on the model service (idempotent via LRU).
+    #
+    # v3.7.7 — ``skip_yolo_load`` lets the batch worker call ``yolo_load`` ONCE
+    # before the asset loop instead of paying an HTTP roundtrip per asset
+    # (~545 unnecessary calls on a 545-asset batch). The single-asset endpoint
+    # keeps the default ``skip_yolo_load=False`` because the model service's
+    # LRU still makes repeated loads cheap and the call surfaces a clear 5xx
+    # if the weight URL has expired.
+    if not skip_yolo_load:
+        try:
+            yolo_load(str(weight.id), presigned_url_for_weight)
+        except ModelServiceError as exc:
+            if exc.status_code == 503:
+                raise AutoAnnotateModelUnreachable(f"yolo/load: {exc.body!r}") from exc
+            raise AutoAnnotateModelFailed(f"yolo/load: {exc.body!r}") from exc
 
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
     try:
@@ -293,6 +302,15 @@ def fetch_asset_bytes(asset: Asset) -> bytes:
 def presigned_url_for_weight(weight: Weight) -> str:
     """URL handed to the MODEL SERVICE for downloading a weight; uses
     the internal minio endpoint so the model service container can
-    resolve it via Docker DNS."""
+    resolve it via Docker DNS.
+
+    v3.7.7 — TTL bumped from 600s (10 min) to 3600s (1 hour). On real
+    batches a 545-asset job easily runs past 10 minutes due to early
+    failures + retries, so the late assets receive an EXPIRED URL and
+    the model service returns ``weight_download_failed`` for every
+    remaining asset (cascade). 1 hour is still finite — a 5000-asset
+    batch at ~200ms/asset is ~17 minutes, well within the window — but
+    long enough to rule out URL expiry as the practical bottleneck.
+    """
     storage = MinioClient.from_settings()
-    return storage.presigned_get_internal(weight.minio_key, expires_seconds=600)
+    return storage.presigned_get_internal(weight.minio_key, expires_seconds=3600)

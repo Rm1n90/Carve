@@ -1295,3 +1295,201 @@ def test_run_batch_returns_per_asset_error_reasons(db_session, monkeypatch) -> N
     # AppError code is "weight_project_mismatch", asset name is "reason1.png".
     assert "reason1.png" in result["errors"][0]
     assert "weight_project_mismatch" in result["errors"][0]
+
+
+# ---------------------------------------------------------------------------
+# v3.7.7 — batch worker loads weight ONCE before the loop, not per-asset
+# ---------------------------------------------------------------------------
+
+
+def _seed_batch_world_with_n_assets(db_session, n: int):
+    """Helper: seed user/project/task/class/weight + ``n`` assets+frames."""
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+    for i in range(n):
+        a = Asset(
+            task_id=t.id,
+            kind=AssetKind.image,
+            xxh3_128=f"v377_{i}",
+            mime="image/png",
+            size_bytes=1,
+            width=10,
+            height=10,
+            frames=1,
+            original_name=f"v377_{i}.png",
+        )
+        db_session.add(a)
+        db_session.flush()
+        db_session.add(Frame(asset_id=a.id, idx=0, pts_ms=0))
+        db_session.flush()
+    db_session.commit()
+    return u, t, w
+
+
+def test_run_batch_calls_yolo_load_exactly_once_before_loop(
+    db_session, monkeypatch
+) -> None:
+    """v3.7.7 — the batch worker must call ``yolo_load`` exactly ONCE
+    before any asset is processed. The pre-v3.7.7 path called
+    ``yolo_load`` per-asset inside ``auto_annotate_asset``, adding ~545
+    unnecessary HTTP roundtrips per batch and making the late assets
+    vulnerable to a mid-batch presigned-URL expiry cascade.
+    """
+    u, t, w = _seed_batch_world_with_n_assets(db_session, n=5)
+
+    yolo_load_calls: list[tuple] = []
+    asset_call_log: list[str] = []
+
+    def fake_yolo_load(*args, **kwargs):
+        yolo_load_calls.append((args, kwargs))
+        # Sentinel: when this fires, NO asset has been processed yet.
+        assert len(asset_call_log) == 0, (
+            "yolo_load was called AFTER assets started processing — "
+            "the load-once-before-loop contract is broken"
+        )
+        return {"loaded": "ok"}
+
+    def fake_auto_annotate_asset(**_kwargs):
+        asset_call_log.append("asset")
+
+        class _Result:
+            annotations: list = []
+            annotations_created = 1
+            skipped_count = 0
+            skipped_by_class: dict = {}
+            overwrite_skipped = False
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "yolo_load", fake_yolo_load)
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    result = batch_mod.run_batch_auto_annotate(payload)
+
+    assert result["status"] == "completed"
+    assert result["done"] == 5
+    # Exactly ONE yolo_load call regardless of asset count.
+    assert len(yolo_load_calls) == 1, (
+        f"expected exactly 1 yolo_load call before the loop, "
+        f"got {len(yolo_load_calls)} — the worker is still calling "
+        "yolo_load per-asset"
+    )
+    # 5 assets processed.
+    assert len(asset_call_log) == 5
+
+
+def test_run_batch_passes_skip_yolo_load_true_to_each_asset(
+    db_session, monkeypatch
+) -> None:
+    """v3.7.7 — every per-asset ``auto_annotate_asset(...)`` call must
+    receive ``skip_yolo_load=True``. The single yolo_load happens before
+    the loop; per-asset duplicates would re-introduce the regression
+    this fix addresses.
+    """
+    u, t, w = _seed_batch_world_with_n_assets(db_session, n=3)
+
+    captured_kwargs: list[dict] = []
+
+    def fake_yolo_load(*_a, **_k):
+        return {"loaded": "ok"}
+
+    def fake_auto_annotate_asset(**kwargs):
+        captured_kwargs.append(kwargs)
+
+        class _Result:
+            annotations: list = []
+            annotations_created = 1
+            skipped_count = 0
+            skipped_by_class: dict = {}
+            overwrite_skipped = False
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "yolo_load", fake_yolo_load)
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    result = batch_mod.run_batch_auto_annotate(payload)
+
+    assert result["status"] == "completed"
+    assert len(captured_kwargs) == 3
+    for idx, kw in enumerate(captured_kwargs):
+        assert kw.get("skip_yolo_load") is True, (
+            f"asset {idx} did not receive skip_yolo_load=True "
+            f"(got {kw.get('skip_yolo_load')!r}) — the worker must pin "
+            "this kwarg so per-asset yolo_load roundtrips are eliminated"
+        )
+
+
+def test_run_batch_fails_fast_when_initial_yolo_load_fails(
+    db_session, monkeypatch
+) -> None:
+    """v3.7.7 — if the up-front ``yolo_load`` call fails, the batch must
+    finalize as ``failed`` with a clear ``weight_load_failed_at_start``
+    reason, not silently let every per-asset call distribute the error.
+    """
+    from carve_api.inference.model_client import ModelServiceError
+
+    u, t, w = _seed_batch_world_with_n_assets(db_session, n=3)
+
+    asset_call_log: list[str] = []
+
+    def fake_yolo_load(*_a, **_k):
+        raise ModelServiceError(503, b"unreachable")
+
+    def fake_auto_annotate_asset(**_kwargs):
+        asset_call_log.append("asset")
+
+        class _Result:
+            annotations: list = []
+            annotations_created = 1
+            skipped_count = 0
+            skipped_by_class: dict = {}
+            overwrite_skipped = False
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "yolo_load", fake_yolo_load)
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    result = batch_mod.run_batch_auto_annotate(payload)
+
+    assert result["status"] == "failed"
+    # No asset processed because the upfront load aborted the batch.
+    assert len(asset_call_log) == 0
+    assert any(
+        "weight_load_failed_at_start" in e for e in result.get("errors", [])
+    ), result.get("errors")

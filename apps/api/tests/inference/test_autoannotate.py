@@ -435,6 +435,93 @@ def test_overwrite_with_matching_detections_replaces_existing(
         model_client_mod.set_test_transport(None)
 
 
+# ---------------------------------------------------------------------------
+# v3.7.7 — skip_yolo_load lets the batch worker load the weight ONCE
+# ---------------------------------------------------------------------------
+
+
+def test_auto_annotate_skip_yolo_load_does_not_call_load(
+    db_session, monkeypatch
+) -> None:
+    """v3.7.7 — when ``skip_yolo_load=True``, ``auto_annotate_asset`` must
+    NOT call ``/yolo/load`` on the model service. The batch worker uses
+    this to load the weight ONCE before the asset loop instead of paying
+    an HTTP roundtrip per asset.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import select as _select
+
+    from carve_api.assets.models import Asset
+    from carve_api.auth.models import User
+    from carve_api.inference import autoannotate as aa_mod
+    from carve_api.projects.models import Task
+    from carve_api.weights.models import Weight
+
+    load_calls: list[tuple] = []
+    predict_calls: list[tuple] = []
+
+    def fake_yolo_load(*args, **kwargs):
+        load_calls.append((args, kwargs))
+        return {"loaded": "ok"}
+
+    def fake_yolo_predict(*args, **kwargs):
+        predict_calls.append((args, kwargs))
+        return {"detections": [], "polygons": []}
+
+    monkeypatch.setattr(aa_mod, "yolo_load", fake_yolo_load)
+    monkeypatch.setattr(aa_mod, "yolo_predict", fake_yolo_predict)
+
+    # Use the existing _setup_full_world helper to get real DB rows.
+    client = _client(db_session)
+    _token, _pid, tid, aid, wid, _car_id, _truck_id = _setup_full_world(
+        client, monkeypatch
+    )
+
+    # Re-fetch the persisted rows on the test session.
+    user = db_session.execute(
+        _select(User).where(User.email == "aa@x.com")
+    ).scalar_one()
+    task = db_session.get(Task, _uuid.UUID(tid))
+    asset = db_session.get(Asset, _uuid.UUID(aid))
+    weight = db_session.get(Weight, _uuid.UUID(wid))
+
+    # skip_yolo_load=True path — yolo_load must NOT be called.
+    aa_mod.auto_annotate_asset(
+        session=db_session,
+        actor=user,
+        task=task,
+        asset=asset,
+        weight=weight,
+        overwrite=False,
+        presigned_url_for_weight="https://fake/weight.pt",
+        image_bytes=_tiny_png(),
+        skip_yolo_load=True,
+    )
+    assert len(load_calls) == 0, (
+        f"expected zero yolo_load calls when skip_yolo_load=True, "
+        f"got {len(load_calls)}"
+    )
+    assert len(predict_calls) == 1
+
+    # Default path — yolo_load IS called (regression guard for the
+    # single-asset endpoint).
+    aa_mod.auto_annotate_asset(
+        session=db_session,
+        actor=user,
+        task=task,
+        asset=asset,
+        weight=weight,
+        overwrite=False,
+        presigned_url_for_weight="https://fake/weight.pt",
+        image_bytes=_tiny_png(),
+    )
+    assert len(load_calls) == 1, (
+        f"expected one yolo_load call with default skip_yolo_load=False, "
+        f"got {len(load_calls)}"
+    )
+
+
 def test_no_overwrite_keeps_both_existing_and_new(db_session, monkeypatch) -> None:
     """v3.7.2 sanity — overwrite=false is additive regardless of detection
     counts. Existing annotations stay; matching detections add on top.

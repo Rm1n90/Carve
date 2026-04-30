@@ -16,6 +16,7 @@ from carve_api.inference.autoannotate import (
     fetch_asset_bytes,
     presigned_url_for_weight,
 )
+from carve_api.inference.model_client import ModelServiceError, yolo_load
 from carve_api.projects.models import Task
 from carve_api.weights.models import Weight
 
@@ -433,6 +434,54 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
             "errors": ["refs:missing_after_boot"],
         }
 
+    # ---- v3.7.7 — load the weight on the model service ONCE before the loop.
+    #
+    # Pre-v3.7.7 ``auto_annotate_asset`` called ``yolo_load`` per-asset; on a
+    # 545-asset batch that meant 545 HTTP roundtrips to the model service
+    # even though the LRU cache hit on every call after the first. Worse, if
+    # the (presigned) weight URL expired mid-batch the cascade surfaced as
+    # ``weight_download_failed`` on every late asset instead of one clear
+    # failure. We now load once here and pass ``skip_yolo_load=True`` per
+    # asset.
+    try:
+        yolo_load(str(weight_uuid), url)
+        log.info(
+            "batch.weight.loaded job_id=%s weight_id=%s",
+            payload.job_id,
+            payload.weight_id,
+        )
+    except ModelServiceError as exc:
+        log.exception(
+            "batch.weight.load_failed job_id=%s weight_id=%s status=%s",
+            payload.job_id,
+            payload.weight_id,
+            exc.status_code,
+        )
+        session.close()
+        finalize_progress(redis_client, payload.job_id, status="failed")
+        return {
+            "status": "failed",
+            "done": 0,
+            "total": len(asset_ids),
+            "failed": 0,
+            "errors": [f"weight_load_failed_at_start: {exc.status_code}"],
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.exception(
+            "batch.weight.load_failed.unexpected job_id=%s weight_id=%s",
+            payload.job_id,
+            payload.weight_id,
+        )
+        session.close()
+        finalize_progress(redis_client, payload.job_id, status="failed")
+        return {
+            "status": "failed",
+            "done": 0,
+            "total": len(asset_ids),
+            "failed": 0,
+            "errors": [f"weight_load_failed_at_start: {type(exc).__name__}"],
+        }
+
     try:
         for asset_id in asset_ids:
             original_name = asset_names_by_id.get(asset_id, str(asset_id))
@@ -467,6 +516,12 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                     overwrite=payload.overwrite,
                     presigned_url_for_weight=url,
                     image_bytes=body,
+                    # v3.7.7 — weight already loaded on the model service ONCE
+                    # before the loop (above). Skip the per-asset yolo_load
+                    # roundtrip; the LRU cache would have made it a no-op
+                    # anyway, but the HTTP overhead added up to ~545 unnecessary
+                    # calls per batch.
+                    skip_yolo_load=True,
                 )
                 if clamped_conf is not None:
                     aa_kwargs["min_confidence"] = clamped_conf
