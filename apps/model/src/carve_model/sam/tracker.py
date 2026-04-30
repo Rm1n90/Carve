@@ -22,6 +22,7 @@ v1.4 introduces multi-object support:
   to work without modification.
 """
 
+import os
 import threading
 import time
 import uuid
@@ -207,15 +208,27 @@ def _default_factory() -> TrackerProtocol:
     based (concept tracking); ``track_router`` enforces the ``text`` field
     requirement at the HTTP boundary.
 
-    For SAM 2.x variants the raw ``SAM2VideoPredictor`` is wrapped in
-    ``Sam2VideoPredictorAdapter`` so it speaks our v1.4 multi-object
-    protocol.
+    For SAM 2.x variants the backend is selected by ``SAM2_BACKEND``:
+    ``transformers`` routes through ``carve_model.sam.sam2_adapter`` (built
+    on ``Sam2VideoModel`` + ``Sam2VideoProcessor``), while the default
+    ``legacy`` keeps the existing ``sam2`` git package path which wraps
+    ``SAM2VideoPredictor`` in ``Sam2VideoPredictorAdapter`` to speak our
+    v1.4 multi-object protocol. The flag is paired with the same one in
+    ``predictor.py`` so the image and video paths flip together.
     """
     model = get_sam_model()
     if model == "sam3":
         from carve_model.sam import sam3_adapter
 
         return sam3_adapter.build_sam3_video_tracker()
+
+    # SAM 2.x: opt in to the transformers adapter via SAM2_BACKEND.
+    # Default ``legacy`` preserves the existing sam2 git package path.
+    if model.startswith("sam2") and os.getenv("SAM2_BACKEND", "legacy") == "transformers":
+        from carve_model.sam import sam2_adapter
+
+        return sam2_adapter.build_sam2_video_tracker(model)
+
     repo = _HF_REPO_BY_MODEL[model]
 
     import torch  # type: ignore[import-not-found]
