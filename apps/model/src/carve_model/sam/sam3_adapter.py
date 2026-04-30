@@ -193,6 +193,10 @@ def build_sam3_image_predictor(device: str | None = None) -> Sam3ImagePredictorA
     Loads the **Tracker** image classes (the drop-in SAM 2 replacement)
     so /sam/decode click prompts work. Text and box concept prompts use
     Sam3Model + Sam3Processor via ``_build_concept_image_pair`` below.
+
+    v3.6 — brackets HF ``from_pretrained`` with ``_set_load_progress``
+    so ``GET /sam/status`` shows a "downloading" indicator. MVP is
+    indeterminate; real byte progress is the v3.7 follow-up.
     """
     import torch  # type: ignore[import-not-found]
     from transformers import (  # type: ignore[import-not-found]
@@ -200,10 +204,16 @@ def build_sam3_image_predictor(device: str | None = None) -> Sam3ImagePredictorA
         Sam3TrackerProcessor,
     )
 
+    from carve_model.sam.predictor import _set_load_progress
+
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16 if dev == "cuda" else torch.float32
-    model = Sam3TrackerModel.from_pretrained("facebook/sam3").to(dev, dtype=dtype)
-    processor = Sam3TrackerProcessor.from_pretrained("facebook/sam3")
+    _set_load_progress(progress_bytes=0, progress_total=-1)
+    try:
+        model = Sam3TrackerModel.from_pretrained("facebook/sam3").to(dev, dtype=dtype)
+        processor = Sam3TrackerProcessor.from_pretrained("facebook/sam3")
+    finally:
+        _set_load_progress(progress_bytes=None, progress_total=None)
     return Sam3ImagePredictorAdapter(model=model, processor=processor, device=dev)
 
 
