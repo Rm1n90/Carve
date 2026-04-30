@@ -11,8 +11,6 @@ router resolved at import time and assert on the contract:
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -51,7 +49,9 @@ def test_switch_calls_load_predictor_and_returns_active(monkeypatch) -> None:
 
     def fake_load(variant: str) -> None:
         calls.append(variant)
-        os.environ["SAM_MODEL"] = variant
+        # Use monkeypatch.setenv so teardown restores the original value
+        # and does not pollute sibling tests (e.g. test_text_router).
+        monkeypatch.setenv("SAM_MODEL", variant)
 
     # Patch on the router module — that's where ``load_predictor`` was
     # bound at import time.

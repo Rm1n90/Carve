@@ -3,8 +3,9 @@
 Mirrors ``tests/sam/test_predictor_resolver.py``. The tracker reads
 ``SAM_MODEL`` (or the legacy ``SAM_VARIANT``) via the shared resolver in
 ``carve_model.sam.predictor`` and binds the matching HF repo. Tests stub
-out ``torch`` and ``sam2.sam2_video_predictor`` via ``sys.modules`` so
-the production factory can run end-to-end without GPUs or real weights.
+out ``torch`` + ``transformers.Sam2VideoModel`` / ``Sam2VideoProcessor``
+via ``sys.modules`` so the production factory can run end-to-end without
+GPUs or real weights.
 """
 
 import sys
@@ -26,33 +27,39 @@ def _isolate_env(monkeypatch):
 
 
 @pytest.fixture
-def fake_sam2_modules(monkeypatch):
-    """Stand in for torch + sam2.sam2_video_predictor so _default_factory
-    can run end-to-end without GPUs or real SAM 2 weights."""
+def fake_transformers_sam2_video_modules(monkeypatch):
+    """Stub the transformers ``Sam2VideoModel`` + ``Sam2VideoProcessor`` so
+    the transformers-backed video tracker can be built without loading
+    torch or pulling weights."""
     captured: dict = {}
 
-    class _FakeModel:
-        def to(self, _device):
-            return self
+    fake_torch = ModuleType("torch")
+    fake_torch.cuda = SimpleNamespace(
+        is_available=lambda: False,
+        is_bf16_supported=lambda: False,
+    )
+    fake_torch.bfloat16 = "bfloat16"
+    fake_torch.float32 = "float32"
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
 
-    class _FakeTracker:
-        model = _FakeModel()
-
+    class _M:
         @classmethod
         def from_pretrained(cls, repo: str):
-            captured["repo"] = repo
+            captured["model_repo"] = repo
+            captured["model_class"] = cls.__name__
+            return SimpleNamespace(to=lambda dev, dtype=None: cls())
+
+    class _P:
+        @classmethod
+        def from_pretrained(cls, repo: str):
+            captured["proc_repo"] = repo
+            captured["proc_class"] = cls.__name__
             return cls()
 
-    fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
-
-    fake_sam2 = ModuleType("sam2")
-    fake_video = ModuleType("sam2.sam2_video_predictor")
-    fake_video.SAM2VideoPredictor = _FakeTracker
-
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setitem(sys.modules, "sam2", fake_sam2)
-    monkeypatch.setitem(sys.modules, "sam2.sam2_video_predictor", fake_video)
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.Sam2VideoModel = type("Sam2VideoModel", (_M,), {})
+    fake_transformers.Sam2VideoProcessor = type("Sam2VideoProcessor", (_P,), {})
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
     return captured
 
 
@@ -63,25 +70,29 @@ def fake_sam2_modules(monkeypatch):
     ("sam2.1-large",     "facebook/sam2.1-hiera-large"),
 ])
 def test_default_factory_resolves_each_sam2_1_variant(
-    monkeypatch, fake_sam2_modules, model_name, expected_repo,
+    monkeypatch, fake_transformers_sam2_video_modules, model_name, expected_repo,
 ):
+    """Every SAM 2.x model must route through ``Sam2VideoModel.from_pretrained``
+    on the transformers backend. The legacy ``sam2`` git path no longer
+    exists (removed in v3.4 commit 6)."""
     monkeypatch.setenv("SAM_MODEL", model_name)
-    t_mod._default_factory()
-    assert fake_sam2_modules["repo"] == expected_repo
+    t_mod._default_factory()  # noqa: SLF001
+    assert fake_transformers_sam2_video_modules["model_repo"] == expected_repo
+    assert fake_transformers_sam2_video_modules["proc_repo"] == expected_repo
+    assert fake_transformers_sam2_video_modules["model_class"] == "Sam2VideoModel"
 
 
-def test_default_factory_default_is_sam2_1_large(fake_sam2_modules):
-    # Both env vars unset (autouse fixture)
-    t_mod._default_factory()
-    assert fake_sam2_modules["repo"] == "facebook/sam2.1-hiera-large"
-
-
-def test_default_factory_routes_to_sam3_adapter_when_sam3_selected(
-    monkeypatch, fake_sam2_modules,
+def test_default_factory_default_is_sam2_1_large(
+    monkeypatch, fake_transformers_sam2_video_modules,
 ):
-    """v1.1 T6: SAM 3 selection now routes through the SAM 3 video tracker
-    adapter instead of raising — the actual model is loaded lazily by the
-    adapter so the RuntimeError from earlier plans no longer fires."""
+    # SAM_MODEL/SAM_VARIANT unset → resolver default is sam2.1-large.
+    t_mod._default_factory()  # noqa: SLF001
+    assert fake_transformers_sam2_video_modules["model_repo"] == "facebook/sam2.1-hiera-large"
+
+
+def test_default_factory_routes_to_sam3_adapter_when_sam3_selected(monkeypatch):
+    """v1.1 T6: SAM 3 selection routes through the SAM 3 video tracker
+    adapter; the actual model is loaded lazily by the adapter."""
     monkeypatch.setenv("SAM_MODEL", "sam3")
     called = {"build": False}
 
@@ -94,12 +105,12 @@ def test_default_factory_routes_to_sam3_adapter_when_sam3_selected(
         _fake_build,
     )
 
-    t_mod._default_factory()
+    t_mod._default_factory()  # noqa: SLF001
     assert called["build"] is True
 
 
 def test_default_factory_routes_to_sam3_adapter_when_legacy_sam_variant_sam3(
-    monkeypatch, fake_sam2_modules,
+    monkeypatch,
 ):
     monkeypatch.setenv("SAM_VARIANT", "sam3")
     called = {"build": False}
@@ -113,5 +124,5 @@ def test_default_factory_routes_to_sam3_adapter_when_legacy_sam_variant_sam3(
         _fake_build,
     )
 
-    t_mod._default_factory()
+    t_mod._default_factory()  # noqa: SLF001
     assert called["build"] is True

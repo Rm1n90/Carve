@@ -6,6 +6,9 @@ reads ``SAM_MODEL`` first and falls back to the legacy Plan 08
 ``SAM_VARIANT`` env var so existing operator setups keep working.
 """
 
+import sys
+from types import ModuleType, SimpleNamespace
+
 import pytest
 
 from carve_model.sam import predictor as p_mod
@@ -13,7 +16,9 @@ from carve_model.sam import predictor as p_mod
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
-    # Strip both env vars before each test so we always start from defaults
+    # Strip env vars before each test so we always start from defaults.
+    # As of v3.4 commit 6 the SAM 2 backend is transformers-only; there is
+    # no legacy toggle to clear.
     monkeypatch.delenv("SAM_MODEL", raising=False)
     monkeypatch.delenv("SAM_VARIANT", raising=False)
 
@@ -71,3 +76,99 @@ def test_sam_model_takes_precedence_over_sam_variant(monkeypatch):
 def test_repo_map_has_entry_per_model():
     for name in p_mod.ALLOWED_SAM_MODELS:
         assert name in p_mod._HF_REPO_BY_MODEL  # noqa: SLF001 — module-level constant
+
+
+# --- SAM 2 transformers backend (v3.4 commit 6: legacy path removed) --------
+
+
+@pytest.fixture
+def fake_transformers_sam2_modules(monkeypatch):
+    """Stub the transformers ``Sam2Model`` + ``Sam2Processor`` classes so
+    ``_default_factory`` can build the transformers-backed adapter without
+    loading torch or pulling weights."""
+    captured: dict = {}
+
+    fake_torch = ModuleType("torch")
+    fake_torch.cuda = SimpleNamespace(
+        is_available=lambda: False,
+        is_bf16_supported=lambda: False,
+    )
+    fake_torch.bfloat16 = "bfloat16"
+    fake_torch.float32 = "float32"
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    class _M:
+        @classmethod
+        def from_pretrained(cls, repo: str):
+            captured["model_repo"] = repo
+            captured["model_class"] = cls.__name__
+            return SimpleNamespace(to=lambda dev, dtype=None: cls())
+
+    class _P:
+        @classmethod
+        def from_pretrained(cls, repo: str):
+            captured["proc_repo"] = repo
+            captured["proc_class"] = cls.__name__
+            return cls()
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.Sam2Model = type("Sam2Model", (_M,), {})
+    fake_transformers.Sam2Processor = type("Sam2Processor", (_P,), {})
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    return captured
+
+
+@pytest.mark.parametrize("model_name,expected_repo", [
+    ("sam2.1-tiny",      "facebook/sam2.1-hiera-tiny"),
+    ("sam2.1-small",     "facebook/sam2.1-hiera-small"),
+    ("sam2.1-base-plus", "facebook/sam2.1-hiera-base-plus"),
+    ("sam2.1-large",     "facebook/sam2.1-hiera-large"),
+])
+def test_default_factory_uses_transformers_path_for_each_sam2_variant(
+    monkeypatch, fake_transformers_sam2_modules, model_name, expected_repo,
+):
+    """Every SAM 2.x model must route through ``Sam2Model.from_pretrained``
+    on the transformers backend. The legacy ``sam2`` git path no longer
+    exists (removed in v3.4 commit 6)."""
+    monkeypatch.setenv("SAM_MODEL", model_name)
+
+    p_mod._default_factory()  # noqa: SLF001 — exercising module-private factory
+
+    assert fake_transformers_sam2_modules["model_repo"] == expected_repo
+    assert fake_transformers_sam2_modules["proc_repo"] == expected_repo
+    assert fake_transformers_sam2_modules["model_class"] == "Sam2Model"
+
+
+def test_default_factory_routes_sam3_through_sam3_adapter(monkeypatch):
+    """``SAM_MODEL=sam3`` must always route through the SAM 3 adapter,
+    independent of how SAM 2 is wired."""
+    monkeypatch.setenv("SAM_MODEL", "sam3")
+
+    called = {"build": False}
+
+    def _fake_build():
+        called["build"] = True
+        return object()
+
+    def _noop_text():
+        return lambda **_: []
+
+    def _noop_box():
+        return lambda **_: []
+
+    monkeypatch.setattr(
+        "carve_model.sam.sam3_adapter.build_sam3_image_predictor",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "carve_model.sam.sam3_adapter.make_sam3_text_predictor",
+        _noop_text,
+    )
+    monkeypatch.setattr(
+        "carve_model.sam.sam3_adapter.make_sam3_box_predictor",
+        _noop_box,
+    )
+
+    p_mod._default_factory()  # noqa: SLF001
+
+    assert called["build"] is True

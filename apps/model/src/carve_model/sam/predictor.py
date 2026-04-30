@@ -371,12 +371,17 @@ def _reset_singleton() -> None:
 def _default_factory() -> SamPredictor:
     """Production factory: load the configured SAM image predictor.
 
-    Imports torch + sam2/transformers lazily so the test path stays
+    Imports torch + transformers lazily so the test path stays
     import-free. Pulls the HF repo id from ``get_sam_model()``. When
     ``SAM_MODEL=sam3`` is selected, builds the SAM 3 adapter via
     ``carve_model.sam.sam3_adapter`` and (as a side effect) registers the
     SAM 3 text predictor for ``/sam/text-prompt`` if the operator has not
     already supplied a custom one.
+
+    For SAM 2.x variants the predictor is built via
+    ``carve_model.sam.sam2_adapter`` on top of Hugging Face transformers
+    (``Sam2Model`` + ``Sam2Processor``). The legacy upstream ``sam2`` git
+    package path was removed in v3.4 commit 6.
     """
     model = get_sam_model()
     if model == "sam3":
@@ -392,15 +397,16 @@ def _default_factory() -> SamPredictor:
         if _BOX_PREDICTOR_FACTORY is None:
             set_box_predictor(sam3_adapter.make_sam3_box_predictor())
         return adapter
-    repo = _HF_REPO_BY_MODEL[model]
 
-    import torch  # type: ignore[import-not-found]
-    from sam2.sam2_image_predictor import SAM2ImagePredictor  # type: ignore[import-not-found]
+    if model.startswith("sam2"):
+        from carve_model.sam import sam2_adapter
 
-    p = SAM2ImagePredictor.from_pretrained(repo)
-    p.model.to("cuda" if torch.cuda.is_available() else "cpu")
-    p.model = maybe_compile(p.model)
-    return p
+        return sam2_adapter.build_sam2_image_predictor(model)
+
+    raise ValueError(
+        f"unknown SAM model {model!r}; "
+        f"allowed: {', '.join(ALLOWED_SAM_MODELS)}"
+    )
 
 
 def get_predictor() -> SamPredictor:

@@ -50,6 +50,71 @@ The **Models** section under Settings provides operator-facing views into the in
 - **Models → SAM**: shows all five SAM variants (`sam2.1-tiny`, `sam2.1-small`, `sam2.1-base-plus`, `sam2.1-large`, `sam3`) and indicates which one is active. Switching the active variant requires editing `SAM_MODEL` in `.env` and restarting the model container — see [SAM model selection](#sam-3-toggle).
 - **Models → YOLO**: lists uploaded custom YOLO weights and lets you upload new `.pt` files. Weights are stored in MinIO and loaded lazily by the model service.
 
+## Model service (v3.4)
+
+The inference container (`model`) is **opt-in** behind the `inference`
+docker-compose profile. The editor stack (api / web / worker / postgres /
+redis / minio) runs without it; manual annotation tools never call the
+model service.
+
+```bash
+# Start the model container
+docker compose --profile inference up -d model
+
+# Stop it (editor keeps running)
+docker compose --profile inference stop model
+```
+
+### Backend
+
+As of v3.4 the model service runs SAM 2.1 entirely on Hugging Face
+`transformers` (`Sam2Model` + `Sam2Processor` for image, `Sam2VideoModel`
++ `Sam2VideoProcessor` for video). The previous upstream `sam2` git
+package path was removed in v3.4 commit 6 — there is no toggle to opt
+back in. SAM 3 routes through the same transformers path via
+`Sam3Model` / `Sam3VideoModel` / `Sam3TrackerModel` /
+`Sam3TrackerVideoModel`.
+
+### Variant selection
+
+Default variant is `sam2.1-large`. To switch:
+
+- **Permanent:** edit `SAM_MODEL` in `.env` and restart the container.
+- **Hot swap (admin):** `POST /sam/switch {"variant": "sam2.1-small"}`
+  on the model service's internal port. The current predictor is
+  evicted and the new variant is loaded lazily on the next request.
+
+Valid values: `sam2.1-tiny`, `sam2.1-small`, `sam2.1-base-plus`,
+`sam2.1-large`, `sam3` (gated — see [SAM 3](#sam-3-toggle)).
+
+### HF cache volume
+
+Weights are cached at `/root/.cache/huggingface` inside the container,
+backed by the named volume `carve-hf-cache`. The volume persists across
+`docker compose build` and `up -d` cycles, so a rebuild does not force
+a re-download of multi-gigabyte SAM weights. To wipe the cache:
+
+```bash
+docker compose --profile inference down model
+docker volume rm carve-hf-cache
+```
+
+### Pre-warm (optional)
+
+Predictor loading is lazy by default — the first `/sam/encode` call
+pays the load cost. To warm the active predictor before the first
+request (e.g. after a deploy):
+
+```bash
+docker compose --profile inference exec model \
+  python -c "from carve_model.sam.predictor import get_predictor; get_predictor()"
+```
+
+This loads the variant configured by `SAM_MODEL` into GPU memory and
+caches the singleton. Subsequent `/sam/encode` calls hit the cached
+predictor immediately. The `SAM_PREWARM` env var is reserved for a
+future container-startup hook; it is not yet wired.
+
 ## MinIO public endpoint (v2.0)
 
 The browser fetches assets via presigned URLs that point at MinIO. Inside the docker network the API reaches MinIO at `http://minio:9000`, but the browser cannot resolve `minio` — it needs a host-reachable URL.
@@ -94,6 +159,12 @@ license and provide an HF token before enabling it.
 - **torch.compile (optional):** Set `SAM_COMPILE=1` for ~1.3-2x faster
   inference after a one-time 30-60s warmup. Falls back gracefully on
   incompatible hardware.
+- **SAM 2.1 backend (v3.4):** SAM 2.x runs on Hugging Face `transformers`
+  (`Sam2Model` + `Sam2Processor` for image, `Sam2VideoModel` +
+  `Sam2VideoProcessor` for video). Weights are cached at
+  `/root/.cache/huggingface` inside the model container. The legacy
+  upstream `sam2` git package path was removed in v3.4 commit 6; no
+  toggle to opt back in.
 - **GPU memory management:** SAM models are unloaded from GPU memory
   after `SAM_IDLE_TIMEOUT_S` seconds of inactivity (default `900` =
   15 min). Set to `0` to disable idle eviction. Force-unload immediately

@@ -1,8 +1,8 @@
 """SAM 2 / SAM 3 video tracker — protocol + in-memory session store.
 
 A ``Tracker`` advances objects' masks one frame at a time. Production
-binds the protocol to ``sam2.sam2_video_predictor.SAM2VideoPredictor``
-(via ``Sam2VideoPredictorAdapter``) for SAM 2 paths and to
+binds the protocol to ``Sam2VideoTrackerAdapter`` (Hugging Face
+``Sam2VideoModel`` + ``Sam2VideoProcessor``) for SAM 2 paths and to
 ``Sam3VideoDispatcherAdapter`` for SAM 3. Tests inject a stub via
 ``set_test_tracker_factory``.
 
@@ -29,17 +29,15 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from carve_model.sam.predictor import (
-    _HF_REPO_BY_MODEL,
     _empty_cuda_cache,
     _idle_timeout_s,
     autocast_ctx,
     get_sam_model,
-    maybe_compile,
 )
 
 
 class TrackerProtocol(Protocol):
-    """Subset of SAM2VideoPredictor / SAM 3 dispatcher we use."""
+    """Subset of the SAM 2 / SAM 3 video predictor surface we use."""
 
     def init_state(self, video_path: str) -> Any: ...
 
@@ -135,70 +133,6 @@ def set_test_tracker_factory(factory: Any) -> None:
     _TEST_FACTORY = factory
 
 
-class Sam2VideoPredictorAdapter:
-    """Wrap the standalone ``sam2.sam2_video_predictor.SAM2VideoPredictor``
-    so it conforms to the v1.4 ``TrackerProtocol``.
-
-    The raw SAM 2 predictor accepts ``add_new_points_or_box(state,
-    frame_idx, obj_id, points=, labels=, box=)`` per object and yields
-    ``(out_frame_idx, out_obj_ids, out_mask_logits)`` from
-    ``propagate_in_video``. We translate to / from the per-object dict
-    contract our router speaks.
-    """
-
-    def __init__(self, predictor: Any) -> None:
-        self._predictor = predictor
-
-    def init_state(self, video_path: str) -> Any:
-        return self._predictor.init_state(video_path)
-
-    def add_new_points(
-        self, inference_state: Any, frame_idx: int, points: Any, labels: Any,
-    ) -> tuple[Any, Any, Any]:
-        # Legacy single-object path: route to add_inputs_at_frame as obj 1.
-        self.add_inputs_at_frame(
-            inference_state,
-            frame_idx=frame_idx,
-            obj_id=1,
-            points=points,
-            labels=labels,
-        )
-        return None, None, None
-
-    def add_inputs_at_frame(
-        self,
-        inference_state: Any,
-        frame_idx: int,
-        obj_id: int,
-        points: Any = None,
-        labels: Any = None,
-        boxes: Any = None,
-    ) -> Any:
-        # SAM 2 predictor takes a single ``box`` (not a list of boxes); our
-        # contract carries a list of boxes per object so callers can pass
-        # multiple at once via /objects, but SAM 2 only consumes one at a
-        # time. Forward the first if present.
-        box = boxes[0] if boxes else None
-        return self._predictor.add_new_points_or_box(
-            inference_state,
-            frame_idx,
-            obj_id,
-            points=points,
-            labels=labels,
-            box=box,
-        )
-
-    def propagate_in_video(self, inference_state: Any) -> Any:
-        for out in self._predictor.propagate_in_video(inference_state):
-            # sam2 yields (frame_idx, obj_ids, mask_logits) where mask_logits
-            # is shape [num_obj, ...]. Bundle into {obj_id: mask}.
-            out_frame_idx, out_obj_ids, out_mask_logits = out
-            masks_by_obj: dict[int, Any] = {}
-            for i, oid in enumerate(out_obj_ids):
-                masks_by_obj[int(oid)] = out_mask_logits[i]
-            yield int(out_frame_idx), masks_by_obj
-
-
 def _default_factory() -> TrackerProtocol:
     """Production factory — imports lazily; pulls the HF repo from get_sam_model().
 
@@ -207,24 +141,23 @@ def _default_factory() -> TrackerProtocol:
     based (concept tracking); ``track_router`` enforces the ``text`` field
     requirement at the HTTP boundary.
 
-    For SAM 2.x variants the raw ``SAM2VideoPredictor`` is wrapped in
-    ``Sam2VideoPredictorAdapter`` so it speaks our v1.4 multi-object
-    protocol.
+    For SAM 2.x variants the tracker is built via
+    ``carve_model.sam.sam2_adapter`` on top of Hugging Face transformers
+    (``Sam2VideoModel`` + ``Sam2VideoProcessor``). The legacy upstream
+    ``sam2`` git package path was removed in v3.4 commit 6.
     """
     model = get_sam_model()
     if model == "sam3":
         from carve_model.sam import sam3_adapter
 
         return sam3_adapter.build_sam3_video_tracker()
-    repo = _HF_REPO_BY_MODEL[model]
 
-    import torch  # type: ignore[import-not-found]
-    from sam2.sam2_video_predictor import SAM2VideoPredictor  # type: ignore[import-not-found]
+    if model.startswith("sam2"):
+        from carve_model.sam import sam2_adapter
 
-    p = SAM2VideoPredictor.from_pretrained(repo)
-    p.model.to("cuda" if torch.cuda.is_available() else "cpu")
-    p.model = maybe_compile(p.model)
-    return Sam2VideoPredictorAdapter(p)
+        return sam2_adapter.build_sam2_video_tracker(model)
+
+    raise ValueError(f"unknown SAM model {model!r}")
 
 
 def _get_tracker() -> TrackerProtocol:
