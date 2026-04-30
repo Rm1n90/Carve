@@ -109,6 +109,13 @@ interface EditorToolbarProps {
   /** Only present when an asset is open. */
   projectId?: string;
   assetId?: string;
+  /**
+   * v3.5 Phase E — true when the open asset is a multi-frame video.
+   * Gates the SAM "Track" mode chip; tracking has no meaning on a
+   * single-frame image asset because the predictor needs more than one
+   * frame to propagate masks across.
+   */
+  isVideo?: boolean;
   /** Called when YOLO predict completes; lets the page reload annotations. */
   onAfterYoloPredict?: () => void;
 }
@@ -660,14 +667,21 @@ function MaskBrushSizeControl() {
 }
 
 /**
- * v3.5 Phase D — SAM mode picker. Inline 3-chip strip (Point / Box /
- * Text) shown only while the SAM tool is active. Text + Box require
- * SAM 3; on SAM 2 variants those chips render disabled with a tooltip
- * directing the user to the SAM model picker. The picker writes into
- * the ``samMode`` field of the tool store; the canvas + SamTool
- * subscribe and reset their in-flight state on transitions.
+ * v3.5 Phase D/E — SAM mode picker. Inline 4-chip strip (Point / Box /
+ * Text / Track) shown only while the SAM tool is active.
+ *
+ *   - Point — both SAM 2 and SAM 3.
+ *   - Box / Text — SAM 3 only; on SAM 2 variants those chips render
+ *     disabled with a tooltip directing the user to the SAM picker.
+ *   - Track — both SAM 2 and SAM 3, but only when the active asset is
+ *     a multi-frame video (gated by ``isVideo``). Switches the right
+ *     rail to the dedicated <SamTrackPanel>.
+ *
+ * The picker writes into the ``samMode`` field of the tool store; the
+ * canvas + SamTool subscribe and reset their in-flight state on
+ * transitions.
  */
-function SamModePicker() {
+function SamModePicker({ isVideo }: { isVideo: boolean }) {
   const active = useTool((s) => s.active);
   const samMode = useTool((s) => s.samMode);
   const setSamMode = useTool((s) => s.setSamMode);
@@ -684,10 +698,16 @@ function SamModePicker() {
 
   if (active !== "sam") return null;
 
-  const modes: { id: import("@/canvas/tools/SamTool").SamMode; label: string; sam3Only: boolean }[] = [
-    { id: "point", label: "Point", sam3Only: false },
-    { id: "box", label: "Box", sam3Only: true },
-    { id: "text", label: "Text", sam3Only: true },
+  const modes: {
+    id: import("@/canvas/tools/SamTool").SamMode;
+    label: string;
+    sam3Only: boolean;
+    videoOnly: boolean;
+  }[] = [
+    { id: "point", label: "Point", sam3Only: false, videoOnly: false },
+    { id: "box", label: "Box", sam3Only: true, videoOnly: false },
+    { id: "text", label: "Text", sam3Only: true, videoOnly: false },
+    { id: "track", label: "Track", sam3Only: false, videoOnly: true },
   ];
 
   return (
@@ -698,8 +718,13 @@ function SamModePicker() {
       className="inline-flex items-center gap-0.5 h-8 px-1 rounded-[var(--radius-sm)] bg-[var(--bg-subtle)]"
     >
       {modes.map((m) => {
-        const disabled = m.sam3Only && !isSam3;
+        const sam3Disabled = m.sam3Only && !isSam3;
+        const videoDisabled = m.videoOnly && !isVideo;
+        const disabled = sam3Disabled || videoDisabled;
         const isActive = samMode === m.id;
+        const tooltipText = videoDisabled
+          ? "Open a video asset to enable tracking"
+          : "Switch to SAM 3 for text/box prompting";
         const button = (
           <button
             key={m.id}
@@ -728,10 +753,7 @@ function SamModePicker() {
         );
         if (disabled) {
           return (
-            <Tooltip
-              key={m.id}
-              content="Switch to SAM 3 for text/box prompting"
-            >
+            <Tooltip key={m.id} content={tooltipText}>
               {button}
             </Tooltip>
           );
@@ -1036,6 +1058,7 @@ export function EditorToolbar({
   zoomPct,
   projectId,
   assetId,
+  isVideo = false,
   onAfterYoloPredict,
 }: EditorToolbarProps) {
   const active = useTool((s) => s.active);
@@ -1148,7 +1171,7 @@ export function EditorToolbar({
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
       <SamModelPicker />
-      <SamModePicker />
+      <SamModePicker isVideo={isVideo} />
       <AutoApplyToggle />
       <MaskBrushSizeControl />
 

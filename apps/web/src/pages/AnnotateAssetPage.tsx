@@ -19,6 +19,7 @@ import { FrameTimeline } from "@/components/annotation/FrameTimeline";
 import { InfoDialog } from "@/components/annotation/InfoDialog";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
 import { AppearancePanel } from "@/components/annotation/AppearancePanel";
+import { SamTrackPanel } from "@/components/annotation/SamTrackPanel";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { SelectionCountBadge } from "@/components/annotation/SelectionCountBadge";
@@ -76,6 +77,40 @@ function ThumbnailStripGate({
       taskId={taskId}
       projectId={projectId}
       activeAssetId={activeAssetId}
+    />
+  );
+}
+
+/**
+ * v3.5 Phase E — gate that mounts the SAM video tracking panel only
+ * when the user is on a video asset, has the SAM tool active, and has
+ * picked the "track" mode. Lifted out of AnnotateAssetPage's render so
+ * the page itself doesn't re-render on every tool / mode transition.
+ */
+function SamTrackModeGate({
+  assetId,
+  frameId,
+  currentFrameIdx,
+  totalFrames,
+  isVideo,
+}: {
+  assetId: string;
+  frameId: string | null;
+  currentFrameIdx: number;
+  totalFrames: number;
+  isVideo: boolean;
+}) {
+  const activeTool = useTool((s) => s.active);
+  const samMode = useTool((s) => s.samMode);
+  if (!isVideo) return null;
+  if (activeTool !== "sam") return null;
+  if (samMode !== "track") return null;
+  return (
+    <SamTrackPanel
+      assetId={assetId}
+      frameId={frameId}
+      currentFrameIdx={currentFrameIdx}
+      totalFrames={totalFrames}
     />
   );
 }
@@ -666,6 +701,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
           <EditorToolbar
             projectId={projectId}
             assetId={assetId}
+            isVideo={isVideo}
             onSave={saveNow}
             isSaving={saveMutation.isPending}
             hasError={hasError}
@@ -880,6 +916,17 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 </Tabs.Content>
               </Tabs.Root>
               <AppearancePanel />
+              {/* v3.5 Phase E — SAM video tracking panel. Renders below
+                  the tabs (i.e. doesn't replace the existing right rail)
+                  when the user is in SAM Track mode on a video asset.
+                  Keeps Phase D's other modes' UX untouched. */}
+              <SamTrackModeGate
+                assetId={assetId}
+                frameId={frameId}
+                currentFrameIdx={currentFrameIdx}
+                totalFrames={asset.frames}
+                isVideo={isVideo}
+              />
             </aside>
           </div>
 

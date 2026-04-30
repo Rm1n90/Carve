@@ -4,11 +4,16 @@ import { canDecodeLocally } from "@/canvas/sam/onnx";
 import type { Point } from "./BboxTool";
 
 /**
- * v3.5 Phase D — three input modalities for SAM:
+ * v3.5 Phase D/E — four input modalities for SAM:
  *
  *   point — click-driven, SAM 2 / SAM 3 (via /sam/encode + /sam/decode).
  *   box   — drag a rectangle, SAM 3 only (via /sam/box-prompt).
  *   text  — type an object name, SAM 3 only (via /sam/text-prompt).
+ *   track — multi-frame video tracking, SAM 2 + SAM 3 (via /sam-track/*).
+ *           The track flow lives in <SamTrackPanel> + TrackPropagateTool
+ *           rather than this class; SamMode merely advertises it so the
+ *           toolbar mode picker and the editor right rail know to swap
+ *           in the dedicated panel.
  *
  * The legacy point flow is preserved verbatim. Box and text modes are
  * one-shot (no session / encode round-trip) — each call sends the
@@ -16,7 +21,7 @@ import type { Point } from "./BboxTool";
  * tool with a mode field over three classes so the canvas wiring,
  * keyboard handling, and commit semantics stay unified.
  */
-export type SamMode = "point" | "box" | "text";
+export type SamMode = "point" | "box" | "text" | "track";
 
 export type SamBox = [number, number, number, number];
 
