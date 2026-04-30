@@ -60,12 +60,19 @@ def _http(err: AppError) -> HTTPException:
 class AutoAnnotateResponse(BaseModel):
     """v3.3 Issue 3c — predict response now includes a skipped-by-class
     summary so the editor can surface "Created N · skipped M (unmapped: …)"
-    instead of silently dropping unmapped detections."""
+    instead of silently dropping unmapped detections.
+
+    v3.7.2 — adds ``overwrite_skipped`` so the UI can warn when the user
+    requested overwrite=true but the existing annotations were
+    intentionally preserved (because the new prediction yielded zero
+    annotations). Defaults to ``False`` for backward compatibility.
+    """
 
     annotations: list[AnnotationOut]
     annotations_created: int
     skipped_count: int
     skipped_by_class: dict[str, int]
+    overwrite_skipped: bool = False
 
 
 class AutoAnnotateBody(BaseModel):
@@ -165,6 +172,7 @@ def auto_annotate(
         annotations_created=result.annotations_created,
         skipped_count=result.skipped_count,
         skipped_by_class=dict(result.skipped_by_class),
+        overwrite_skipped=bool(result.overwrite_skipped),
     )
 
 
