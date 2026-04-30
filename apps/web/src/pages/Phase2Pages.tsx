@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { Select } from "@/components/ui/Select";
+import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import {
   trashApi,
   modelsApi,
@@ -653,60 +654,7 @@ export function ModelsYoloPage() {
 
 // =========================== /models/sam ===========================
 
-const SAM_VARIANT_LABEL: Record<string, string> = {
-  "sam2.1-tiny": "SAM 2.1 — Tiny (39MB · fastest)",
-  "sam2.1-small": "SAM 2.1 — Small",
-  "sam2.1-base+": "SAM 2.1 — Base+",
-  "sam2.1-large": "SAM 2.1 — Large (slowest · best)",
-  sam3: "SAM 3 — concept-driven prompting",
-};
-
 export function ModelsSamPage() {
-  const qc = useQueryClient();
-  const confirm = useConfirm();
-  const samQ = useQuery({ queryKey: ["sam-active"], queryFn: modelsApi.samActive });
-  const data = samQ.data;
-
-  // v3.0 Bug 7: hot-swap UI. ``switching`` reflects whether a load is in
-  // flight — drives the spinner, disabled radios, and the live region copy.
-  const [switching, setSwitching] = useState(false);
-  const [pendingVariant, setPendingVariant] = useState<string | null>(null);
-
-  const switchM = useMutation({
-    mutationFn: (variant: string) => modelsApi.samSetActive(variant),
-    onMutate: (variant) => {
-      setSwitching(true);
-      setPendingVariant(variant);
-    },
-    onSuccess: (result) => {
-      showToast(`Active SAM variant: ${result.active_variant}`, {
-        variant: "success",
-      });
-      void qc.invalidateQueries({ queryKey: ["sam-active"] });
-    },
-    onError: () => {
-      showToast("Failed to switch SAM variant", { variant: "error" });
-    },
-    onSettled: () => {
-      setSwitching(false);
-      setPendingVariant(null);
-    },
-  });
-
-  async function handleVariantChange(variant: string) {
-    if (switching) return;
-    if (variant === data?.active) return;
-    const ok = await confirm({
-      title: `Switch to ${SAM_VARIANT_LABEL[variant] ?? variant}?`,
-      description:
-        "The current model will be offloaded from GPU memory. Loading the new variant takes 5-30 seconds.",
-      confirmLabel: "Switch",
-      cancelLabel: "Cancel",
-    });
-    if (!ok) return;
-    switchM.mutate(variant);
-  }
-
   return (
     <div className="grid gap-6 max-w-[1100px]">
       {/* v2.9 P1-16 — editorial header pattern. */}
@@ -722,114 +670,9 @@ export function ModelsSamPage() {
         </p>
       </header>
 
-      <Card variant="surface" radius="lg" className="p-6 grid gap-4">
-        <div className="flex items-center gap-3">
-          <span className="grid h-10 w-10 place-items-center rounded-[var(--radius-md)] bg-[var(--accent-bg)] text-[color:var(--accent)]">
-            <Sparkles className="h-5 w-5" />
-          </span>
-          <div>
-            <p className="text-[12px] tracking-tight text-[color:var(--text-tertiary)] uppercase">
-              Active variant
-            </p>
-            <p
-              className="text-[18px] font-medium tracking-tight"
-              data-testid="sam-active-variant-label"
-            >
-              {samQ.isLoading
-                ? "…"
-                : SAM_VARIANT_LABEL[data?.active ?? ""] ?? data?.active}
-            </p>
-          </div>
-        </div>
-      </Card>
-
-      <Card variant="surface" radius="lg" className="overflow-hidden">
-        <div className="px-6 py-4 border-b border-[var(--border-subtle)]">
-          <h2 className="text-[14px] font-medium tracking-tight">
-            Available variants
-          </h2>
-          <p className="text-[12px] text-[color:var(--text-tertiary)] mt-0.5">
-            Select a variant to hot-swap the active SAM model. The model
-            service offloads the current model and loads the new one
-            (typically 5-30 seconds).
-          </p>
-        </div>
-        <ul
-          role="radiogroup"
-          aria-label="sam-variant"
-          aria-busy={switching}
-          data-testid="sam-variant-radiogroup"
-        >
-          {(data?.available ?? []).map((variant) => {
-            const active = variant === data?.active;
-            const id = `sam-variant-${variant}`;
-            const disabled = switching;
-            return (
-              <li
-                key={variant}
-                className={
-                  "px-6 py-3 border-b border-[var(--border-subtle)] last:border-b-0 flex items-center gap-3 " +
-                  (active ? "bg-[var(--accent-bg)]" : "")
-                }
-              >
-                <input
-                  type="radio"
-                  id={id}
-                  name="sam-variant"
-                  value={variant}
-                  checked={active}
-                  disabled={disabled}
-                  onChange={() => {
-                    void handleVariantChange(variant);
-                  }}
-                  className="h-4 w-4 accent-[var(--accent)] cursor-pointer disabled:cursor-not-allowed"
-                  data-testid={`sam-variant-radio-${variant}`}
-                  aria-label={SAM_VARIANT_LABEL[variant] ?? variant}
-                />
-                <Layers
-                  className={
-                    "h-3.5 w-3.5 " +
-                    (active
-                      ? "text-[color:var(--accent)]"
-                      : "text-[color:var(--text-tertiary)]")
-                  }
-                />
-                <label
-                  htmlFor={id}
-                  className={
-                    "text-[13.5px] tracking-tight " +
-                    (disabled ? "" : "cursor-pointer")
-                  }
-                >
-                  {SAM_VARIANT_LABEL[variant] ?? variant}
-                </label>
-                {active && !switching && (
-                  <Badge variant="accent" className="ml-auto">
-                    Active
-                  </Badge>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-        {switching && (
-          <div
-            className="px-6 py-3 border-t border-[var(--border-subtle)] flex items-center gap-3 bg-[var(--bg-subtle)]"
-            role="status"
-            aria-live="polite"
-            data-testid="sam-switching-status"
-          >
-            <span
-              className="inline-block h-3.5 w-3.5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin"
-              aria-hidden="true"
-            />
-            <span className="text-[12.5px] text-[color:var(--text-secondary)]">
-              Loading {SAM_VARIANT_LABEL[pendingVariant ?? ""] ?? pendingVariant}
-              … this can take 30 seconds.
-            </span>
-          </div>
-        )}
-      </Card>
+      {/* v3.5 Phase B — render the shared switcher; the same widget is
+          now used in the editor toolbar's compact picker. */}
+      <SamVariantSwitcher variant="full" />
     </div>
   );
 }

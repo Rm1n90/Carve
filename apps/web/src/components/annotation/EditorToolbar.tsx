@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
+import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
 import { useTool, type ToolName, type VisibilityFlags } from "@/state/tool";
@@ -92,14 +93,6 @@ const TOOLS: ToolDef[] = [
   { name: "tag", label: "Tag", hotkey: "T", icon: <Tag className="h-[18px] w-[18px]" /> },
 ];
 
-const VARIANT_NOTES: Record<string, string> = {
-  "sam2.1-tiny": "Tiny — fastest",
-  "sam2.1-small": "Small — balanced",
-  "sam2.1-base+": "Base+ — accurate",
-  "sam2.1-large": "Large — best quality",
-  sam3: "SAM 3 — preview",
-};
-
 interface EditorToolbarProps {
   onSave: () => void;
   isSaving: boolean;
@@ -153,22 +146,19 @@ function ToolButton({
   );
 }
 
+/**
+ * Compact SAM variant picker for the editor toolbar. The trigger shows
+ * the currently active variant; the popover wraps the shared
+ * `<SamVariantSwitcher variant="compact" />` which handles the real
+ * runtime switch (POST /models/sam-active). v3.5 Phase B — was
+ * previously read-only; now actually swaps.
+ */
 function SamModelPicker() {
   const q = useQuery({
     queryKey: ["sam-active"],
     queryFn: () => modelsApi.samActive(),
   });
   const active = q.data?.active ?? "sam2.1-base+";
-  const available = q.data?.available ?? [];
-  // The picker has no runtime mutation — switching SAM_MODEL requires a
-  // service restart. We treat any of: query error, empty available list,
-  // or explicit reachable=false as "model service is not reachable" and
-  // show a banner. (audit bug 8b; v2.3 phase B refines with the explicit
-  // `reachable` field returned by the API.)
-  const unreachable =
-    !!q.error ||
-    (q.isFetched && available.length === 0) ||
-    (q.isFetched && q.data?.reachable === false);
 
   return (
     <Popover>
@@ -190,70 +180,7 @@ function SamModelPicker() {
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="min-w-[300px] p-1">
-        <p className="px-2 py-1.5 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
-          SAM model
-        </p>
-        {unreachable && (
-          <div
-            data-testid="sam-picker-unreachable-banner"
-            className="mx-1 mb-1 px-2 py-2 text-[11.5px] rounded-[var(--radius-xs)] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)] flex items-start gap-1.5"
-          >
-            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 text-[color:var(--danger)] shrink-0" />
-            <span>
-              Model service is not running. Start it with
-              <code className="mx-1 px-1 py-0.5 rounded bg-[var(--bg-app)] text-[10.5px] font-mono">
-                docker compose --profile inference up -d
-              </code>
-              .
-            </span>
-          </div>
-        )}
-        {q.isLoading && !unreachable ? (
-          <p className="px-2 py-2 text-[12px] text-[color:var(--text-tertiary)] italic">
-            Loading…
-          </p>
-        ) : (
-          available.map((name) => (
-            <div
-              key={name}
-              role="listitem"
-              aria-label={`${name}${name === active ? " (active)" : ""}`}
-              data-testid={`sam-variant-${name}`}
-              data-active={name === active ? "true" : undefined}
-              className={cn(
-                "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
-                "text-[12.5px] tracking-tight outline-none",
-                name === active ? "bg-[var(--accent-bg)]" : "",
-              )}
-            >
-              {name === active ? (
-                <Check className="h-3.5 w-3.5 text-[color:var(--accent)]" />
-              ) : (
-                <span className="h-3.5 w-3.5" aria-hidden />
-              )}
-              <span className="flex-1">{name}</span>
-              <span className="text-[10.5px] text-[color:var(--text-tertiary)]">
-                {VARIANT_NOTES[name] ?? ""}
-              </span>
-              {name === active && (
-                <span className="text-[9.5px] uppercase tracking-[0.10em] px-1.5 py-0.5 rounded bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium">
-                  active
-                </span>
-              )}
-            </div>
-          ))
-        )}
-        <p className="px-2 py-2 mt-1 border-t border-[var(--border-subtle)] text-[11px] text-[color:var(--text-tertiary)] leading-snug">
-          To change the active SAM variant, set{" "}
-          <code className="px-1 py-0.5 rounded bg-[var(--bg-subtle)] text-[10.5px] font-mono">
-            SAM_MODEL
-          </code>{" "}
-          in your model service{" "}
-          <code className="px-1 py-0.5 rounded bg-[var(--bg-subtle)] text-[10.5px] font-mono">
-            .env
-          </code>{" "}
-          and restart it.
-        </p>
+        <SamVariantSwitcher variant="compact" />
       </PopoverContent>
     </Popover>
   );
