@@ -168,11 +168,26 @@ def auto_annotate(
     )
 
 
+class BatchAutoAnnotateBody(BaseModel):
+    """v3.7 Phase 2 Issue 1 — optional JSON body for the batch enqueue
+    endpoint. Mirrors :class:`AutoAnnotateBody` so the same predict
+    popover state (min_confidence + class_overrides) maps cleanly to
+    both the single-asset and the all-assets-in-task call sites.
+
+    Both fields are optional; an empty body keeps the legacy
+    "name-match + zero confidence floor" defaults.
+    """
+
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    class_overrides: dict[str, str | None] | None = Field(default=None)
+
+
 @task_inference_router.post("/{task_id}/auto-annotate")
 def enqueue_batch_auto_annotate(
     task_id: uuid.UUID,
     weight_id: uuid.UUID,
     overwrite: bool = False,
+    body: BatchAutoAnnotateBody | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -185,7 +200,42 @@ def enqueue_batch_auto_annotate(
     if weight.project_id is not None and weight.project_id != task.project_id:
         raise HTTPException(status_code=400, detail="weight_project_mismatch")
 
-    payload = build_job_payload(actor=user, task=task, weight=weight, overwrite=overwrite)
+    # v3.7 Phase 2 Issue 1 — coerce the wire ``{"3": "<uuid>"}`` body
+    # into ``{int: str | None}`` for the RQ payload. Same validation
+    # shape as :func:`auto_annotate` in the single-asset path: invalid
+    # keys / values are dropped silently rather than 422-ing the call.
+    overrides_for_payload: dict[int, str | None] | None = None
+    min_conf: float | None = None
+    if body is not None:
+        if body.min_confidence is not None:
+            # Pydantic already enforced 0..1 via Field(ge=0, le=1).
+            min_conf = float(body.min_confidence)
+        if body.class_overrides is not None:
+            overrides_for_payload = {}
+            for k, v in body.class_overrides.items():
+                try:
+                    idx = int(k)
+                except (TypeError, ValueError):
+                    continue
+                if v is None:
+                    overrides_for_payload[idx] = None
+                    continue
+                # Validate UUID shape but keep the raw string in the
+                # payload so RQ pickles cleanly across worker boundaries.
+                try:
+                    uuid.UUID(str(v))
+                except (TypeError, ValueError):
+                    continue
+                overrides_for_payload[idx] = str(v)
+
+    payload = build_job_payload(
+        actor=user,
+        task=task,
+        weight=weight,
+        overwrite=overwrite,
+        min_confidence=min_conf,
+        class_overrides=overrides_for_payload,
+    )
 
     # Best-effort enqueue — if Redis/RQ are not reachable, return the job_id anyway
     # so callers can poll later when Redis is back up. Production has Redis up by
