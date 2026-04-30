@@ -19,6 +19,7 @@ import {
   vi,
 } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -58,6 +59,7 @@ import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { SamTrackPanel } from "@/components/annotation/SamTrackPanel";
 import { useAnnotations } from "@/state/annotations";
 import { useTool } from "@/state/tool";
+import { useSamTrackBridge } from "@/state/samTrackBridge";
 
 function wrap(node: React.ReactNode) {
   const qc = new QueryClient({
@@ -78,6 +80,7 @@ beforeEach(() => {
     samMode: "point",
     activeClassId: null,
   });
+  useSamTrackBridge.getState().clear();
 });
 
 afterEach(() => {
@@ -339,5 +342,114 @@ describe("SamTrackPanel", () => {
     await waitFor(() => {
       expect(screen.getByTestId("sam-track-start")).toBeInTheDocument();
     });
+  });
+});
+
+// --- v3.6 — canvas teach-back through the SamTrack bridge -----------------
+
+describe("SamTrackPanel — canvas click teach-back (v3.6)", () => {
+  function renderPanel() {
+    return render(
+      wrap(
+        <SamTrackPanel
+          assetId="asset-vid-1"
+          frameId="frame-id-0"
+          currentFrameIdx={0}
+          totalFrames={100}
+        />,
+      ),
+    );
+  }
+
+  it("registers a canvas-click handler on the bridge while mounted", () => {
+    expect(useSamTrackBridge.getState().onCanvasClick).toBeNull();
+    renderPanel();
+    expect(typeof useSamTrackBridge.getState().onCanvasClick).toBe("function");
+  });
+
+  it("clears the bridge handler on unmount", () => {
+    const { unmount } = renderPanel();
+    expect(useSamTrackBridge.getState().onCanvasClick).not.toBeNull();
+    unmount();
+    expect(useSamTrackBridge.getState().onCanvasClick).toBeNull();
+    expect(useSamTrackBridge.getState().markers).toEqual([]);
+  });
+
+  it("canvas click auto-starts the session and adds an object at the click coords", async () => {
+    (samTrackApi.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      session_id: "S-77",
+      mask_at_start: { counts: "", size: [0, 0] },
+    });
+    (samTrackApi.addObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      obj_id: 1,
+      frame_idx: 0,
+    });
+    useTool.setState({ activeClassId: "c-X" });
+    renderPanel();
+
+    // Simulate the canvas dispatching a click in track mode through the bridge.
+    const handler = useSamTrackBridge.getState().onCanvasClick;
+    expect(handler).not.toBeNull();
+    await act(async () => {
+      handler!([123, 456]);
+    });
+
+    // Auto-start path: a /sam/track/start should fire because no session is open.
+    await waitFor(() => {
+      expect(samTrackApi.start).toHaveBeenCalledWith("asset-vid-1", 0, [], []);
+    });
+    // addObject should be called with the click coords as a positive prompt.
+    await waitFor(() => {
+      expect(samTrackApi.addObject).toHaveBeenCalledWith(
+        "asset-vid-1",
+        "S-77",
+        expect.objectContaining({
+          frame_idx: 0,
+          obj_id: 1,
+          points: [[123, 456]],
+          labels: [1],
+        }),
+      );
+    });
+    // The panel publishes a marker so the canvas can paint a numbered dot.
+    await waitFor(() => {
+      const markers = useSamTrackBridge.getState().markers;
+      expect(markers).toEqual([{ objId: 1, x: 123, y: 456 }]);
+    });
+  });
+
+  it("subsequent canvas clicks add more objects without re-starting the session", async () => {
+    (samTrackApi.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      session_id: "S-1",
+      mask_at_start: { counts: "", size: [0, 0] },
+    });
+    (samTrackApi.addObject as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ obj_id: 1, frame_idx: 0 })
+      .mockResolvedValueOnce({ obj_id: 2, frame_idx: 0 });
+    useTool.setState({ activeClassId: "c-X" });
+    renderPanel();
+
+    const handler = useSamTrackBridge.getState().onCanvasClick!;
+    await act(async () => {
+      handler([10, 20]);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("sam-track-object-1")).toBeInTheDocument(),
+    );
+    await act(async () => {
+      handler([30, 40]);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("sam-track-object-2")).toBeInTheDocument(),
+    );
+
+    // start should fire once; addObject twice with each click's coords.
+    expect(samTrackApi.start).toHaveBeenCalledTimes(1);
+    expect(samTrackApi.addObject).toHaveBeenCalledTimes(2);
+    const markers = useSamTrackBridge.getState().markers;
+    expect(markers).toEqual([
+      { objId: 1, x: 10, y: 20 },
+      { objId: 2, x: 30, y: 40 },
+    ]);
   });
 });

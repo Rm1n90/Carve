@@ -10,6 +10,7 @@ import { useTool, type ToolName } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
+import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
 import { evaluateFilter, hasMeaningfulRules } from "@/lib/annotation-filter";
 import type { ClassRow } from "@/api/classes";
 import {
@@ -278,8 +279,30 @@ export function AnnotationCanvas({
     if (samMode !== "text") setSamTextDraft("");
     clearSamPreview();
     clearSamPoints();
+    // Track-mode markers belong to the SamTrack panel, not the SamTool.
+    // Tear them down whenever the user leaves track mode so leftover
+    // markers don't follow them into point/box/text flows.
+    if (samMode !== "track") clearSamTrackMarkers();
+    else void drawSamTrackMarkers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [samMode, samTool]);
+
+  // Subscribe to bridge marker changes so the canvas re-paints whenever
+  // <SamTrackPanel> publishes a new markers array (after addObjectAtFrame).
+  useEffect(() => {
+    const unsub = useSamTrackBridge.subscribe((s, prev) => {
+      if (s.markers === prev.markers) return;
+      // Only paint when track mode is active — otherwise we'd draw on
+      // top of a non-track UX.
+      if (useTool.getState().samMode === "track") {
+        void drawSamTrackMarkers();
+      }
+    });
+    return () => {
+      unsub();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Empty map fallback so the renderer doesn't depend on prop being provided.
   const classMap = classColorMap ?? EMPTY_CLASS_MAP;
   const classNames = classNameMap ?? EMPTY_CLASS_MAP;
@@ -302,6 +325,11 @@ export function AnnotationCanvas({
   // Per-click point markers (positives + negatives) drawn on top of the
   // mask preview so the user can see exactly where they clicked. v3.6.
   const samPointsGfxRef = useRef<unknown | null>(null);
+  // v3.6 — numbered markers for SAM video tracking objects. Rendered on
+  // the overlay layer when the SAM tool + track mode are active. Each
+  // entry is a Pixi Container holding a circle + text label so we can
+  // tear them down individually when the panel resets.
+  const samTrackMarkersGfxRef = useRef<unknown[]>([]);
   // Per-annotation label tag (a Pixi Container holding a fill rect + Text).
   // Rendered above each bbox when the `labels` visibility flag is on.
   // Audit bug O.
@@ -1500,6 +1528,107 @@ export function AnnotationCanvas({
     if (g && typeof g.clear === "function") g.clear();
   }
 
+  /**
+   * v3.6 — paint numbered markers for each SAM tracking object. Reads
+   * the markers list from the SamTrack bridge slice (published by
+   * <SamTrackPanel> after each successful addObjectAtFrame).
+   *
+   * Each marker is its own Pixi Container so we can tear them down
+   * individually on reset. Style: filled circle with the obj_id rendered
+   * inside in white. Color cycles through a small palette so adjacent
+   * markers are easy to tell apart.
+   */
+  async function drawSamTrackMarkers(): Promise<void> {
+    const app = appRef.current;
+    if (!app) return;
+    let pixi:
+      | typeof import("pixi.js")
+      | undefined;
+    try {
+      pixi = await import("pixi.js");
+    } catch {
+      return;
+    }
+    if (!pixi || !pixi.Graphics || !pixi.Container || !pixi.Text) return;
+    const markers = useSamTrackBridge.getState().markers;
+    // Tear down any existing markers — we re-render the full set on
+    // every change rather than diffing. The list is small (<10 typical).
+    for (const c of samTrackMarkersGfxRef.current) {
+      try {
+        (app.overlayLayer as { removeChild?: (c: never) => void }).removeChild?.(
+          c as never,
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+    samTrackMarkersGfxRef.current = [];
+    const PALETTE = [
+      0x3b82f6, // blue
+      0xf59e0b, // amber
+      0x10b981, // emerald
+      0xec4899, // pink
+      0x8b5cf6, // violet
+      0xef4444, // red
+    ];
+    const radius = 10;
+    for (const m of markers as SamTrackMarker[]) {
+      const color = PALETTE[(m.objId - 1) % PALETTE.length];
+      try {
+        const container = new pixi.Container();
+        const circle = new pixi.Graphics();
+        circle.circle(m.x, m.y, radius);
+        circle.fill({ color, alpha: 1 });
+        circle.circle(m.x, m.y, radius);
+        circle.stroke({ color: 0xffffff, width: 1.5, alpha: 1 });
+        const label = new pixi.Text({
+          text: String(m.objId),
+          style: {
+            fontFamily: "Geist Variable, ui-sans-serif, system-ui, sans-serif",
+            fontSize: 11,
+            fill: 0xffffff,
+            fontWeight: "600",
+          },
+        });
+        // Center the label over the circle.
+        const lw = (label as { width: number }).width || 6;
+        const lh = (label as { height: number }).height || 12;
+        (label as { x: number }).x = m.x - lw / 2;
+        (label as { y: number }).y = m.y - lh / 2;
+        (container as unknown as { addChild: (c: never) => unknown }).addChild(
+          circle as never,
+        );
+        (container as unknown as { addChild: (c: never) => unknown }).addChild(
+          label as never,
+        );
+        (app.overlayLayer as unknown as { addChild: (c: never) => unknown }).addChild(
+          container as never,
+        );
+        samTrackMarkersGfxRef.current.push(container);
+      } catch {
+        /* best-effort under jsdom mocks */
+      }
+    }
+  }
+
+  function clearSamTrackMarkers() {
+    const app = appRef.current;
+    if (!app) {
+      samTrackMarkersGfxRef.current = [];
+      return;
+    }
+    for (const c of samTrackMarkersGfxRef.current) {
+      try {
+        (app.overlayLayer as { removeChild?: (c: never) => void }).removeChild?.(
+          c as never,
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+    samTrackMarkersGfxRef.current = [];
+  }
+
   // ----- Tool routing — recreate per render-relevant change.
   useEffect(() => {
     const host = hostRef.current;
@@ -1769,7 +1898,27 @@ export function AnnotationCanvas({
       else if (tool === "sam") {
         e.preventDefault();
         const mode = useTool.getState().samMode;
-        if (mode === "box") {
+        if (mode === "track") {
+          // v3.6 — canvas teach-back: route the click to the panel's
+          // registered handler, which auto-starts the session and calls
+          // addObjectAtFrame with the click as the positive prompt.
+          // Clamp to image bounds so an off-image click produces a
+          // sane in-image prompt.
+          const clamped = clampPointToImage(p);
+          const handler = useSamTrackBridge.getState().onCanvasClick;
+          if (handler) {
+            try {
+              handler([clamped.x, clamped.y]);
+            } catch {
+              /* best-effort — handler errors surface in panel toasts */
+            }
+            // Refresh marker overlay on next frame so the new marker
+            // (added asynchronously by the panel) becomes visible.
+            void drawSamTrackMarkers();
+          } else {
+            showToast("Open the Track panel first.", { variant: "warning" });
+          }
+        } else if (mode === "box") {
           // SAM 3 box prompt — clamp to image bounds (mirrors BboxTool)
           // so a drag past the canvas backdrop produces sane xyxy.
           const clamped = clampPointToImage(p);
