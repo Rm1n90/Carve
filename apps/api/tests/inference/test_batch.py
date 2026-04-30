@@ -38,6 +38,9 @@ class _FakeStorage:
     def presigned_get(self, key, **k):
         return f"https://fake/{key}"
 
+    def presigned_get_internal(self, key, **k):
+        return f"https://fake-internal/{key}"
+
 
 def _tiny_png() -> bytes:
     return bytes.fromhex(
@@ -835,3 +838,162 @@ def test_run_batch_aggregates_persist_to_progress_hash(db_session, monkeypatch) 
     )
     assert snap["total_annotations_created"] == 4
     assert snap["total_skipped_detections"] == 2
+
+
+# ---------------------------------------------------------------------------
+# v3.7.3 — fresh session per asset: failures don't poison subsequent assets
+# ---------------------------------------------------------------------------
+
+
+def test_run_batch_continues_after_per_asset_failure(db_session, monkeypatch) -> None:
+    """v3.7.3 — when one asset's autoannotate raises, subsequent assets
+    must still be processed. The previous (v3.7.2) implementation kept
+    a single Session across the loop; an exception that left ORM
+    internals in a bad state could silently cascade and skip every
+    remaining asset while still reporting "completed". With a fresh
+    Session per asset, asset N's failure can't poison asset N+1.
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+
+    # 4 assets — middle one will fail.
+    for i in range(4):
+        a = Asset(
+            task_id=t.id,
+            kind=AssetKind.image,
+            xxh3_128=f"resilient{i}",
+            mime="image/png",
+            size_bytes=1,
+            width=10,
+            height=10,
+            frames=1,
+            original_name=f"r{i}.png",
+        )
+        db_session.add(a)
+        db_session.flush()
+        db_session.add(Frame(asset_id=a.id, idx=0, pts_ms=0))
+        db_session.flush()
+    db_session.commit()
+
+    call_idx = {"n": 0}
+
+    def fake_auto_annotate_asset(**_kwargs):
+        call_idx["n"] += 1
+        # Asset #2 (index 1) blows up.
+        if call_idx["n"] == 2:
+            raise RuntimeError("boom-on-asset-2")
+
+        class _Result:
+            annotations: list = []
+            annotations_created = 1
+            skipped_count = 0
+            skipped_by_class: dict = {}
+            overwrite_skipped = False
+
+        return _Result()
+
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    result = batch_mod.run_batch_auto_annotate(payload)
+
+    # 1 failure but the other 3 must have been processed.
+    assert result["total"] == 4
+    assert result["done"] == 3, (
+        f"expected 3 successful assets after 1 failure, got {result['done']} — "
+        "the failure poisoned subsequent iterations"
+    )
+    assert result["failed"] == 1
+    assert result["status"] == "completed_with_errors"
+    # Per-asset error reason must be surfaced (not just an opaque count).
+    assert any("RuntimeError" in e for e in result["errors"]), result["errors"]
+
+
+def test_run_batch_returns_per_asset_error_reasons(db_session, monkeypatch) -> None:
+    """v3.7.3 — the final return dict must include a populated ``errors``
+    list with per-asset reason strings so the polling endpoint can show
+    the user *why* assets failed (not just a count). Reasons format:
+    ``"<asset_name>: <code-or-exception-type>"``.
+    """
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    db_session.flush()
+    w = Weight(
+        project_id=p.id,
+        name="y",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/abc/x.pt",
+        size_bytes=1,
+        class_names=["car"],
+    )
+    db_session.add(w)
+    db_session.flush()
+    a = Asset(
+        task_id=t.id,
+        kind=AssetKind.image,
+        xxh3_128="reason1",
+        mime="image/png",
+        size_bytes=1,
+        width=10,
+        height=10,
+        frames=1,
+        original_name="reason1.png",
+    )
+    db_session.add(a)
+    db_session.flush()
+    db_session.add(Frame(asset_id=a.id, idx=0, pts_ms=0))
+    db_session.flush()
+    db_session.commit()
+
+    from carve_api.inference.autoannotate import AutoAnnotateMismatch
+
+    def fake_auto_annotate_asset(**_kwargs):
+        raise AutoAnnotateMismatch("weight does not belong to this project")
+
+    monkeypatch.setattr(batch_mod, "auto_annotate_asset", fake_auto_annotate_asset)
+    monkeypatch.setattr(batch_mod, "fetch_asset_bytes", lambda _a: b"x")
+    monkeypatch.setattr(batch_mod, "presigned_url_for_weight", lambda _w: "https://fake")
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    result = batch_mod.run_batch_auto_annotate(payload)
+
+    assert result["status"] == "completed_with_errors"
+    assert result["failed"] == 1
+    assert "errors" in result
+    assert len(result["errors"]) == 1
+    # AppError code is "weight_project_mismatch", asset name is "reason1.png".
+    assert "reason1.png" in result["errors"][0]
+    assert "weight_project_mismatch" in result["errors"][0]

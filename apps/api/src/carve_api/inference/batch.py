@@ -1,6 +1,7 @@
 """Batch auto-annotate: RQ job + Redis progress hash."""
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -17,6 +18,9 @@ from carve_api.inference.autoannotate import (
 )
 from carve_api.projects.models import Task
 from carve_api.weights.models import Weight
+
+
+log = logging.getLogger(__name__)
 
 
 _PROGRESS_KEY_PREFIX = "aa:job:"
@@ -195,9 +199,52 @@ def list_assets_for_task(session: Session, task_id: uuid.UUID) -> list[Asset]:
     )
 
 
+def _coerce_overrides(
+    raw: dict[int, str | None] | None,
+) -> dict[int, uuid.UUID | None] | None:
+    """Coerce wire-form overrides (str / None) to UUIDs for the autoannotate
+    layer. Bad UUIDs are dropped (falls through to name-match)."""
+    if raw is None:
+        return None
+    coerced: dict[int, uuid.UUID | None] = {}
+    for idx_key, val in raw.items():
+        try:
+            idx = int(idx_key)
+        except (TypeError, ValueError):
+            continue
+        if val is None:
+            coerced[idx] = None
+            continue
+        try:
+            coerced[idx] = uuid.UUID(str(val))
+        except (TypeError, ValueError):
+            continue
+    return coerced
+
+
+def _truncated_repr(obj, limit: int = 400) -> str:
+    """Short repr for log lines so a 576-asset payload doesn't flood logs."""
+    text = repr(obj)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"... <truncated, len={len(text)}>"
+
+
 def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
     """RQ job entry point. Imports kept inside the function so RQ workers
     that load this module without a full FastAPI app can still pickle it.
+
+    v3.7.3 — fresh session per asset. The previous implementation kept
+    a single ``Session()`` open across the whole loop and called
+    ``session.commit()`` after each asset. After commit, all ORM objects
+    bound to that session (``actor``, ``task``, ``weight``, plus every
+    queried ``Class`` / ``Frame`` / ``WeightAssignment``) are expired.
+    Any silent failure during the next iteration's auto-refresh would
+    cascade as ``DetachedInstanceError`` or ``StaleDataError`` and the
+    loop would skip every remaining asset under
+    ``except Exception:`` while still reporting "completed". The fix
+    here isolates each asset in its own ``Session()`` + ``Session.begin()``
+    transaction; ORM staleness cannot leak across iterations.
     """
     from redis import Redis
 
@@ -211,120 +258,198 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
         redis_client = None
 
     SessionLocal = get_session_factory()
-    # v3.7.2 — also track aggregate created/skipped detection counts so
-    # the polling endpoint can surface "Created N · skipped M" without
-    # the frontend having to re-read each asset's annotations.
     counts = {"done": 0, "failed": 0}
     aggregates = {"total_annotations_created": 0, "total_skipped_detections": 0}
     errors: list[str] = []
 
-    # v3.7.1 — per-asset commits. The previous version wrapped the whole
-    # batch in a single ``with SessionLocal.begin():`` block, which meant:
-    #   1) Annotations from earlier iterations were buffered until the
-    #      with-block exited, so a worker kill mid-batch persisted
-    #      nothing.
-    #   2) Any later constraint violation rolled the whole transaction
-    #      back, losing every prior asset's annotations.
-    # We use a plain ``Session()`` (no auto-begin/commit) and call
-    # ``session.commit()`` after each successful asset, so progress is
-    # durable even if the worker dies. SQLAlchemy auto-begins a fresh
-    # transaction on the next statement after each commit.
-    with SessionLocal() as session:
-        # Resolve actor / task / weight via the session
-        actor = session.get(User, uuid.UUID(payload.actor_id))
-        task = session.get(Task, uuid.UUID(payload.task_id))
-        weight = session.get(Weight, uuid.UUID(payload.weight_id))
-        if actor is None or task is None or weight is None:
-            init_progress(redis_client, payload.job_id, 0)
-            finalize_progress(redis_client, payload.job_id, status="failed")
-            return {"status": "failed", "done": 0, "total": 0, "failed": 0}
+    log.info(
+        "batch.start job_id=%s task_id=%s weight_id=%s actor_id=%s "
+        "overwrite=%s min_confidence=%s class_overrides=%s",
+        payload.job_id,
+        payload.task_id,
+        payload.weight_id,
+        payload.actor_id,
+        payload.overwrite,
+        payload.min_confidence,
+        _truncated_repr(payload.class_overrides),
+    )
 
-        assets = list_assets_for_task(session, task.id)
-        init_progress(redis_client, payload.job_id, len(assets))
+    # ---- Phase 1: short-lived boot session — resolve refs + fetch asset list ----
+    asset_ids: list[uuid.UUID] = []
+    asset_names_by_id: dict[uuid.UUID, str] = {}
+    try:
+        with SessionLocal() as boot:
+            actor = boot.get(User, uuid.UUID(payload.actor_id))
+            task = boot.get(Task, uuid.UUID(payload.task_id))
+            weight = boot.get(Weight, uuid.UUID(payload.weight_id))
+            if actor is None or task is None or weight is None:
+                log.error(
+                    "batch.boot.missing job_id=%s actor=%s task=%s weight=%s",
+                    payload.job_id,
+                    actor is not None,
+                    task is not None,
+                    weight is not None,
+                )
+                init_progress(redis_client, payload.job_id, 0)
+                finalize_progress(redis_client, payload.job_id, status="failed")
+                return {"status": "failed", "done": 0, "total": 0, "failed": 0}
 
-        url = presigned_url_for_weight(weight)
-        # v3.7 Phase 2 Issue 1 — coerce override values back into UUIDs
-        # for the autoannotate pipeline. The wire / payload form keeps
-        # values as strings (or None) so RQ-pickled payloads stay
-        # JSON-friendly; the autoannotate layer wants real UUID objects.
-        coerced_overrides: dict[int, uuid.UUID | None] | None = None
-        if payload.class_overrides is not None:
-            coerced_overrides = {}
-            for idx_key, val in payload.class_overrides.items():
-                try:
-                    idx = int(idx_key)
-                except (TypeError, ValueError):
-                    continue
-                if val is None:
-                    coerced_overrides[idx] = None
-                    continue
-                try:
-                    coerced_overrides[idx] = uuid.UUID(str(val))
-                except (TypeError, ValueError):
-                    # Bad UUID — drop this override; falls through to
-                    # name-match in the autoannotate pipeline.
-                    continue
-        # Clamp confidence the same way the single-asset path does.
-        clamped_conf: float | None
-        if payload.min_confidence is None:
-            clamped_conf = None
-        else:
-            clamped_conf = max(0.0, min(1.0, float(payload.min_confidence)))
-        for asset in assets:
-            try:
-                body = fetch_asset_bytes(asset)
-                aa_kwargs: dict = dict(
-                    session=session,
-                    actor=actor,
-                    task=task,
-                    asset=asset,
-                    weight=weight,
-                    overwrite=payload.overwrite,
-                    presigned_url_for_weight=url,
-                    image_bytes=body,
+            assets = list_assets_for_task(boot, task.id)
+            asset_ids = [a.id for a in assets]
+            asset_names_by_id = {a.id: a.original_name for a in assets}
+            init_progress(redis_client, payload.job_id, len(assets))
+
+            # Compute the presigned URL once (cheap; reused per asset).
+            url = presigned_url_for_weight(weight)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("batch.boot.failed job_id=%s", payload.job_id)
+        init_progress(redis_client, payload.job_id, 0)
+        finalize_progress(redis_client, payload.job_id, status="failed")
+        return {
+            "status": "failed",
+            "done": 0,
+            "total": 0,
+            "failed": 0,
+            "errors": [f"boot:{type(exc).__name__}"],
+        }
+
+    log.info(
+        "batch.assets job_id=%s total=%d url_set=%s",
+        payload.job_id,
+        len(asset_ids),
+        bool(url),
+    )
+
+    # Coerce / clamp wire fields once.
+    coerced_overrides = _coerce_overrides(payload.class_overrides)
+    clamped_conf: float | None
+    if payload.min_confidence is None:
+        clamped_conf = None
+    else:
+        clamped_conf = max(0.0, min(1.0, float(payload.min_confidence)))
+
+    # IDs we'll re-fetch in each iteration's fresh session.
+    actor_uuid = uuid.UUID(payload.actor_id)
+    task_uuid = uuid.UUID(payload.task_id)
+    weight_uuid = uuid.UUID(payload.weight_id)
+
+    # ---- Phase 2: per-asset, fresh session + transaction ----
+    for asset_id in asset_ids:
+        original_name = asset_names_by_id.get(asset_id, str(asset_id))
+        session = SessionLocal()
+        try:
+            actor_db = session.get(User, actor_uuid)
+            task_db = session.get(Task, task_uuid)
+            weight_db = session.get(Weight, weight_uuid)
+            asset_db = session.get(Asset, asset_id)
+            if (
+                actor_db is None
+                or task_db is None
+                or weight_db is None
+                or asset_db is None
+            ):
+                raise RuntimeError(
+                    f"missing rows on refetch: actor={actor_db is not None} "
+                    f"task={task_db is not None} weight={weight_db is not None} "
+                    f"asset={asset_db is not None}"
                 )
-                if clamped_conf is not None:
-                    aa_kwargs["min_confidence"] = clamped_conf
-                if coerced_overrides is not None:
-                    aa_kwargs["class_overrides"] = coerced_overrides
-                aa_result = auto_annotate_asset(**aa_kwargs)
-                # v3.7.1 — commit this asset's annotations immediately so
-                # crashes / later failures cannot roll them back.
-                session.commit()
-                counts["done"] += 1
-                # v3.7.2 — accumulate per-asset created/skipped tallies.
-                # ``aa_result`` may be a real ``AutoAnnotateResult`` or a
-                # test stub — read defensively (getattr) so test doubles
-                # without these attrs don't blow up.
-                aggregates["total_annotations_created"] += int(
-                    getattr(aa_result, "annotations_created", 0) or 0
-                )
-                aggregates["total_skipped_detections"] += int(
-                    getattr(aa_result, "skipped_count", 0) or 0
-                )
-            except AppError as exc:
-                # Drop any uncommitted changes for the failed asset so the
-                # next iteration starts from a clean slate.
-                session.rollback()
-                counts["failed"] += 1
-                errors.append(f"{asset.original_name}: {exc.code}")
-            except Exception as exc:  # noqa: BLE001
-                session.rollback()
-                counts["failed"] += 1
-                errors.append(f"{asset.original_name}: {type(exc).__name__}")
-            update_progress(
-                redis_client,
-                payload.job_id,
-                **counts,
-                errors=errors,
-                **aggregates,
+
+            body = fetch_asset_bytes(asset_db)
+            aa_kwargs: dict = dict(
+                session=session,
+                actor=actor_db,
+                task=task_db,
+                asset=asset_db,
+                weight=weight_db,
+                overwrite=payload.overwrite,
+                presigned_url_for_weight=url,
+                image_bytes=body,
             )
+            if clamped_conf is not None:
+                aa_kwargs["min_confidence"] = clamped_conf
+            if coerced_overrides is not None:
+                aa_kwargs["class_overrides"] = coerced_overrides
+            aa_result = auto_annotate_asset(**aa_kwargs)
+            # Commit per-asset so partial progress is durable on worker
+            # kill. Each iteration uses a fresh Session, so ORM staleness
+            # cannot leak across iterations.
+            session.commit()
+
+            counts["done"] += 1
+            created = int(getattr(aa_result, "annotations_created", 0) or 0)
+            skipped = int(getattr(aa_result, "skipped_count", 0) or 0)
+            aggregates["total_annotations_created"] += created
+            aggregates["total_skipped_detections"] += skipped
+
+            if created == 0:
+                log.warning(
+                    "batch.asset.zero_created job_id=%s asset_id=%s "
+                    "name=%s skipped=%d skipped_by_class=%s "
+                    "overwrite_skipped=%s",
+                    payload.job_id,
+                    asset_id,
+                    original_name,
+                    skipped,
+                    _truncated_repr(
+                        getattr(aa_result, "skipped_by_class", {})
+                    ),
+                    getattr(aa_result, "overwrite_skipped", False),
+                )
+        except AppError as exc:
+            try:
+                session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            counts["failed"] += 1
+            errors.append(f"{original_name}: {exc.code}")
+            log.exception(
+                "batch.asset.failed.app_error job_id=%s asset_id=%s code=%s",
+                payload.job_id,
+                asset_id,
+                exc.code,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            counts["failed"] += 1
+            errors.append(f"{original_name}: {type(exc).__name__}")
+            log.exception(
+                "batch.asset.failed.unexpected job_id=%s asset_id=%s type=%s",
+                payload.job_id,
+                asset_id,
+                type(exc).__name__,
+            )
+        finally:
+            session.close()
+
+        update_progress(
+            redis_client,
+            payload.job_id,
+            **counts,
+            errors=errors,
+            **aggregates,
+        )
 
     final_status = "completed" if counts["failed"] == 0 else "completed_with_errors"
     finalize_progress(redis_client, payload.job_id, status=final_status)
+    log.info(
+        "batch.done job_id=%s status=%s done=%d failed=%d total=%d "
+        "created=%d skipped=%d errors=%s",
+        payload.job_id,
+        final_status,
+        counts["done"],
+        counts["failed"],
+        len(asset_ids),
+        aggregates["total_annotations_created"],
+        aggregates["total_skipped_detections"],
+        _truncated_repr(errors),
+    )
     return {
         "status": final_status,
         **counts,
-        "total": len(assets),
+        "total": len(asset_ids),
+        "errors": errors[-50:],
         **aggregates,
     }
