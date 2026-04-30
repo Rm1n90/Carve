@@ -1,16 +1,17 @@
 /**
- * v3.7 Phase 3 Issue 4 — weight <-> project assignment chips on the
- * ModelsYoloPage details panel.
+ * v3.7 Phase 3 Issue 4 — weight <-> project assignment chips.
  *
- * Asserts:
- *   - When a project-scoped weight is selected and has 2 assignments,
- *     both project names render as chips.
- *   - Clicking the X on a chip calls `removeAssignment(weightId, pid)`.
- *   - Clicking "Add project…" opens the inline picker; selecting a
- *     project + clicking Add calls `addAssignment(weightId, pid)`.
- *   - Workspace-wide weights (project_id == null) do NOT render chips —
- *     they show the helper text instead because they're already
- *     visible to every project.
+ * v3.7.1 update: the assignment UI moved from the right details panel
+ * to an inline column in the YOLO weights table (per user feedback).
+ * The picker is now a search-based multi-select popover that commits
+ * adds + removes in one Save. The tests below assert on the new
+ * inline cell test-ids:
+ *   - ``weight-assignment-chip-<wid>-<pid>`` (chip in row)
+ *   - ``weight-assignments-trigger-<wid>`` ("+" button)
+ *   - ``weight-assignments-popover-<wid>``
+ *   - ``weight-assignments-checkbox-<wid>-<pid>``
+ *   - ``weight-assignments-save-<wid>``
+ *   - ``weight-assignments-cell-<wid>`` (whole cell — text "Workspace-wide" for ws weights)
  */
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -161,53 +162,95 @@ beforeEach(() => {
   (projectsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue(PROJECTS);
 });
 
-describe("ModelsYoloPage — weight ↔ project assignment chips (v3.7 Issue 4)", () => {
-  it("shows existing assignments as chips when a project-scoped weight is selected", async () => {
+describe("ModelsYoloPage — inline weight ↔ project assignment column (v3.7.1)", () => {
+  it("renders existing assignment chips inline in the row", async () => {
     render(wrap(<ModelsYoloPage />));
-
-    const row = await screen.findByTestId("weight-row-w-scoped");
-    fireEvent.click(row);
 
     await waitFor(() => {
       expect(
-        screen.getByTestId("yolo-assignment-chip-p-alpha"),
-      ).toBeInTheDocument();
+        screen.getByTestId("weight-assignment-chip-w-scoped-p-alpha"),
+      ).toHaveTextContent("Alpha");
     });
-    expect(screen.getByTestId("yolo-assignment-chip-p-alpha")).toHaveTextContent(
-      "Alpha",
-    );
-    expect(screen.getByTestId("yolo-assignment-chip-p-beta")).toHaveTextContent(
-      "Beta",
-    );
+    expect(
+      screen.getByTestId("weight-assignment-chip-w-scoped-p-beta"),
+    ).toHaveTextContent("Beta");
   });
 
-  it("removes an assignment when the chip's X is clicked", async () => {
+  it("workspace-wide weights show 'Workspace-wide' instead of chips", async () => {
     render(wrap(<ModelsYoloPage />));
-
-    fireEvent.click(await screen.findByTestId("weight-row-w-scoped"));
-    const removeBtn = await screen.findByTestId(
-      "yolo-assignment-remove-p-alpha",
-    );
-    fireEvent.click(removeBtn);
 
     await waitFor(() => {
-      expect(weightsApi.removeAssignment).toHaveBeenCalledWith(
-        "w-scoped",
-        "p-alpha",
-      );
+      expect(
+        screen.getByTestId("weight-assignments-cell-w-workspace"),
+      ).toHaveTextContent(/Workspace-wide/i);
     });
+    expect(
+      screen.queryByTestId("weight-assignments-trigger-w-workspace"),
+    ).not.toBeInTheDocument();
   });
 
-  it("adds an assignment via the inline picker", async () => {
+  it("opens the multi-select popover with search + project list when '+' is clicked", async () => {
     render(wrap(<ModelsYoloPage />));
 
-    fireEvent.click(await screen.findByTestId("weight-row-w-scoped"));
-    const addBtn = await screen.findByTestId("yolo-assignment-add-trigger");
-    fireEvent.click(addBtn);
+    const trigger = await screen.findByTestId(
+      "weight-assignments-trigger-w-scoped",
+    );
+    fireEvent.click(trigger);
 
-    const select = await screen.findByTestId("yolo-assignment-add-select");
-    fireEvent.change(select, { target: { value: "p-gamma" } });
-    fireEvent.click(screen.getByTestId("yolo-assignment-add-confirm"));
+    expect(
+      await screen.findByTestId("weight-assignments-search-w-scoped"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("weight-assignments-popover-w-scoped"),
+    ).toBeInTheDocument();
+    // The popover should list all workspace projects except the
+    // weight's own scoped project (p-home).
+    expect(
+      await screen.findByTestId("weight-assignments-option-w-scoped-p-alpha"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("weight-assignments-option-w-scoped-p-beta"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("weight-assignments-option-w-scoped-p-gamma"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("weight-assignments-option-w-scoped-p-home"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("filters the project list when typing in the search input", async () => {
+    render(wrap(<ModelsYoloPage />));
+
+    fireEvent.click(
+      await screen.findByTestId("weight-assignments-trigger-w-scoped"),
+    );
+    await screen.findByTestId("weight-assignments-option-w-scoped-p-gamma");
+
+    const search = screen.getByTestId("weight-assignments-search-w-scoped");
+    fireEvent.change(search, { target: { value: "gam" } });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("weight-assignments-option-w-scoped-p-alpha"),
+      ).not.toBeInTheDocument();
+    });
+    expect(
+      screen.getByTestId("weight-assignments-option-w-scoped-p-gamma"),
+    ).toBeInTheDocument();
+  });
+
+  it("checking a new project + Save calls addAssignment", async () => {
+    render(wrap(<ModelsYoloPage />));
+
+    fireEvent.click(
+      await screen.findByTestId("weight-assignments-trigger-w-scoped"),
+    );
+    const gammaCheckbox = await screen.findByTestId(
+      "weight-assignments-checkbox-w-scoped-p-gamma",
+    );
+    fireEvent.click(gammaCheckbox);
+    fireEvent.click(screen.getByTestId("weight-assignments-save-w-scoped"));
 
     await waitFor(() => {
       expect(weightsApi.addAssignment).toHaveBeenCalledWith(
@@ -217,21 +260,25 @@ describe("ModelsYoloPage — weight ↔ project assignment chips (v3.7 Issue 4)"
     });
   });
 
-  it("workspace-wide weights show the helper text instead of chips", async () => {
+  it("unchecking an assigned project + Save calls removeAssignment", async () => {
     render(wrap(<ModelsYoloPage />));
 
-    fireEvent.click(await screen.findByTestId("weight-row-w-workspace"));
+    fireEvent.click(
+      await screen.findByTestId("weight-assignments-trigger-w-scoped"),
+    );
+    const alphaCheckbox = await screen.findByTestId(
+      "weight-assignments-checkbox-w-scoped-p-alpha",
+    );
+    // Pre-condition: alpha is currently assigned, so checkbox is checked.
+    expect((alphaCheckbox as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(alphaCheckbox);
+    fireEvent.click(screen.getByTestId("weight-assignments-save-w-scoped"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("yolo-details-assignments")).toHaveTextContent(
-        /Workspace-wide/i,
+      expect(weightsApi.removeAssignment).toHaveBeenCalledWith(
+        "w-scoped",
+        "p-alpha",
       );
     });
-    expect(
-      screen.queryByTestId("yolo-details-assignment-chips"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("yolo-assignment-add-trigger"),
-    ).not.toBeInTheDocument();
   });
 });

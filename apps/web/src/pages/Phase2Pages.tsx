@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Cpu,
-  Plus,
   RotateCcw,
   Star,
   Trash2,
@@ -28,12 +27,12 @@ import {
   weightsApi,
   type TrashItem,
   type Weight,
-  type WeightAssignment,
 } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { useAuth } from "@/auth/store";
 import { showToast } from "@/lib/toast";
 import { UploadWeightDialog } from "@/pages/UploadWeightDialog";
+import { WeightAssignmentCell } from "@/components/weights/WeightAssignmentCell";
 
 // =========================== /models/yolo ===========================
 
@@ -235,54 +234,10 @@ export function ModelsYoloPage() {
   const [setDefaultDialog, setSetDefaultDialog] = useState<Weight | null>(null);
   const [setDefaultProject, setSetDefaultProject] = useState<string>("");
 
-  // v3.7 Phase 3 Issue 4 — assigned-projects panel state. The dropdown is
-  // a tiny inline picker that appears on click; we keep it as boolean +
-  // selected id to avoid adding a portal/popover dependency for a 2-row
-  // dropdown.
-  const [assignAddOpen, setAssignAddOpen] = useState(false);
-  const [assignAddProject, setAssignAddProject] = useState<string>("");
-
-  const assignmentsQ = useQuery<WeightAssignment[]>({
-    queryKey: ["weights", selectedWeightId, "assignments"],
-    queryFn: () =>
-      selectedWeightId
-        ? weightsApi.getAssignments(selectedWeightId)
-        : Promise.resolve([]),
-    enabled: selectedWeightId !== null,
-    staleTime: 30_000,
-  });
-
-  const addAssignmentM = useMutation({
-    mutationFn: ({ weightId, projectId }: { weightId: string; projectId: string }) =>
-      weightsApi.addAssignment(weightId, projectId),
-    onSuccess: () => {
-      showToast("Assigned to project", { variant: "success" });
-      qc.invalidateQueries({
-        queryKey: ["weights", selectedWeightId, "assignments"],
-      });
-      qc.invalidateQueries({ queryKey: ["weights"] });
-      setAssignAddOpen(false);
-      setAssignAddProject("");
-    },
-    onError: (err: Error) => {
-      showToast(err?.message ?? "Failed to assign", { variant: "error" });
-    },
-  });
-
-  const removeAssignmentM = useMutation({
-    mutationFn: ({ weightId, projectId }: { weightId: string; projectId: string }) =>
-      weightsApi.removeAssignment(weightId, projectId),
-    onSuccess: () => {
-      showToast("Assignment removed", { variant: "success" });
-      qc.invalidateQueries({
-        queryKey: ["weights", selectedWeightId, "assignments"],
-      });
-      qc.invalidateQueries({ queryKey: ["weights"] });
-    },
-    onError: (err: Error) => {
-      showToast(err?.message ?? "Failed to remove assignment", { variant: "error" });
-    },
-  });
+  // v3.7.1 — assignment editing moved inline into the weights table row
+  // (see WeightAssignmentCell). The details panel now shows weight
+  // intrinsics only. The cell owns its own assignmentsQ /
+  // add/removeAssignment mutations against ["weights", id, "assignments"].
 
   const canDelete = me?.role === "admin";
 
@@ -378,6 +333,9 @@ export function ModelsYoloPage() {
                   <th className="text-left font-medium px-4 py-2.5">Classes</th>
                   <th className="text-right font-medium px-4 py-2.5">Size</th>
                   <th className="text-left font-medium px-4 py-2.5">Uploaded</th>
+                  <th className="text-left font-medium px-4 py-2.5">
+                    Assigned projects
+                  </th>
                   <th className="text-right font-medium px-4 py-2.5">Actions</th>
                 </tr>
               </thead>
@@ -440,6 +398,19 @@ export function ModelsYoloPage() {
                       </td>
                       <td className="px-4 py-2.5 text-[color:var(--text-tertiary)]">
                         {new Date(w.created_at).toLocaleDateString()}
+                      </td>
+                      {/* v3.7.1 — inline assignment editor (chips + "+"
+                          button → search-based multi-select popover).
+                          Replaces the v3.7 details-panel widget. */}
+                      <td
+                        className="px-4 py-2.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <WeightAssignmentCell
+                          weightId={w.id}
+                          weightProjectId={w.project_id}
+                          canEdit={canDelete}
+                        />
                       </td>
                       <td
                         className="px-4 py-2.5"
@@ -536,130 +507,13 @@ export function ModelsYoloPage() {
                   allowed classes, so binding is intrinsically per-task and
                   no longer persisted on the weight itself. */}
 
-              {/* v3.7 Phase 3 Issue 4 — assigned projects (many-to-many).
-                  Chips show project_name + ✕; the inline "Add project…"
-                  picker lists workspace projects that aren't already
-                  assigned. Workspace-wide weights show the helper text
-                  instead of chips because they're already visible to
-                  every project. */}
-              <div
-                className="grid gap-1.5 pt-1"
-                data-testid="yolo-details-assignments"
-              >
-                <span className="text-[11px] tracking-tight text-[color:var(--text-tertiary)] uppercase">
-                  Assigned projects
-                </span>
-                {selectedWeight.project_id === null ? (
-                  <p className="text-[12px] text-[color:var(--text-tertiary)] italic">
-                    Workspace-wide — visible from every project. Assignments
-                    only matter for project-scoped weights.
-                  </p>
-                ) : (
-                  <>
-                    <ul
-                      className="flex flex-wrap gap-1"
-                      data-testid="yolo-details-assignment-chips"
-                    >
-                      {(assignmentsQ.data ?? []).map((a) => (
-                        <li key={a.project_id}>
-                          <span
-                            data-testid={`yolo-assignment-chip-${a.project_id}`}
-                            className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-[11.5px] text-[color:var(--text-secondary)] tracking-tight"
-                          >
-                            {a.project_name}
-                            <button
-                              type="button"
-                              aria-label={`Remove ${a.project_name}`}
-                              data-testid={`yolo-assignment-remove-${a.project_id}`}
-                              disabled={!canDelete || removeAssignmentM.isPending}
-                              onClick={() => {
-                                removeAssignmentM.mutate({
-                                  weightId: selectedWeight.id,
-                                  projectId: a.project_id,
-                                });
-                              }}
-                              className="grid h-4 w-4 place-items-center rounded-full text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] disabled:opacity-40"
-                            >
-                              <X className="h-2.5 w-2.5" />
-                            </button>
-                          </span>
-                        </li>
-                      ))}
-                      {(assignmentsQ.data ?? []).length === 0 && (
-                        <li className="text-[12px] text-[color:var(--text-tertiary)] italic">
-                          Not assigned to any other project.
-                        </li>
-                      )}
-                    </ul>
-                    {assignAddOpen ? (
-                      <div className="flex items-center gap-1.5">
-                        <select
-                          value={assignAddProject}
-                          onChange={(e) => setAssignAddProject(e.target.value)}
-                          data-testid="yolo-assignment-add-select"
-                          className="h-7 px-1.5 rounded-[var(--radius-xs)] border border-[var(--border-strong)] bg-[var(--bg-elev)] text-[12.5px] outline-none focus:border-[var(--accent)] flex-1"
-                        >
-                          <option value="">— Choose project —</option>
-                          {(projectsQ.data ?? [])
-                            .filter((p) => {
-                              const assigned = new Set(
-                                (assignmentsQ.data ?? []).map((a) => a.project_id),
-                              );
-                              // Hide already-assigned + the weight's own scoped project
-                              // (where it's already visible by definition).
-                              if (assigned.has(p.id)) return false;
-                              if (p.id === selectedWeight.project_id) return false;
-                              return true;
-                            })
-                            .map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name}
-                              </option>
-                            ))}
-                        </select>
-                        <Button
-                          size="sm"
-                          variant="primary"
-                          data-testid="yolo-assignment-add-confirm"
-                          disabled={
-                            !assignAddProject || addAssignmentM.isPending
-                          }
-                          onClick={() => {
-                            addAssignmentM.mutate({
-                              weightId: selectedWeight.id,
-                              projectId: assignAddProject,
-                            });
-                          }}
-                        >
-                          Add
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          aria-label="Cancel add"
-                          onClick={() => {
-                            setAssignAddOpen(false);
-                            setAssignAddProject("");
-                          }}
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        leftIcon={<Plus className="h-3.5 w-3.5" />}
-                        disabled={!canDelete}
-                        data-testid="yolo-assignment-add-trigger"
-                        onClick={() => setAssignAddOpen(true)}
-                      >
-                        Add project…
-                      </Button>
-                    )}
-                  </>
-                )}
-              </div>
+              {/* v3.7.1 — assignment editing moved inline to the table
+                  row (see WeightAssignmentCell). The details panel now
+                  shows weight intrinsics only — task, size, uploaded,
+                  classes — restoring the v3.3 layout where the panel
+                  describes the selected weight without per-project
+                  bindings (which are intrinsically scope-level data,
+                  not weight-level). */}
 
               {/* v3.3 Issue 4 — default toggle. If currently default, show
                   a status pill; otherwise show a button to flip the slot. */}
