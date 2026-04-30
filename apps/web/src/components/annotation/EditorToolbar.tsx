@@ -55,6 +55,7 @@ import {
 import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { useOptionalConfirm } from "@/components/ui/ConfirmDialog";
 
 const PREDICT_CONF_KEY = "carve.predict.minConfidence";
 const DEFAULT_PREDICT_CONFIDENCE = 0.4;
@@ -428,6 +429,27 @@ const YoloPredictButton = forwardRef<
     return acc + (v !== null && v !== undefined ? 1 : 0);
   }, 0);
 
+  // v3.7.2 — pre-flight: when suggestions are loaded but ZERO weight
+  // classes are mapped to a project class (auto-suggestion null AND
+  // override null/undefined for every suggestion), the predict would
+  // skip every detection. Critical for the yolov8n-vs-3-class scenario
+  // that triggered the data-loss bug. Disable the Predict button to
+  // force the user to map at least one class first.
+  const noClassesMapped =
+    !!selected &&
+    !!taskId &&
+    suggestions.length > 0 &&
+    matchedCount === 0;
+
+  // v3.7.2 — confirmation dialog for the destructive overwrite+batch
+  // combination. The user just learned the safety net (existing
+  // annotations are preserved on no-match assets) but they should still
+  // explicitly confirm replacing annotations across an entire task.
+  // Uses the non-throwing variant so legacy test wrappers that don't
+  // mount <ConfirmProvider> still render the toolbar; production has
+  // the provider mounted in main.tsx.
+  const confirm = useOptionalConfirm();
+
   const m = useMutation({
     mutationFn: (weightId: string) => {
       if (!assetId) return Promise.reject(new Error("no asset"));
@@ -456,7 +478,15 @@ const YoloPredictButton = forwardRef<
       const created = res?.annotations_created ?? res?.count ?? 0;
       const skipped = res?.skipped_count ?? 0;
       const unmappedClasses = Object.keys(res?.skipped_by_class ?? {});
-      if (created === 0 && skipped === 0) {
+      // v3.7.2 — overwrite=true was requested but suppressed because
+      // the new prediction yielded zero annotations. Tell the user
+      // their existing annotations were preserved (data-loss prevention).
+      if (res?.overwrite_skipped) {
+        showToast(
+          "Overwrite skipped — no matching detections. Existing annotations were preserved.",
+          { variant: "warning", duration: 6000 },
+        );
+      } else if (created === 0 && skipped === 0) {
         showToast(
           `No detections at confidence ${(confidence * 100).toFixed(0)}%`,
           { variant: "warning" },
@@ -596,7 +626,7 @@ const YoloPredictButton = forwardRef<
     },
   });
 
-  function handlePredict() {
+  async function handlePredict() {
     if (!selected) {
       showToast("Select a weight first.", { variant: "error" });
       return;
@@ -605,6 +635,22 @@ const YoloPredictButton = forwardRef<
       if (!taskId) {
         showToast("No task open.", { variant: "error" });
         return;
+      }
+      // v3.7.2 — confirm the destructive overwrite+batch combination so
+      // the user can't accidentally replace annotations across every
+      // asset in a task. The backend safety net preserves existing rows
+      // on assets with zero matching detections, so the UI surfaces
+      // that nuance in the dialog copy.
+      if (overwrite) {
+        const ok = await confirm({
+          title: "Replace existing annotations across the task?",
+          description:
+            "This will REPLACE existing annotations on every asset in this task that has a matching detection. Existing annotations on assets with no matches will be preserved. Continue?",
+          confirmLabel: "Replace and predict",
+          cancelLabel: "Cancel",
+          variant: "danger",
+        });
+        if (!ok) return;
       }
       batchM.mutate(selected);
       return;
@@ -1004,6 +1050,35 @@ const YoloPredictButton = forwardRef<
           />
           Overwrite existing annotations
         </label>
+        {/* v3.7.2 — pre-flight warning banner when zero classes are
+            mapped. Mirrors the user's data-loss scenario (yolov8n COCO
+            classes vs. a 3-class custom project) and prevents the
+            Predict button from firing a no-op that would have deleted
+            existing annotations on the pre-fix code path. */}
+        {noClassesMapped && (
+          <div
+            data-testid="yolo-no-mapping-warning"
+            role="alert"
+            className={cn(
+              "mx-1 mb-2 px-2.5 py-2 rounded-[var(--radius-xs)]",
+              "border border-[var(--warning)]/40 bg-[var(--warning)]/10",
+              "text-[11.5px] text-[color:var(--warning-text,var(--text-primary))] leading-snug",
+              "flex items-start gap-2",
+            )}
+          >
+            <AlertTriangle
+              className="h-3.5 w-3.5 mt-0.5 shrink-0 text-[color:var(--warning)]"
+              aria-hidden
+            />
+            <span>
+              <span className="font-medium">
+                0 of {suggestions.length} weight classes
+              </span>{" "}
+              are mapped to your project's classes. Predict will skip all
+              detections — no annotations will be created.
+            </span>
+          </div>
+        )}
         <div className="flex items-center justify-end gap-1.5 pt-1">
           {(m.isError || batchM.isError) && (
             <span className="inline-flex items-center gap-1 text-[11px] text-[color:var(--danger)] mr-auto">
@@ -1031,9 +1106,16 @@ const YoloPredictButton = forwardRef<
           </button>
           <button
             type="button"
-            disabled={!selected || isPredicting}
+            // v3.7.2 — also disabled when zero classes are mapped, so
+            // the user can't fire a predict that would skip everything.
+            disabled={!selected || isPredicting || noClassesMapped}
             onClick={handlePredict}
             data-testid="yolo-predict-go"
+            title={
+              noClassesMapped
+                ? "Map at least one class first"
+                : undefined
+            }
             className={cn(
               "inline-flex items-center gap-1.5 h-7 px-3 rounded-full",
               "bg-[var(--success)] text-white text-[12px] font-medium",
@@ -1072,15 +1154,25 @@ const YoloPredictButton = forwardRef<
               const done = progress.done;
               const failed = progress.failed;
               const successes = Math.max(0, done - failed);
+              // v3.7.2 — surface aggregate created + skipped counts so
+              // the user can tell a "completed but produced nothing"
+              // batch (the original data-loss scenario, where 0 of 80
+              // weight classes mapped) from a successful one.
+              const created = progress.total_annotations_created ?? 0;
+              const skipped = progress.total_skipped_detections ?? 0;
               const variant: "success" | "warning" | "error" =
                 progress.status === "failed"
                   ? "error"
-                  : failed > 0
+                  : failed > 0 || created === 0
                     ? "warning"
                     : "success";
+              const skippedLine =
+                skipped > 0
+                  ? ` Skipped ${skipped} detections (unmapped classes).`
+                  : "";
               showToast(
-                `Predicted on ${total} assets, ${successes} succeeded, ${failed} failed`,
-                { variant, duration: 5000 },
+                `Created ${created} annotations across ${successes} of ${total} assets.${skippedLine}`,
+                { variant, duration: 6000 },
               );
             }
           }}

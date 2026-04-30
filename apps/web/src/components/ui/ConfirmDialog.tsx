@@ -309,3 +309,27 @@ export function useConfirm(): ConfirmFn {
   }
   return ctx;
 }
+
+/**
+ * v3.7.2 — non-throwing variant of ``useConfirm``. Falls back to
+ * ``window.confirm()`` when no ``<ConfirmProvider>`` is mounted (e.g.
+ * legacy tests that render a component which wants to confirm but
+ * didn't wrap with the provider). Production always has the provider
+ * mounted in ``main.tsx``, so the fallback is a defensive guard
+ * rather than a common path.
+ */
+export function useOptionalConfirm(): ConfirmFn {
+  const ctx = useContext(ConfirmContext);
+  if (ctx) return ctx;
+  return (request) =>
+    new Promise<boolean>((resolve) => {
+      try {
+        const ok = window.confirm(request.title);
+        resolve(!!ok);
+      } catch {
+        // No window (SSR / non-DOM env) — default to "yes" to mirror
+        // how the provider resolves when the user clicks confirm.
+        resolve(true);
+      }
+    });
+}
