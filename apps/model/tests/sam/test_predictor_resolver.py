@@ -17,7 +17,7 @@ from carve_model.sam import predictor as p_mod
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
     # Strip env vars before each test so we always start from defaults.
-    # SAM2_BACKEND defaults to legacy when unset.
+    # SAM2_BACKEND defaults to transformers when unset (since v3.4).
     monkeypatch.delenv("SAM_MODEL", raising=False)
     monkeypatch.delenv("SAM_VARIANT", raising=False)
     monkeypatch.delenv("SAM2_BACKEND", raising=False)
@@ -149,17 +149,19 @@ def fake_transformers_sam2_modules(monkeypatch):
     return captured
 
 
-def test_default_factory_uses_legacy_path_when_sam2_backend_unset(
-    monkeypatch, fake_legacy_sam2_modules,
+def test_default_factory_uses_transformers_path_when_sam2_backend_unset(
+    monkeypatch, fake_transformers_sam2_modules,
 ):
-    """Default ``SAM2_BACKEND`` (unset) must keep the existing legacy SAM 2
-    git package path so production behavior is identical without an
-    explicit opt-in."""
+    """Default ``SAM2_BACKEND`` (unset) must use the HF transformers adapter
+    (v3.4 flipped the default from ``legacy`` → ``transformers``).
+    Production now picks up the new path without an explicit opt-in."""
     monkeypatch.setenv("SAM_MODEL", "sam2.1-tiny")
 
     p_mod._default_factory()  # noqa: SLF001 — exercising module-private factory
 
-    assert fake_legacy_sam2_modules["legacy_repo"] == "facebook/sam2.1-hiera-tiny"
+    assert fake_transformers_sam2_modules["model_repo"] == "facebook/sam2.1-hiera-tiny"
+    assert fake_transformers_sam2_modules["proc_repo"] == "facebook/sam2.1-hiera-tiny"
+    assert fake_transformers_sam2_modules["model_class"] == "Sam2Model"
 
 
 def test_default_factory_uses_legacy_path_when_sam2_backend_legacy(

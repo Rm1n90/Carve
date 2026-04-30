@@ -379,11 +379,10 @@ def _default_factory() -> SamPredictor:
     already supplied a custom one.
 
     For SAM 2.x variants the backend is selected by ``SAM2_BACKEND``:
-    ``transformers`` routes through ``carve_model.sam.sam2_adapter``,
-    while the default ``legacy`` keeps the existing ``sam2`` git package
-    path. The flag exists so the new transformers-backed code path can
-    soak in production behind a feature toggle before becoming default
-    in v3.4 commit 5.
+    the default ``transformers`` (since v3.4) routes through
+    ``carve_model.sam.sam2_adapter``; setting ``SAM2_BACKEND=legacy``
+    falls back to the upstream ``sam2`` git package path that shipped
+    pre-v3.4.
     """
     model = get_sam_model()
     if model == "sam3":
@@ -400,9 +399,9 @@ def _default_factory() -> SamPredictor:
             set_box_predictor(sam3_adapter.make_sam3_box_predictor())
         return adapter
 
-    # SAM 2.x: opt in to the transformers adapter via SAM2_BACKEND.
-    # Default ``legacy`` preserves the existing sam2 git package path.
-    if model.startswith("sam2") and os.getenv("SAM2_BACKEND", "legacy") == "transformers":
+    # SAM 2.x: defaults to the HF transformers adapter (since v3.4).
+    # Set ``SAM2_BACKEND=legacy`` to roll back to the upstream sam2 git path.
+    if model.startswith("sam2") and os.getenv("SAM2_BACKEND", "transformers") != "legacy":
         from carve_model.sam import sam2_adapter
 
         return sam2_adapter.build_sam2_image_predictor(model)

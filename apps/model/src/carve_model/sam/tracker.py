@@ -209,9 +209,10 @@ def _default_factory() -> TrackerProtocol:
     requirement at the HTTP boundary.
 
     For SAM 2.x variants the backend is selected by ``SAM2_BACKEND``:
-    ``transformers`` routes through ``carve_model.sam.sam2_adapter`` (built
-    on ``Sam2VideoModel`` + ``Sam2VideoProcessor``), while the default
-    ``legacy`` keeps the existing ``sam2`` git package path which wraps
+    the default ``transformers`` (since v3.4) routes through
+    ``carve_model.sam.sam2_adapter`` (built on ``Sam2VideoModel`` +
+    ``Sam2VideoProcessor``); setting ``SAM2_BACKEND=legacy`` falls back
+    to the upstream ``sam2`` git package path which wraps
     ``SAM2VideoPredictor`` in ``Sam2VideoPredictorAdapter`` to speak our
     v1.4 multi-object protocol. The flag is paired with the same one in
     ``predictor.py`` so the image and video paths flip together.
@@ -222,9 +223,9 @@ def _default_factory() -> TrackerProtocol:
 
         return sam3_adapter.build_sam3_video_tracker()
 
-    # SAM 2.x: opt in to the transformers adapter via SAM2_BACKEND.
-    # Default ``legacy`` preserves the existing sam2 git package path.
-    if model.startswith("sam2") and os.getenv("SAM2_BACKEND", "legacy") == "transformers":
+    # SAM 2.x: defaults to the HF transformers adapter (since v3.4).
+    # Set ``SAM2_BACKEND=legacy`` to roll back to the upstream sam2 git path.
+    if model.startswith("sam2") and os.getenv("SAM2_BACKEND", "transformers") != "legacy":
         from carve_model.sam import sam2_adapter
 
         return sam2_adapter.build_sam2_video_tracker(model)

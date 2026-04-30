@@ -19,7 +19,7 @@ from carve_model.sam import tracker as t_mod
 def _isolate_env(monkeypatch):
     monkeypatch.delenv("SAM_MODEL", raising=False)
     monkeypatch.delenv("SAM_VARIANT", raising=False)
-    # SAM2_BACKEND defaults to legacy when unset (v3.4 commit 3 toggle).
+    # SAM2_BACKEND defaults to transformers when unset (v3.4: flipped default).
     monkeypatch.delenv("SAM2_BACKEND", raising=False)
     # Ensure no test factory leakage between resolver tests
     t_mod.set_test_tracker_factory(None)
@@ -67,13 +67,18 @@ def fake_sam2_modules(monkeypatch):
 def test_default_factory_resolves_each_sam2_1_variant(
     monkeypatch, fake_sam2_modules, model_name, expected_repo,
 ):
+    # Pin to legacy backend so this test keeps exercising the
+    # resolver→legacy-repo mapping after v3.4 flipped the default.
+    monkeypatch.setenv("SAM2_BACKEND", "legacy")
     monkeypatch.setenv("SAM_MODEL", model_name)
     t_mod._default_factory()
     assert fake_sam2_modules["repo"] == expected_repo
 
 
-def test_default_factory_default_is_sam2_1_large(fake_sam2_modules):
-    # Both env vars unset (autouse fixture)
+def test_default_factory_default_is_sam2_1_large(monkeypatch, fake_sam2_modules):
+    # Pin to legacy backend so this test keeps exercising the legacy path.
+    # SAM_MODEL/SAM_VARIANT unset → resolver default is sam2.1-large.
+    monkeypatch.setenv("SAM2_BACKEND", "legacy")
     t_mod._default_factory()
     assert fake_sam2_modules["repo"] == "facebook/sam2.1-hiera-large"
 
@@ -159,16 +164,19 @@ def fake_transformers_sam2_video_modules(monkeypatch):
     return captured
 
 
-def test_default_factory_uses_legacy_path_when_sam2_backend_unset(
-    monkeypatch, fake_sam2_modules,
+def test_default_factory_uses_transformers_path_when_sam2_backend_unset(
+    monkeypatch, fake_transformers_sam2_video_modules,
 ):
-    """Default ``SAM2_BACKEND`` (unset) must keep using the legacy
-    ``SAM2VideoPredictor`` from the sam2 git package."""
+    """Default ``SAM2_BACKEND`` (unset) must use the HF transformers adapter
+    (v3.4 flipped the default from ``legacy`` → ``transformers``).
+    Production now picks up the new path without an explicit opt-in."""
     monkeypatch.setenv("SAM_MODEL", "sam2.1-tiny")
 
     t_mod._default_factory()  # noqa: SLF001
 
-    assert fake_sam2_modules["repo"] == "facebook/sam2.1-hiera-tiny"
+    assert fake_transformers_sam2_video_modules["model_repo"] == "facebook/sam2.1-hiera-tiny"
+    assert fake_transformers_sam2_video_modules["proc_repo"] == "facebook/sam2.1-hiera-tiny"
+    assert fake_transformers_sam2_video_modules["model_class"] == "Sam2VideoModel"
 
 
 def test_default_factory_uses_legacy_path_when_sam2_backend_legacy(
