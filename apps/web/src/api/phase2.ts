@@ -188,6 +188,28 @@ export const weightsApi = {
   ): Promise<Weight> =>
     (await api.post<Weight>(`/weights/${weightId}/default`, body)).data,
   /**
+   * v3.7 Phase 3 Issue 4 — many-to-many weight ↔ project assignments.
+   * `getAssignments` lists assigned projects (with names) for the UI
+   * details panel; `addAssignment` is idempotent server-side; `removeAssignment`
+   * is also idempotent (a missing row still returns 204).
+   */
+  getAssignments: async (weightId: string): Promise<WeightAssignment[]> =>
+    (
+      await api.get<WeightAssignment[]>(`/weights/${weightId}/assignments`)
+    ).data,
+  addAssignment: async (
+    weightId: string,
+    projectId: string,
+  ): Promise<WeightAssignment> =>
+    (
+      await api.post<WeightAssignment>(`/weights/${weightId}/assignments`, {
+        project_id: projectId,
+      })
+    ).data,
+  removeAssignment: async (weightId: string, projectId: string): Promise<void> => {
+    await api.delete(`/weights/${weightId}/assignments/${projectId}`);
+  },
+  /**
    * v3.5 Phase F1 — read-only predict-time mapping suggestions for a
    * `(weight, task)` pair. Returns one entry per weight class with a
    * suggested project class id (case-insensitive name match) and the
@@ -204,6 +226,18 @@ export const weightsApi = {
       )
     ).data,
 };
+
+/**
+ * v3.7 Phase 3 Issue 4 — one row of the weight ↔ project membership
+ * join. The backend joins `projects.name` so the chip list can render
+ * a human-readable label without an extra round-trip.
+ */
+export interface WeightAssignment {
+  weight_id: string;
+  project_id: string;
+  project_name: string;
+  created_at: string;
+}
 
 /**
  * v3.5 Phase F1 — single mapping suggestion for a `(weight, task)` pair.
