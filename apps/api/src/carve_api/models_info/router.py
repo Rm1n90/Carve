@@ -73,7 +73,7 @@ def _probe_model_service() -> bool:
     base = settings.model_base_url.rstrip("/")
     try:
         with httpx.Client(timeout=1.5) as c:
-            r = c.get(f"{base}/healthz")
+            r = c.get(f"{base}/health")
             return r.status_code == 200
     except Exception:
         return False

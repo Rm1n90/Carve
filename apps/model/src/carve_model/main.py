@@ -32,6 +32,8 @@ def _sweep_loop() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    from carve_model.yolo.registry import install_default_loader
+    install_default_loader()
     _SWEEPER_STOP.clear()
     t = threading.Thread(target=_sweep_loop, daemon=True, name="sam-sweeper")
     t.start()
