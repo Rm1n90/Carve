@@ -175,48 +175,7 @@ export const weightsApi = {
         `/weights/${weightId}/mapping-suggestions?task_id=${encodeURIComponent(taskId)}`,
       )
     ).data,
-  /**
-   * v3.3 Issue 3c — list every weight-class → project-class mapping row
-   * for a weight. Returned in `weight_class_idx` order.
-   *
-   * @deprecated Phase F4 removes this — the persistent mapping table is
-   * dropped and replaced with the transient `getMappingSuggestions` API.
-   */
-  getMappings: async (weightId: string): Promise<WeightClassMapping[]> =>
-    (await api.get<WeightClassMapping[]>(`/weights/${weightId}/mappings`)).data,
-  /**
-   * v3.3 Issue 3c — update a single mapping row's `project_class_id`.
-   *
-   * @deprecated Phase F4 removes this. Use `class_overrides` on the
-   * predict body via `inferenceApi.predictYolo`.
-   */
-  updateMapping: async (
-    weightId: string,
-    mappingId: string,
-    patch: { project_class_id: string | null },
-  ): Promise<WeightClassMapping> =>
-    (
-      await api.put<WeightClassMapping>(
-        `/weights/${weightId}/mappings/${mappingId}`,
-        patch,
-      )
-    ).data,
 };
-
-/**
- * v3.3 Issue 3c — single mapping row exposed by
- * `GET /weights/{wid}/mappings`. `project_class_id` is null when the
- * weight class doesn't (yet) bind to a project class.
- *
- * @deprecated Phase F4 removes this — see `MappingSuggestion` instead.
- */
-export interface WeightClassMapping {
-  id: string;
-  weight_id: string;
-  weight_class_idx: number;
-  weight_class_name: string;
-  project_class_id: string | null;
-}
 
 /**
  * v3.5 Phase F1 — single mapping suggestion for a `(weight, task)` pair.

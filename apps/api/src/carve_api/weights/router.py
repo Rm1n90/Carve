@@ -13,7 +13,7 @@ from carve_api.errors import AppError
 from carve_api.projects.models import Class
 from carve_api.projects.service import ProjectService, TaskService
 from carve_api.ratelimit import limiter
-from carve_api.weights.models import Weight, WeightClassMapping, WeightTaskKind
+from carve_api.weights.models import Weight, WeightTaskKind
 from carve_api.weights.schemas import WeightOut
 from carve_api.weights.service import WeightInvalid, WeightService
 
@@ -160,108 +160,6 @@ def update_weight(
     db.flush()
     db.commit()
     return WeightOut.from_orm_weight(w)
-
-
-# ---------------------------------------------------------------------------
-# v3.3 Issue 3c — class-mapping CRUD
-# ---------------------------------------------------------------------------
-
-
-class WeightClassMappingOut(BaseModel):
-    """Single ``weight_class_mappings`` row, exposed to the client.
-
-    The frontend renders one row per ``(weight_class_idx, weight_class_name)``
-    in the YOLO weight detail panel and lets the user pick a project class
-    (or "None") for each row."""
-
-    id: str
-    weight_id: str
-    weight_class_idx: int
-    weight_class_name: str
-    project_class_id: str | None
-
-    @classmethod
-    def from_orm_mapping(cls, m: WeightClassMapping) -> "WeightClassMappingOut":
-        return cls(
-            id=str(m.id),
-            weight_id=str(m.weight_id),
-            weight_class_idx=m.weight_class_idx,
-            weight_class_name=m.weight_class_name,
-            project_class_id=str(m.project_class_id) if m.project_class_id else None,
-        )
-
-
-class MappingUpdateIn(BaseModel):
-    """PATCH-style body for ``PUT /weights/{wid}/mappings/{mid}``.
-
-    ``project_class_id`` is the only mutable field. ``None`` disconnects
-    the row (so the auto-annotate path will skip detections for that
-    weight class and surface them in the "skipped" tally)."""
-
-    project_class_id: uuid.UUID | None = Field(default=None)
-
-
-@router.get(
-    "/weights/{weight_id}/mappings",
-    response_model=list[WeightClassMappingOut],
-)
-def list_weight_mappings(
-    weight_id: uuid.UUID,
-    user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
-    db: Session = Depends(get_db),
-) -> list[WeightClassMappingOut]:
-    """List every weight-class → project-class mapping row for a weight.
-
-    Returned in ``weight_class_idx`` order so the frontend table renders
-    in the same order the YOLO model exposed at upload time.
-    """
-    weight = db.get(Weight, weight_id)
-    if weight is None:
-        raise HTTPException(status_code=404, detail="weight_not_found")
-    rows = list(
-        db.execute(
-            select(WeightClassMapping)
-            .where(WeightClassMapping.weight_id == weight_id)
-            .order_by(WeightClassMapping.weight_class_idx)
-        ).scalars()
-    )
-    return [WeightClassMappingOut.from_orm_mapping(m) for m in rows]
-
-
-@router.put(
-    "/weights/{weight_id}/mappings/{mapping_id}",
-    response_model=WeightClassMappingOut,
-)
-def update_weight_mapping(
-    weight_id: uuid.UUID,
-    mapping_id: uuid.UUID,
-    payload: MappingUpdateIn,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> WeightClassMappingOut:
-    """Update a weight-class mapping's ``project_class_id``.
-
-    Pass ``project_class_id: null`` to disconnect a mapping. Owner / admin
-    only — same gate as rename/delete on the parent weight."""
-    from carve_api.projects.service import _can_modify
-
-    weight = db.get(Weight, weight_id)
-    if weight is None:
-        raise HTTPException(status_code=404, detail="weight_not_found")
-    project = ProjectService(db).get(actor=user, project_id=weight.project_id)
-    if not _can_modify(user, project):
-        raise HTTPException(status_code=403, detail="weight_forbidden")
-    mapping = db.get(WeightClassMapping, mapping_id)
-    if mapping is None or mapping.weight_id != weight_id:
-        raise HTTPException(status_code=404, detail="mapping_not_found")
-    if payload.project_class_id is not None:
-        target = db.get(Class, payload.project_class_id)
-        if target is None or target.project_id != weight.project_id:
-            raise HTTPException(status_code=400, detail="class_not_in_project")
-    mapping.project_class_id = payload.project_class_id
-    db.flush()
-    db.commit()
-    return WeightClassMappingOut.from_orm_mapping(mapping)
 
 
 # ---------------------------------------------------------------------------

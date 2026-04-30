@@ -2,9 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Cpu,
-  Layers,
   RotateCcw,
-  Sparkles,
   Star,
   Trash2,
   Upload,
@@ -16,25 +14,16 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
-import { Select } from "@/components/ui/Select";
 import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import {
   trashApi,
-  modelsApi,
   weightsApi,
   type TrashItem,
   type Weight,
-  type WeightClassMapping,
 } from "@/api/phase2";
-import { classesApi, type ClassRow } from "@/api/classes";
 import { useAuth } from "@/auth/store";
 import { showToast } from "@/lib/toast";
 import { UploadWeightDialog } from "@/pages/UploadWeightDialog";
-
-// v3.3 Issue 3c — sentinel value for the "None" option in the mapping
-// editor. Radix Select doesn't allow an empty-string value, so we use a
-// reserved token and translate it to `null` at the API boundary.
-const MAPPING_NONE = "__none__";
 
 // =========================== /models/yolo ===========================
 
@@ -144,138 +133,6 @@ function InlineName({ weight, canEdit, busy, onSubmit }: InlineNameProps) {
         <X className="h-3 w-3" />
       </button>
     </span>
-  );
-}
-
-/**
- * v3.3 Issue 3c — class mapping editor for a single weight.
- *
- * Renders a row per `weight_class_mappings` entry with a `<Select>` of
- * project classes (plus a "None" option). Changes are persisted via
- * `weightsApi.updateMapping`. The header summary reflects "N of M classes
- * mapped to project classes" so the user sees coverage at a glance.
- */
-interface ClassMappingEditorProps {
-  weight: Weight;
-  canEdit: boolean;
-}
-
-function ClassMappingEditor({ weight, canEdit }: ClassMappingEditorProps) {
-  const qc = useQueryClient();
-  const mappingsQ = useQuery({
-    queryKey: ["weight-mappings", weight.id],
-    queryFn: () => weightsApi.getMappings(weight.id),
-  });
-  const classesQ = useQuery({
-    queryKey: ["classes", weight.project_id],
-    queryFn: () => classesApi.listForProject(weight.project_id),
-  });
-
-  const updateM = useMutation({
-    mutationFn: ({ id, projectClassId }: { id: string; projectClassId: string | null }) =>
-      weightsApi.updateMapping(weight.id, id, {
-        project_class_id: projectClassId,
-      }),
-    onSuccess: () => {
-      showToast("Class mapping updated", { variant: "success" });
-      qc.invalidateQueries({ queryKey: ["weight-mappings", weight.id] });
-    },
-    onError: (err: Error) => {
-      showToast(err?.message ?? "Failed to update mapping", { variant: "error" });
-    },
-  });
-
-  if (mappingsQ.isLoading || classesQ.isLoading) {
-    return (
-      <p
-        className="text-[12px] text-[color:var(--text-tertiary)] italic"
-        data-testid="weight-mappings-loading"
-      >
-        Loading class mapping…
-      </p>
-    );
-  }
-
-  const mappings: WeightClassMapping[] = mappingsQ.data ?? [];
-  const projectClasses: ClassRow[] = classesQ.data ?? [];
-
-  if (mappings.length === 0) {
-    return (
-      <p
-        className="text-[12px] text-[color:var(--text-tertiary)] italic"
-        data-testid="weight-mappings-empty"
-      >
-        This weight has no class mapping rows yet — re-upload to refresh.
-      </p>
-    );
-  }
-
-  const mappedCount = mappings.filter((m) => m.project_class_id !== null).length;
-
-  return (
-    <div className="grid gap-2" data-testid="weight-mappings-editor">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] tracking-tight text-[color:var(--text-tertiary)] uppercase">
-          Class mapping
-        </span>
-        <span
-          className="font-mono text-[11px] text-[color:var(--text-secondary)]"
-          data-testid="weight-mappings-summary"
-        >
-          {mappedCount} of {mappings.length} mapped
-        </span>
-      </div>
-      <div className="grid gap-1.5">
-        {mappings.map((m) => {
-          const value = m.project_class_id ?? MAPPING_NONE;
-          return (
-            <div
-              key={m.id}
-              data-testid={`weight-mapping-row-${m.weight_class_idx}`}
-              className="grid grid-cols-[auto_1fr] gap-2 items-center text-[12.5px]"
-            >
-              <span className="font-mono text-[11px] text-[color:var(--text-tertiary)]">
-                #{m.weight_class_idx} {m.weight_class_name}
-              </span>
-              <Select
-                value={value}
-                disabled={!canEdit || updateM.isPending}
-                onValueChange={(next) => {
-                  const projectClassId = next === MAPPING_NONE ? null : next;
-                  if (projectClassId === (m.project_class_id ?? null)) return;
-                  updateM.mutate({ id: m.id, projectClassId });
-                }}
-              >
-                <Select.Trigger
-                  aria-label={`Project class for ${m.weight_class_name}`}
-                  data-testid={`weight-mapping-trigger-${m.weight_class_idx}`}
-                  className="w-full"
-                />
-                <Select.Content>
-                  <Select.Item
-                    value={MAPPING_NONE}
-                    data-testid={`weight-mapping-option-none-${m.weight_class_idx}`}
-                  >
-                    <span className="italic text-[color:var(--text-tertiary)]">
-                      None
-                    </span>
-                  </Select.Item>
-                  {projectClasses.map((c) => (
-                    <Select.Item
-                      key={c.id}
-                      value={c.id}
-                      data-testid={`weight-mapping-option-${m.weight_class_idx}-${c.id}`}
-                    >
-                      {c.name}
-                    </Select.Item>
-                  ))}
-                </Select.Content>
-              </Select>
-            </div>
-          );
-        })}
-      </div>
-    </div>
   );
 }
 
@@ -594,10 +451,11 @@ export function ModelsYoloPage() {
                 )}
               </div>
 
-              {/* v3.3 Issue 3c — explicit class mapping editor. Replaces the
-                  silent name-only matcher; user can rebind weight classes to
-                  project classes (or "None" to skip them on predict). */}
-              <ClassMappingEditor weight={selectedWeight} canEdit={canDelete} />
+              {/* v3.5 Phase F4 — the per-weight class mapping editor moved
+                  to the predict popover (where task context exists). One
+                  weight can be predicted into many tasks, each with its own
+                  allowed classes, so binding is intrinsically per-task and
+                  no longer persisted on the weight itself. */}
 
               {/* v3.3 Issue 4 — default toggle. If currently default, show
                   a status pill; otherwise show a button to flip the slot. */}
