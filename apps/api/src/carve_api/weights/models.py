@@ -51,6 +51,37 @@ class Weight(Base):
     )
 
 
+class WeightAssignment(Base):
+    """v3.7 Phase 3 Issue 4 — explicit many-to-many weight <-> project.
+
+    A weight can be assigned to multiple projects (and vice versa). This
+    is a *membership* relation, not a default. ``WeightService.list_for_project``
+    unions weights joined via this table on top of:
+      * workspace-wide weights (``Weight.project_id IS NULL``)
+      * legacy direct-scoped weights (``Weight.project_id == project.id``)
+
+    Auto-annotate access checks (``inference/autoannotate.py``) treat an
+    assigned weight the same as a workspace-wide one: the task's project
+    is allowed to predict with it.
+    """
+
+    __tablename__ = "weight_assignments"
+
+    weight_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("weights.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class WeightProjectDefault(Base):
     """v3.5 Phase F5 — per-project default weight per task kind.
 

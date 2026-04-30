@@ -35,7 +35,7 @@ from carve_api.inference.sam_track import (
     start as _track_start,
     step as _track_step,
 )
-from carve_api.weights.models import Weight
+from carve_api.weights.models import Weight, WeightAssignment
 
 
 router = APIRouter(prefix="/assets", tags=["auto-annotate"])
@@ -197,8 +197,21 @@ def enqueue_batch_auto_annotate(
         raise HTTPException(status_code=404, detail="weight_not_found")
     # v3.5 Phase F5 — workspace-wide weights (project_id IS NULL) are
     # valid for any task; project-scoped weights still must match.
+    # v3.7 Phase 3 Issue 4 — also accept weights joined via
+    # ``weight_assignments`` so a project-scoped or workspace weight
+    # explicitly assigned to this project's id is allowed.
     if weight.project_id is not None and weight.project_id != task.project_id:
-        raise HTTPException(status_code=400, detail="weight_project_mismatch")
+        is_assigned = (
+            db.execute(
+                select(WeightAssignment).where(
+                    WeightAssignment.weight_id == weight.id,
+                    WeightAssignment.project_id == task.project_id,
+                )
+            ).scalar_one_or_none()
+            is not None
+        )
+        if not is_assigned:
+            raise HTTPException(status_code=400, detail="weight_project_mismatch")
 
     # v3.7 Phase 2 Issue 1 — coerce the wire ``{"3": "<uuid>"}`` body
     # into ``{int: str | None}`` for the RQ payload. Same validation
