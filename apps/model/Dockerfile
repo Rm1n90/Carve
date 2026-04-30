@@ -23,8 +23,6 @@ COPY pyproject.toml ./
 # Install runtime deps + GPU extras (Torch + Ultralytics + SAM-related libs).
 # --break-system-packages: container is isolated, no risk of breaking the host.
 RUN pip3 install --no-cache-dir --break-system-packages -e ".[gpu]"
-# SAM 2 from upstream (not on PyPI under that name).
-RUN pip3 install --no-cache-dir --break-system-packages git+https://github.com/facebookresearch/sam2.git
 
 COPY src ./src
 ENV PYTHONPATH=/app/src

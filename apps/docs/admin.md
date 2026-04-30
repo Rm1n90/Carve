@@ -94,12 +94,12 @@ license and provide an HF token before enabling it.
 - **torch.compile (optional):** Set `SAM_COMPILE=1` for ~1.3-2x faster
   inference after a one-time 30-60s warmup. Falls back gracefully on
   incompatible hardware.
-- **SAM 2.1 backend (v3.4):** SAM 2.x now loads via the Hugging Face
-  `transformers` package by default (`Sam2Model` / `Sam2VideoModel`).
-  The legacy upstream `sam2` git package path remains available as an
-  opt-out — set `SAM2_BACKEND=legacy` in `.env` to roll back. The
-  `transformers` GPU extra is included by default; no extra install is
-  required for the new path.
+- **SAM 2.1 backend (v3.4):** SAM 2.x runs on Hugging Face `transformers`
+  (`Sam2Model` + `Sam2Processor` for image, `Sam2VideoModel` +
+  `Sam2VideoProcessor` for video). Weights are cached at
+  `/root/.cache/huggingface` inside the model container. The legacy
+  upstream `sam2` git package path was removed in v3.4 commit 6; no
+  toggle to opt back in.
 - **GPU memory management:** SAM models are unloaded from GPU memory
   after `SAM_IDLE_TIMEOUT_S` seconds of inactivity (default `900` =
   15 min). Set to `0` to disable idle eviction. Force-unload immediately

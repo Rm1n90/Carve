@@ -1,15 +1,11 @@
 """SAM 2 adapters that conform to the SamPredictor + TrackerProtocol contracts.
 
 This module is the **transformers-backed** path for SAM 2.x, mirroring the
-SAM 3 adapter pattern in ``sam3_adapter.py``. It is gated behind the
-``SAM2_BACKEND`` environment variable (default ``legacy`` so existing
-production behavior is unchanged).
-
-When ``SAM2_BACKEND=transformers`` the predictor and tracker factories
-in ``predictor.py`` / ``tracker.py`` route SAM 2.x models (``sam2.1-tiny``,
-``sam2.1-small``, ``sam2.1-base-plus``, ``sam2.1-large``) through these
-adapters. When unset or set to ``legacy``, the original ``sam2`` git
-package paths run unchanged.
+SAM 3 adapter pattern in ``sam3_adapter.py``. Since v3.4 commit 6 it is
+the only path: the legacy ``sam2`` git-package install was removed and
+the ``predictor.py`` / ``tracker.py`` factories route every SAM 2.x model
+(``sam2.1-tiny``, ``sam2.1-small``, ``sam2.1-base-plus``, ``sam2.1-large``)
+through these adapters unconditionally.
 
 The transformers SAM 2 API surface used here:
 
@@ -217,7 +213,7 @@ def build_sam2_image_predictor(
     device: str | None = None,
 ) -> Sam2ImagePredictorAdapter:
     """Eager construction. Imports torch + transformers — only call when
-    ``SAM2_BACKEND=transformers`` and the GPU extras are installed.
+    the GPU extras are installed.
 
     Resolves the HF repo id from the SAM 2.x ``model_name`` (e.g.
     ``sam2.1-tiny``). Raises ``ValueError`` for unknown SAM 2 model
@@ -248,9 +244,8 @@ def build_sam2_image_predictor(
 
 
 class Sam2VideoTrackerAdapter:
-    """Wrap ``Sam2VideoModel`` + ``Sam2VideoProcessor`` to look like the
-    legacy ``Sam2VideoPredictorAdapter`` (i.e. conforms to
-    ``TrackerProtocol``).
+    """Wrap ``Sam2VideoModel`` + ``Sam2VideoProcessor`` to conform to the
+    ``TrackerProtocol`` contract (multi-object dict-of-masks per frame).
 
     Lazy session bring-up: ``init_state(video_path)`` loads the video
     frames; the inference session is only constructed on the first
@@ -333,9 +328,8 @@ class Sam2VideoTrackerAdapter:
     def propagate_in_video(self, inference_state: Any) -> Any:
         """Yield ``(frame_idx, {obj_id: mask})`` for each propagated frame.
 
-        Mirrors the per-object dict contract the legacy
-        ``Sam2VideoPredictorAdapter`` already speaks (see
-        ``tracker.py:Sam2VideoPredictorAdapter.propagate_in_video``).
+        The per-object dict contract is what the v1.4 ``TrackerProtocol``
+        speaks; ``track_router`` consumes it directly without translation.
         """
         if inference_state.get("session") is None:
             return

@@ -17,10 +17,10 @@ from carve_model.sam import predictor as p_mod
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
     # Strip env vars before each test so we always start from defaults.
-    # SAM2_BACKEND defaults to transformers when unset (since v3.4).
+    # As of v3.4 commit 6 the SAM 2 backend is transformers-only; there is
+    # no legacy toggle to clear.
     monkeypatch.delenv("SAM_MODEL", raising=False)
     monkeypatch.delenv("SAM_VARIANT", raising=False)
-    monkeypatch.delenv("SAM2_BACKEND", raising=False)
 
 
 def test_default_is_sam2_1_large():
@@ -78,45 +78,14 @@ def test_repo_map_has_entry_per_model():
         assert name in p_mod._HF_REPO_BY_MODEL  # noqa: SLF001 — module-level constant
 
 
-# --- SAM2_BACKEND toggle (v3.4 commit 3) ------------------------------------
-
-
-@pytest.fixture
-def fake_legacy_sam2_modules(monkeypatch):
-    """Stub the legacy ``sam2.sam2_image_predictor`` path so ``_default_factory``
-    can run end-to-end without GPUs or real SAM 2 weights."""
-    captured: dict = {}
-
-    class _FakeModel:
-        def to(self, _device):
-            return self
-
-    class _FakePredictor:
-        model = _FakeModel()
-
-        @classmethod
-        def from_pretrained(cls, repo: str):
-            captured["legacy_repo"] = repo
-            return cls()
-
-    fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
-
-    fake_sam2 = ModuleType("sam2")
-    fake_image_pred = ModuleType("sam2.sam2_image_predictor")
-    fake_image_pred.SAM2ImagePredictor = _FakePredictor
-
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setitem(sys.modules, "sam2", fake_sam2)
-    monkeypatch.setitem(sys.modules, "sam2.sam2_image_predictor", fake_image_pred)
-    return captured
+# --- SAM 2 transformers backend (v3.4 commit 6: legacy path removed) --------
 
 
 @pytest.fixture
 def fake_transformers_sam2_modules(monkeypatch):
     """Stub the transformers ``Sam2Model`` + ``Sam2Processor`` classes so
-    ``_default_factory`` can build the new transformers-backed adapter
-    without loading torch or pulling weights."""
+    ``_default_factory`` can build the transformers-backed adapter without
+    loading torch or pulling weights."""
     captured: dict = {}
 
     fake_torch = ModuleType("torch")
@@ -149,60 +118,31 @@ def fake_transformers_sam2_modules(monkeypatch):
     return captured
 
 
-def test_default_factory_uses_transformers_path_when_sam2_backend_unset(
-    monkeypatch, fake_transformers_sam2_modules,
-):
-    """Default ``SAM2_BACKEND`` (unset) must use the HF transformers adapter
-    (v3.4 flipped the default from ``legacy`` → ``transformers``).
-    Production now picks up the new path without an explicit opt-in."""
-    monkeypatch.setenv("SAM_MODEL", "sam2.1-tiny")
-
-    p_mod._default_factory()  # noqa: SLF001 — exercising module-private factory
-
-    assert fake_transformers_sam2_modules["model_repo"] == "facebook/sam2.1-hiera-tiny"
-    assert fake_transformers_sam2_modules["proc_repo"] == "facebook/sam2.1-hiera-tiny"
-    assert fake_transformers_sam2_modules["model_class"] == "Sam2Model"
-
-
-def test_default_factory_uses_legacy_path_when_sam2_backend_legacy(
-    monkeypatch, fake_legacy_sam2_modules,
-):
-    """Explicit ``SAM2_BACKEND=legacy`` is equivalent to unset."""
-    monkeypatch.setenv("SAM_MODEL", "sam2.1-tiny")
-    monkeypatch.setenv("SAM2_BACKEND", "legacy")
-
-    p_mod._default_factory()  # noqa: SLF001
-
-    assert fake_legacy_sam2_modules["legacy_repo"] == "facebook/sam2.1-hiera-tiny"
-
-
 @pytest.mark.parametrize("model_name,expected_repo", [
     ("sam2.1-tiny",      "facebook/sam2.1-hiera-tiny"),
     ("sam2.1-small",     "facebook/sam2.1-hiera-small"),
     ("sam2.1-base-plus", "facebook/sam2.1-hiera-base-plus"),
     ("sam2.1-large",     "facebook/sam2.1-hiera-large"),
 ])
-def test_default_factory_uses_transformers_path_when_sam2_backend_transformers(
+def test_default_factory_uses_transformers_path_for_each_sam2_variant(
     monkeypatch, fake_transformers_sam2_modules, model_name, expected_repo,
 ):
-    """When ``SAM2_BACKEND=transformers``, ``_default_factory`` must call
-    ``Sam2Model.from_pretrained(<repo>)`` (NOT the legacy
-    ``SAM2ImagePredictor`` from the sam2 git package)."""
+    """Every SAM 2.x model must route through ``Sam2Model.from_pretrained``
+    on the transformers backend. The legacy ``sam2`` git path no longer
+    exists (removed in v3.4 commit 6)."""
     monkeypatch.setenv("SAM_MODEL", model_name)
-    monkeypatch.setenv("SAM2_BACKEND", "transformers")
 
-    p_mod._default_factory()  # noqa: SLF001
+    p_mod._default_factory()  # noqa: SLF001 — exercising module-private factory
 
     assert fake_transformers_sam2_modules["model_repo"] == expected_repo
     assert fake_transformers_sam2_modules["proc_repo"] == expected_repo
     assert fake_transformers_sam2_modules["model_class"] == "Sam2Model"
 
 
-def test_default_factory_sam3_unaffected_by_sam2_backend(monkeypatch):
-    """``SAM2_BACKEND`` is a SAM 2.x toggle only — ``SAM_MODEL=sam3`` always
-    routes through the SAM 3 adapter regardless of the SAM2_BACKEND value."""
+def test_default_factory_routes_sam3_through_sam3_adapter(monkeypatch):
+    """``SAM_MODEL=sam3`` must always route through the SAM 3 adapter,
+    independent of how SAM 2 is wired."""
     monkeypatch.setenv("SAM_MODEL", "sam3")
-    monkeypatch.setenv("SAM2_BACKEND", "transformers")
 
     called = {"build": False}
 

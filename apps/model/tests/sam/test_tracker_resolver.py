@@ -3,8 +3,9 @@
 Mirrors ``tests/sam/test_predictor_resolver.py``. The tracker reads
 ``SAM_MODEL`` (or the legacy ``SAM_VARIANT``) via the shared resolver in
 ``carve_model.sam.predictor`` and binds the matching HF repo. Tests stub
-out ``torch`` and ``sam2.sam2_video_predictor`` via ``sys.modules`` so
-the production factory can run end-to-end without GPUs or real weights.
+out ``torch`` + ``transformers.Sam2VideoModel`` / ``Sam2VideoProcessor``
+via ``sys.modules`` so the production factory can run end-to-end without
+GPUs or real weights.
 """
 
 import sys
@@ -19,8 +20,6 @@ from carve_model.sam import tracker as t_mod
 def _isolate_env(monkeypatch):
     monkeypatch.delenv("SAM_MODEL", raising=False)
     monkeypatch.delenv("SAM_VARIANT", raising=False)
-    # SAM2_BACKEND defaults to transformers when unset (v3.4: flipped default).
-    monkeypatch.delenv("SAM2_BACKEND", raising=False)
     # Ensure no test factory leakage between resolver tests
     t_mod.set_test_tracker_factory(None)
     yield
@@ -28,109 +27,9 @@ def _isolate_env(monkeypatch):
 
 
 @pytest.fixture
-def fake_sam2_modules(monkeypatch):
-    """Stand in for torch + sam2.sam2_video_predictor so _default_factory
-    can run end-to-end without GPUs or real SAM 2 weights."""
-    captured: dict = {}
-
-    class _FakeModel:
-        def to(self, _device):
-            return self
-
-    class _FakeTracker:
-        model = _FakeModel()
-
-        @classmethod
-        def from_pretrained(cls, repo: str):
-            captured["repo"] = repo
-            return cls()
-
-    fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
-
-    fake_sam2 = ModuleType("sam2")
-    fake_video = ModuleType("sam2.sam2_video_predictor")
-    fake_video.SAM2VideoPredictor = _FakeTracker
-
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setitem(sys.modules, "sam2", fake_sam2)
-    monkeypatch.setitem(sys.modules, "sam2.sam2_video_predictor", fake_video)
-    return captured
-
-
-@pytest.mark.parametrize("model_name,expected_repo", [
-    ("sam2.1-tiny",      "facebook/sam2.1-hiera-tiny"),
-    ("sam2.1-small",     "facebook/sam2.1-hiera-small"),
-    ("sam2.1-base-plus", "facebook/sam2.1-hiera-base-plus"),
-    ("sam2.1-large",     "facebook/sam2.1-hiera-large"),
-])
-def test_default_factory_resolves_each_sam2_1_variant(
-    monkeypatch, fake_sam2_modules, model_name, expected_repo,
-):
-    # Pin to legacy backend so this test keeps exercising the
-    # resolver→legacy-repo mapping after v3.4 flipped the default.
-    monkeypatch.setenv("SAM2_BACKEND", "legacy")
-    monkeypatch.setenv("SAM_MODEL", model_name)
-    t_mod._default_factory()
-    assert fake_sam2_modules["repo"] == expected_repo
-
-
-def test_default_factory_default_is_sam2_1_large(monkeypatch, fake_sam2_modules):
-    # Pin to legacy backend so this test keeps exercising the legacy path.
-    # SAM_MODEL/SAM_VARIANT unset → resolver default is sam2.1-large.
-    monkeypatch.setenv("SAM2_BACKEND", "legacy")
-    t_mod._default_factory()
-    assert fake_sam2_modules["repo"] == "facebook/sam2.1-hiera-large"
-
-
-def test_default_factory_routes_to_sam3_adapter_when_sam3_selected(
-    monkeypatch, fake_sam2_modules,
-):
-    """v1.1 T6: SAM 3 selection now routes through the SAM 3 video tracker
-    adapter instead of raising — the actual model is loaded lazily by the
-    adapter so the RuntimeError from earlier plans no longer fires."""
-    monkeypatch.setenv("SAM_MODEL", "sam3")
-    called = {"build": False}
-
-    def _fake_build():
-        called["build"] = True
-        return object()
-
-    monkeypatch.setattr(
-        "carve_model.sam.sam3_adapter.build_sam3_video_tracker",
-        _fake_build,
-    )
-
-    t_mod._default_factory()
-    assert called["build"] is True
-
-
-def test_default_factory_routes_to_sam3_adapter_when_legacy_sam_variant_sam3(
-    monkeypatch, fake_sam2_modules,
-):
-    monkeypatch.setenv("SAM_VARIANT", "sam3")
-    called = {"build": False}
-
-    def _fake_build():
-        called["build"] = True
-        return object()
-
-    monkeypatch.setattr(
-        "carve_model.sam.sam3_adapter.build_sam3_video_tracker",
-        _fake_build,
-    )
-
-    t_mod._default_factory()
-    assert called["build"] is True
-
-
-# --- SAM2_BACKEND toggle (v3.4 commit 3) ------------------------------------
-
-
-@pytest.fixture
 def fake_transformers_sam2_video_modules(monkeypatch):
     """Stub the transformers ``Sam2VideoModel`` + ``Sam2VideoProcessor`` so
-    the new transformers-backed video tracker can be built without loading
+    the transformers-backed video tracker can be built without loading
     torch or pulling weights."""
     captured: dict = {}
 
@@ -164,62 +63,56 @@ def fake_transformers_sam2_video_modules(monkeypatch):
     return captured
 
 
-def test_default_factory_uses_transformers_path_when_sam2_backend_unset(
-    monkeypatch, fake_transformers_sam2_video_modules,
-):
-    """Default ``SAM2_BACKEND`` (unset) must use the HF transformers adapter
-    (v3.4 flipped the default from ``legacy`` → ``transformers``).
-    Production now picks up the new path without an explicit opt-in."""
-    monkeypatch.setenv("SAM_MODEL", "sam2.1-tiny")
-
-    t_mod._default_factory()  # noqa: SLF001
-
-    assert fake_transformers_sam2_video_modules["model_repo"] == "facebook/sam2.1-hiera-tiny"
-    assert fake_transformers_sam2_video_modules["proc_repo"] == "facebook/sam2.1-hiera-tiny"
-    assert fake_transformers_sam2_video_modules["model_class"] == "Sam2VideoModel"
-
-
-def test_default_factory_uses_legacy_path_when_sam2_backend_legacy(
-    monkeypatch, fake_sam2_modules,
-):
-    """Explicit ``SAM2_BACKEND=legacy`` is equivalent to unset."""
-    monkeypatch.setenv("SAM_MODEL", "sam2.1-tiny")
-    monkeypatch.setenv("SAM2_BACKEND", "legacy")
-
-    t_mod._default_factory()  # noqa: SLF001
-
-    assert fake_sam2_modules["repo"] == "facebook/sam2.1-hiera-tiny"
-
-
 @pytest.mark.parametrize("model_name,expected_repo", [
     ("sam2.1-tiny",      "facebook/sam2.1-hiera-tiny"),
     ("sam2.1-small",     "facebook/sam2.1-hiera-small"),
     ("sam2.1-base-plus", "facebook/sam2.1-hiera-base-plus"),
     ("sam2.1-large",     "facebook/sam2.1-hiera-large"),
 ])
-def test_default_factory_uses_transformers_path_when_sam2_backend_transformers(
+def test_default_factory_resolves_each_sam2_1_variant(
     monkeypatch, fake_transformers_sam2_video_modules, model_name, expected_repo,
 ):
-    """When ``SAM2_BACKEND=transformers``, ``_default_factory`` must call
-    ``Sam2VideoModel.from_pretrained(<repo>)`` (NOT the legacy
-    ``SAM2VideoPredictor`` from the sam2 git package)."""
+    """Every SAM 2.x model must route through ``Sam2VideoModel.from_pretrained``
+    on the transformers backend. The legacy ``sam2`` git path no longer
+    exists (removed in v3.4 commit 6)."""
     monkeypatch.setenv("SAM_MODEL", model_name)
-    monkeypatch.setenv("SAM2_BACKEND", "transformers")
-
     t_mod._default_factory()  # noqa: SLF001
-
     assert fake_transformers_sam2_video_modules["model_repo"] == expected_repo
     assert fake_transformers_sam2_video_modules["proc_repo"] == expected_repo
     assert fake_transformers_sam2_video_modules["model_class"] == "Sam2VideoModel"
 
 
-def test_default_factory_sam3_unaffected_by_sam2_backend(
-    monkeypatch, fake_sam2_modules,
+def test_default_factory_default_is_sam2_1_large(
+    monkeypatch, fake_transformers_sam2_video_modules,
 ):
-    """``SAM2_BACKEND`` is a SAM 2.x toggle only — ``SAM_MODEL=sam3`` always
-    routes through the SAM 3 adapter regardless of the SAM2_BACKEND value."""
+    # SAM_MODEL/SAM_VARIANT unset → resolver default is sam2.1-large.
+    t_mod._default_factory()  # noqa: SLF001
+    assert fake_transformers_sam2_video_modules["model_repo"] == "facebook/sam2.1-hiera-large"
+
+
+def test_default_factory_routes_to_sam3_adapter_when_sam3_selected(monkeypatch):
+    """v1.1 T6: SAM 3 selection routes through the SAM 3 video tracker
+    adapter; the actual model is loaded lazily by the adapter."""
     monkeypatch.setenv("SAM_MODEL", "sam3")
-    monkeypatch.setenv("SAM2_BACKEND", "transformers")
+    called = {"build": False}
+
+    def _fake_build():
+        called["build"] = True
+        return object()
+
+    monkeypatch.setattr(
+        "carve_model.sam.sam3_adapter.build_sam3_video_tracker",
+        _fake_build,
+    )
+
+    t_mod._default_factory()  # noqa: SLF001
+    assert called["build"] is True
+
+
+def test_default_factory_routes_to_sam3_adapter_when_legacy_sam_variant_sam3(
+    monkeypatch,
+):
+    monkeypatch.setenv("SAM_VARIANT", "sam3")
     called = {"build": False}
 
     def _fake_build():

@@ -129,30 +129,33 @@ def test_tracker_factory_uses_sam3_adapter_when_sam3_selected(monkeypatch):
 def test_predictor_factory_uses_sam2_path_for_default(monkeypatch):
     """Regression: when SAM_MODEL is unset (default sam2.1-large) the
     factory must NOT touch the SAM 3 adapter — it must follow the SAM 2
-    path that imports torch + sam2."""
+    transformers path."""
     captured: dict[str, Any] = {}
 
     fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
+    fake_torch.cuda = SimpleNamespace(
+        is_available=lambda: False,
+        is_bf16_supported=lambda: False,
+    )
+    fake_torch.bfloat16 = "bfloat16"
+    fake_torch.float32 = "float32"
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
 
-    class _FakeModel:
-        def to(self, _device):
-            return self
-
-    class _FakeSam2Predictor:
-        model = _FakeModel()
-
+    class _M:
         @classmethod
         def from_pretrained(cls, repo: str):
             captured["repo"] = repo
+            return SimpleNamespace(to=lambda dev, dtype=None: cls())
+
+    class _P:
+        @classmethod
+        def from_pretrained(cls, repo: str):
             return cls()
 
-    fake_sam2 = ModuleType("sam2")
-    fake_image = ModuleType("sam2.sam2_image_predictor")
-    fake_image.SAM2ImagePredictor = _FakeSam2Predictor
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setitem(sys.modules, "sam2", fake_sam2)
-    monkeypatch.setitem(sys.modules, "sam2.sam2_image_predictor", fake_image)
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.Sam2Model = type("Sam2Model", (_M,), {})
+    fake_transformers.Sam2Processor = type("Sam2Processor", (_P,), {})
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 
     # Sentinel to detect any leakage into the SAM 3 path.
     def _explode():
@@ -173,26 +176,29 @@ def test_tracker_factory_uses_sam2_path_for_default(monkeypatch):
     captured: dict[str, Any] = {}
 
     fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
+    fake_torch.cuda = SimpleNamespace(
+        is_available=lambda: False,
+        is_bf16_supported=lambda: False,
+    )
+    fake_torch.bfloat16 = "bfloat16"
+    fake_torch.float32 = "float32"
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
 
-    class _FakeModel:
-        def to(self, _device):
-            return self
-
-    class _FakeSam2VideoPredictor:
-        model = _FakeModel()
-
+    class _M:
         @classmethod
         def from_pretrained(cls, repo: str):
             captured["repo"] = repo
+            return SimpleNamespace(to=lambda dev, dtype=None: cls())
+
+    class _P:
+        @classmethod
+        def from_pretrained(cls, repo: str):
             return cls()
 
-    fake_sam2 = ModuleType("sam2")
-    fake_video = ModuleType("sam2.sam2_video_predictor")
-    fake_video.SAM2VideoPredictor = _FakeSam2VideoPredictor
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setitem(sys.modules, "sam2", fake_sam2)
-    monkeypatch.setitem(sys.modules, "sam2.sam2_video_predictor", fake_video)
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.Sam2VideoModel = type("Sam2VideoModel", (_M,), {})
+    fake_transformers.Sam2VideoProcessor = type("Sam2VideoProcessor", (_P,), {})
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 
     def _explode():
         raise AssertionError("sam2 default path must not call the SAM 3 builder")
