@@ -975,10 +975,18 @@ export function AnnotationCanvas({
         } else {
           color = hexFromColor(classMap[draft.classId]);
         }
-        const fillAlpha = Math.max(0, Math.min(1, settings.opacity / 100));
+        // Plan-09 Phase 5 Task 3 — rejected annotations render dimmed
+        // so the reviewer can SEE at a glance which proposals are
+        // discarded without hiding them entirely (still selectable /
+        // editable, can be un-rejected from the panel).
+        const rejectedAlphaMul = draft.status === "rejected" ? 0.4 : 1;
+        const fillAlpha = Math.max(
+          0,
+          Math.min(1, (settings.opacity / 100) * rejectedAlphaMul),
+        );
         const selectedFillAlpha = Math.max(
           0,
-          Math.min(1, settings.selectedOpacity / 100),
+          Math.min(1, (settings.selectedOpacity / 100) * rejectedAlphaMul),
         );
         const outlineColor = settings.outlinedBorders
           ? hexFromColor(settings.outlinedBorderColor)

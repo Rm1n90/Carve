@@ -2,6 +2,8 @@ import { create } from "zustand";
 
 export type AnnotationKind = "bbox" | "polygon" | "mask" | "tag";
 
+export type ReviewStatus = "proposed" | "accepted" | "rejected";
+
 export interface Bbox { kind: "bbox"; x: number; y: number; w: number; h: number; }
 export interface Polygon { kind: "polygon"; points: [number, number][]; }
 export interface Mask { kind: "mask_rle"; size: [number, number]; counts: string; }
@@ -25,6 +27,28 @@ export interface AnnotationDraft {
   trackId?: string | null;
   /** Stacking order — lower paints first. Defaults to 0. */
   zOrder?: number;
+  /**
+   * Plan-09 Phase 5 Task 3 — review lifecycle. New drafts default to
+   * ``proposed``. Once a reviewer accepts/rejects via the review panel
+   * the server stamps ``reviewedById``/``reviewedAt``. ``prevGeometry``
+   * preserves the prior geometry on edits-after-accept (server-set).
+   *
+   * These are typed optional to avoid churn at the ~50 internal callsites
+   * that currently construct ``AnnotationDraft`` literals; the store's
+   * ``add()`` / ``reset()`` and ``api/annotations#toDraft`` always seed
+   * a concrete value (defaulting to ``"proposed"`` when missing).
+   */
+  status?: ReviewStatus;
+  reviewedById?: string | null;
+  reviewedAt?: string | null;
+  prevGeometry?: Record<string, unknown> | null;
+}
+
+export interface ReviewStatePatch {
+  status?: ReviewStatus;
+  reviewedById?: string | null;
+  reviewedAt?: string | null;
+  prevGeometry?: Record<string, unknown> | null;
 }
 
 interface HistorySnapshot {
@@ -60,6 +84,21 @@ interface State {
   pushHistory: () => void;
   undo: () => void;
   redo: () => void;
+  /**
+   * Plan-09 Phase 5 Task 3 — apply a review-status patch (used for the
+   * optimistic flip when the user clicks Accept/Reject in ReviewPanel
+   * AND for applying the authoritative server response after the API
+   * resolves). Does NOT mark the draft dirty — review state is server-
+   * authoritative and travels via the dedicated /review endpoint, not
+   * the geometry batch.
+   */
+  setReviewState: (id: string, patch: ReviewStatePatch) => void;
+  /**
+   * Restore a previous review state — called from ReviewPanel's
+   * optimistic-failure path so the UI snaps back to the pre-click state
+   * when the API rejects.
+   */
+  revertReviewState: (id: string, prev: ReviewStatePatch) => void;
 }
 
 const HISTORY_CAP = 50;
@@ -88,12 +127,25 @@ export const useAnnotations = create<State>((set) => ({
   pendingDeletes: [],
   history: { past: [], future: [] },
   add: (a) =>
-    set((s) => ({
-      byId: { ...s.byId, [a.tempId]: a },
-      selectedId: a.tempId,
-      selectedIds: [a.tempId],
-      history: pushPast(s),
-    })),
+    set((s) => {
+      // Plan-09 Phase 5 Task 3 — every new draft enters the review
+      // pipeline as "proposed" unless the caller already set a value
+      // (e.g. a draft hydrated from the server already carries its
+      // server-authoritative status).
+      const seeded: AnnotationDraft = {
+        ...a,
+        status: a.status ?? "proposed",
+        reviewedById: a.reviewedById ?? null,
+        reviewedAt: a.reviewedAt ?? null,
+        prevGeometry: a.prevGeometry ?? null,
+      };
+      return {
+        byId: { ...s.byId, [a.tempId]: seeded },
+        selectedId: a.tempId,
+        selectedIds: [a.tempId],
+        history: pushPast(s),
+      };
+    }),
   update: (id, patch) =>
     set((s) => {
       const cur = s.byId[id];
@@ -152,7 +204,18 @@ export const useAnnotations = create<State>((set) => ({
   clearSelection: () => set({ selectedId: null, selectedIds: [] }),
   reset: (initial) =>
     set({
-      byId: Object.fromEntries(initial.map((a) => [a.tempId, a])),
+      byId: Object.fromEntries(
+        initial.map((a) => [
+          a.tempId,
+          {
+            ...a,
+            status: a.status ?? "proposed",
+            reviewedById: a.reviewedById ?? null,
+            reviewedAt: a.reviewedAt ?? null,
+            prevGeometry: a.prevGeometry ?? null,
+          },
+        ]),
+      ),
       selectedId: null,
       selectedIds: [],
       pendingDeletes: [],
@@ -219,6 +282,23 @@ export const useAnnotations = create<State>((set) => ({
       return {
         byId: { ...s.byId, [id]: { ...cur, zOrder: (cur.zOrder ?? 0) - 1, dirty: true } },
         history: pushPast(s),
+      };
+    }),
+  setReviewState: (id, patch) =>
+    set((s) => {
+      const cur = s.byId[id];
+      if (!cur) return s;
+      // Review state is server-authoritative — do NOT flip ``dirty``.
+      return {
+        byId: { ...s.byId, [id]: { ...cur, ...patch } },
+      };
+    }),
+  revertReviewState: (id, prev) =>
+    set((s) => {
+      const cur = s.byId[id];
+      if (!cur) return s;
+      return {
+        byId: { ...s.byId, [id]: { ...cur, ...prev } },
       };
     }),
   pushHistory: () => set((s) => ({ history: pushPast(s) })),
