@@ -139,13 +139,28 @@ def sam_encode(image_b64: str) -> dict:
         return r.json()
 
 
-def sam_decode(image_hash: str, points: list[list[int]], labels: list[int]) -> dict:
-    """POST /sam/decode — returns {counts, size, score}."""
+def sam_decode(
+    image_hash: str,
+    points: list[list[int]],
+    labels: list[int],
+    box: list[float] | None = None,
+) -> dict:
+    """POST /sam/decode — returns {counts, size, score, polygon}.
+
+    v3.8 Phase 2 — optional ``box`` (xyxy) is forwarded to the model
+    service so the editor's BBox-then-refine flow uses a single decode
+    per click via the embedding cache instead of the SAM 3-only
+    /sam/box-prompt round-trip.
+    """
+    body: dict[str, object] = {
+        "image_hash": image_hash,
+        "points": points,
+        "labels": labels,
+    }
+    if box is not None:
+        body["box"] = box
     with _wrap_unreachable("sam_decode"), _client() as c:
-        r = c.post(
-            "/sam/decode",
-            json={"image_hash": image_hash, "points": points, "labels": labels},
-        )
+        r = c.post("/sam/decode", json=body)
         if r.status_code >= 400:
             raise ModelServiceError(r.status_code, _safe_json(r))
         return r.json()

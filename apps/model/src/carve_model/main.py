@@ -30,8 +30,39 @@ def _sweep_loop() -> None:
             log.exception("sam idle sweeper iteration failed")
 
 
+def _hf_login_from_env() -> None:
+    """Authenticate with Hugging Face at startup when ``HF_TOKEN`` is set.
+
+    SAM 3 (``facebook/sam3``) is a gated repository: without a logged-in
+    token, ``Sam3Model.from_pretrained`` returns 401/403. The model
+    service receives ``HF_TOKEN`` via docker-compose env, but the
+    huggingface_hub library only consults the token automatically when
+    it has been written via ``login()`` (or to
+    ``~/.cache/huggingface/token``). Calling login() at lifespan-start
+    persists the token to the cache so every subsequent
+    ``from_pretrained`` call authenticates -- SAM 3 image, SAM 3 video,
+    and any future gated weights all benefit.
+    """
+    import os
+
+    token = os.environ.get("HF_TOKEN", "").strip()
+    if not token:
+        log.info("HF_TOKEN unset; gated repos (e.g. facebook/sam3) will fail")
+        return
+    try:
+        from huggingface_hub import login as hf_login
+
+        hf_login(token=token, add_to_git_credential=False)
+        log.info("authenticated with Hugging Face Hub via HF_TOKEN")
+    except Exception:  # noqa: BLE001 -- HF login is best-effort at startup
+        log.exception(
+            "huggingface_hub.login failed; gated repos may not download"
+        )
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    _hf_login_from_env()
     from carve_model.yolo.registry import install_default_loader
     install_default_loader()
     _SWEEPER_STOP.clear()

@@ -718,6 +718,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             onAfterYoloPredict={() => {
               qc.invalidateQueries({ queryKey: ["annotations", taskId] });
             }}
+            classes={classesQ.data ?? []}
           />
 
           <SamUnavailableBanner />
@@ -899,6 +900,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                     }}
                     onUpdateColor={(cid, color) =>
                       classUpdate.mutate({ cid, patch: { color } })
+                    }
+                    onSavePrompt={(cid, prompt) =>
+                      classUpdate.mutate({
+                        cid,
+                        patch: { text_prompt: prompt },
+                      })
                     }
                     onEditClass={(cid) => {
                       const cls = (classesQ.data ?? []).find((c) => c.id === cid);

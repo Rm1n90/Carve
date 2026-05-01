@@ -88,6 +88,12 @@ class Class(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     color: Mapped[str] = mapped_column(String(7), nullable=False)
     attributes: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # v3.8 Phase 3 — per-class SAM 3 text concept. NULL means the class
+    # is not eligible for Text-SAM and the runner UI hides it. See
+    # alembic 0020.
+    text_prompt: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, default=None
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

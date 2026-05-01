@@ -126,6 +126,7 @@ class Sam2ImagePredictorAdapter:
         point_coords: Any,
         point_labels: Any,
         multimask_output: bool = True,
+        box: list[float] | None = None,
     ) -> tuple[Any, Any, Any]:
         """Run a click-prompt forward pass and return ``(masks, scores, None)``.
 
@@ -134,6 +135,10 @@ class Sam2ImagePredictorAdapter:
         post-process via ``processor.post_process_masks`` and return
         shape ``(K, H, W)`` so the router's existing argmax over scores
         keeps working.
+
+        v3.8 Phase 2 — optional ``box`` (xyxy) is forwarded as
+        ``input_boxes`` to the processor so the BBox-then-refine flow
+        can issue a single decode per click via the embedding cache.
         """
         if self._raw_image is None or self._original_size is None:
             raise RuntimeError("set_image must be called before predict")
@@ -145,14 +150,17 @@ class Sam2ImagePredictorAdapter:
         # Sam2Processor expects [batch][num_obj][num_pts][xy] for input_points
         # and [batch][num_obj][num_pts] for input_labels. We treat the click
         # set as a single object (matches /sam/decode).
-        input_points = [[[[float(p[0]), float(p[1])] for p in pts]]]
-        input_labels = [[[int(label) for label in lbls]]]
-        inputs = self._processor(
-            images=self._raw_image,
-            input_points=input_points,
-            input_labels=input_labels,
-            return_tensors="pt",
-        ).to(self._device)
+        proc_kwargs: dict[str, Any] = {
+            "images": self._raw_image,
+            "return_tensors": "pt",
+        }
+        if pts:
+            proc_kwargs["input_points"] = [[[[float(p[0]), float(p[1])] for p in pts]]]
+            proc_kwargs["input_labels"] = [[[int(label) for label in lbls]]]
+        if box is not None:
+            x1, y1, x2, y2 = (float(v) for v in box)
+            proc_kwargs["input_boxes"] = [[[x1, y1, x2, y2]]]
+        inputs = self._processor(**proc_kwargs).to(self._device)
 
         with torch.no_grad():
             outputs = self._model(

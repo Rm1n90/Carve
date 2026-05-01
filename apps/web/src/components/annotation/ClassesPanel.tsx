@@ -42,6 +42,12 @@ interface Props {
   onUpdateColor?: (cid: string, color: string) => void;
   onCreateClass?: (name: string, color: string) => void;
   /**
+   * v3.8 Phase 3 — save the SAM 3 text prompt for a class. ``null``
+   * clears the stored prompt; non-empty string sets it. Wired by the
+   * page-level page (which has the QueryClient/useMutation context).
+   */
+  onSavePrompt?: (classId: string, prompt: string | null) => void;
+  /**
    * v3.0 B2 — current frame in the editor. Used to scope the "Clear on this
    * frame" per-class action. ``null`` covers single-image assets where every
    * annotation has ``frameId === null``.
@@ -246,6 +252,7 @@ function ClassRowItem({
   hoveredAnnId,
   selectedAnnIds,
   hiddenAnnIds,
+  onSavePrompt,
 }: {
   cls: ClassRow;
   index: number;
@@ -269,6 +276,9 @@ function ClassRowItem({
   hoveredAnnId: string | null;
   selectedAnnIds: string[];
   hiddenAnnIds: string[];
+  /** v3.8 Phase 3 — save the SAM 3 text prompt for this class. ``null``
+   *  clears the prompt; non-empty string sets it. */
+  onSavePrompt?: (classId: string, prompt: string | null) => void;
 }) {
   const setActiveClassId = useTool((s) => s.setActiveClassId);
   const confirm = useConfirm();
@@ -462,21 +472,97 @@ function ClassRowItem({
           )}
         </span>
       </div>
-      {expanded && classAnnotations.length > 0 && (
-        <ul className="pb-1" data-testid={`class-annotations-${cls.id}`}>
-          {classAnnotations.map((a) => (
-            <AnnotationRow
-              key={a.tempId}
-              ann={a}
-              classColor={cls.color}
-              hovered={hoveredAnnId === a.tempId}
-              selected={selectedAnnIds.includes(a.tempId)}
-              hidden={hiddenAnnIds.includes(a.tempId)}
+      {expanded && (
+        <>
+          {/* v3.8 Phase 3 — inline SAM 3 text prompt editor. Lives in
+              the expanded view so it doesn't crowd the collapsed row.
+              Save on blur / Enter; Esc reverts. Empty saves as null. */}
+          {onSavePrompt && (
+            <ClassPromptInline
+              classId={cls.id}
+              initial={cls.text_prompt ?? ""}
+              onSave={onSavePrompt}
             />
-          ))}
-        </ul>
+          )}
+          {classAnnotations.length > 0 && (
+            <ul className="pb-1" data-testid={`class-annotations-${cls.id}`}>
+              {classAnnotations.map((a) => (
+                <AnnotationRow
+                  key={a.tempId}
+                  ann={a}
+                  classColor={cls.color}
+                  hovered={hoveredAnnId === a.tempId}
+                  selected={selectedAnnIds.includes(a.tempId)}
+                  hidden={hiddenAnnIds.includes(a.tempId)}
+                />
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </li>
+  );
+}
+
+// v3.8 Phase 3 — inline SAM-prompt editor for a single class row.
+// Local draft state, save on blur / Enter, Esc reverts. Empty maps
+// upstream to ``null`` (clears the prompt and removes the class from
+// the Auto-annotate / Text-mode eligible list).
+function ClassPromptInline({
+  classId,
+  initial,
+  onSave,
+}: {
+  classId: string;
+  initial: string;
+  onSave: (classId: string, prompt: string | null) => void;
+}) {
+  const [value, setValue] = useState(initial);
+  useEffect(() => {
+    setValue(initial);
+  }, [initial]);
+  const dirty = value.trim() !== initial.trim();
+  return (
+    <div
+      className="flex items-center gap-2 px-2.5 pb-1.5 pt-0"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span
+        className="font-mono text-[9px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)] shrink-0"
+        title="SAM 3 text prompt"
+      >
+        SAM
+      </span>
+      <input
+        type="text"
+        data-testid={`class-prompt-input-${classId}`}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => {
+          if (dirty) onSave(classId, value.trim() === "" ? null : value.trim());
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            (e.currentTarget as HTMLInputElement).blur();
+          } else if (e.key === "Escape") {
+            setValue(initial);
+            (e.currentTarget as HTMLInputElement).blur();
+          }
+        }}
+        placeholder="text prompt — empty hides from Auto-annotate"
+        maxLength={200}
+        className={cn(
+          "flex-1 h-6 px-2 rounded-[var(--radius-xs)]",
+          "bg-transparent border border-transparent",
+          "text-[11.5px] tracking-tight text-[color:var(--text-primary)]",
+          "placeholder:text-[color:var(--text-tertiary)]",
+          "focus:outline-none focus:border-[var(--border-strong)] focus:bg-[var(--bg-sunken)]",
+          "hover:border-[var(--border-subtle)]",
+          dirty && "border-[var(--accent)] bg-[var(--accent-bg)]",
+        )}
+      />
+    </div>
   );
 }
 
@@ -584,6 +670,7 @@ export function ClassesPanel({
   onUpdateColor,
   onCreateClass,
   currentFrameId = null,
+  onSavePrompt,
 }: Props) {
   const activeClassId = useTool((s) => s.activeClassId);
   const setActiveClassId = useTool((s) => s.setActiveClassId);
@@ -814,6 +901,7 @@ export function ClassesPanel({
               hoveredAnnId={hoveredAnnotationId}
               selectedAnnIds={selectedIds}
               hiddenAnnIds={hiddenAnnotationIds}
+              onSavePrompt={onSavePrompt}
             />
           );
         })}

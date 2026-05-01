@@ -30,10 +30,16 @@ class _FakePredictor:
     def set_image(self, image: Any) -> None:
         self.set_image_calls.append(tuple(image.shape))
 
-    def predict(self, point_coords, point_labels, multimask_output=True):
+    def predict(self, point_coords, point_labels, multimask_output=True, box=None):
+        # v3.8 Phase 2 -- record ``box`` so router tests can assert it
+        # gets forwarded from /sam/decode without coupling the stub to
+        # any particular tensor backend.
+        pts_arr = np.asarray(point_coords)
+        lbls_arr = np.asarray(point_labels)
         self.predict_calls.append({
-            "points": np.asarray(point_coords).tolist(),
-            "labels": np.asarray(point_labels).tolist(),
+            "points": pts_arr.tolist() if pts_arr.size else [],
+            "labels": lbls_arr.tolist() if lbls_arr.size else [],
+            "box": list(box) if box is not None else None,
         })
         # Three candidate masks — the highest score should win
         masks = np.stack([
@@ -180,6 +186,70 @@ def test_decode_mismatched_lengths_returns_422() -> None:
         "labels": [1],
     })
     assert r.status_code == 422
+
+
+# --- v3.8 Phase 2 — BBox mode: /sam/decode now accepts an optional box ----
+
+
+def test_decode_box_only_forwards_box_to_predictor() -> None:
+    """Box-only decode: no points, an xyxy box -> predictor receives box."""
+    client, stub = _client_with_stub(
+        np.array([[1, 1], [1, 0]], dtype=np.uint8), score=0.5
+    )
+    enc = client.post("/sam/encode", json={"image_b64": _png_b64()}).json()
+    r = client.post("/sam/decode", json={
+        "image_hash": enc["image_hash"],
+        "points": [],
+        "labels": [],
+        "box": [10.0, 20.0, 50.0, 80.0],
+    })
+    assert r.status_code == 200
+    assert stub.predict_calls[0]["points"] == []
+    assert stub.predict_calls[0]["labels"] == []
+    assert stub.predict_calls[0]["box"] == [10.0, 20.0, 50.0, 80.0]
+
+
+def test_decode_box_with_points_forwards_both() -> None:
+    """BBox-then-refine: box plus refinement clicks both reach the predictor."""
+    client, stub = _client_with_stub(
+        np.array([[1, 1], [1, 0]], dtype=np.uint8), score=0.5
+    )
+    enc = client.post("/sam/encode", json={"image_b64": _png_b64()}).json()
+    r = client.post("/sam/decode", json={
+        "image_hash": enc["image_hash"],
+        "points": [[15, 30], [40, 60]],
+        "labels": [1, 0],
+        "box": [10.0, 20.0, 50.0, 80.0],
+    })
+    assert r.status_code == 200
+    assert stub.predict_calls[0]["points"] == [[15, 30], [40, 60]]
+    assert stub.predict_calls[0]["labels"] == [1, 0]
+    assert stub.predict_calls[0]["box"] == [10.0, 20.0, 50.0, 80.0]
+
+
+def test_decode_without_points_or_box_returns_422() -> None:
+    client, _ = _client_with_stub(np.zeros((4, 4), dtype=np.uint8))
+    enc = client.post("/sam/encode", json={"image_b64": _png_b64()}).json()
+    r = client.post("/sam/decode", json={
+        "image_hash": enc["image_hash"],
+        "points": [],
+        "labels": [],
+    })
+    assert r.status_code == 422
+    assert "at least one of points or box" in r.json()["detail"]
+
+
+def test_decode_box_wrong_length_returns_422() -> None:
+    client, _ = _client_with_stub(np.zeros((4, 4), dtype=np.uint8))
+    enc = client.post("/sam/encode", json={"image_b64": _png_b64()}).json()
+    r = client.post("/sam/decode", json={
+        "image_hash": enc["image_hash"],
+        "points": [],
+        "labels": [],
+        "box": [10.0, 20.0, 50.0],  # only 3 floats
+    })
+    assert r.status_code == 422
+    assert "x1, y1, x2, y2" in r.json()["detail"]
 
 
 def test_encode_bad_image_b64_returns_400() -> None:

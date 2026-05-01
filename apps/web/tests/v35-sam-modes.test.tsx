@@ -105,25 +105,41 @@ describe("SamTool — setMode / setText / setBox", () => {
     expect(result?.score).toBe(0.91);
   });
 
-  it("setMode('box') + setBox(...) calls samApi.boxPrompt with positive label", async () => {
-    (samApi.boxPrompt as ReturnType<typeof vi.fn>).mockResolvedValue([
-      {
-        counts: "0,4,4,4,12",
-        size: [8, 8],
-        score: 0.83,
-        bbox: [10, 20, 30, 40],
-      },
-    ]);
+  it("setMode('box') + setBox(...) calls samApi.decode with the box (Phase 2)", async () => {
+    // v3.8 Phase 2 -- Box mode now goes through /sam/encode + /sam/decode
+    // (with an optional `box` arg) instead of the SAM 3-only
+    // /sam/box-prompt. setBox first activates the tool to obtain the
+    // image hash, then issues a box-only decode.
+    (samApi.encode as ReturnType<typeof vi.fn>).mockResolvedValue({
+      image_hash: "h".repeat(32),
+      shape: [50, 50],
+    });
+    (samApi.decode as ReturnType<typeof vi.fn>).mockResolvedValue({
+      counts: "0,4,4,4,12",
+      size: [8, 8],
+      score: 0.83,
+      polygon: [
+        [10, 20],
+        [30, 20],
+        [30, 40],
+        [10, 40],
+      ],
+    });
 
     const tool = new SamTool("asset-2", () => "c-1", () => null);
     tool.setMode("box");
+    await tool.activate();
     const result = await tool.setBox([10, 20, 30, 40]);
-    expect(samApi.boxPrompt).toHaveBeenCalledWith(
-      "asset-2",
-      [[10, 20, 30, 40]],
-      [1],
-    );
-    expect(result?.bbox).toEqual([10, 20, 30, 40]);
+    expect(samApi.boxPrompt).not.toHaveBeenCalled();
+    expect(samApi.decode).toHaveBeenCalledTimes(1);
+    const call = (samApi.decode as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toBe("asset-2");
+    expect(call[1]).toBe("h".repeat(32));
+    expect(call[2]).toEqual([]); // no points yet
+    expect(call[3]).toEqual([]); // no labels yet
+    expect(call[5]).toEqual([10, 20, 30, 40]); // box positional arg
+    expect(result?.score).toBe(0.83);
+    expect(tool.getBox()).toEqual([10, 20, 30, 40]);
   });
 
   it("setText is a no-op when not in text mode", async () => {
@@ -195,14 +211,23 @@ describe("SamTool — setMode / setText / setBox", () => {
     expect(g.counts).toBe("0,2,2,2,10");
   });
 
-  it("box mode picks the highest-score candidate when the model returns multiple", async () => {
-    (samApi.boxPrompt as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { counts: "lo", size: [4, 4], score: 0.3, bbox: [0, 0, 1, 1] },
-      { counts: "hi", size: [4, 4], score: 0.9, bbox: [0, 0, 1, 1] },
-      { counts: "mid", size: [4, 4], score: 0.6, bbox: [0, 0, 1, 1] },
-    ]);
+  it("box mode returns the decode's best mask (server picks argmax in Phase 2)", async () => {
+    // v3.8 Phase 2 -- /sam/decode now does the argmax server-side and
+    // returns a single best result, so the client doesn't pick among
+    // candidates anymore. setBox simply reads back that result.
+    (samApi.encode as ReturnType<typeof vi.fn>).mockResolvedValue({
+      image_hash: "h".repeat(32),
+      shape: [10, 10],
+    });
+    (samApi.decode as ReturnType<typeof vi.fn>).mockResolvedValue({
+      counts: "hi",
+      size: [4, 4],
+      score: 0.9,
+      polygon: [],
+    });
     const tool = new SamTool("a", () => "c-1", () => null);
     tool.setMode("box");
+    await tool.activate();
     const r = await tool.setBox([0, 0, 1, 1]);
     expect(r?.score).toBe(0.9);
     expect(r?.counts).toBe("hi");
@@ -237,7 +262,10 @@ describe("SamModePicker (EditorToolbar)", () => {
     expect(screen.queryByTestId("sam-mode-picker")).toBeNull();
   });
 
-  it("disables Text + Box chips when the active variant is SAM 2", async () => {
+  it("disables only Text chip on SAM 2 (Phase 2: Box now works on SAM 2)", async () => {
+    // v3.8 Phase 2 — Box mode routes through /sam/encode + /sam/decode
+    // (not /sam/box-prompt) so it's no longer SAM 3-only. Text mode
+    // still requires SAM 3 because /sam/text-prompt is SAM 3-only.
     (modelsApi.samActive as ReturnType<typeof vi.fn>).mockResolvedValue({
       active: "sam2.1-large",
       available: ["sam2.1-large", "sam3"],
@@ -253,9 +281,8 @@ describe("SamModePicker (EditorToolbar)", () => {
     await waitFor(() => {
       const box = screen.getByTestId("sam-mode-box");
       const text = screen.getByTestId("sam-mode-text");
-      expect(box).toBeDisabled();
+      expect(box).not.toBeDisabled();
       expect(text).toBeDisabled();
-      expect(box.getAttribute("data-disabled")).toBe("true");
       expect(text.getAttribute("data-disabled")).toBe("true");
     });
   });

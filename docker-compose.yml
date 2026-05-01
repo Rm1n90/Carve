@@ -150,6 +150,12 @@ services:
       MODEL_HOST: 0.0.0.0
       MODEL_PORT: 8100
       HF_TOKEN: ${HF_TOKEN:-}
+      # v3.8 Phase 3 — pass SAM_MODEL through so .env can pick the
+      # boot-time variant. Without this, the container always starts on
+      # the hard-coded default (sam2.1-large) and runtime /sam/switch
+      # is the only way to change models. Default kept identical so
+      # operators who never set SAM_MODEL see no behavior change.
+      SAM_MODEL: ${SAM_MODEL:-sam2.1-large}
       # Optional: pin a specific GPU index. Default = use all visible GPUs.
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
     volumes:

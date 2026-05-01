@@ -7,6 +7,11 @@ export interface ClassRow {
   name: string;
   color: string;
   attributes: Record<string, unknown>;
+  // v3.8 Phase 3 — per-class SAM 3 text concept. null/undefined = not
+  // eligible for Text-SAM (runner UI hides such classes). Optional so
+  // legacy test fixtures (and any pre-Phase-3 cached responses) keep
+  // type-checking; the server always sends it post-Phase-3.
+  text_prompt?: string | null;
   created_at: string;
 }
 
@@ -15,6 +20,8 @@ export interface ClassIn {
   name: string;
   color: string;
   attributes?: Record<string, unknown>;
+  // v3.8 Phase 3 — optional. Omitted on create => null (ineligible).
+  text_prompt?: string | null;
 }
 
 export const classesApi = {

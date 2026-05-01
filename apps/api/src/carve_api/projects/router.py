@@ -188,6 +188,7 @@ def create_class(
             name=payload.name,
             color=payload.color,
             attributes=payload.attributes,
+            text_prompt=payload.text_prompt,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -223,13 +224,21 @@ def patch_class(
 ) -> ClassOut:
     try:
         project = ProjectService(db).get(actor=user, project_id=project_id)
+        # v3.8 Phase 3 — text_prompt uses Pydantic's `model_fields_set`
+        # so an explicit `null` from the client clears the prompt while
+        # an omitted field preserves the current value.
+        update_kwargs: dict = {
+            "idx": payload.idx,
+            "name": payload.name,
+            "color": payload.color,
+            "attributes": payload.attributes,
+        }
+        if "text_prompt" in payload.model_fields_set:
+            update_kwargs["text_prompt"] = payload.text_prompt
         c = ClassService(db).update(
             project=project,
             class_id=class_id,
-            idx=payload.idx,
-            name=payload.name,
-            color=payload.color,
-            attributes=payload.attributes,
+            **update_kwargs,
         )
     except AppError as exc:
         raise _http(exc) from exc

@@ -35,6 +35,7 @@ import {
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
 import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
+import { AutoAnnotateDialog } from "@/components/annotation/AutoAnnotateDialog";
 import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
 import { useTool, type ToolName, type VisibilityFlags } from "@/state/tool";
@@ -201,6 +202,12 @@ interface EditorToolbarProps {
   isVideo?: boolean;
   /** Called when YOLO predict completes; lets the page reload annotations. */
   onAfterYoloPredict?: () => void;
+  /**
+   * v3.8 Phase 3.5 — project classes. Passed through to the
+   * Auto-annotate dialog so its checklist can show name + color +
+   * stored ``text_prompt`` per class.
+   */
+  classes?: import("@/api/classes").ClassRow[];
 }
 
 function ToolButton({
@@ -1605,7 +1612,9 @@ function SamModePicker({ isVideo }: { isVideo: boolean }) {
     videoOnly: boolean;
   }[] = [
     { id: "point", label: "Point", sam3Only: false, videoOnly: false },
-    { id: "box", label: "Box", sam3Only: true, videoOnly: false },
+    // v3.8 Phase 2 — Box mode now goes through /sam/encode + /sam/decode
+    // (with optional `box` arg) so it works on both SAM 2 and SAM 3.
+    { id: "box", label: "Box", sam3Only: false, videoOnly: false },
     { id: "text", label: "Text", sam3Only: true, videoOnly: false },
     { id: "track", label: "Track", sam3Only: false, videoOnly: true },
   ];
@@ -1961,6 +1970,7 @@ export function EditorToolbar({
   assetId,
   isVideo = false,
   onAfterYoloPredict,
+  classes: classesProp,
 }: EditorToolbarProps) {
   const active = useTool((s) => s.active);
   const setActive = useTool((s) => s.setActive);
@@ -2138,6 +2148,16 @@ export function EditorToolbar({
         taskId={taskId}
         assetId={assetId}
         onAfter={onAfterYoloPredict}
+      />
+
+      {/* v3.8 Phase 3.5 — Auto-annotate (SAM 3 text). Lives next to the
+          YOLO predict button so users have one consistent place for
+          "let the model help me". */}
+      <AutoAnnotateDialog
+        assetId={assetId ?? null}
+        taskId={taskId}
+        classes={classesProp ?? []}
+        onSuccess={onAfterYoloPredict}
       />
 
       <Tooltip content={filterActive ? "Filter (active)" : "Filter annotations"}>

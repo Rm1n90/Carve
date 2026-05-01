@@ -42,6 +42,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from carve_model.sam.codec import encode_mask_rle
+from carve_model.sam.polygonize import mask_to_polygon
 from carve_model.sam.predictor import (
     ALLOWED_SAM_MODELS,
     _reset_singleton,
@@ -79,14 +80,27 @@ class EncodeOut(BaseModel):
 
 class DecodeIn(BaseModel):
     image_hash: str
-    points: list[list[int]] = Field(min_length=1)
-    labels: list[int] = Field(min_length=1)
+    # v3.8 Phase 2 — points/labels are now optional so the editor's BBox
+    # mode can issue a box-only decode (and refine with clicks via
+    # subsequent decodes that pass both). The endpoint validates at
+    # least one of (points, box) is present.
+    points: list[list[int]] = Field(default_factory=list)
+    labels: list[int] = Field(default_factory=list)
+    # v3.8 Phase 2 — optional xyxy box. Combines with points at decode
+    # time so a box-then-click refinement loop reuses the embedding
+    # cache, without forcing the SAM 3-only /sam/box-prompt path.
+    box: list[float] | None = None
 
 
 class DecodeOut(BaseModel):
     counts: str
     size: list[int]
     score: float
+    # v3.8 Phase 1 — Douglas-Peucker simplified outer contour of the
+    # selected mask. Empty when the mask has no usable contour (single
+    # pixel, all zero, etc). Lets the editor commit the result as an
+    # editable polygon annotation without a client-side rasterise step.
+    polygon: list[list[float]] = []
 
 
 @router.post("/encode", response_model=EncodeOut)
@@ -126,25 +140,64 @@ def decode(payload: DecodeIn) -> DecodeOut:
         )
     if len(payload.points) != len(payload.labels):
         raise HTTPException(status_code=422, detail="points and labels must have equal length")
+    if not payload.points and payload.box is None:
+        raise HTTPException(
+            status_code=422,
+            detail="at least one of points or box must be provided",
+        )
+    if payload.box is not None and len(payload.box) != 4:
+        raise HTTPException(
+            status_code=422,
+            detail="box must be [x1, y1, x2, y2]",
+        )
 
-    pts = np.asarray(payload.points)
-    lbl = np.asarray(payload.labels)
+    pts = np.asarray(payload.points) if payload.points else np.zeros((0, 2), dtype=np.float32)
+    lbl = np.asarray(payload.labels) if payload.labels else np.zeros((0,), dtype=np.int64)
     p = get_predictor()
     with autocast_ctx():
-        masks, scores, _ = p.predict(point_coords=pts, point_labels=lbl, multimask_output=True)
+        masks, scores, _ = p.predict(
+            point_coords=pts,
+            point_labels=lbl,
+            multimask_output=True,
+            box=payload.box,
+        )
 
     masks_np = _to_numpy(masks)
     scores_np = _to_numpy(scores)
     if masks_np.ndim != 3 or scores_np.ndim < 1:
         raise HTTPException(status_code=500, detail="unexpected_predictor_output")
     best = int(np.argmax(scores_np))
-    counts, size = encode_mask_rle(masks_np[best])
-    return DecodeOut(counts=counts, size=size, score=float(scores_np[best]))
+    best_mask = masks_np[best]
+    counts, size = encode_mask_rle(best_mask)
+    polygon = mask_to_polygon(best_mask)
+    return DecodeOut(
+        counts=counts,
+        size=size,
+        score=float(scores_np[best]),
+        polygon=polygon,
+    )
 
 
 def _to_numpy(arr: Any) -> np.ndarray:
+    """Convert a torch tensor (or array-like) to numpy.
+
+    v3.8 — bfloat16 tensors raise ``TypeError: Got unsupported ScalarType
+    BFloat16`` on ``.numpy()`` because numpy has no native bfloat16
+    dtype. The transformers SAM2 backend runs autocast in bfloat16 by
+    default, so ``scores`` and sometimes ``masks`` come back as bf16.
+    Cast non-float32 floating tensors up to float32 before the numpy
+    bridge. ``.float()`` is the standard torch idiom for this; gracefully
+    skip when ``arr`` lacks the method (e.g. raw numpy arrays).
+    """
     if hasattr(arr, "cpu"):
-        return arr.cpu().numpy()
+        cpu_arr = arr.cpu()
+        # `.dtype` exists on torch tensors; defensively gate via getattr.
+        dtype = getattr(cpu_arr, "dtype", None)
+        if dtype is not None and hasattr(cpu_arr, "float"):
+            dname = str(dtype)
+            if "bfloat16" in dname or "float16" in dname:
+                cpu_arr = cpu_arr.float()
+        return cpu_arr.numpy()
     return np.asarray(arr)
 
 
@@ -178,6 +231,10 @@ class TextPromptOut(BaseModel):
     size: list[int]
     score: float
     bbox: list[float]  # xyxy
+    # v3.8 Phase 1 — optional with default [] so SAM 3 text-prompt
+    # factories can populate this incrementally. The editor falls back
+    # to rasterising counts when polygon is empty.
+    polygon: list[list[float]] = []
 
 
 @router.post("/text-prompt", response_model=list[TextPromptOut])
@@ -216,6 +273,9 @@ class BoxPromptOut(BaseModel):
     size: list[int]
     score: float
     bbox: list[float]  # xyxy
+    # v3.8 Phase 1 — see DecodeOut.polygon. Optional default for the
+    # same factory-incremental reason as TextPromptOut.
+    polygon: list[list[float]] = []
 
 
 @router.post("/box-prompt", response_model=list[BoxPromptOut])

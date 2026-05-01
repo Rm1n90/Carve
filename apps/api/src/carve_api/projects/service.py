@@ -351,7 +351,14 @@ class ClassService:
         self.session = session
 
     def create(
-        self, *, project: Project, idx: int, name: str, color: str, attributes: dict
+        self,
+        *,
+        project: Project,
+        idx: int,
+        name: str,
+        color: str,
+        attributes: dict,
+        text_prompt: str | None = None,
     ) -> Class:
         c = Class(
             project_id=project.id,
@@ -359,6 +366,7 @@ class ClassService:
             name=name,
             color=color,
             attributes=attributes,
+            text_prompt=text_prompt,
         )
         self.session.add(c)
         try:
@@ -383,7 +391,15 @@ class ClassService:
 
     def update(self, *, project: Project, class_id: uuid.UUID, **fields) -> Class:
         c = self.get(project=project, class_id=class_id)
+        # v3.8 Phase 3 -- text_prompt is the one nullable patchable field
+        # where None means "clear it", not "skip". Apply it directly when
+        # the caller passed the key (router uses model_fields_set to
+        # signal intent); the None-skip filter still protects every other
+        # field from accidental clears via omitted PATCH bodies.
         for k, v in fields.items():
+            if k == "text_prompt":
+                setattr(c, k, v)
+                continue
             if v is not None:
                 setattr(c, k, v)
         try:
@@ -424,6 +440,9 @@ class ClassService:
                 name=src_c.name,
                 color=src_c.color,
                 attributes=dict(src_c.attributes or {}),
+                # v3.8 Phase 3 — carry the source's SAM 3 text prompt so
+                # the duplicated project keeps its Text-SAM eligibility.
+                text_prompt=src_c.text_prompt,
             )
             self.session.add(new_c)
             next_idx += 1

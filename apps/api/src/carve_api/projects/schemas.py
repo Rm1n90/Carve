@@ -70,6 +70,9 @@ class ClassIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     color: str
     attributes: dict = Field(default_factory=dict)
+    # v3.8 Phase 3 — optional SAM 3 text concept; empty string treated
+    # the same as None (class not eligible for Text-SAM).
+    text_prompt: str | None = Field(default=None, max_length=200)
 
     @field_validator("color")
     @classmethod
@@ -78,12 +81,22 @@ class ClassIn(BaseModel):
             raise ValueError("color must be #RRGGBB")
         return v
 
+    @field_validator("text_prompt")
+    @classmethod
+    def _normalize_prompt(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = v.strip()
+        return s if s else None
+
 
 class ClassPatch(BaseModel):
     idx: int | None = Field(default=None, ge=0, le=10000)
     name: str | None = Field(default=None, min_length=1, max_length=120)
     color: str | None = None
     attributes: dict | None = None
+    # v3.8 Phase 3 — patchable text prompt. Pass empty string to clear.
+    text_prompt: str | None = Field(default=None, max_length=200)
 
     @field_validator("color")
     @classmethod
@@ -94,6 +107,14 @@ class ClassPatch(BaseModel):
             raise ValueError("color must be #RRGGBB")
         return v
 
+    @field_validator("text_prompt")
+    @classmethod
+    def _normalize_prompt(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = v.strip()
+        return s if s else None
+
 
 class ClassOut(BaseModel):
     id: str
@@ -102,6 +123,7 @@ class ClassOut(BaseModel):
     name: str
     color: str
     attributes: dict
+    text_prompt: str | None
     created_at: datetime
 
     @classmethod
@@ -113,6 +135,7 @@ class ClassOut(BaseModel):
             name=c.name,
             color=c.color,
             attributes=c.attributes,
+            text_prompt=getattr(c, "text_prompt", None),
             created_at=c.created_at,
         )
 

@@ -12,7 +12,8 @@ import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@
 import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
 import { evaluateFilter, hasMeaningfulRules } from "@/lib/annotation-filter";
-import type { ClassRow } from "@/api/classes";
+import { classesApi, type ClassRow } from "@/api/classes";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   renderBbox,
   renderPolygon,
@@ -33,6 +34,7 @@ import { showToast } from "@/lib/toast";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
 import { AnnotationContextMenu } from "@/components/annotation/AnnotationContextMenu";
 import { ModelLoadingOverlay } from "@/components/annotation/ModelLoadingOverlay";
+import { ClassCommandPalette } from "@/components/annotation/ClassCommandPalette";
 import {
   centeredOffset,
   clampScale,
@@ -245,6 +247,14 @@ export function AnnotationCanvas({
   const samMode = useTool((s) => s.samMode);
   const [samTextDraft, setSamTextDraft] = useState("");
   const [samTextPending, setSamTextPending] = useState(false);
+  // v3.8 Phase 3.6 — Class Command Palette open state. Opens via "/"
+  // when a SAM candidate is active (or, future, polygon/bbox candidate).
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // v3.8 Phase 3.7 — when true, Apply commits every result above
+  // SAM_TEXT_FIND_ALL_THRESHOLD as a polygon (or mask) annotation
+  // straight to the active class. Default true: addresses the user's
+  // "3 people but only 1 found" expectation.
+  const [samTextFindAll, setSamTextFindAll] = useState(true);
   // v3.2 Issue 2: canvas-pan affordances. `spacePanRef` tracks whether
   // Space is held (enables click-drag pan regardless of active tool);
   // `panActiveRef` tracks whether a pan drag is in flight (Space+drag
@@ -276,9 +286,16 @@ export function AnnotationCanvas({
     // modes mid-interaction. v3.6 — also drop the live mask preview +
     // point markers so a stale mask from the previous mode never lingers.
     samBoxDraftRef.current = null;
+    // v3.8 Phase 3 — leaving Text mode clears the draft. We DO NOT
+    // auto-fill on entry: the user controls their input. The "Use
+    // class prompt" button on the floating panel is the explicit
+    // opt-in path for copying a class's stored prompt.
     if (samMode !== "text") setSamTextDraft("");
     clearSamPreview();
     clearSamPoints();
+    // v3.8 Phase 2 — drop any persistent SAM-box outline when leaving
+    // box mode so it doesn't render under Point / Track flows.
+    clearPreview();
     // Track-mode markers belong to the SamTrack panel, not the SamTool.
     // Tear them down whenever the user leaves track mode so leftover
     // markers don't follow them into point/box/text flows.
@@ -286,6 +303,10 @@ export function AnnotationCanvas({
     else void drawSamTrackMarkers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [samMode, samTool]);
+
+  // v3.8 Phase 3 — class auto-fill removed. The "Use class prompt"
+  // button on the floating Text panel is the explicit way to copy the
+  // active class's stored text_prompt into the input.
 
   // Subscribe to bridge marker changes so the canvas re-paints whenever
   // <SamTrackPanel> publishes a new markers array (after addObjectAtFrame).
@@ -1776,6 +1797,17 @@ export function AnnotationCanvas({
     }
 
     function onDown(e: PointerEvent) {
+      // v3.8 Phase 3 — pointerdowns originating inside the floating
+      // Text-mode panel must NOT be eaten by the canvas. Without this
+      // guard, the SAM-tool branch below calls e.preventDefault() which
+      // blocks the input from receiving focus, and every subsequent
+      // keystroke goes to <body> instead -- triggering global shortcuts
+      // (1-9 commit, Backspace pop, etc.) instead of typing into the
+      // prompt box.
+      const tgt = e.target as HTMLElement | null;
+      if (tgt?.closest?.('[data-testid="sam-text-prompt-input"]')) {
+        return;
+      }
       // v3.2 Issue 2: pan branch — runs BEFORE tool routing so a
       // Space-armed click or middle-mouse click never gets eaten by the
       // active tool's onPointerDown (which would otherwise start a bbox
@@ -1919,14 +1951,38 @@ export function AnnotationCanvas({
             showToast("Open the Track panel first.", { variant: "warning" });
           }
         } else if (mode === "box") {
-          // SAM 3 box prompt — clamp to image bounds (mirrors BboxTool)
-          // so a drag past the canvas backdrop produces sane xyxy.
-          const clamped = clampPointToImage(p);
-          samBoxDraftRef.current = { anchor: clamped, current: clamped };
-          try {
-            host!.setPointerCapture(e.pointerId);
-          } catch {
-            /* setPointerCapture not always available in jsdom */
+          // v3.8 Phase 2 — once a box is committed, treat further
+          // pointerdowns as point refinement (positive=left,
+          // negative=right) anchored to that box. The user clears the
+          // box via Esc to start a new selection.
+          if (samTool.getBox()) {
+            const promise = samTool.addClick(p, { pointer: e.button });
+            void drawSamPoints();
+            promise
+              .then((result) => {
+                if (result) {
+                  const cls = useTool.getState().activeClassId;
+                  const color = hexFromColor(cls ? classMap[cls] : undefined);
+                  void drawSamMaskPreview(result.counts, result.size, color);
+                }
+              })
+              .catch((err: unknown) => {
+                showToast(describeSamError(err), {
+                  variant: "error",
+                  duration: 5000,
+                });
+              });
+          } else {
+            // No box yet — start a drag. Clamp to image bounds (mirrors
+            // BboxTool) so a drag past the canvas backdrop produces a
+            // sane xyxy on release.
+            const clamped = clampPointToImage(p);
+            samBoxDraftRef.current = { anchor: clamped, current: clamped };
+            try {
+              host!.setPointerCapture(e.pointerId);
+            } catch {
+              /* setPointerCapture not always available in jsdom */
+            }
           }
         } else if (mode === "point") {
           // v3.6 — fire-and-await addClick. The SamTool mutates its
@@ -2095,7 +2151,6 @@ export function AnnotationCanvas({
         // SAM tool. Errors propagate as toasts via describeSamError.
         const draft = samBoxDraftRef.current;
         samBoxDraftRef.current = null;
-        clearPreview();
         try {
           host!.releasePointerCapture(e.pointerId);
         } catch {
@@ -2110,12 +2165,19 @@ export function AnnotationCanvas({
         const dy = y2 - y1;
         // 4px min edge — same threshold the bbox tool uses to filter
         // accidental click-as-drag events.
-        if (dx >= 4 && dy >= 4) {
+        if (dx < 4 || dy < 4) {
+          // Drag was below the noise threshold — drop the rubber-band
+          // overlay and skip setBox.
+          clearPreview();
+        } else {
+          // v3.8 Phase 2 — keep the rubber-band rectangle painted as a
+          // persistent SAM-box outline so the user sees what they are
+          // refining when they click inside it. Cleared by Esc / commit
+          // through clearPreview().
+          void drawPreviewRect({ x: x1, y: y1, w: dx, h: dy });
           samTool
             .setBox([x1, y1, x2, y2])
             .then((result) => {
-              // v3.6 — paint the box-prompt mask preview live so the
-              // user sees the segmented region without pressing Enter.
               if (result) {
                 const cls = useTool.getState().activeClassId;
                 const color = hexFromColor(cls ? classMap[cls] : undefined);
@@ -2198,17 +2260,70 @@ export function AnnotationCanvas({
         if (e.key === "Enter") {
           // v3.6 — commit() resets the SamTool's internal state; clear
           // the live preview + markers so they don't linger over the
-          // newly-committed mask annotation that the normal render path
-          // is about to paint as a regular mask_rle entry.
+          // newly-committed annotation that the normal render path is
+          // about to paint.
+          // v3.8 Phase 2 — also clear the persistent box outline.
           const ok = samTool.commit();
           if (ok) {
             clearSamPreview();
             clearSamPoints();
+            clearPreview();
           }
         } else if (e.key === "Escape") {
           samTool.reset();
           clearSamPreview();
           clearSamPoints();
+          clearPreview();
+        } else if (e.key === "Backspace" || e.key === "Delete") {
+          // v3.8 Phase 1 — pop the most recently added click, re-decode
+          // and repaint. Suppresses any parent handler while a SAM
+          // candidate is active.
+          e.preventDefault();
+          e.stopPropagation();
+          samTool
+            .popLastClick()
+            .then((result) => {
+              void drawSamPoints();
+              if (result === null) {
+                clearSamPreview();
+              } else {
+                const cls = useTool.getState().activeClassId;
+                const color = hexFromColor(cls ? classMap[cls] : undefined);
+                void drawSamMaskPreview(result.counts, result.size, color);
+              }
+            })
+            .catch((err: unknown) => {
+              showToast(describeSamError(err), { variant: "error", duration: 5000 });
+            });
+        } else if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          // v3.8 Phase 1 — commit with the class whose idx matches the
+          // pressed digit. Power-user path: click on the object, press
+          // the digit. No-op when no class with that idx exists.
+          const idx = parseInt(e.key, 10) - 1;
+          const target = (classesProp ?? []).find((c) => c.idx === idx);
+          if (target) {
+            e.preventDefault();
+            e.stopPropagation();
+            const ok = samTool.commit(target.id);
+            if (ok) {
+              clearSamPreview();
+              clearSamPoints();
+              clearPreview();
+              // Make the chosen class active so the next candidate
+              // inherits it without an extra UI click.
+              useTool.getState().setActiveClassId(target.id);
+            }
+          }
+        } else if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          // v3.8 Phase 3.6 — open the Class Command Palette. Universal
+          // class picker that scales past the 1-9 limit. Only opens
+          // when a SAM candidate is active (otherwise picking a class
+          // does nothing).
+          if (samTool.getLastResult()) {
+            e.preventDefault();
+            e.stopPropagation();
+            setPaletteOpen(true);
+          }
         }
       }
     }
@@ -2239,7 +2354,7 @@ export function AnnotationCanvas({
       clearSamPoints();
       unsubMaskRadius();
     };
-  }, [tool, activeClassId, frameId, imageSize, samTool, classMap]);
+  }, [tool, activeClassId, frameId, imageSize, samTool, classMap, classesProp]);
 
   const crosshairsOn = useTool((s) => s.visibility.crosshairs);
   const showCrosshair =
@@ -2326,14 +2441,70 @@ export function AnnotationCanvas({
   function applySamText(): void {
     const text = samTextDraft.trim();
     if (text.length === 0 || samTextPending) return;
+    const cls = useTool.getState().activeClassId;
     setSamTextPending(true);
+
+    // v3.8 Phase 3.7 — Find-all path: skip the preview dance, fetch
+    // every candidate above the score threshold, and commit each as
+    // its own annotation under the active class. The user gets all
+    // instances on screen at once instead of "best match" + Enter.
+    if (samTextFindAll) {
+      if (!cls) {
+        showToast("Pick an active class first.", {
+          variant: "warning",
+          duration: 4000,
+        });
+        setSamTextPending(false);
+        return;
+      }
+      // v3.8 Phase 3 followup — interactive default is more permissive
+      // (0.25) than the Auto-annotate dialog's batch default (0.4) so
+      // the user's first "type a thing, see it" experience isn't an
+      // empty toast. The dialog gives an explicit slider for the
+      // higher-precision batch path.
+      samTool
+        .applyTextMulti(text, 0.25, cls)
+        .then(({ created, total }) => {
+          if (created > 0) {
+            showToast(
+              `Created ${created} annotation${created === 1 ? "" : "s"} for "${text}".`,
+              { variant: "success", duration: 3000 },
+            );
+            // Drop any leftover preview from a prior single-mode run
+            // so the new annotations stand on their own.
+            clearSamPreview();
+            clearSamPoints();
+          } else if (total > 0) {
+            showToast(
+              `${total} candidate${total === 1 ? "" : "s"} below score threshold.`,
+              { variant: "warning", duration: 3000 },
+            );
+          } else {
+            showToast(`No matches for "${text}".`, {
+              variant: "warning",
+              duration: 3000,
+            });
+          }
+        })
+        .catch((err: unknown) => {
+          showToast(describeSamError(err), {
+            variant: "error",
+            duration: 5000,
+          });
+        })
+        .finally(() => {
+          setSamTextPending(false);
+        });
+      return;
+    }
+
+    // Best-match path (v3.6 behavior) — paint the text-prompt mask
+    // preview live so the user sees the segmented region without
+    // pressing Enter.
     samTool
       .setText(text)
       .then((result) => {
-        // v3.6 — paint the text-prompt mask preview live so the user
-        // sees the segmented region without pressing Enter.
         if (result) {
-          const cls = useTool.getState().activeClassId;
           const color = hexFromColor(cls ? classMap[cls] : undefined);
           void drawSamMaskPreview(result.counts, result.size, color);
         }
@@ -2376,6 +2547,25 @@ export function AnnotationCanvas({
         vertexHitTest={vertexHitTestClient}
         classes={classesProp}
       />
+      {/* v3.8 Phase 3.6 — Class Command Palette. "/" opens it when a
+          SAM candidate is in flight; selecting a class commits the
+          candidate to it and updates the active class so the next
+          candidate inherits the choice. */}
+      <ClassCommandPalette
+        open={paletteOpen}
+        classes={classesProp ?? []}
+        onClose={() => setPaletteOpen(false)}
+        onPick={(classId) => {
+          const ok = samTool.commit(classId);
+          if (ok) {
+            clearSamPreview();
+            clearSamPoints();
+            clearPreview();
+            useTool.getState().setActiveClassId(classId);
+          }
+        }}
+        title="Commit SAM candidate to class"
+      />
       <ModelLoadingOverlay
         open={samLoadOverlayOpen}
         onClose={() => setSamLoadOverlayOpen(false)}
@@ -2410,11 +2600,30 @@ export function AnnotationCanvas({
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
+          {/* v3.8 Phase 3 followup — pre-flight class check. The input
+              and Apply button are disabled until the user picks an
+              active class from the right panel. Clear inline hint
+              instead of an after-the-fact toast on Apply. */}
+          {!activeClassId && (
+            <span
+              data-testid="sam-text-no-class-hint"
+              style={{
+                fontSize: 11,
+                color: "var(--warning, oklch(0.78 0.18 85))",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Select a class first →
+            </span>
+          )}
           <input
             type="text"
-            placeholder="enter object name…"
+            placeholder={
+              activeClassId ? "enter object name…" : "(class required)"
+            }
             value={samTextDraft}
             onChange={(e) => setSamTextDraft(e.target.value)}
+            disabled={!activeClassId || samTextPending}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -2425,7 +2634,7 @@ export function AnnotationCanvas({
               }
             }}
             data-testid="sam-text-prompt-field"
-            disabled={samTextPending}
+            autoFocus
             style={{
               minWidth: 220,
               height: 28,
@@ -2441,32 +2650,186 @@ export function AnnotationCanvas({
           <button
             type="button"
             data-testid="sam-text-prompt-apply"
-            disabled={samTextPending || samTextDraft.trim().length === 0}
+            disabled={
+              !activeClassId ||
+              samTextPending ||
+              samTextDraft.trim().length === 0
+            }
             onClick={() => applySamText()}
-            style={{
-              height: 28,
-              padding: "0 12px",
-              borderRadius: 6,
-              border: "none",
-              background:
-                samTextDraft.trim().length === 0 || samTextPending
+            style={(() => {
+              const inert =
+                !activeClassId ||
+                samTextDraft.trim().length === 0 ||
+                samTextPending;
+              return {
+                height: 28,
+                padding: "0 12px",
+                borderRadius: 6,
+                border: "none",
+                background: inert
                   ? "var(--bg-subtle, rgba(255,255,255,0.05))"
                   : "var(--accent, #6366f1)",
-              color:
-                samTextDraft.trim().length === 0 || samTextPending
+                color: inert
                   ? "var(--text-tertiary, rgba(255,255,255,0.4))"
                   : "var(--accent-fg, #fff)",
-              fontSize: 12,
-              fontWeight: 500,
-              cursor:
-                samTextDraft.trim().length === 0 || samTextPending
-                  ? "not-allowed"
-                  : "pointer",
-            }}
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: inert ? "not-allowed" : "pointer",
+              };
+            })()}
           >
             {samTextPending ? "…" : "Apply"}
           </button>
+          {/* v3.8 Phase 3.7 — Find all toggle. When on, Apply commits
+              every candidate above 0.4 score directly to the active
+              class instead of showing one preview and waiting for
+              Enter. Default on so multi-instance images work as users
+              expect ("type 'person', get all 3"). */}
+          <label
+            data-testid="sam-text-find-all"
+            title="Find every instance above the score threshold"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 11,
+              color: "var(--text-secondary, rgba(255,255,255,0.7))",
+              cursor: "pointer",
+              userSelect: "none",
+              whiteSpace: "nowrap",
+              borderLeft: "1px solid var(--border-subtle, rgba(255,255,255,0.1))",
+              paddingLeft: 6,
+              marginLeft: 2,
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              checked={samTextFindAll}
+              onChange={(e) => setSamTextFindAll(e.target.checked)}
+              style={{ margin: 0 }}
+            />
+            All instances
+          </label>
+          {/* v3.8 Phase 3 — Use class prompt / Save to class helpers.
+              Owned by a sub-component so the useQueryClient/useMutation
+              hooks only run when Text mode is actually open. Tests that
+              mount AnnotationCanvas without a QueryClientProvider stay
+              green because they never enter Text mode. */}
+          <TextSamHelpers
+            classes={classesProp}
+            activeClassId={activeClassId}
+            samTextDraft={samTextDraft}
+            onUsePrompt={setSamTextDraft}
+          />
         </div>
+      )}
+    </div>
+  );
+}
+
+// v3.8 Phase 3 — Helper buttons next to the Text-mode prompt input.
+// Lives outside the parent so its useQueryClient/useMutation only
+// instantiate when the Text panel is actually rendered (i.e. when the
+// production app is running, where the React Query provider always
+// exists). Test mounts of <AnnotationCanvas /> without a provider
+// stay green because they never enter Text mode.
+function TextSamHelpers({
+  classes,
+  activeClassId,
+  samTextDraft,
+  onUsePrompt,
+}: {
+  classes: ClassRow[] | undefined;
+  activeClassId: string | null;
+  samTextDraft: string;
+  onUsePrompt: (prompt: string) => void;
+}) {
+  const qc = useQueryClient();
+  const updateClassPrompt = useMutation({
+    mutationFn: ({
+      projectId,
+      classId,
+      prompt,
+    }: {
+      projectId: string;
+      classId: string;
+      prompt: string | null;
+    }) => classesApi.update(projectId, classId, { text_prompt: prompt }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["classes", vars.projectId] });
+      showToast("Prompt saved to class.", { variant: "success", duration: 2200 });
+    },
+    onError: () =>
+      showToast("Failed to save prompt to class.", { variant: "error" }),
+  });
+
+  const cls = (classes ?? []).find((c) => c.id === activeClassId);
+  if (!cls) return null;
+  const stored = (cls.text_prompt ?? "").trim();
+  const draft = samTextDraft.trim();
+  const showUse = stored.length > 0 && stored !== draft;
+  const showSave =
+    draft.length > 0 && draft !== stored && !updateClassPrompt.isPending;
+  if (!showUse && !showSave) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        borderLeft: "1px solid var(--border-subtle, rgba(255,255,255,0.1))",
+        paddingLeft: 6,
+        marginLeft: 2,
+      }}
+    >
+      {showUse && (
+        <button
+          type="button"
+          data-testid="sam-text-use-class-prompt"
+          title={`Use ${cls.name}'s prompt: "${stored}"`}
+          onClick={() => onUsePrompt(stored)}
+          style={{
+            height: 24,
+            padding: "0 8px",
+            borderRadius: 5,
+            border: "1px solid var(--border-subtle, rgba(255,255,255,0.1))",
+            background: "transparent",
+            color: "var(--text-secondary, rgba(255,255,255,0.7))",
+            fontSize: 11,
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+          }}
+        >
+          Use {cls.name}'s prompt
+        </button>
+      )}
+      {showSave && (
+        <button
+          type="button"
+          data-testid="sam-text-save-to-class"
+          title={`Save current input as ${cls.name}'s prompt`}
+          onClick={() =>
+            updateClassPrompt.mutate({
+              projectId: cls.project_id,
+              classId: cls.id,
+              prompt: draft,
+            })
+          }
+          style={{
+            height: 24,
+            padding: "0 8px",
+            borderRadius: 5,
+            border: "1px solid var(--accent, #6366f1)",
+            background: "transparent",
+            color: "var(--accent, #6366f1)",
+            fontSize: 11,
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+          }}
+        >
+          Save to {cls.name}
+        </button>
       )}
     </div>
   );
@@ -2729,6 +3092,12 @@ function describeSamError(err: unknown): string {
   const errorCode = errObj?.response?.data?.error;
   if (status === 503 || errorCode === "model_service_unreachable") {
     return "SAM unavailable — model service is not running.";
+  }
+  // v3.8 Phase 3 — Text mode requires SAM 3 specifically. Surface the
+  // actionable hint instead of a generic "SAM unavailable" toast so
+  // the user knows where to switch.
+  if (status === 409 && errorCode === "sam3_not_enabled") {
+    return "Text mode needs SAM 3. Switch the active model in Settings → Models.";
   }
   return "SAM unavailable — please try again later.";
 }

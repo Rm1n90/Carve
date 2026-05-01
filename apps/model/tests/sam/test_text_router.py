@@ -89,7 +89,16 @@ def test_text_prompt_calls_factory_when_sam3_enabled_and_factory_set(monkeypatch
     )
     assert r.status_code == 200
     body = r.json()
-    assert body == canned
+    # v3.8 Phase 1 -- TextPromptOut now declares an optional ``polygon``
+    # field with default []. Pydantic serializes it on the response
+    # even when the factory's payload omits it. Assert each field
+    # individually so legacy factory payloads keep passing.
+    assert len(body) == 1
+    assert body[0]["counts"] == canned[0]["counts"]
+    assert body[0]["size"] == canned[0]["size"]
+    assert body[0]["score"] == canned[0]["score"]
+    assert body[0]["bbox"] == canned[0]["bbox"]
+    assert body[0]["polygon"] == []
     assert received["text"] == "a person"
     assert received["image_b64"]  # non-empty
 

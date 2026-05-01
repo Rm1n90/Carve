@@ -229,6 +229,175 @@ def read_progress(redis_client, job_id: str) -> dict:
     }
 
 
+# v3.8 Phase 3.5 -- multi-asset SAM 3 text-prompt batch. Reuses the
+# Redis progress hash helpers (init/update/finalize/read) so the
+# frontend's BatchProgressDialog works for both YOLO and SAM-text.
+
+@dataclass
+class AutoTextBatchPayload:
+    """Serialisable args for the SAM 3 text auto-annotate batch job."""
+
+    job_id: str
+    actor_id: str
+    task_id: str
+    class_ids: list[str]
+    threshold: float
+    find_all: bool
+    overwrite: bool
+
+
+def build_auto_text_payload(
+    *,
+    actor: User,
+    task: Task,
+    class_ids: list[uuid.UUID],
+    threshold: float,
+    find_all: bool,
+    overwrite: bool,
+) -> AutoTextBatchPayload:
+    return AutoTextBatchPayload(
+        job_id=str(uuid.uuid4()),
+        actor_id=str(actor.id),
+        task_id=str(task.id),
+        class_ids=[str(c) for c in class_ids],
+        threshold=float(threshold),
+        find_all=bool(find_all),
+        overwrite=bool(overwrite),
+    )
+
+
+def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
+    """RQ job entry point for the SAM 3 text-prompt multi-asset batch.
+
+    Imports inside the function so RQ workers that load this module
+    without a full FastAPI app stack still pickle/unpickle cleanly.
+    Mirrors run_batch_auto_annotate's session/commit semantics:
+    single shared session for the whole batch, per-asset commit, per-
+    asset rollback on failure (so one bad asset doesn't poison the rest).
+    """
+    import os
+
+    import redis as _redis
+    from carve_api.db import get_session_factory
+    from carve_api.inference.auto_text import auto_text_for_asset
+    from carve_api.projects.models import Class as ClassModel
+
+    redis_client = None
+    try:
+        redis_client = _redis.Redis(
+            host=os.environ.get("REDIS_HOST", "redis"),
+            port=int(os.environ.get("REDIS_PORT", "6379")),
+            decode_responses=True,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception(
+            "auto_text_batch: redis init failed; running without progress"
+        )
+
+    task_uuid = uuid.UUID(payload.task_id)
+    actor_uuid = uuid.UUID(payload.actor_id)
+    class_uuids = [uuid.UUID(c) for c in payload.class_ids]
+
+    total_created = 0
+    failed = 0
+    errors: list[str] = []
+
+    session = get_session_factory()()
+    try:
+        task = session.get(Task, task_uuid)
+        if task is None:
+            finalize_progress(redis_client, payload.job_id, status="failed")
+            return {"ok": False, "error": "task_not_found"}
+
+        classes = (
+            session.query(ClassModel)
+            .filter(
+                ClassModel.id.in_(class_uuids),
+                ClassModel.project_id == task.project_id,
+            )
+            .all()
+        )
+        if not classes:
+            finalize_progress(redis_client, payload.job_id, status="failed")
+            return {"ok": False, "error": "no_matching_classes"}
+
+        assets = list_assets_for_task(session, task_uuid)
+        init_progress(redis_client, payload.job_id, total=len(assets))
+
+        canceled = False
+        for i, asset in enumerate(assets):
+            # v3.8 Phase 3.5 -- co-operative cancel: between assets,
+            # check the progress hash for status="canceled" written by
+            # the API's cancel endpoint. Per-asset commits ensure all
+            # work done so far is preserved.
+            if redis_client is not None:
+                try:
+                    cur_status = redis_client.hget(
+                        progress_key(payload.job_id), "status"
+                    )
+                    if cur_status == "canceled":
+                        canceled = True
+                        break
+                except Exception:
+                    # Best-effort -- if Redis blips we keep going.
+                    pass
+            try:
+                result = auto_text_for_asset(
+                    session=session,
+                    asset=asset,
+                    task=task,
+                    classes=classes,
+                    threshold=payload.threshold,
+                    find_all=payload.find_all,
+                    overwrite=payload.overwrite,
+                    actor_id=actor_uuid,
+                )
+                session.commit()
+                total_created += int(result.get("annotations_created", 0))
+            except (AppError, ModelServiceError) as exc:
+                session.rollback()
+                failed += 1
+                errors.append(_truncated_repr(exc, limit=200))
+                log.warning(
+                    "auto_text_batch: asset %s failed: %s",
+                    asset.id,
+                    _truncated_repr(exc),
+                )
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                failed += 1
+                errors.append(_truncated_repr(exc, limit=200))
+                log.exception("auto_text_batch: asset %s unexpected error", asset.id)
+
+            update_progress(
+                redis_client,
+                payload.job_id,
+                done=i + 1,
+                failed=failed,
+                errors=errors[-20:],
+                total_annotations_created=total_created,
+                total_skipped_detections=0,
+                skipped_by_class={},
+            )
+
+        if canceled:
+            finalize_progress(redis_client, payload.job_id, status="canceled")
+            return {
+                "ok": True,
+                "canceled": True,
+                "annotations_created": total_created,
+                "failed": failed,
+            }
+        finalize_progress(
+            redis_client,
+            payload.job_id,
+            status="completed" if failed == 0 else "completed_with_errors",
+        )
+        return {"ok": True, "annotations_created": total_created, "failed": failed}
+    finally:
+        session.close()
+
+
 def list_assets_for_task(session: Session, task_id: uuid.UUID) -> list[Asset]:
     return list(
         session.execute(

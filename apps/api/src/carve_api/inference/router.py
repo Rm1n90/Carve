@@ -19,9 +19,15 @@ from carve_api.inference.autoannotate import (
     presigned_url_for_weight,
 )
 from carve_api.inference.batch import (
+    build_auto_text_payload,
     build_job_payload,
     read_progress,
+    run_auto_text_batch,
     run_batch_auto_annotate,
+)
+from carve_api.inference.auto_text import (
+    AutoTextNoEligibleClasses,
+    auto_text_for_asset,
 )
 from carve_api.inference.sam import (
     sam_box_prompt_for_asset,
@@ -326,10 +332,113 @@ def get_batch_progress(
     return read_progress(_redis_client_or_none(), job_id)
 
 
+# v3.8 Phase 3.5 — multi-asset SAM 3 text-prompt batch.
+class SamAutoTextBatchIn(BaseModel):
+    class_ids: list[uuid.UUID] = Field(..., min_length=1)
+    threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    find_all: bool = Field(default=True)
+    overwrite: bool = Field(default=False)
+
+
+@task_inference_router.post("/{task_id}/sam/auto-text-batch")
+def enqueue_sam_auto_text_batch(
+    task_id: uuid.UUID,
+    payload: SamAutoTextBatchIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Enqueue a multi-asset SAM 3 text-prompt batch. Reuses the same
+    Redis progress hash as YOLO batches so the frontend's polling
+    dialog (BatchProgressDialog) works for both engines.
+    """
+    task = _require_visible_task(db, user, task_id)
+    from carve_api.projects.models import Class as ClassModel
+
+    classes = (
+        db.query(ClassModel)
+        .filter(
+            ClassModel.id.in_(payload.class_ids),
+            ClassModel.project_id == task.project_id,
+        )
+        .all()
+    )
+    if not classes:
+        raise HTTPException(status_code=422, detail="no_matching_classes")
+    eligible = [c for c in classes if (c.text_prompt or "").strip()]
+    if not eligible:
+        raise HTTPException(status_code=422, detail="no_eligible_classes")
+
+    job_payload = build_auto_text_payload(
+        actor=user,
+        task=task,
+        class_ids=[c.id for c in eligible],
+        threshold=payload.threshold,
+        find_all=payload.find_all,
+        overwrite=payload.overwrite,
+    )
+    try:
+        from rq import Queue
+        client = _redis_client_or_none()
+        if client is not None:
+            q = Queue("default", connection=client)
+            q.enqueue(run_auto_text_batch, job_payload)
+    except Exception:
+        pass
+    return {"job_id": job_payload.job_id}
+
+
+@task_inference_router.get(
+    "/{task_id}/sam/auto-text-batch/{job_id}",
+    response_model=BatchAutoAnnotateProgress,
+)
+def get_sam_auto_text_batch_progress(
+    task_id: uuid.UUID,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    _require_visible_task(db, user, task_id)
+    return read_progress(_redis_client_or_none(), job_id)
+
+
+# v3.8 Phase 3.5 — co-operative cancellation. The worker reads the
+# Redis hash's ``status`` between assets; setting it to ``canceled``
+# breaks the loop after the in-flight asset commits. Already-saved
+# annotations are kept (per-asset commit pattern).
+@task_inference_router.post(
+    "/{task_id}/sam/auto-text-batch/{job_id}/cancel",
+    status_code=202,
+)
+def cancel_sam_auto_text_batch(
+    task_id: uuid.UUID,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    _require_visible_task(db, user, task_id)
+    client = _redis_client_or_none()
+    if client is None:
+        raise HTTPException(status_code=503, detail="redis_unavailable")
+    try:
+        from carve_api.inference.batch import progress_key
+        client.hset(progress_key(job_id), "status", "canceled")
+    except Exception:
+        raise HTTPException(status_code=502, detail="cancel_failed") from None
+    return {"job_id": job_id, "status": "canceled"}
+
+
 class SamDecodeIn(BaseModel):
     image_hash: str
-    points: list[list[int]] = Field(min_length=1)
-    labels: list[int] = Field(min_length=1)
+    # v3.8 Phase 2 — points/labels are now optional so the editor's
+    # BBox mode can issue a box-only decode (and refine with clicks via
+    # subsequent decodes that pass both). The model service validates
+    # at least one of (points, box) is present.
+    points: list[list[int]] = Field(default_factory=list)
+    labels: list[int] = Field(default_factory=list)
+    # v3.8 Phase 2 — optional xyxy box. Combines with points at decode
+    # time so a box-then-click refinement loop reuses the embedding
+    # cache (no SAM 3-only /sam/box-prompt round-trip).
+    box: list[float] | None = None
 
 
 class SamTextIn(BaseModel):
@@ -356,6 +465,78 @@ class SamBoxIn(BaseModel):
     boxes: list[list[float]] = Field(..., min_length=1)
     box_labels: list[int] = Field(..., min_length=1)
     text: str | None = Field(default=None, max_length=200)
+
+
+# v3.8 Phase 3.5 — multi-class SAM 3 text-prompt auto-annotate (sync,
+# single asset). The dialog UI builds the body from a class checklist;
+# only classes whose ``text_prompt`` is non-empty are sent.
+class SamAutoTextIn(BaseModel):
+    class_ids: list[uuid.UUID] = Field(..., min_length=1)
+    threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    find_all: bool = Field(default=True)
+    overwrite: bool = Field(default=False)
+
+
+class SamAutoTextOut(BaseModel):
+    annotations_created: int
+    per_class: dict[str, int]
+    ineligible: list[str]
+
+
+@router.post(
+    "/{asset_id}/sam/auto-text",
+    response_model=SamAutoTextOut,
+)
+def sam_auto_text_endpoint(
+    asset_id: uuid.UUID,
+    payload: SamAutoTextIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SamAutoTextOut:
+    """Run SAM 3 text-prompt for each selected class on this asset.
+
+    For each class with a stored ``text_prompt``, calls /sam/text-prompt
+    once and saves polygon (preferred) / mask (fallback) annotations
+    above ``threshold``. ``find_all=False`` keeps only the highest-
+    scored result per class. ``overwrite=True`` deletes existing
+    annotations of the selected classes on this asset's frame BEFORE
+    inserting new ones (and only when at least one new annotation is
+    going to land -- v3.7.2 zero-match safety).
+    """
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    task = _require_visible_task(db, user, asset.task_id)
+    # Resolve classes from the task's project, preserving the user's
+    # request order. Skip ids that don't belong to the project.
+    from carve_api.projects.models import Class
+
+    classes = (
+        db.query(Class)
+        .filter(Class.id.in_(payload.class_ids), Class.project_id == task.project_id)
+        .all()
+    )
+    if not classes:
+        raise HTTPException(status_code=422, detail="no_matching_classes")
+    try:
+        result = auto_text_for_asset(
+            session=db,
+            asset=asset,
+            task=task,
+            classes=classes,
+            threshold=payload.threshold,
+            find_all=payload.find_all,
+            overwrite=payload.overwrite,
+            actor_id=user.id,
+        )
+    except AutoTextNoEligibleClasses as exc:
+        raise _http(exc) from exc
+    except AppError as exc:
+        # SAM upstream errors (Sam3NotEnabled, SamModelUnreachable,
+        # SamModelFailed) get the standard envelope.
+        raise _http(exc) from exc
+    db.commit()
+    return SamAutoTextOut(**result)
 
 
 @router.post("/{asset_id}/sam/encode")
@@ -386,7 +567,12 @@ def sam_decode_endpoint(
         raise HTTPException(status_code=404, detail="asset_not_found")
     _require_visible_task(db, user, asset.task_id)
     try:
-        return sam_decode_with_hash(payload.image_hash, payload.points, payload.labels)
+        return sam_decode_with_hash(
+            payload.image_hash,
+            payload.points,
+            payload.labels,
+            box=payload.box,
+        )
     except AppError as exc:
         raise _http(exc) from exc
 

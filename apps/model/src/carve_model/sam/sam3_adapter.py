@@ -107,6 +107,7 @@ class Sam3ImagePredictorAdapter:
         point_coords: Any,
         point_labels: Any,
         multimask_output: bool = True,
+        box: list[float] | None = None,
     ) -> tuple[Any, Any, Any]:
         """Run a click-prompt forward pass and return ``(masks, scores, None)``.
 
@@ -115,6 +116,10 @@ class Sam3ImagePredictorAdapter:
         We post-process via ``processor.post_process_masks`` (which collapses
         the batch dim) and return shape ``(K, H, W)`` so the router's
         existing argmax logic continues to work.
+
+        v3.8 Phase 2 — optional ``box`` (xyxy) is forwarded as
+        ``input_boxes`` so the BBox-then-refine flow shares the
+        embedding cache instead of re-encoding per click.
         """
         if self._raw_image is None or self._original_size is None:
             raise RuntimeError("set_image must be called before predict")
@@ -126,14 +131,17 @@ class Sam3ImagePredictorAdapter:
         # Sam3TrackerProcessor expects [batch][num_obj][num_pts][xy] for
         # input_points and [batch][num_obj][num_pts] for input_labels.
         # We treat the click set as a single object (matches /sam/decode).
-        input_points = [[[[float(p[0]), float(p[1])] for p in pts]]]
-        input_labels = [[[int(label) for label in lbls]]]
-        inputs = self._processor(
-            images=self._raw_image,
-            input_points=input_points,
-            input_labels=input_labels,
-            return_tensors="pt",
-        ).to(self._device)
+        proc_kwargs: dict[str, Any] = {
+            "images": self._raw_image,
+            "return_tensors": "pt",
+        }
+        if pts:
+            proc_kwargs["input_points"] = [[[[float(p[0]), float(p[1])] for p in pts]]]
+            proc_kwargs["input_labels"] = [[[int(label) for label in lbls]]]
+        if box is not None:
+            x1, y1, x2, y2 = (float(v) for v in box)
+            proc_kwargs["input_boxes"] = [[[x1, y1, x2, y2]]]
+        inputs = self._processor(**proc_kwargs).to(self._device)
 
         with torch.no_grad():
             outputs = self._model(**inputs)
@@ -274,6 +282,7 @@ def make_sam3_text_predictor():
         from PIL import Image  # type: ignore[import-not-found]
 
         from carve_model.sam.codec import encode_mask_rle
+        from carve_model.sam.polygonize import mask_to_polygon
 
         _ensure_loaded()
         img_bytes = base64.b64decode(image_b64)
@@ -299,15 +308,32 @@ def make_sam3_text_predictor():
         if masks is None:
             return out
         for i in range(len(masks)):
-            mask_np = masks[i].cpu().numpy().astype(np.uint8)
+            # v3.8 Phase 3 fix — bf16 / f16 tensors raise on .numpy().
+            # Cast to float32 before the bridge (mirrors the same fix
+            # applied to /sam/decode in sam/router.py).
+            mask_t = masks[i].cpu()
+            if "bfloat16" in str(mask_t.dtype) or "float16" in str(mask_t.dtype):
+                mask_t = mask_t.float()
+            mask_np = mask_t.numpy().astype(np.uint8)
             counts, size = encode_mask_rle(mask_np)
-            box = boxes[i].cpu().numpy().tolist() if boxes is not None else [0, 0, 0, 0]
+            polygon = mask_to_polygon(mask_np)
+            if boxes is not None:
+                box_t = boxes[i].cpu()
+                if "bfloat16" in str(box_t.dtype) or "float16" in str(box_t.dtype):
+                    box_t = box_t.float()
+                box = box_t.numpy().tolist()
+            else:
+                box = [0, 0, 0, 0]
             score_val = float(scores[i].item()) if scores is not None else 1.0
             out.append({
                 "counts": counts,
                 "size": size,
                 "score": score_val,
                 "bbox": [float(x) for x in box],
+                # v3.8 Phase 3 — polygon added so the editor commits an
+                # editable polygon annotation; empty when the mask had no
+                # usable contour. Falls back to mask_rle on the client.
+                "polygon": polygon,
             })
         return out
 
@@ -354,6 +380,7 @@ def make_sam3_box_predictor():
         from PIL import Image  # type: ignore[import-not-found]
 
         from carve_model.sam.codec import encode_mask_rle
+        from carve_model.sam.polygonize import mask_to_polygon
 
         _ensure_loaded()
         img_bytes = base64.b64decode(image_b64)
@@ -392,19 +419,29 @@ def make_sam3_box_predictor():
         if masks is None:
             return out
         for i in range(len(masks)):
-            mask_np = masks[i].cpu().numpy().astype(np.uint8)
+            # v3.8 Phase 3 fix — bf16 / f16 tensors raise on .numpy().
+            mask_t = masks[i].cpu()
+            if "bfloat16" in str(mask_t.dtype) or "float16" in str(mask_t.dtype):
+                mask_t = mask_t.float()
+            mask_np = mask_t.numpy().astype(np.uint8)
             counts, size = encode_mask_rle(mask_np)
-            box = (
-                boxes_out[i].cpu().numpy().tolist()
-                if boxes_out is not None
-                else [0.0, 0.0, 0.0, 0.0]
-            )
+            polygon = mask_to_polygon(mask_np)
+            if boxes_out is not None:
+                box_t = boxes_out[i].cpu()
+                if "bfloat16" in str(box_t.dtype) or "float16" in str(box_t.dtype):
+                    box_t = box_t.float()
+                box = box_t.numpy().tolist()
+            else:
+                box = [0.0, 0.0, 0.0, 0.0]
             score_val = float(scores[i].item()) if scores is not None else 1.0
             out.append({
                 "counts": counts,
                 "size": size,
                 "score": score_val,
                 "bbox": [float(x) for x in box],
+                # v3.8 Phase 3 — polygon for editable commit on the
+                # client. Empty when the mask had no usable contour.
+                "polygon": polygon,
             })
         return out
 
