@@ -174,10 +174,15 @@ describe("v3.7.1 — inline weight assignment cell", () => {
     expect(
       await screen.findByTestId("weight-assignments-search-w-1"),
     ).toBeInTheDocument();
-    // The list should include all workspace projects except the
-    // weight's own scoped project (p-home is hidden — already implicit).
+    // v3.7.10: the list shows ALL workspace projects, including the
+    // weight's legacy scoped project (`p-home`) — it is rendered
+    // pre-checked as the "default" home. This keeps the picker
+    // functional for single-project workspaces.
     expect(
-      await screen.findByTestId("weight-assignments-option-w-1-p-alpha"),
+      await screen.findByTestId("weight-assignments-option-w-1-p-home"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("weight-assignments-option-w-1-p-alpha"),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId("weight-assignments-option-w-1-p-beta"),
@@ -188,9 +193,6 @@ describe("v3.7.1 — inline weight assignment cell", () => {
     expect(
       screen.getByTestId("weight-assignments-option-w-1-p-delta"),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("weight-assignments-option-w-1-p-home"),
-    ).not.toBeInTheDocument();
   });
 
   it("filters the project list when typing in the search input", async () => {
@@ -281,6 +283,135 @@ describe("v3.7.1 — inline weight assignment cell", () => {
       expect(weightsApi.removeAssignment).toHaveBeenCalledWith(
         "w-1",
         "p-alpha",
+      );
+    });
+  });
+});
+
+describe("v3.7.10 — show all projects + legacy scope chip", () => {
+  it("renders the legacy project as a chip with a default marker", async () => {
+    render(wrap(<ModelsYoloPage />));
+
+    // The weight's own legacy project (`p-home` → name "Home") should
+    // appear as a chip alongside the explicitly-assigned ones.
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("weight-assignment-chip-w-1-p-home"),
+      ).toBeInTheDocument();
+    });
+    // It must carry the "default" visual marker.
+    expect(
+      screen.getByTestId("weight-assignment-default-marker-w-1-p-home"),
+    ).toBeInTheDocument();
+    // The explicit assignments are still there.
+    expect(
+      screen.getByTestId("weight-assignment-chip-w-1-p-alpha"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("weight-assignment-chip-w-1-p-beta"),
+    ).toBeInTheDocument();
+  });
+
+  it("with one project total (the legacy one) the popover shows it as a checkbox option", async () => {
+    // Single-project workspace: the legacy project is the ONLY project.
+    // Pre-v3.7.10 this would render an empty popover. Now it shows the
+    // legacy project as a (pre-checked) checkbox option.
+    (projectsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "p-home", name: "Home", description: null, owner_id: "u1" },
+    ]);
+    (weightsApi.getAssignments as ReturnType<typeof vi.fn>).mockResolvedValue(
+      [],
+    );
+
+    render(wrap(<ModelsYoloPage />));
+
+    fireEvent.click(
+      await screen.findByTestId("weight-assignments-trigger-w-1"),
+    );
+
+    const option = await screen.findByTestId(
+      "weight-assignments-option-w-1-p-home",
+    );
+    expect(option).toBeInTheDocument();
+    const checkbox = screen.getByTestId(
+      "weight-assignments-checkbox-w-1-p-home",
+    );
+    // Legacy project is pre-checked as the weight's default home.
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("workspace-wide weight (project_id=null) renders the cell with chips + popover", async () => {
+    const WORKSPACE_WEIGHT = {
+      id: "w-ws",
+      project_id: null,
+      name: "yolov8 ws",
+      task_kind: "detect" as const,
+      minio_key: "weights/ws.pt",
+      size_bytes: 4_500_000,
+      class_names: ["dog"],
+      created_by: null,
+      created_at: "2026-04-26T10:00:00+00:00",
+      is_default: false,
+    };
+    (weightsApi.listWorkspace as ReturnType<typeof vi.fn>).mockResolvedValue([
+      WORKSPACE_WEIGHT,
+    ]);
+    (weightsApi.getAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        weight_id: "w-ws",
+        project_id: "p-alpha",
+        project_name: "Alpha",
+        created_at: "2026-04-27T10:00:00+00:00",
+      },
+    ]);
+
+    render(wrap(<ModelsYoloPage />));
+
+    // The cell renders, with the explicit assignment as a chip.
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("weight-assignment-chip-w-ws-p-alpha"),
+      ).toHaveTextContent("Alpha");
+    });
+    // No "Workspace-wide" placeholder text.
+    expect(
+      screen.getByTestId("weight-assignments-cell-w-ws"),
+    ).not.toHaveTextContent(/workspace-wide/i);
+    // The Plus trigger is present and enabled — the user can pin
+    // additional projects.
+    const trigger = screen.getByTestId("weight-assignments-trigger-w-ws");
+    expect(trigger).toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(
+      await screen.findByTestId("weight-assignments-search-w-ws"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("weight-assignments-option-w-ws-p-alpha"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("weight-assignments-option-w-ws-p-gamma"),
+    ).toBeInTheDocument();
+  });
+
+  it("opening the popover does not stage a phantom add for the legacy project on Save", async () => {
+    // Regression: pre-checking the legacy project must NOT translate
+    // into a spurious addAssignment(weight, legacy) when saving with
+    // no other change.
+    render(wrap(<ModelsYoloPage />));
+
+    fireEvent.click(
+      await screen.findByTestId("weight-assignments-trigger-w-1"),
+    );
+    // Touch nothing; just click Save.
+    await screen.findByTestId("weight-assignments-option-w-1-p-home");
+    fireEvent.click(screen.getByTestId("weight-assignments-save-w-1"));
+
+    await waitFor(() => {
+      // Either no calls at all (preferred) or strictly not the legacy.
+      expect(weightsApi.addAssignment).not.toHaveBeenCalledWith(
+        "w-1",
+        "p-home",
       );
     });
   });

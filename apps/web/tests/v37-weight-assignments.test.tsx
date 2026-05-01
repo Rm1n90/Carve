@@ -11,7 +11,13 @@
  *   - ``weight-assignments-popover-<wid>``
  *   - ``weight-assignments-checkbox-<wid>-<pid>``
  *   - ``weight-assignments-save-<wid>``
- *   - ``weight-assignments-cell-<wid>`` (whole cell — text "Workspace-wide" for ws weights)
+ *   - ``weight-assignments-cell-<wid>`` (whole cell)
+ *
+ * v3.7.10 update: workspace-wide weights now ALSO render the inline
+ * cell with chips + popover (no more short-circuit to a static
+ * "Workspace-wide" label), and the popover lists ALL workspace
+ * projects (the weight's legacy `project_id` is no longer hidden — it
+ * is rendered pre-checked as the "default" home).
  */
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -176,16 +182,26 @@ describe("ModelsYoloPage — inline weight ↔ project assignment column (v3.7.1
     ).toHaveTextContent("Beta");
   });
 
-  it("workspace-wide weights show 'Workspace-wide' instead of chips", async () => {
+  it("workspace-wide weights also render the assignment cell with the editor trigger", async () => {
+    // v3.7.10: workspace-wide weights are no longer a dead-end — they
+    // can be pinned to specific projects via the same chips + popover
+    // UI. The cell renders with a "+" trigger (no legacy default chip,
+    // because there is no `project_id`).
     render(wrap(<ModelsYoloPage />));
 
     await waitFor(() => {
       expect(
         screen.getByTestId("weight-assignments-cell-w-workspace"),
-      ).toHaveTextContent(/Workspace-wide/i);
+      ).toBeInTheDocument();
     });
     expect(
-      screen.queryByTestId("weight-assignments-trigger-w-workspace"),
+      screen.getByTestId("weight-assignments-trigger-w-workspace"),
+    ).toBeInTheDocument();
+    // No legacy default marker on a workspace-wide weight.
+    expect(
+      screen.queryByTestId(
+        "weight-assignment-default-marker-w-workspace-null",
+      ),
     ).not.toBeInTheDocument();
   });
 
@@ -203,10 +219,14 @@ describe("ModelsYoloPage — inline weight ↔ project assignment column (v3.7.1
     expect(
       screen.getByTestId("weight-assignments-popover-w-scoped"),
     ).toBeInTheDocument();
-    // The popover should list all workspace projects except the
-    // weight's own scoped project (p-home).
+    // v3.7.10: the popover lists ALL workspace projects, including the
+    // weight's legacy scoped project (`p-home`) — pre-checked as the
+    // default home.
     expect(
-      await screen.findByTestId("weight-assignments-option-w-scoped-p-alpha"),
+      await screen.findByTestId("weight-assignments-option-w-scoped-p-home"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("weight-assignments-option-w-scoped-p-alpha"),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId("weight-assignments-option-w-scoped-p-beta"),
@@ -214,9 +234,6 @@ describe("ModelsYoloPage — inline weight ↔ project assignment column (v3.7.1
     expect(
       screen.getByTestId("weight-assignments-option-w-scoped-p-gamma"),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("weight-assignments-option-w-scoped-p-home"),
-    ).not.toBeInTheDocument();
   });
 
   it("filters the project list when typing in the search input", async () => {

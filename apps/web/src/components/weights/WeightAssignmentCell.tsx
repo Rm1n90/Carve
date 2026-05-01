@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, Star } from "lucide-react";
 import {
   weightsApi,
   type WeightAssignment,
@@ -31,9 +31,12 @@ interface WeightAssignmentCellProps {
  * edits; Save diffs the local set against the server state and fans out
  * the necessary `addAssignment` / `removeAssignment` calls in parallel.
  *
- * Workspace-wide weights (`weightProjectId === null`) render the
- * "Workspace-wide" label and skip the editor entirely — they are
- * already visible to every project.
+ * v3.7.10 — popover lists ALL workspace projects (no longer filters
+ * out the weight's own legacy `project_id`); the legacy project is
+ * rendered as a "default" chip and pre-checked in the popover.
+ * Workspace-wide weights (`weightProjectId === null`) also support
+ * per-project assignments — they no longer short-circuit out of the
+ * editor.
  */
 export function WeightAssignmentCell({
   weightId,
@@ -48,7 +51,7 @@ export function WeightAssignmentCell({
   const assignmentsQ = useQuery<WeightAssignment[]>({
     queryKey: ["weights", weightId, "assignments"],
     queryFn: () => weightsApi.getAssignments(weightId),
-    enabled: weightProjectId !== null,
+    enabled: true,
     staleTime: 30_000,
   });
 
@@ -67,17 +70,31 @@ export function WeightAssignmentCell({
   );
 
   // Seed the draft from the currently-assigned set every time the
-  // popover opens so prior cancelled edits don't leak back in.
+  // popover opens so prior cancelled edits don't leak back in. The
+  // legacy `project_id` is also pre-checked so users see it as the
+  // weight's "default" home in the picker.
   useEffect(() => {
     if (open) {
-      setDraftIds(new Set(assignedSet));
+      const initial = new Set(assignedSet);
+      if (weightProjectId !== null) {
+        initial.add(weightProjectId);
+      }
+      setDraftIds(initial);
       setQuery("");
     }
-  }, [open, assignedSet]);
+  }, [open, assignedSet, weightProjectId]);
 
   const saveM = useMutation({
     mutationFn: async () => {
-      const before = assignedSet;
+      // Build the effective "before" set used for diffing. We include
+      // the legacy project here because the popover seeds the draft
+      // with it pre-checked — so leaving it checked must be a no-op
+      // (not a phantom add). Unchecking it still produces a remove,
+      // which the backend treats as idempotent if no row exists.
+      const before = new Set(assignedSet);
+      if (weightProjectId !== null) {
+        before.add(weightProjectId);
+      }
       const after = draftIds;
       const toAdd: string[] = [];
       const toRemove: string[] = [];
@@ -117,26 +134,60 @@ export function WeightAssignmentCell({
     },
   });
 
-  // Workspace-wide weights are visible everywhere — no per-project chips.
-  if (weightProjectId === null) {
-    return (
-      <span
-        className="text-[11.5px] text-[color:var(--text-tertiary)] italic"
-        data-testid={`weight-assignments-cell-${weightId}`}
-      >
-        Workspace-wide
-      </span>
+  const assignmentsList = assignmentsQ.data ?? [];
+  const allProjects = projectsQ.data ?? [];
+
+  // Find the legacy project's name from the projects list (best-effort).
+  // Only resolved once the popover (and therefore the projects list)
+  // has been opened at least once. Until then we fall back to the
+  // assignment row's name (if present) or a placeholder.
+  const legacyProject =
+    weightProjectId !== null
+      ? allProjects.find((p) => p.id === weightProjectId) ?? null
+      : null;
+
+  // Build display chips: legacy first (marked as default), then
+  // assignments. Dedupe in case the legacy project was also explicitly
+  // assigned.
+  const displayChips: Array<{
+    project_id: string;
+    project_name: string;
+    isDefault: boolean;
+  }> = [];
+  if (legacyProject) {
+    displayChips.push({
+      project_id: legacyProject.id,
+      project_name: legacyProject.name,
+      isDefault: true,
+    });
+  } else if (weightProjectId !== null) {
+    // Projects list not loaded yet — synthesize the default chip from
+    // any matching assignment row, otherwise show a generic label.
+    const fromAssignments = assignmentsList.find(
+      (a) => a.project_id === weightProjectId,
     );
+    displayChips.push({
+      project_id: weightProjectId,
+      project_name: fromAssignments?.project_name ?? "Default project",
+      isDefault: true,
+    });
+  }
+  for (const a of assignmentsList) {
+    if (a.project_id === weightProjectId) continue; // already added as legacy
+    displayChips.push({
+      project_id: a.project_id,
+      project_name: a.project_name,
+      isDefault: false,
+    });
   }
 
-  const chips = assignmentsQ.data ?? [];
-  const allProjects = projectsQ.data ?? [];
   const filteredProjects = (() => {
     const q = query.trim().toLowerCase();
-    // Hide the weight's own scoped project — already implicitly visible.
-    const visible = allProjects.filter((p) => p.id !== weightProjectId);
-    if (!q) return visible;
-    return visible.filter((p) => p.name.toLowerCase().includes(q));
+    // Show ALL workspace projects — including the weight's legacy
+    // project (it's pre-checked). This keeps the picker functional
+    // for single-project workspaces.
+    if (!q) return allProjects;
+    return allProjects.filter((p) => p.name.toLowerCase().includes(q));
   })();
 
   function toggleDraft(projectId: string) {
@@ -153,16 +204,29 @@ export function WeightAssignmentCell({
       className="flex flex-wrap items-center gap-1"
       data-testid={`weight-assignments-cell-${weightId}`}
     >
-      {chips.map((a) => (
+      {displayChips.map((c) => (
         <span
-          key={a.project_id}
-          data-testid={`weight-assignment-chip-${weightId}-${a.project_id}`}
-          className="inline-flex items-center rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-[11.5px] text-[color:var(--text-secondary)] tracking-tight"
+          key={c.project_id}
+          data-testid={`weight-assignment-chip-${weightId}-${c.project_id}`}
+          data-default={c.isDefault ? "true" : undefined}
+          title={c.isDefault ? "Default project (weight owner)" : undefined}
+          className={
+            c.isDefault
+              ? "inline-flex items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-[11.5px] font-medium text-[color:var(--text-primary)] tracking-tight"
+              : "inline-flex items-center rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-[11.5px] text-[color:var(--text-secondary)] tracking-tight"
+          }
         >
-          {a.project_name}
+          {c.isDefault && (
+            <Star
+              className="h-2.5 w-2.5 text-[color:var(--accent)]"
+              data-testid={`weight-assignment-default-marker-${weightId}-${c.project_id}`}
+              aria-label="Default project"
+            />
+          )}
+          {c.project_name}
         </span>
       ))}
-      {chips.length === 0 && (
+      {displayChips.length === 0 && (
         <span className="text-[11.5px] text-[color:var(--text-tertiary)] italic">
           —
         </span>
@@ -221,6 +285,7 @@ export function WeightAssignmentCell({
                 <ul className="grid gap-0.5">
                   {filteredProjects.map((p) => {
                     const checked = draftIds.has(p.id);
+                    const isLegacy = p.id === weightProjectId;
                     return (
                       <li key={p.id}>
                         <label
@@ -237,6 +302,12 @@ export function WeightAssignmentCell({
                           <span className="flex-1 text-[12.5px] truncate">
                             {p.name}
                           </span>
+                          {isLegacy && (
+                            <Star
+                              className="h-2.5 w-2.5 text-[color:var(--accent)]"
+                              aria-label="Default project"
+                            />
+                          )}
                         </label>
                       </li>
                     );
