@@ -11,10 +11,15 @@
  * so callers fall back cleanly to the server-side `/sam/decode` endpoint.
  */
 
-import * as ort from "onnxruntime-web";
+import type * as ort from "onnxruntime-web";
 
 import { SAM_DECODER_MODEL_URL } from "./onnx";
 
+// onnxruntime-web is large (~6 MB raw, ~1 MB gzipped of JS plus WASM
+// blobs). It must NEVER land in the initial bundle — only the asset
+// editor's local SAM decode path needs it. We dynamically import it
+// inside `getSession()` so it ends up in its own `ort` chunk that is
+// fetched on demand.
 let _session: ort.InferenceSession | null = null;
 
 /**
@@ -29,6 +34,11 @@ let _session: ort.InferenceSession | null = null;
  */
 async function getSession(): Promise<ort.InferenceSession> {
   if (_session) return _session;
+  // Dynamic import keeps onnxruntime-web out of the initial JS bundle.
+  // Vite emits this as a separate `ort` chunk (see vite.config.ts
+  // manualChunks); the chunk is fetched only when local SAM decoding
+  // is actually invoked.
+  const ort = await import("onnxruntime-web");
   ort.env.wasm.numThreads = 1;
   _session = await ort.InferenceSession.create(SAM_DECODER_MODEL_URL, {
     executionProviders: ["webgpu", "wasm"],

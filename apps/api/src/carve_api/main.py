@@ -56,6 +56,10 @@ def create_app() -> FastAPI:
     app.include_router(task_annotations_router)
     app.include_router(ann_router)
 
+    # Phase 5 review workflow (plan-09 task-02): single + batch review.
+    from carve_api.reviews.router import router as reviews_router
+    app.include_router(reviews_router)
+
     from carve_api.weights.router import project_weights_router, router as weights_router
     app.include_router(project_weights_router)
     app.include_router(weights_router)
@@ -65,6 +69,10 @@ def create_app() -> FastAPI:
 
     from carve_api.inference.router import task_inference_router
     app.include_router(task_inference_router)
+
+    # Plan-09 task-05 — active-learning retrain endpoints.
+    from carve_api.inference.retrain_router import router as retrain_router
+    app.include_router(retrain_router)
 
     from carve_api.io.import_router import router as import_router
     app.include_router(import_router)

@@ -31,6 +31,7 @@ import {
   AlertTriangle,
   Settings,
   X,
+  Eraser,
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
@@ -1575,6 +1576,78 @@ function MaskBrushSizeControl() {
 }
 
 /**
+ * Plan 09 Task 11 — Mask brush hardness slider. Shown only when the
+ * mask tool is active, sits directly alongside the brush-size control.
+ * Hardness 0..1 with 0.05 step; default 0.7. Controls the alpha
+ * falloff curve in `MaskRasterizer.paintBrushHardness`.
+ */
+function MaskBrushHardnessControl() {
+  const active = useTool((s) => s.active);
+  const hardness = useTool((s) => s.maskHardness);
+  const setHardness = useTool((s) => s.setMaskHardness);
+  if (active !== "mask") return null;
+  return (
+    <div
+      className="inline-flex items-center gap-1.5 h-8 px-2 rounded-[var(--radius-sm)] bg-[var(--bg-subtle)]"
+      data-testid="mask-brush-hardness-control"
+    >
+      <span className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
+        Hardness
+      </span>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.05}
+        value={Math.max(0, Math.min(1, hardness))}
+        onChange={(e) => setHardness(Number(e.target.value))}
+        aria-label="Brush hardness"
+        data-testid="mask-brush-hardness-slider"
+        className="w-24 accent-[var(--accent)]"
+      />
+      <span
+        className="font-mono tabular-nums text-[11.5px] text-[color:var(--text-primary)] w-10 text-right"
+        data-testid="mask-brush-hardness-value"
+      >
+        {Math.round(hardness * 100)}%
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Plan 09 Task 11 — Eraser toggle button. When pressed, left-click in
+ * the mask tool subtracts from the mask. Right-click is always erase
+ * regardless of this toggle.
+ */
+function MaskBrushEraserToggle() {
+  const active = useTool((s) => s.active);
+  const eraser = useTool((s) => s.maskEraser);
+  const toggle = useTool((s) => s.toggleMaskEraser);
+  if (active !== "mask") return null;
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      aria-label="Toggle eraser"
+      aria-pressed={eraser}
+      data-testid="mask-brush-eraser-toggle"
+      data-active={eraser ? "true" : "false"}
+      title={eraser ? "Eraser on (click to disable)" : "Eraser off (click to enable)"}
+      className={cn(
+        "inline-flex items-center justify-center h-8 w-8 rounded-[var(--radius-sm)]",
+        "transition-colors",
+        eraser
+          ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
+          : "bg-[var(--bg-subtle)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+      )}
+    >
+      <Eraser className="h-[16px] w-[16px]" />
+    </button>
+  );
+}
+
+/**
  * v3.5 Phase D/E — SAM mode picker. Inline 4-chip strip (Point / Box /
  * Text / Track) shown only while the SAM tool is active.
  *
@@ -2101,6 +2174,8 @@ export function EditorToolbar({
       <SamModePicker isVideo={isVideo} />
       <AutoApplyToggle />
       <MaskBrushSizeControl />
+      <MaskBrushHardnessControl />
+      <MaskBrushEraserToggle />
 
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 

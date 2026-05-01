@@ -18,6 +18,7 @@ import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
 import { InfoDialog } from "@/components/annotation/InfoDialog";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
+import { ReviewPanel } from "@/components/annotation/ReviewPanel";
 import { AppearancePanel } from "@/components/annotation/AppearancePanel";
 import { SamTrackPanel } from "@/components/annotation/SamTrackPanel";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
@@ -1052,6 +1053,20 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   >
                     Objects
                   </Tabs.Trigger>
+                  <Tabs.Trigger
+                    value="review"
+                    className={cn(
+                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-full",
+                      "text-[color:var(--text-tertiary)]",
+                      "hover:text-[color:var(--text-primary)] hover:bg-[var(--glass-bg-subtle)]",
+                      "data-[state=active]:text-[color:var(--text-primary)]",
+                      "data-[state=active]:bg-[var(--glass-bg-subtle)]",
+                      "data-[state=active]:shadow-[inset_0_1px_0_var(--glass-highlight),0_0_0_1px_var(--glass-border)]",
+                      "transition-all duration-150",
+                    )}
+                  >
+                    Review
+                  </Tabs.Trigger>
                 </Tabs.List>
                 <Tabs.Content
                   value="classes"
@@ -1091,6 +1106,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   className="flex-1 overflow-y-auto p-3 focus-visible:outline-none"
                 >
                   <ObjectsPanel frameId={frameId} classes={classByIdMap} />
+                </Tabs.Content>
+                <Tabs.Content
+                  value="review"
+                  className="flex-1 overflow-y-auto focus-visible:outline-none"
+                >
+                  <ReviewPanel classes={classesQ.data ?? []} />
                 </Tabs.Content>
               </Tabs.Root>
               <AppearancePanel />

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { createRoute, Link, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -15,7 +15,10 @@ import { AssetUploadDialog } from "@/pages/AssetUploadDialog";
 import { ImportDialog } from "@/pages/ImportDialog";
 import { ExportDialog } from "@/pages/ExportDialog";
 import { AssetGrid } from "@/pages/AssetGrid";
-import { StatsPanel } from "@/pages/StatsPanel";
+// Lazy: keeps the recharts chunk out of the initial bundle.
+const StatsPanel = lazy(() =>
+  import("@/pages/StatsPanel").then((m) => ({ default: m.StatsPanel })),
+);
 import { projectsApi } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
 import {
@@ -243,7 +246,9 @@ function TaskDetail() {
           {tab === "assets" ? (
             <AssetGrid projectId={projectId} taskId={taskId} />
           ) : (
-            <StatsPanel taskId={taskId} />
+            <Suspense fallback={null}>
+              <StatsPanel taskId={taskId} />
+            </Suspense>
           )}
         </div>
       </div>

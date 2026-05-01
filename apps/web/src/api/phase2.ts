@@ -225,7 +225,65 @@ export const weightsApi = {
         `/weights/${weightId}/mapping-suggestions?task_id=${encodeURIComponent(taskId)}`,
       )
     ).data,
+  /**
+   * v3.4+ Phase 5 Task 5/6 — kick off a YOLO retraining job for a task.
+   * Returns the RQ job id; callers poll `retrainStatus` for progress.
+   */
+  retrainStart: async (
+    taskId: string,
+    body: {
+      base_weight_id: string | null;
+      epochs: number;
+      imgsz: number;
+      include_proposed: boolean;
+      weight_name: string | null;
+    },
+  ): Promise<{ job_id: string }> =>
+    (
+      await api.post<{ job_id: string }>(
+        `/tasks/${taskId}/retrain-yolo`,
+        body,
+      )
+    ).data,
+  /**
+   * Poll the retrain job's status hash. Any field may be null when the
+   * worker hasn't written it yet; the dialog drives its UI off `phase`.
+   */
+  retrainStatus: async (
+    taskId: string,
+    jobId: string,
+  ): Promise<RetrainStatus> =>
+    (
+      await api.get<RetrainStatus>(
+        `/tasks/${taskId}/retrain-yolo/${jobId}`,
+      )
+    ).data,
+  retrainCancel: async (taskId: string, jobId: string): Promise<void> => {
+    await api.delete(`/tasks/${taskId}/retrain-yolo/${jobId}`);
+  },
 };
+
+/**
+ * v3.4+ Phase 5 Task 5 — retrain job phase. The status walk:
+ * exporting → uploading dataset → training → registering →
+ * done | error | canceled.
+ */
+export type RetrainPhase =
+  | "exporting"
+  | "uploading dataset"
+  | "training"
+  | "registering"
+  | "done"
+  | "error"
+  | "canceled";
+
+export interface RetrainStatus {
+  phase: RetrainPhase | null;
+  progress_pct: number | null;
+  error: string | null;
+  error_traceback: string | null;
+  weight_id: string | null;
+}
 
 /**
  * v3.7 Phase 3 Issue 4 — one row of the weight ↔ project membership

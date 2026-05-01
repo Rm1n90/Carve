@@ -71,12 +71,17 @@ export const assetsApi = {
   },
   /**
    * Compatibility helper: returns just the items array. Callers that need
-   * pagination metadata should use `listPage` directly.
+   * pagination metadata should use `listPage` directly, or for very large
+   * tasks consume `listPage` via `useInfiniteQuery` (see
+   * `AssetThumbnailStrip` / `AssetGrid` for examples).
+   *
+   * v3.7 Issue 3 follow-up: raised from 500 → 5000 to match the backend
+   * cap. Plan 09 Task 8 (v3.9) introduced an `useInfiniteQuery`-based
+   * thumbnail strip that no longer pulls every row at once; this helper
+   * stays for callers (AnnotateAssetPage prev/next nav, etc.) that still
+   * benefit from the eager list and where task sizes cap out well below
+   * 5000 assets in practice.
    */
-  // v3.7 Issue 3 follow-up: raised from 500 → 5000 because the thumbnail
-  // strip used to silently truncate tasks larger than 500 assets. TODO
-  // (v3.8): replace with an `useInfiniteQuery` consumer so we don't pull
-  // every Asset row at once for huge tasks.
   listForTask: async (taskId: string): Promise<Asset[]> =>
     (await assetsApi.listPage(taskId, { limit: 5000 })).items,
   /**

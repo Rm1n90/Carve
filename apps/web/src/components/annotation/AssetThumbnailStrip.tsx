@@ -1,7 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useQuery,
+} from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { WheelEvent } from "react";
-import { assetsApi, type Asset } from "@/api/assets";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type WheelEvent } from "react";
+import { assetsApi, type Asset, type AssetListPage } from "@/api/assets";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -10,10 +15,20 @@ interface Props {
   activeAssetId: string;
 }
 
-// v3.7 Issue 3: previously capped at 50 thumbnails which silently dropped
-// assets in mid-sized tasks. The strip is horizontally scrollable, so
-// rendering all assets is fine — CSS auto-fill handles wrap and the
-// browser keeps offscreen <img loading="lazy"> tiles cheap.
+// v3.9 Plan 09 Task 8: switched from a single eager `listForTask` query +
+// CSS-only scrolling (which mounted every <Link> tile, even off-screen)
+// to a virtualised horizontal list backed by `useInfiniteQuery`. At
+// 10 000 assets the previous implementation froze the editor on first
+// load. We now mount only the visible tiles + a small overscan, and we
+// fetch in 200-asset pages. Scrolling past ~80% of the loaded range
+// triggers the next page fetch.
+const PAGE_SIZE = 200;
+const TILE_WIDTH = 80; // matches w-[80px] below
+const TILE_GAP = 8; // 0.5rem inter-tile gap
+const TILE_TOTAL = TILE_WIDTH + TILE_GAP;
+const OVERSCAN = 6;
+const PREFETCH_THRESHOLD = 0.8;
+
 function ThumbItem({
   asset,
   projectId,
@@ -31,7 +46,7 @@ function ThumbItem({
     staleTime: 60_000,
   });
 
-  const url = q.data?.url;
+  const url = q.data?.url ?? asset.thumbnail_url ?? null;
 
   return (
     <Link
@@ -62,39 +77,131 @@ function ThumbItem({
   );
 }
 
-export function AssetThumbnailStrip({ taskId, projectId, activeAssetId }: Props) {
-  const q = useQuery({
-    queryKey: ["task-assets", taskId],
-    queryFn: () => assetsApi.listForTask(taskId),
+export function AssetThumbnailStrip({
+  taskId,
+  projectId,
+  activeAssetId,
+}: Props) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const pagesQ = useInfiniteQuery({
+    queryKey: ["task-assets-strip", taskId],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      assetsApi.listPage(taskId, {
+        limit: PAGE_SIZE,
+        offset: pageParam,
+      }),
+    getNextPageParam: (lastPage: AssetListPage) => {
+      const fetchedSoFar = lastPage.offset + lastPage.items.length;
+      return fetchedSoFar < lastPage.total ? fetchedSoFar : undefined;
+    },
+    placeholderData: keepPreviousData,
   });
-  const assets = q.data ?? [];
-  if (assets.length <= 1) return null;
-  function onWheel(e: WheelEvent<HTMLDivElement>) {
+
+  const assets: Asset[] = useMemo(
+    () => pagesQ.data?.pages.flatMap((p) => p.items) ?? [],
+    [pagesQ.data],
+  );
+
+  const total = pagesQ.data?.pages[0]?.total ?? assets.length;
+  // The virtualizer needs the full row count so the scroll surface is
+  // sized correctly even when only the first page is loaded. Indices
+  // beyond `assets.length` render an empty placeholder until their
+  // page fetches in.
+  const virtualCount = total > 0 ? total : assets.length;
+
+  const virtualizer = useVirtualizer({
+    horizontal: true,
+    count: virtualCount,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => TILE_TOTAL,
+    overscan: OVERSCAN,
+  });
+
+  const items = virtualizer.getVirtualItems();
+  const lastVisibleIndex = items.length > 0 ? items[items.length - 1].index : 0;
+
+  // When the user has scrolled past ~80% of the *fetched* range, kick
+  // off the next page. Compare the last visible virtual index against
+  // the loaded count (not total) so a new request only fires when more
+  // rows are actually waiting on the server.
+  useEffect(() => {
+    if (assets.length === 0) return;
+    if (!pagesQ.hasNextPage || pagesQ.isFetchingNextPage) return;
+    if (lastVisibleIndex >= assets.length * PREFETCH_THRESHOLD) {
+      pagesQ.fetchNextPage();
+    }
+  }, [
+    lastVisibleIndex,
+    assets.length,
+    pagesQ.hasNextPage,
+    pagesQ.isFetchingNextPage,
+    pagesQ,
+  ]);
+
+  const onWheel = useCallback((e: WheelEvent<HTMLDivElement>) => {
     if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
       e.currentTarget.scrollLeft += e.deltaY;
       e.preventDefault();
     }
-  }
+  }, []);
+
+  if (virtualCount <= 1) return null;
+
   return (
     <div
+      ref={scrollRef}
       role="region"
       aria-label="Task thumbnails"
       data-testid="asset-thumbnail-strip"
+      data-asset-count={virtualCount}
       onWheel={onWheel}
       className={cn(
         "h-[64px] shrink-0 border-b border-[var(--border-subtle)]",
-        "bg-[var(--bg-app)] flex items-center gap-2 px-3 overflow-x-auto overflow-y-hidden",
+        "bg-[var(--bg-app)] flex items-center px-3 overflow-x-auto overflow-y-hidden",
       )}
     >
-      {assets.map((a) => (
-        <ThumbItem
-          key={a.id}
-          asset={a}
-          projectId={projectId}
-          taskId={taskId}
-          active={a.id === activeAssetId}
-        />
-      ))}
+      <div
+        style={{
+          width: `${virtualizer.getTotalSize()}px`,
+          height: "56px",
+          position: "relative",
+        }}
+      >
+        {items.map((virtualItem) => {
+          const asset = assets[virtualItem.index];
+          const style: CSSProperties = {
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: `${TILE_WIDTH}px`,
+            height: "56px",
+            transform: `translateX(${virtualItem.start}px)`,
+          };
+          if (!asset) {
+            return (
+              <div
+                key={`pending-${virtualItem.index}`}
+                data-testid={`thumb-skeleton-${virtualItem.index}`}
+                style={style}
+                className="rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] border border-[var(--border-subtle)]"
+                aria-hidden
+              />
+            );
+          }
+          return (
+            <div key={asset.id} style={style}>
+              <ThumbItem
+                asset={asset}
+                projectId={projectId}
+                taskId={taskId}
+                active={asset.id === activeAssetId}
+              />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

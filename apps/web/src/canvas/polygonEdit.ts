@@ -72,6 +72,97 @@ export function applyVertexTranslate(
   return { kind: "polygon", points: next };
 }
 
+/**
+ * Tolerance (image-space pixels) for hit-testing a polygon edge. Mirrors
+ * ``POLY_VERTEX_HIT_HALO`` so edge hits and vertex hits feel consistent.
+ * Plan-09 Phase 5 Task 12.
+ */
+export const INSERT_TOLERANCE_PX = 6;
+
+/**
+ * Project ``p`` onto the segment ``a``→``b`` (clamped to the segment, not
+ * the infinite line). Returns the projected point and its squared distance
+ * to ``p``. Internal helper for ``hitTestEdge``.
+ */
+function projectOntoSegment(
+  p: { x: number; y: number },
+  a: [number, number],
+  b: [number, number],
+): { projected: { x: number; y: number }; distSq: number } {
+  const ax = a[0];
+  const ay = a[1];
+  const bx = b[0];
+  const by = b[1];
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((p.x - ax) * dx + (p.y - ay) * dy) / lenSq : 0;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  const px = ax + t * dx;
+  const py = ay + t * dy;
+  const ex = p.x - px;
+  const ey = p.y - py;
+  return { projected: { x: px, y: py }, distSq: ex * ex + ey * ey };
+}
+
+/**
+ * Hit-test against a polygon's edges. Returns the index of the edge whose
+ * closest point to ``cursor`` is within ``tolerance`` pixels (defaults to
+ * ``INSERT_TOLERANCE_PX``), along with the projected point on that edge.
+ * Edges are indexed by their starting vertex: edge ``i`` runs from
+ * ``points[i]`` to ``points[(i + 1) % n]``. Returns ``null`` when no edge
+ * is within tolerance.
+ *
+ * When two edges are within tolerance the closest one wins (squared
+ * distance), which matches user intent when alt-clicking near a vertex
+ * shared by two edges.
+ */
+export function hitTestEdge(
+  poly: Polygon,
+  cursor: { x: number; y: number },
+  tolerance: number = INSERT_TOLERANCE_PX,
+): { edgeIndex: number; projected: { x: number; y: number } } | null {
+  const pts = poly.points;
+  if (pts.length < 2) return null;
+  const tolSq = tolerance * tolerance;
+  let best: {
+    edgeIndex: number;
+    projected: { x: number; y: number };
+    distSq: number;
+  } | null = null;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    const r = projectOntoSegment(cursor, a, b);
+    if (r.distSq <= tolSq && (best === null || r.distSq < best.distSq)) {
+      best = { edgeIndex: i, projected: r.projected, distSq: r.distSq };
+    }
+  }
+  if (!best) return null;
+  return { edgeIndex: best.edgeIndex, projected: best.projected };
+}
+
+/**
+ * Returns a new polygon with ``point`` inserted between the two endpoints
+ * of edge ``edgeIndex``. The new vertex's index is ``edgeIndex + 1`` so
+ * subsequent vertex-drag callers can target it directly. Returns the
+ * original polygon unchanged if ``edgeIndex`` is out of range.
+ */
+export function insertVertex(
+  poly: Polygon,
+  edgeIndex: number,
+  point: { x: number; y: number },
+): Polygon {
+  if (edgeIndex < 0 || edgeIndex >= poly.points.length) return poly;
+  const next: [number, number][] = [
+    ...poly.points.slice(0, edgeIndex + 1),
+    [point.x, point.y],
+    ...poly.points.slice(edgeIndex + 1),
+  ];
+  return { kind: "polygon", points: next };
+}
+
 /** Returns a new polygon with the vertex at ``index`` removed. Returns the
  *  original unchanged if removing would leave fewer than 3 vertices. */
 export function applyVertexDelete(

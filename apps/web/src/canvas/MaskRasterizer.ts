@@ -181,6 +181,80 @@ export class MaskRasterizer {
     this._generation += 1;
   }
 
+  /**
+   * Plan 09 Task 11 — paint (or erase) a single dab with a hardness
+   * falloff. Implementation operates directly on the alpha channel via
+   * `getImageData` / `putImageData` so the alpha curve is exact and the
+   * result is identical across real Canvas2D and the jsdom fallback.
+   *
+   *   - ``hardness = 1`` → solid disc (matches the legacy brush).
+   *   - ``hardness < 1`` → solid inside ``radius * hardness``, linear
+   *     ramp from 1.0 → 0.0 across the falloff band, 0 outside ``radius``.
+   *
+   * Mode "draw": max-blend the new alpha into existing alpha.
+   * Mode "erase": subtract the new alpha from existing alpha (clamped).
+   */
+  paintBrushHardness(
+    x: number,
+    y: number,
+    radius: number,
+    hardness: number,
+    mode: BrushMode,
+  ): void {
+    const r = Math.max(0.5, radius);
+    const h = Math.max(0, Math.min(1, hardness));
+    const inner = r * h;
+    const x0 = Math.max(0, Math.floor(x - r));
+    const y0 = Math.max(0, Math.floor(y - r));
+    const x1 = Math.min(this.width - 1, Math.ceil(x + r));
+    const y1 = Math.min(this.height - 1, Math.ceil(y + r));
+    const ww = x1 - x0 + 1;
+    const hh = y1 - y0 + 1;
+    if (ww <= 0 || hh <= 0) return;
+    const img = this.ctx.getImageData(x0, y0, ww, hh);
+    const data = img.data;
+    const r2 = r * r;
+    const inner2 = inner * inner;
+    const band = r - inner;
+    for (let yy = 0; yy < hh; yy += 1) {
+      const dy = y0 + yy - y;
+      const dy2 = dy * dy;
+      for (let xx = 0; xx < ww; xx += 1) {
+        const dx = x0 + xx - x;
+        const d2 = dx * dx + dy2;
+        if (d2 > r2) continue;
+        let a: number;
+        if (d2 <= inner2 || band <= 0) {
+          a = 255;
+        } else {
+          const d = Math.sqrt(d2);
+          const t = 1 - (d - inner) / band;
+          a = Math.max(0, Math.min(255, Math.round(t * 255)));
+        }
+        if (a === 0) continue;
+        const i = (yy * ww + xx) * 4;
+        const prev = data[i + 3];
+        if (mode === "erase") {
+          const next = Math.max(0, prev - a);
+          data[i + 3] = next;
+          if (next === 0) {
+            data[i] = 0;
+            data[i + 1] = 0;
+            data[i + 2] = 0;
+          }
+        } else {
+          const next = prev > a ? prev : a;
+          data[i] = 255;
+          data[i + 1] = 255;
+          data[i + 2] = 255;
+          data[i + 3] = next;
+        }
+      }
+    }
+    this.ctx.putImageData(img, x0, y0);
+    this._generation += 1;
+  }
+
   /** Paint (or erase) a single circle at image coordinates. */
   paintBrush(x: number, y: number, radius: number, mode: BrushMode): void {
     const r = Math.max(0.5, radius);

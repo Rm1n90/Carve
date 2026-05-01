@@ -181,9 +181,50 @@ describe("v3.7 Issue 5 — AssetUploadDialog invalidates task-assets keys", () =
 // Issue 3 — thumbnail strip renders every asset (cap removed).
 // ---------------------------------------------------------------------------
 describe("v3.7 Issue 3 — AssetThumbnailStrip renders all assets (>50)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // jsdom returns 0 for layout properties; the strip's react-virtual
+    // virtualizer needs a non-zero size to compute the visible window.
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get() {
+        return 1200;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return 64;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value() {
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 1200,
+          bottom: 64,
+          width: 1200,
+          height: 64,
+          toJSON() {
+            return {};
+          },
+        } as DOMRect;
+      },
+    });
+  });
 
-  it("renders 75 thumbnails when given 75 assets", async () => {
+  it("exposes all 75 assets via the virtualised strip's data-asset-count", async () => {
+    // v3.9 Plan 09 Task 8: the strip switched to a virtualised
+    // useInfiniteQuery + react-virtual layer, so only the visible
+    // window of tiles is mounted at any time. The original v3.7
+    // intent ("no silent cap — all assets are reachable") is now
+    // verified by asserting that the strip's surface is sized for
+    // the full dataset (data-asset-count) and that the leading
+    // tiles render.
     const assets = Array.from({ length: 75 }, (_, i) => ({
       id: `a-${i}`,
       task_id: "t1",
@@ -198,7 +239,12 @@ describe("v3.7 Issue 3 — AssetThumbnailStrip renders all assets (>50)", () => 
       created_at: "2026-04-25",
       thumbnail_url: null,
     }));
-    (assetsApi.listForTask as any).mockResolvedValue(assets);
+    (assetsApi.listPage as any).mockResolvedValue({
+      items: assets,
+      total: 75,
+      limit: 200,
+      offset: 0,
+    });
     (assetsApi.get as any).mockImplementation((id: string) =>
       Promise.resolve({
         asset: assets.find((a) => a.id === id),
@@ -217,13 +263,14 @@ describe("v3.7 Issue 3 — AssetThumbnailStrip renders all assets (>50)", () => 
       ),
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId("thumb-a-0")).toBeTruthy();
+    const strip = await waitFor(() => {
+      const el = screen.getByTestId("asset-thumbnail-strip");
+      expect(el).toBeTruthy();
+      return el;
     });
 
-    // The 51st through 75th tiles only exist if the cap was removed.
-    expect(screen.getByTestId("thumb-a-50")).toBeTruthy();
-    expect(screen.getByTestId("thumb-a-74")).toBeTruthy();
+    expect(strip.getAttribute("data-asset-count")).toBe("75");
+    expect(screen.getByTestId("thumb-a-0")).toBeTruthy();
   });
 });
 

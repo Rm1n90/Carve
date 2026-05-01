@@ -1,10 +1,17 @@
+import { lazy, Suspense } from "react";
 import { createRoute, Link, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
 import { rootRoute } from "./_root";
 import { RequireAuth } from "@/auth/RequireAuth";
-import { StatsPanel } from "@/pages/StatsPanel";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { projectsApi } from "@/api/projects";
+
+// Lazy-load StatsPanel so the recharts chunk is fetched only on the
+// stats route. Keeps the initial bundle under the 250 kB budget.
+const StatsPanel = lazy(() =>
+  import("@/pages/StatsPanel").then((m) => ({ default: m.StatsPanel })),
+);
 
 function ProjectStatsRoute() {
   const { projectId } = useParams({ from: "/projects/$projectId/stats" });
@@ -40,7 +47,9 @@ function ProjectStatsRoute() {
             {projectQ.data?.name ?? "…"}
           </h1>
         </header>
-        <StatsPanel projectId={projectId} />
+        <Suspense fallback={<Skeleton label="Loading stats…" />}>
+          <StatsPanel projectId={projectId} />
+        </Suspense>
       </div>
     </RequireAuth>
   );
