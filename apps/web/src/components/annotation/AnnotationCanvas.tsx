@@ -1197,32 +1197,65 @@ export function AnnotationCanvas({
         if (!draft) continue;
         const prev = draft.prevGeometry as
           | { kind?: string; x?: number; y?: number; w?: number; h?: number;
-              points?: Array<[number, number]> }
+              points?: Array<[number, number]>;
+              counts?: string; size?: [number, number] }
           | null
           | undefined;
         if (!prev || !prev.kind) continue;
         const color = hexFromColor(classMap[draft.classId]);
-        let cg = compareMap.get(id) as InstanceType<typeof Graphics> | undefined;
-        if (!cg) {
-          cg = new Graphics();
-          compareMap.set(id, cg);
-          app.shapeLayer.addChild(cg);
-        }
-        cg.clear();
         if (prev.kind === "bbox" && typeof prev.x === "number" &&
             typeof prev.y === "number" && typeof prev.w === "number" &&
             typeof prev.h === "number") {
+          let cg = compareMap.get(id) as InstanceType<typeof Graphics> | undefined;
+          if (!cg || !(cg as { clear?: unknown }).clear) {
+            // Existing entry isn't a Graphics (maybe a previous mask sprite).
+            // Drop it and start fresh.
+            if (cg) {
+              try { app.shapeLayer.removeChild(cg as never); } catch { /* ignore */ }
+            }
+            cg = new Graphics();
+            compareMap.set(id, cg);
+            app.shapeLayer.addChild(cg);
+          }
+          cg.clear();
           drawDashedRect(cg, prev.x, prev.y, prev.w, prev.h, color);
           compareSeen.add(id);
         } else if (prev.kind === "polygon" && Array.isArray(prev.points) &&
                    prev.points.length > 0) {
+          let cg = compareMap.get(id) as InstanceType<typeof Graphics> | undefined;
+          if (!cg || !(cg as { clear?: unknown }).clear) {
+            if (cg) {
+              try { app.shapeLayer.removeChild(cg as never); } catch { /* ignore */ }
+            }
+            cg = new Graphics();
+            compareMap.set(id, cg);
+            app.shapeLayer.addChild(cg);
+          }
+          cg.clear();
           drawDashedPolygon(cg, prev.points, color);
           compareSeen.add(id);
-        } else if (prev.kind === "mask_rle") {
-          // Pragmatic v1: skip rendering a dashed outline for masks.
-          // The compare overlay for masks is a no-op until we have a
-          // mask-to-contour helper; consumers with a mask-only history
-          // see no extra paint but the toggle/UI still works. Document.
+        } else if (prev.kind === "mask_rle" && typeof prev.counts === "string" &&
+                   Array.isArray(prev.size) && prev.size.length === 2) {
+          // Paint the prev mask as a translucent class-coloured sprite.
+          // Mount lazily; reuse the cached sprite when the same id is
+          // hovered/pinned across reconciles.
+          const existing = compareMap.get(id);
+          if (!existing) {
+            // Build async; mark as seen so the cleanup pass below doesn't
+            // immediately drop the placeholder. We add the sprite to the
+            // map only after the texture is built.
+            void paintCompareMaskSprite(
+              app.shapeLayer as unknown as {
+                addChild: (c: never) => unknown;
+                removeChild?: (c: never) => void;
+              },
+              compareMap,
+              id,
+              prev.counts,
+              prev.size as [number, number],
+              color,
+            );
+          }
           compareSeen.add(id);
         }
       }
@@ -3277,6 +3310,84 @@ async function renderMaskRleSprite(
   } catch {
     /* ignore — sprite tint/alpha are best-effort */
   }
+}
+
+/**
+ * Plan-09b Task 1 — paint a translucent class-coloured sprite for a
+ * prev-revision mask_rle overlay. The sprite is parked in
+ * ``compareMap`` under ``id`` so the existing reconcile cleanup loop
+ * removes it from the layer when the id leaves pinned ∪ hovered.
+ *
+ * 30% alpha keeps the prev mask visually subordinate to the live shape
+ * underneath, mirroring the dashed-outline cue used for bbox/polygon
+ * compare overlays.
+ */
+async function paintCompareMaskSprite(
+  layer: { addChild: (c: never) => unknown; removeChild?: (c: never) => void },
+  compareMap: Map<string, unknown>,
+  id: string,
+  counts: string,
+  size: [number, number],
+  color: number,
+): Promise<void> {
+  let pixi: typeof import("pixi.js") | undefined;
+  try {
+    pixi = await import("pixi.js");
+  } catch {
+    return;
+  }
+  if (!pixi) return;
+  // Re-check; the id may have left pinned ∪ hovered while we were
+  // awaiting the dynamic import.
+  if (compareMap.has(id)) return;
+  const [h, w] = size;
+  if (h <= 0 || w <= 0) return;
+  const cv = document.createElement("canvas");
+  cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext("2d");
+  if (!ctx) return;
+  try {
+    const { decodeRLE } = await import("@/canvas/maskio");
+    const mask = decodeRLE(counts, h, w);
+    const img = ctx.createImageData(w, h);
+    const data = img.data;
+    // Pre-multiplied class colour at full alpha for ON pixels; the
+    // sprite-level alpha (0.3 below) does the translucent blending.
+    const r = (color >> 16) & 0xff;
+    const g = (color >> 8) & 0xff;
+    const b = color & 0xff;
+    for (let row = 0; row < h; row += 1) {
+      for (let col = 0; col < w; col += 1) {
+        const i = (row * w + col) * 4;
+        if (mask[row * w + col]) {
+          data[i] = r;
+          data[i + 1] = g;
+          data[i + 2] = b;
+          data[i + 3] = 255;
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  } catch {
+    return;
+  }
+  // The id may have been dropped while the decode was in flight.
+  if (compareMap.has(id)) return;
+  let texture: InstanceType<typeof pixi.Texture>;
+  try {
+    texture = pixi.Texture.from(cv as TexImageSource);
+  } catch {
+    return;
+  }
+  const sprite = new pixi.Sprite(texture);
+  try {
+    (sprite as { alpha?: number }).alpha = 0.3;
+  } catch {
+    /* alpha is best-effort */
+  }
+  layer.addChild(sprite as never);
+  compareMap.set(id, sprite);
 }
 
 /**
