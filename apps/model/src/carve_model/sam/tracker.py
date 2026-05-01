@@ -22,6 +22,8 @@ v1.4 introduces multi-object support:
   to work without modification.
 """
 
+import logging
+import os
 import threading
 import time
 import uuid
@@ -34,6 +36,8 @@ from carve_model.sam.predictor import (
     autocast_ctx,
     get_sam_model,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TrackerProtocol(Protocol):
@@ -151,6 +155,29 @@ def _default_factory() -> TrackerProtocol:
     ``sam2`` git package path was removed in v3.4 commit 6.
     """
     model = get_sam_model()
+    backend = os.environ.get("SAM_VIDEO_BACKEND", "").lower()
+
+    # Plan 11 — SAM 3.1 native multiplex video adapter. Opt-in via
+    # ``SAM_VIDEO_BACKEND=multiplex`` (or ``SAM_MODEL=sam3.1``); requires
+    # the native ``sam3`` git package. Falls back to the SAM 3 transformers
+    # dispatcher when the native package is unavailable.
+    if backend == "multiplex" or model == "sam3.1":
+        try:
+            from carve_model.sam.sam3p1_adapter import (
+                build_sam3p1_multiplex_video_tracker,
+            )
+
+            return build_sam3p1_multiplex_video_tracker()
+        except ImportError as exc:
+            logger.warning(
+                "sam3.1 multiplex backend requested but native sam3 package not "
+                "available: %s; falling back to transformers SAM 3 dispatcher",
+                exc,
+            )
+            from carve_model.sam import sam3_adapter
+
+            return sam3_adapter.build_sam3_video_tracker()
+
     if model == "sam3":
         from carve_model.sam import sam3_adapter
 
