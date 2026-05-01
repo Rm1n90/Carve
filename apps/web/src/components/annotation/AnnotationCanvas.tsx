@@ -29,7 +29,9 @@ import {
 } from "@/canvas/bboxEdit";
 import {
   applyVertexTranslate,
+  hitTestEdge,
   hitTestVertex,
+  insertVertex,
 } from "@/canvas/polygonEdit";
 import { showToast } from "@/lib/toast";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
@@ -2031,6 +2033,37 @@ export function AnnotationCanvas({
               /* ignore */
             }
             return;
+          }
+          // Plan-09 Phase 5 Task 12 — alt-click on an edge inserts a new
+          // vertex at the projected point and immediately starts dragging
+          // it (so the user can reposition it without a second click).
+          // Hover-only ghost marker is deferred to a later iteration.
+          if (e.altKey) {
+            const edge = hitTestEdge(polySel.poly, p);
+            if (edge !== null) {
+              const nextPoly = insertVertex(
+                polySel.poly,
+                edge.edgeIndex,
+                edge.projected,
+              );
+              const newIndex = edge.edgeIndex + 1;
+              useAnnotations
+                .getState()
+                .update(polySel.id, { geometry: nextPoly });
+              dragRef.current = {
+                mode: "vertex",
+                id: polySel.id,
+                index: newIndex,
+                original: nextPoly,
+              };
+              setDragCursor("grabbing");
+              try {
+                host!.setPointerCapture(e.pointerId);
+              } catch {
+                /* ignore */
+              }
+              return;
+            }
           }
         }
 
