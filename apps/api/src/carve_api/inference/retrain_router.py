@@ -107,10 +107,17 @@ def enqueue_retrain(
     try:
         from rq import Queue
 
+        from carve_api.jobs.queue import enqueue_with_defaults
+
         client = _redis_client_or_none()
         if client is not None:
             q = Queue("default", connection=client)
-            q.enqueue(run_retrain_job, job_payload, job_timeout=24 * 3600)
+            # plan-09 task-09 — retrain is the long pole (training).
+            # The 24h timeout matches the helper's per-callable default
+            # but we pass it explicitly to keep the contract obvious.
+            enqueue_with_defaults(
+                q, run_retrain_job, job_payload, job_timeout=24 * 3600
+            )
     except Exception:  # noqa: BLE001
         pass
 

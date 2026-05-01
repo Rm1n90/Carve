@@ -158,6 +158,7 @@ def probe_video_metadata(asset_id: str, asset_hash: str, ext: str) -> None:
         from rq import Queue as _Queue
 
         from carve_api.jobs.frames import extract_frames_for_video
+        from carve_api.jobs.queue import enqueue_with_defaults
 
         _client = _redis.Redis(
             host=_os.environ.get("REDIS_HOST", "redis"),
@@ -165,7 +166,16 @@ def probe_video_metadata(asset_id: str, asset_hash: str, ext: str) -> None:
             decode_responses=True,
         )
         _q = _Queue("default", connection=_client)
-        _q.enqueue(extract_frames_for_video, asset_id, "auto", None)
+        # plan-09 task-09 — frame extraction is bounded by ffmpeg; 30
+        # minutes covers worst-case re-extracts of long videos.
+        enqueue_with_defaults(
+            _q,
+            extract_frames_for_video,
+            asset_id,
+            "auto",
+            None,
+            job_timeout=30 * 60,
+        )
     except Exception:
         import logging as _log
         _log.getLogger(__name__).warning(

@@ -284,10 +284,17 @@ def enqueue_batch_auto_annotate(
     # docker-compose health gates.
     try:
         from rq import Queue
+
+        from carve_api.jobs.queue import enqueue_with_defaults
+
         client = _redis_client_or_none()
         if client is not None:
             q = Queue("default", connection=client)
-            q.enqueue(run_batch_auto_annotate, payload)
+            # plan-09 task-09 — predict batches can run long; bump
+            # job_timeout to 2h so RQ doesn't reap the worker mid-batch.
+            enqueue_with_defaults(
+                q, run_batch_auto_annotate, payload, job_timeout=2 * 3600
+            )
     except Exception:
         pass
     return {"job_id": payload.job_id}

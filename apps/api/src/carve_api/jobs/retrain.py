@@ -373,7 +373,7 @@ def retrain_job(
             phase="error",
             progress_pct=0,
             error=f"export_failed: {exc}",
-            error_traceback=traceback.format_exc(limit=5),
+            error_traceback=traceback.format_exc(),
         )
         return {"ok": False, "error": "export_failed"}
 
@@ -401,7 +401,7 @@ def retrain_job(
             phase="error",
             progress_pct=0,
             error=f"dataset_upload_failed: {exc}",
-            error_traceback=traceback.format_exc(limit=5),
+            error_traceback=traceback.format_exc(),
         )
         return {"ok": False, "error": "dataset_upload_failed"}
 
@@ -413,6 +413,11 @@ def retrain_job(
         # resolves ``weight_id_base`` from its in-process cache and would
         # silently fall back to ``yolov8n.pt`` if the user-supplied base
         # hasn't been recently loaded.
+        # plan-09 task-09 — wrap each single model-service call in
+        # run_with_retry so a 503 (model_service_unreachable) during
+        # warmup doesn't blow up an otherwise-valid retrain.
+        from carve_api.jobs.retry import run_with_retry
+
         if payload.base_weight_id:
             from carve_api.inference.autoannotate import presigned_url_for_weight
             from carve_api.weights.models import Weight
@@ -422,8 +427,11 @@ def retrain_job(
             )
             if base_weight is not None:
                 base_url = presigned_url_for_weight(base_weight)
-                model_client.yolo_load(payload.base_weight_id, base_url)
-        descriptor = model_client.yolo_train(
+                run_with_retry(
+                    model_client.yolo_load, payload.base_weight_id, base_url
+                )
+        descriptor = run_with_retry(
+            model_client.yolo_train,
             weight_id_base=payload.base_weight_id,
             dataset_zip_url=dataset_url,
             epochs=payload.epochs,
@@ -437,7 +445,7 @@ def retrain_job(
             phase="error",
             progress_pct=0,
             error=f"train_failed: {exc}",
-            error_traceback=traceback.format_exc(limit=5),
+            error_traceback=traceback.format_exc(),
         )
         return {"ok": False, "error": "train_failed"}
 
@@ -465,7 +473,7 @@ def retrain_job(
             phase="error",
             progress_pct=0,
             error=f"register_failed: {exc}",
-            error_traceback=traceback.format_exc(limit=5),
+            error_traceback=traceback.format_exc(),
         )
         return {"ok": False, "error": "register_failed"}
 

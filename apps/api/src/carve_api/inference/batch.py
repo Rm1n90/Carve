@@ -2,6 +2,7 @@
 
 import json
 import logging
+import traceback
 import uuid
 from dataclasses import dataclass
 
@@ -159,6 +160,22 @@ def finalize_progress(redis_client, job_id: str, *, status: str) -> None:
     try:
         redis_client.hset(progress_key(job_id), "status", status)
     except Exception:
+        pass
+
+
+def write_error_traceback(redis_client, job_id: str, tb: str) -> None:
+    """plan-09 task-09 — persist a worker's traceback into the progress hash.
+
+    The frontend never surfaces this raw string; it's purely for ops
+    triage when an RQ worker dies and the only forensic crumb is the
+    Redis hash. Best-effort: a Redis blip must not mask the original
+    exception that triggered the call.
+    """
+    if redis_client is None:
+        return
+    try:
+        redis_client.hset(progress_key(job_id), "error_traceback", tb)
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -541,6 +558,7 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
     except Exception as exc:  # noqa: BLE001
         log.exception("batch.boot.failed job_id=%s", payload.job_id)
         init_progress(redis_client, payload.job_id, 0)
+        write_error_traceback(redis_client, payload.job_id, traceback.format_exc())
         finalize_progress(redis_client, payload.job_id, status="failed")
         return {
             "status": "failed",
@@ -613,7 +631,12 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
     # failure. We now load once here and pass ``skip_yolo_load=True`` per
     # asset.
     try:
-        yolo_load(str(weight_uuid), url)
+        # plan-09 task-09 — wrap the single yolo_load call in run_with_retry
+        # so a model service still warming up (503) doesn't kill the entire
+        # batch on the first blip.
+        from carve_api.jobs.retry import run_with_retry
+
+        run_with_retry(yolo_load, str(weight_uuid), url)
         log.info(
             "batch.weight.loaded job_id=%s weight_id=%s",
             payload.job_id,
@@ -626,6 +649,7 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
             payload.weight_id,
             exc.status_code,
         )
+        write_error_traceback(redis_client, payload.job_id, traceback.format_exc())
         session.close()
         finalize_progress(redis_client, payload.job_id, status="failed")
         return {
@@ -641,6 +665,7 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
             payload.job_id,
             payload.weight_id,
         )
+        write_error_traceback(redis_client, payload.job_id, traceback.format_exc())
         session.close()
         finalize_progress(redis_client, payload.job_id, status="failed")
         return {
