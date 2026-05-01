@@ -6,6 +6,7 @@ const DEFAULT_RADIUS = 25;
 const RADIUS_STEP_PX = 5;
 const MIN_RADIUS = 1;
 const MAX_RADIUS = 200;
+const DEFAULT_HARDNESS = 0.7;
 
 /**
  * Mask brush tool — drives a `MaskRasterizer` for live painting and
@@ -27,6 +28,12 @@ export class MaskBrushTool {
   private erasing = false;
   private strokePoints: Array<[number, number]> = [];
   private radius: number;
+  /**
+   * Plan 09 Task 11 — brush hardness in 0..1. ``1.0`` reproduces the
+   * legacy solid disc; ``< 1.0`` adds a feathered falloff. Default
+   * ``0.7`` — slightly soft edge that matches modern brush UX.
+   */
+  private hardness: number = DEFAULT_HARDNESS;
 
   constructor(
     private getActiveClassId: () => string | null,
@@ -36,6 +43,16 @@ export class MaskBrushTool {
     private generateTempId: () => string = () => `t-${Math.random().toString(36).slice(2)}`,
   ) {
     this.radius = clampRadius(initialRadius);
+  }
+
+  /** Plan 09 Task 11 — set hardness (clamped 0..1). */
+  setHardness(h: number): void {
+    if (!Number.isFinite(h)) return;
+    this.hardness = Math.max(0, Math.min(1, h));
+  }
+
+  getHardness(): number {
+    return this.hardness;
   }
 
   setEraser(on: boolean): void {
@@ -86,7 +103,7 @@ export class MaskBrushTool {
     // the explicit eraser toggle is on).
     const eraseOnDrag = button === 2 || this.erasing;
     this.strokePoints = [[p.x, p.y]];
-    r.paintBrush(p.x, p.y, this.radius, eraseOnDrag ? "erase" : "draw");
+    r.paintBrushHardness(p.x, p.y, this.radius, this.hardness, eraseOnDrag ? "erase" : "draw");
   }
 
   onPointerMove(p: Point): void {
@@ -94,12 +111,25 @@ export class MaskBrushTool {
     const last = this.strokePoints[this.strokePoints.length - 1];
     if (last && last[0] === p.x && last[1] === p.y) return;
     this.strokePoints.push([p.x, p.y]);
-    // Repaint just the new segment as a thick line for smoothness.
+    // Plan 09 Task 11 — interpolate dabs along the segment so each
+    // sample is hardness-aware. ``paintStroke`` (thick line) doesn't
+    // honour the alpha falloff, so we walk the segment in steps of
+    // half the radius and call paintBrushHardness at each step.
     if (this.strokePoints.length >= 2) {
       const a = this.strokePoints[this.strokePoints.length - 2];
       const b = this.strokePoints[this.strokePoints.length - 1];
       const mode = this.erasing ? "erase" : "draw";
-      this.rasterizer.paintStroke([a, b], this.radius, mode);
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const dist = Math.hypot(dx, dy);
+      const step = Math.max(0.5, this.radius * 0.5);
+      const n = Math.max(1, Math.ceil(dist / step));
+      for (let i = 1; i <= n; i += 1) {
+        const t = i / n;
+        const x = a[0] + dx * t;
+        const y = a[1] + dy * t;
+        this.rasterizer.paintBrushHardness(x, y, this.radius, this.hardness, mode);
+      }
     }
   }
 

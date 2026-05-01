@@ -1807,9 +1807,19 @@ export function AnnotationCanvas({
       useTool.getState().maskBrushRadius,
       idGen,
     );
+    // Plan 09 Task 11 — initial hardness pull + live subscribe so the
+    // toolbar slider stays in sync with the tool's per-dab rasteriser.
+    mask.setHardness(useTool.getState().maskHardness);
+    mask.setEraser(useTool.getState().maskEraser);
     const unsubMaskRadius = useTool.subscribe((s, prev) => {
       if (s.maskBrushRadius !== prev.maskBrushRadius) {
         mask.setRadius(s.maskBrushRadius);
+      }
+      if (s.maskHardness !== prev.maskHardness) {
+        mask.setHardness(s.maskHardness);
+      }
+      if (s.maskEraser !== prev.maskEraser) {
+        mask.setEraser(s.maskEraser);
       }
     });
     const tag = new TagTool(getClass, getFrame, idGen);
