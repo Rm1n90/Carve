@@ -4,11 +4,10 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from carve_api.annotations.router import _require_visible_task
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.projects.service import ProjectService
+from carve_api.projects.service import ProjectService, require_visible_task
 from carve_api.stats.heatmap import heatmap
 from carve_api.stats.service import StatsService
 
@@ -27,7 +26,10 @@ def class_frequency(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict]:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     return StatsService(db).class_frequency(project_id=task.project_id, task_id=task.id)
 
 
@@ -37,7 +39,10 @@ def density(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict]:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     return StatsService(db).annotation_density(task_id=task.id)
 
 
@@ -47,7 +52,10 @@ def progress(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     return StatsService(db).task_progress(task_id=task.id)
 
 
@@ -57,7 +65,10 @@ def size_distribution(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     return StatsService(db).size_distribution(task_id=task.id)
 
 
@@ -67,7 +78,10 @@ def aspect_ratio(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     return StatsService(db).aspect_ratio_histogram(task_id=task.id)
 
 
@@ -78,7 +92,10 @@ def heatmap_endpoint(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     grid = heatmap(db, task.id, bins=bins)
     return {"bins": bins, "grid": grid}
 
@@ -89,7 +106,10 @@ def time_on_task(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict]:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     return StatsService(db).time_on_task(task_id=task.id)
 
 

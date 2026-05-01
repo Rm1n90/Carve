@@ -23,20 +23,6 @@ def _http(err: AppError) -> HTTPException:
     return HTTPException(status_code=err.http_status, detail=err.code)
 
 
-def _require_visible_task(db: Session, user: User, task_id: uuid.UUID) -> TaskModel:
-    """Thin HTTP-translating wrapper around the canonical helper.
-
-    Delegates to :func:`carve_api.projects.service.require_visible_task`
-    (the single source of truth for task visibility) and translates the
-    raised :class:`AppError` into an :class:`HTTPException` via the same
-    mapper the rest of this router uses.
-    """
-    try:
-        return require_visible_task(db, user, task_id)
-    except AppError as exc:
-        raise _http(exc) from exc
-
-
 def _require_frame_id_for_image_task(task: TaskModel, frame_id: str | None) -> None:
     """Reject writes to image tasks that omit ``frame_id``.
 
@@ -62,7 +48,10 @@ def create_annotation(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AnnotationOut:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     _require_frame_id_for_image_task(task, payload.frame_id)
     try:
         a = AnnotationService(db).create(
@@ -90,7 +79,10 @@ def list_annotations(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[AnnotationOut]:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     rows = AnnotationService(db).list_for_task(
         task=task, frame_id=frame_id, status=status
     )
@@ -104,7 +96,10 @@ def batch(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> BatchOut:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     # v2.5.1 — every create entry on an image task must carry a frame_id,
     # otherwise the annotation would bleed across all assets in the task.
     for c in payload.create:
@@ -160,8 +155,8 @@ def _resolve_annotation_for_user(db: Session, user: User, annotation_id: uuid.UU
     if a is None:
         raise HTTPException(status_code=404, detail="annotation_not_found")
     try:
-        task = _require_visible_task(db, user, a.task_id)
-    except HTTPException as exc:
+        task = require_visible_task(db, user, a.task_id)
+    except AppError as exc:
         raise HTTPException(status_code=404, detail="annotation_not_found") from exc
     return a, task
 

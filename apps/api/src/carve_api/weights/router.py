@@ -6,12 +6,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from carve_api.annotations.router import _require_visible_task
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.projects.models import Class
-from carve_api.projects.service import ProjectService, TaskService
+from carve_api.projects.service import ProjectService, TaskService, require_visible_task
 from carve_api.ratelimit import limiter
 from carve_api.weights.models import Weight, WeightTaskKind
 from carve_api.weights.schemas import (
@@ -304,7 +303,10 @@ def mapping_suggestions(
     weight = db.get(Weight, weight_id)
     if weight is None:
         raise HTTPException(status_code=404, detail="weight_not_found")
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     project = ProjectService(db).get(actor=user, project_id=task.project_id)
     project_classes, _allowed = TaskService(db).get_effective_classes(
         project=project, task=task
