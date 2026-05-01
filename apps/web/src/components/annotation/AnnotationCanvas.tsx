@@ -32,6 +32,7 @@ import {
   hitTestEdge,
   hitTestVertex,
   insertVertex,
+  shouldShowEdgeGhost,
 } from "@/canvas/polygonEdit";
 import { showToast } from "@/lib/toast";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
@@ -226,6 +227,10 @@ export function AnnotationCanvas({
   // the main shape pipeline can clear/reconcile its own `gfxMap`
   // without destroying the compare overlay (and vice versa).
   const compareGfxByIdRef = useRef<Map<string, unknown>>(new Map());
+  // Plan-09b Task 2 — single Graphics instance for the alt+hover edge-
+  // insert ghost dot. Lazily created on first paint so pure-pixi mocks
+  // that don't expose Graphics (e.g. v3.2 canvas-pan) don't crash.
+  const ghostEdgeGfxRef = useRef<unknown | null>(null);
   // Per-annotation mask sprites (for `geometry.kind === "mask_rle"`).
   // Stored separately from `shapeGfxByIdRef` so the bbox/polygon path
   // can `clear()` its Graphics without affecting masks. Each entry holds
@@ -368,7 +373,9 @@ export function AnnotationCanvas({
   // Per-annotation label tag (a Pixi Container holding a fill rect + Text).
   // Rendered above each bbox when the `labels` visibility flag is on.
   // Audit bug O.
-  const labelGfxByIdRef = useRef<Map<string, { container: unknown; text: unknown; bg: unknown }>>(
+  const labelGfxByIdRef = useRef<
+    Map<string, { container: unknown; text: unknown; bg: unknown; check?: unknown }>
+  >(
     new Map(),
   );
 
@@ -1078,6 +1085,7 @@ export function AnnotationCanvas({
                   Graphics,
                   settings.labelFontSize,
                   settings.labelPosition,
+                  draft.status ?? "proposed",
                 );
                 seenLabels.add(id);
               }
@@ -1197,32 +1205,65 @@ export function AnnotationCanvas({
         if (!draft) continue;
         const prev = draft.prevGeometry as
           | { kind?: string; x?: number; y?: number; w?: number; h?: number;
-              points?: Array<[number, number]> }
+              points?: Array<[number, number]>;
+              counts?: string; size?: [number, number] }
           | null
           | undefined;
         if (!prev || !prev.kind) continue;
         const color = hexFromColor(classMap[draft.classId]);
-        let cg = compareMap.get(id) as InstanceType<typeof Graphics> | undefined;
-        if (!cg) {
-          cg = new Graphics();
-          compareMap.set(id, cg);
-          app.shapeLayer.addChild(cg);
-        }
-        cg.clear();
         if (prev.kind === "bbox" && typeof prev.x === "number" &&
             typeof prev.y === "number" && typeof prev.w === "number" &&
             typeof prev.h === "number") {
+          let cg = compareMap.get(id) as InstanceType<typeof Graphics> | undefined;
+          if (!cg || !(cg as { clear?: unknown }).clear) {
+            // Existing entry isn't a Graphics (maybe a previous mask sprite).
+            // Drop it and start fresh.
+            if (cg) {
+              try { app.shapeLayer.removeChild(cg as never); } catch { /* ignore */ }
+            }
+            cg = new Graphics();
+            compareMap.set(id, cg);
+            app.shapeLayer.addChild(cg);
+          }
+          cg.clear();
           drawDashedRect(cg, prev.x, prev.y, prev.w, prev.h, color);
           compareSeen.add(id);
         } else if (prev.kind === "polygon" && Array.isArray(prev.points) &&
                    prev.points.length > 0) {
+          let cg = compareMap.get(id) as InstanceType<typeof Graphics> | undefined;
+          if (!cg || !(cg as { clear?: unknown }).clear) {
+            if (cg) {
+              try { app.shapeLayer.removeChild(cg as never); } catch { /* ignore */ }
+            }
+            cg = new Graphics();
+            compareMap.set(id, cg);
+            app.shapeLayer.addChild(cg);
+          }
+          cg.clear();
           drawDashedPolygon(cg, prev.points, color);
           compareSeen.add(id);
-        } else if (prev.kind === "mask_rle") {
-          // Pragmatic v1: skip rendering a dashed outline for masks.
-          // The compare overlay for masks is a no-op until we have a
-          // mask-to-contour helper; consumers with a mask-only history
-          // see no extra paint but the toggle/UI still works. Document.
+        } else if (prev.kind === "mask_rle" && typeof prev.counts === "string" &&
+                   Array.isArray(prev.size) && prev.size.length === 2) {
+          // Paint the prev mask as a translucent class-coloured sprite.
+          // Mount lazily; reuse the cached sprite when the same id is
+          // hovered/pinned across reconciles.
+          const existing = compareMap.get(id);
+          if (!existing) {
+            // Build async; mark as seen so the cleanup pass below doesn't
+            // immediately drop the placeholder. We add the sprite to the
+            // map only after the texture is built.
+            void paintCompareMaskSprite(
+              app.shapeLayer as unknown as {
+                addChild: (c: never) => unknown;
+                removeChild?: (c: never) => void;
+              },
+              compareMap,
+              id,
+              prev.counts,
+              prev.size as [number, number],
+              color,
+            );
+          }
           compareSeen.add(id);
         }
       }
@@ -2182,6 +2223,73 @@ export function AnnotationCanvas({
       }
     }
 
+    /**
+     * Plan-09b Task 2 — paint or clear the alt+hover edge-insert ghost.
+     * The ghost graphics is lazily created on first paint and parked on
+     * the overlay layer. ``hit`` is null when the cursor is not within
+     * INSERT_TOLERANCE_PX of any polygon edge (or when alt is released);
+     * we ``clear()`` in that case so the dot disappears without
+     * destroying the node.
+     */
+    async function paintEdgeGhost(
+      hit: { projected: { x: number; y: number } } | null,
+      color: number,
+    ): Promise<void> {
+      const app = appRef.current;
+      if (!app) return;
+      let Graphics: typeof import("pixi.js").Graphics | undefined;
+      try {
+        const pixi = await import("pixi.js");
+        Graphics = pixi.Graphics;
+      } catch {
+        return;
+      }
+      if (!Graphics) return;
+      let g = ghostEdgeGfxRef.current as
+        | InstanceType<typeof Graphics>
+        | null;
+      if (!g) {
+        g = new Graphics();
+        ghostEdgeGfxRef.current = g;
+        try {
+          (app.overlayLayer as { addChild: (c: never) => unknown }).addChild(
+            g as never,
+          );
+        } catch {
+          /* ignore — overlay may be unavailable in test mocks */
+        }
+      }
+      try {
+        (g as { clear?: () => void }).clear?.();
+      } catch {
+        /* ignore */
+      }
+      if (!hit) return;
+      try {
+        const gg = g as {
+          circle?: (x: number, y: number, r: number) => unknown;
+          fill?: (opts: { color: number; alpha: number }) => unknown;
+        };
+        gg.circle?.(hit.projected.x, hit.projected.y, 4);
+        gg.fill?.({ color, alpha: 0.5 });
+      } catch {
+        /* ignore — Graphics ops are best-effort under test mocks */
+      }
+    }
+
+    function clearEdgeGhost(): void {
+      const g = ghostEdgeGfxRef.current as
+        | { clear?: () => void }
+        | null;
+      if (g) {
+        try {
+          g.clear?.();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
     function onMove(e: PointerEvent) {
       // v3.2 Issue 2: pan-move branch. While a pan drag is in flight,
       // delta is computed against the captured origin (not the previous
@@ -2291,8 +2399,32 @@ export function AnnotationCanvas({
           if (idx !== null) {
             setDragCursor("grab");
             useTool.getState().setHoveredAnnotationId(null);
+            // Vertex hover takes priority over the edge-ghost — clear it
+            // so we don't show a ghost dot stacked on a real handle.
+            clearEdgeGhost();
             return;
           }
+        }
+        // Plan-09b Task 2 — alt+hover edge-insert ghost dot. Only when
+        // cursor tool is active, alt is held, a polygon is selected, and
+        // the cursor is within tolerance of an edge. Pure predicate plus
+        // a hitTestEdge call; cleanup-on-clear via clear().
+        const edgeHit = polySel ? hitTestEdge(polySel.poly, p) : null;
+        if (
+          shouldShowEdgeGhost({
+            tool: "cursor",
+            alt: e.altKey === true,
+            polygonSelected: !!polySel,
+            hit: edgeHit,
+          })
+        ) {
+          const cls = polySel
+            ? useAnnotations.getState().byId[polySel.id]?.classId
+            : null;
+          const color = hexFromColor(cls ? classMap[cls] : undefined);
+          void paintEdgeGhost(edgeHit, color);
+        } else {
+          clearEdgeGhost();
         }
         if (dragCursor !== null) setDragCursor(null);
         const hit = hitTest(p);
@@ -2551,20 +2683,47 @@ export function AnnotationCanvas({
       }
     }
 
+    // Plan-09b Task 2 — clear the edge-insert ghost when alt is released
+    // (no pointermove fires on key change alone) and when the pointer
+    // leaves the canvas host.
+    function onAltKeyUp(e: KeyboardEvent): void {
+      if (e.key === "Alt" || e.altKey === false) clearEdgeGhost();
+    }
+    function onPointerLeaveHost(): void {
+      clearEdgeGhost();
+    }
+    // Plan-09b Task 2 — selection change away from a polygon clears
+    // the ghost; without this it would linger until the next move.
+    const unsubSel = useAnnotations.subscribe((s, prev) => {
+      if (s.selectedIds !== prev.selectedIds) {
+        const stillPoly = s.selectedIds.some((id) => {
+          const d = s.byId[id];
+          return d && d.geometry.kind === "polygon";
+        });
+        if (!stillPoly) clearEdgeGhost();
+      }
+    });
+
     host.addEventListener("pointerdown", onDown);
     host.addEventListener("pointermove", onMove);
     host.addEventListener("pointerup", onUp);
+    host.addEventListener("pointerleave", onPointerLeaveHost);
     host.addEventListener("contextmenu", onContextMenu);
     // Capture-phase keydown so the bbox nudge runs BEFORE the page-level
     // ArrowLeft/Right asset-navigation handler — the canvas calls
     // stopPropagation() when it nudges, preventing accidental nav.
     window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onAltKeyUp);
     return () => {
       host.removeEventListener("pointerdown", onDown);
       host.removeEventListener("pointermove", onMove);
       host.removeEventListener("pointerup", onUp);
+      host.removeEventListener("pointerleave", onPointerLeaveHost);
       host.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onAltKeyUp);
+      clearEdgeGhost();
+      unsubSel();
       // Reset any in-flight polygon when the tool changes / the asset
       // unmounts so the preview doesn't linger.
       polygon.cancel();
@@ -3077,7 +3236,10 @@ interface AddChildSink {
 
 function renderLabel(
   layer: AddChildSink,
-  labelMap: Map<string, { container: unknown; text: unknown; bg: unknown }>,
+  labelMap: Map<
+    string,
+    { container: unknown; text: unknown; bg: unknown; check?: unknown }
+  >,
   id: string,
   bbox: { x: number; y: number; w: number; h: number },
   labelText: string,
@@ -3087,6 +3249,7 @@ function renderLabel(
   GraphicsCtor: typeof import("pixi.js").Graphics,
   fontSize = 11,
   position: "auto" | "above" | "below" | "left" | "right" = "auto",
+  status: "proposed" | "accepted" | "rejected" = "proposed",
 ): void {
   let entry = labelMap.get(id);
   if (!entry) {
@@ -3170,6 +3333,47 @@ function renderLabel(
   // Position text inside the bg.
   const tpos = (entry.text as { position: { set: (x: number, y: number) => void } }).position;
   tpos.set(padX, padY);
+  // Plan-09b Task 3 — accepted-status checkmark badge. A small green
+  // ✓ glyph drawn just to the right of the label bg with a hand-rolled
+  // two-segment polyline (no icon library on the canvas). The check
+  // graphics is a child of the label container so it auto-translates
+  // with the label and is destroyed when the label container is.
+  if (status === "accepted") {
+    let check = entry.check as
+      | InstanceType<typeof GraphicsCtor>
+      | undefined;
+    if (!check) {
+      check = new GraphicsCtor();
+      (entry.container as unknown as AddChildSink).addChild(check as never);
+      entry.check = check;
+    }
+    const cg = check as {
+      clear: () => void;
+      moveTo: (x: number, y: number) => void;
+      lineTo: (x: number, y: number) => void;
+      stroke: (opts: { color: number; width: number; alpha?: number }) => void;
+      visible?: boolean;
+    };
+    cg.clear();
+    // ~12px glyph. Two segments: short down-right then long up-right.
+    const cx0 = tw + 4; // 4px gap to the right of the bg
+    const cy0 = (th - 12) / 2; // vertically centered
+    cg.moveTo(cx0 + 1, cy0 + 6);
+    cg.lineTo(cx0 + 5, cy0 + 10);
+    cg.lineTo(cx0 + 11, cy0 + 2);
+    cg.stroke({ color: 0x22c55e, width: 2, alpha: 1 });
+    if (typeof cg.visible === "boolean") cg.visible = true;
+  } else if (entry.check) {
+    // Status changed away from accepted — hide the badge but keep the
+    // node parked on the container for cheap toggling.
+    const cg = entry.check as { clear?: () => void; visible?: boolean };
+    try {
+      cg.clear?.();
+    } catch {
+      /* ignore */
+    }
+    if (typeof cg.visible === "boolean") cg.visible = false;
+  }
 }
 
 /**
@@ -3277,6 +3481,84 @@ async function renderMaskRleSprite(
   } catch {
     /* ignore — sprite tint/alpha are best-effort */
   }
+}
+
+/**
+ * Plan-09b Task 1 — paint a translucent class-coloured sprite for a
+ * prev-revision mask_rle overlay. The sprite is parked in
+ * ``compareMap`` under ``id`` so the existing reconcile cleanup loop
+ * removes it from the layer when the id leaves pinned ∪ hovered.
+ *
+ * 30% alpha keeps the prev mask visually subordinate to the live shape
+ * underneath, mirroring the dashed-outline cue used for bbox/polygon
+ * compare overlays.
+ */
+async function paintCompareMaskSprite(
+  layer: { addChild: (c: never) => unknown; removeChild?: (c: never) => void },
+  compareMap: Map<string, unknown>,
+  id: string,
+  counts: string,
+  size: [number, number],
+  color: number,
+): Promise<void> {
+  let pixi: typeof import("pixi.js") | undefined;
+  try {
+    pixi = await import("pixi.js");
+  } catch {
+    return;
+  }
+  if (!pixi) return;
+  // Re-check; the id may have left pinned ∪ hovered while we were
+  // awaiting the dynamic import.
+  if (compareMap.has(id)) return;
+  const [h, w] = size;
+  if (h <= 0 || w <= 0) return;
+  const cv = document.createElement("canvas");
+  cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext("2d");
+  if (!ctx) return;
+  try {
+    const { decodeRLE } = await import("@/canvas/maskio");
+    const mask = decodeRLE(counts, h, w);
+    const img = ctx.createImageData(w, h);
+    const data = img.data;
+    // Pre-multiplied class colour at full alpha for ON pixels; the
+    // sprite-level alpha (0.3 below) does the translucent blending.
+    const r = (color >> 16) & 0xff;
+    const g = (color >> 8) & 0xff;
+    const b = color & 0xff;
+    for (let row = 0; row < h; row += 1) {
+      for (let col = 0; col < w; col += 1) {
+        const i = (row * w + col) * 4;
+        if (mask[row * w + col]) {
+          data[i] = r;
+          data[i + 1] = g;
+          data[i + 2] = b;
+          data[i + 3] = 255;
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  } catch {
+    return;
+  }
+  // The id may have been dropped while the decode was in flight.
+  if (compareMap.has(id)) return;
+  let texture: InstanceType<typeof pixi.Texture>;
+  try {
+    texture = pixi.Texture.from(cv as TexImageSource);
+  } catch {
+    return;
+  }
+  const sprite = new pixi.Sprite(texture);
+  try {
+    (sprite as { alpha?: number }).alpha = 0.3;
+  } catch {
+    /* alpha is best-effort */
+  }
+  layer.addChild(sprite as never);
+  compareMap.set(id, sprite);
 }
 
 /**

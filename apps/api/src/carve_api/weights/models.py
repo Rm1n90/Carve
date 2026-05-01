@@ -49,6 +49,15 @@ class Weight(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Plan-09b Task 5 -- nullable JSONB blob; the retrain pipeline writes
+    # ``{"retrain": {epochs, imgsz, include_proposed, task_id, metrics,
+    # trained_at}}``; the upload path leaves it ``None``. The Python
+    # attribute is ``metadata_`` (trailing underscore) to avoid clashing
+    # with SQLAlchemy's reserved ``Base.metadata`` attribute; the actual
+    # database column is named ``metadata``.
+    metadata_: Mapped[dict | None] = mapped_column(
+        "metadata", JSONB, nullable=True, default=None
+    )
 
 
 class WeightAssignment(Base):

@@ -7,11 +7,16 @@ from typing import Literal
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
-from carve_api.annotations.router import _require_visible_task
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
+from carve_api.errors import AppError
 from carve_api.io.import_job import ImportJobPayload, read_progress, run_import_job
+from carve_api.projects.service import require_visible_task
 from carve_api.storage.client import MinioClient
+
+
+def _http(err: AppError) -> HTTPException:
+    return HTTPException(status_code=err.http_status, detail=err.code)
 
 
 router = APIRouter(prefix="/tasks", tags=["import"])
@@ -44,7 +49,10 @@ async def enqueue_import(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     body = await file.read()
     if len(body) > _MAX_BYTES:
         raise HTTPException(status_code=413, detail="import_too_large")
@@ -92,5 +100,8 @@ def get_import_progress(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_visible_task(db, user, task_id)
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     return read_progress(_redis_client_or_none(), import_id)

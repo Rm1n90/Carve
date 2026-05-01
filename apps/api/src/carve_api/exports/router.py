@@ -5,10 +5,10 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from carve_api.annotations.router import _require_visible_task
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.projects.service import require_visible_task
 from carve_api.exports.job import ExportJobPayload, run_export_job
 from carve_api.exports.schemas import ExportIn, ExportProgressOut
 from carve_api.exports.service import ExportService
@@ -43,7 +43,10 @@ def enqueue_export(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     e = ExportService(db).create(
         task_id=task.id,
         actor_id=user.id,
@@ -80,8 +83,8 @@ def get_export_progress(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ExportProgressOut:
-    _require_visible_task(db, user, task_id)
     try:
+        require_visible_task(db, user, task_id)
         e = ExportService(db).get(export_id=export_id)
     except AppError as exc:
         raise _http(exc) from exc

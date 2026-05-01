@@ -42,6 +42,7 @@ import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
+import { useUsers, displayNameFor } from "@/api/users";
 import { useAnnotations } from "@/state/annotations";
 import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
@@ -293,6 +294,24 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     // refetch under the correct frame_id has already replaced them by
     // the time the canvas paints.
   });
+
+  // Plan-09b Task 4 — workspace members for reviewer-name resolution. The
+  // ``ReviewPanel`` accepts a ``resolveReviewerName(userId) => string | null``
+  // prop and renders ``<name> · <relative time>`` when a reviewer was
+  // recorded. We memoize an id→name map so the resolver doesn't allocate on
+  // every render.
+  const usersQ = useUsers();
+  const reviewerNameById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const u of usersQ.data ?? []) {
+      map[u.id] = displayNameFor(u);
+    }
+    return map;
+  }, [usersQ.data]);
+  const resolveReviewerName = useMemo(
+    () => (userId: string): string | null => reviewerNameById[userId] ?? null,
+    [reviewerNameById],
+  );
 
   // Seed the store on first load + when annotations change identity.
   // React Query keys include the frameId, so an asset switch produces a
@@ -1111,7 +1130,10 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   value="review"
                   className="flex-1 overflow-y-auto focus-visible:outline-none"
                 >
-                  <ReviewPanel classes={classesQ.data ?? []} />
+                  <ReviewPanel
+                    classes={classesQ.data ?? []}
+                    resolveReviewerName={resolveReviewerName}
+                  />
                 </Tabs.Content>
               </Tabs.Root>
               <AppearancePanel />

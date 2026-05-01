@@ -163,6 +163,29 @@ export function insertVertex(
   return { kind: "polygon", points: next };
 }
 
+/**
+ * Plan-09b Task 2 — pure predicate for the alt+hover edge-insert ghost
+ * dot. The ghost is shown only when ALL preconditions hold: the cursor
+ * tool is active, alt is held, a polygon is selected, and the cursor
+ * is within INSERT_TOLERANCE_PX of an edge.
+ *
+ * Extracted as a pure function so the AnnotationCanvas integration can
+ * be exercised in isolation without instantiating Pixi mocks.
+ */
+export function shouldShowEdgeGhost(args: {
+  tool: string;
+  alt: boolean;
+  polygonSelected: boolean;
+  hit: { edgeIndex: number; projected: { x: number; y: number } } | null;
+}): boolean {
+  return (
+    args.tool === "cursor" &&
+    args.alt === true &&
+    args.polygonSelected === true &&
+    args.hit !== null
+  );
+}
+
 /** Returns a new polygon with the vertex at ``index`` removed. Returns the
  *  original unchanged if removing would leave fewer than 3 vertices. */
 export function applyVertexDelete(

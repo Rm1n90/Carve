@@ -12,8 +12,7 @@ from carve_api.assets.service import AssetService
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.projects.models import Task as TaskModel
-from carve_api.projects.service import ProjectService, TaskService, _can_modify, NotProjectOwner
+from carve_api.projects.service import ProjectService, TaskService, _can_modify, NotProjectOwner, require_visible_task
 from carve_api.ratelimit import limiter
 from carve_api.storage.client import MinioClient
 
@@ -58,15 +57,6 @@ def _http(err: AppError) -> HTTPException:
     return HTTPException(status_code=err.http_status, detail=err.code)
 
 
-def _require_visible_task(db: Session, user: User, task_id: uuid.UUID) -> TaskModel:
-    task = db.get(TaskModel, task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="task_not_found")
-    project = ProjectService(db).get(actor=user, project_id=task.project_id)
-    TaskService(db).get(project=project, task_id=task.id)
-    return task
-
-
 @router.post("/{task_id}/assets", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
 @limiter.limit(SINGLE_ASSET_UPLOAD_LIMIT)
 async def upload_asset(
@@ -77,8 +67,8 @@ async def upload_asset(
     db: Session = Depends(get_db),
 ) -> AssetOut:
     body = await file.read()
-    task = _require_visible_task(db, user, task_id)
     try:
+        task = require_visible_task(db, user, task_id)
         asset = AssetService(db).upload(
             task=task, original_name=file.filename or "unnamed",
             mime=file.content_type or "application/octet-stream", body=body,
@@ -106,7 +96,10 @@ def list_assets(
     can render tiles without a per-asset fetch. Returns a single page
     + total count so the UI can show "Showing N–M of T".
     """
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     svc = AssetService(db)
     items = svc.list_for_task(task=task, limit=limit, offset=offset, q=q, status=status)
     total = svc.count_for_task(task=task, q=q, status=status)
@@ -127,7 +120,10 @@ def asset_count(
     db: Session = Depends(get_db),
 ) -> AssetCount:
     """Total / annotated / unannotated counts for filter chips above the grid."""
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     svc = AssetService(db)
     total = svc.count_for_task(task=task)
     annotated = svc.annotated_count_for_task(task=task)
@@ -144,8 +140,8 @@ async def upload_archive(
     db: Session = Depends(get_db),
 ) -> list[AssetOut]:
     body = await file.read()
-    task = _require_visible_task(db, user, task_id)
     try:
+        task = require_visible_task(db, user, task_id)
         assets = AssetService(db).upload_archive(task=task, archive_bytes=body)
     except AppError as exc:
         raise _http(exc) from exc
@@ -172,7 +168,10 @@ def asset_thumbnail(
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, a.task_id)
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     svc = AssetService(db)
     url = svc.thumbnail_url_for(a)
     if url is None:
@@ -199,7 +198,10 @@ def get_asset(
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, a.task_id)
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     svc = AssetService(db)
     ext = a.original_name.rsplit(".", 1)[-1] if "." in a.original_name else "bin"
     return AssetWithUrl(
@@ -232,7 +234,10 @@ def list_frames(
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, a.task_id)
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     rows = (
         db.query(Frame)
         .filter(Frame.asset_id == a.id)
@@ -285,7 +290,10 @@ def reextract_frames(
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, a.task_id)
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     if a.kind != AssetKind.video:
         raise HTTPException(status_code=422, detail="asset_not_video")
 
@@ -345,7 +353,10 @@ def frame_extract_status(
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, a.task_id)
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     try:
         import os as _os
 
@@ -379,7 +390,10 @@ def delete_asset(
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    task = _require_visible_task(db, user, a.task_id)
+    try:
+        task = require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     project = ProjectService(db).get(actor=user, project_id=task.project_id)
     if not _can_modify(user, project):
         raise _http(NotProjectOwner("only owner or admin can delete an asset"))

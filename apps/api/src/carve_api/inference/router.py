@@ -6,7 +6,6 @@ from redis import Redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from carve_api.annotations.router import _require_visible_task
 from carve_api.annotations.schemas import AnnotationOut
 from carve_api.assets.models import Asset
 from carve_api.auth.models import User
@@ -41,6 +40,7 @@ from carve_api.inference.sam_track import (
     start as _track_start,
     step as _track_step,
 )
+from carve_api.projects.service import require_visible_task
 from carve_api.weights.models import Weight, WeightAssignment
 
 
@@ -112,7 +112,10 @@ def auto_annotate(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    task = _require_visible_task(db, user, asset.task_id)
+    try:
+        task = require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     # v3.5 Phase F5 — `weight_id` is now optional. When omitted, fall
     # back to the project's default for any task_kind by joining
     # ``weight_project_defaults``. Workspace-wide weights are eligible.
@@ -214,7 +217,10 @@ def enqueue_batch_auto_annotate(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     weight = db.get(Weight, weight_id)
     if weight is None:
         raise HTTPException(status_code=404, detail="weight_not_found")
@@ -335,7 +341,10 @@ def get_batch_progress(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_visible_task(db, user, task_id)
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     return read_progress(_redis_client_or_none(), job_id)
 
 
@@ -358,7 +367,10 @@ def enqueue_sam_auto_text_batch(
     Redis progress hash as YOLO batches so the frontend's polling
     dialog (BatchProgressDialog) works for both engines.
     """
-    task = _require_visible_task(db, user, task_id)
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     from carve_api.projects.models import Class as ClassModel
 
     classes = (
@@ -405,7 +417,10 @@ def get_sam_auto_text_batch_progress(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_visible_task(db, user, task_id)
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     return read_progress(_redis_client_or_none(), job_id)
 
 
@@ -423,7 +438,10 @@ def cancel_sam_auto_text_batch(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_visible_task(db, user, task_id)
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     client = _redis_client_or_none()
     if client is None:
         raise HTTPException(status_code=503, detail="redis_unavailable")
@@ -520,7 +538,10 @@ def sam_auto_text_endpoint(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    task = _require_visible_task(db, user, asset.task_id)
+    try:
+        task = require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     # Resolve classes from the task's project, preserving the user's
     # request order. Skip ids that don't belong to the project.
     from carve_api.projects.models import Class
@@ -563,7 +584,10 @@ def sam_encode_endpoint(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, asset.task_id)
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     try:
         return sam_encode_for_asset(asset, frame_id=frame_id)
     except AppError as exc:
@@ -580,7 +604,10 @@ def sam_decode_endpoint(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, asset.task_id)
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     try:
         return sam_decode_with_hash(
             payload.image_hash,
@@ -608,7 +635,10 @@ def sam_text_prompt_endpoint(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, asset.task_id)
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     try:
         return sam_text_prompt_for_asset(
             asset, payload.text, frame_id=payload.frame_id
@@ -633,7 +663,10 @@ def sam_box_prompt_endpoint(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, asset.task_id)
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     if len(payload.boxes) != len(payload.box_labels):
         raise HTTPException(
             status_code=422,
@@ -680,7 +713,10 @@ def sam_track_start_endpoint(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, asset.task_id)
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     # Multi-object workflow: empty points + labels is OK (objects are added
     # via /objects later). Length-match is only enforced when points are given.
     if payload.points and len(payload.points) != len(payload.labels):
@@ -708,7 +744,10 @@ def sam_track_add_object_endpoint(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, asset.task_id)
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     if not payload.points and not payload.boxes:
         raise HTTPException(status_code=422, detail="object_requires_points_or_boxes")
     if payload.points and len(payload.points) != len(payload.labels):
@@ -737,7 +776,10 @@ def sam_track_step_endpoint(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, asset.task_id)
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     try:
         return _track_step(session_id, frames)
     except AppError as exc:
@@ -754,7 +796,10 @@ def sam_track_release_endpoint(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    _require_visible_task(db, user, asset.task_id)
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
     try:
         _track_release(session_id)
     except AppError as exc:

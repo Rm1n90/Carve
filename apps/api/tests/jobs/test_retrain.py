@@ -234,6 +234,17 @@ def test_retrain_job_pipeline_happy_path(db_session, monkeypatch) -> None:
     assert new_w.class_names == ["car"]
     assert new_w.name == "my-retrain"
 
+    # Plan-09b Task 5 — metadata blob persisted with retrain context.
+    assert new_w.metadata_ is not None
+    retrain_meta = new_w.metadata_["retrain"]
+    assert retrain_meta["epochs"] == 10
+    assert retrain_meta["imgsz"] == 640
+    assert retrain_meta["include_proposed"] is False
+    assert retrain_meta["task_id"] == str(t.id)
+    assert retrain_meta["metrics"] == {"metrics/mAP50": 0.5}
+    # Trained-at is an ISO-formatted UTC timestamp.
+    assert "T" in retrain_meta["trained_at"]
+
     # Phase progression went through all expected states ending in "done".
     assert redis.phase_history == [
         "exporting",
