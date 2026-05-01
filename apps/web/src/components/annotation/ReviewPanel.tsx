@@ -13,7 +13,7 @@
  *     ``reviewedAt`` / ``prevGeometry`` from the response.
  *   - On failure, revert the local flip and toast the error.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 
 import {
@@ -96,6 +96,12 @@ export function ReviewPanel({
 
   const [filter, setFilter] = useState<ReviewFilter>("proposed");
   const [bulkBusy, setBulkBusy] = useState(false);
+  // In-flight per-row review calls, keyed by draft.tempId. Tracked in
+  // state so per-row buttons rerender disabled, AND in a ref so the
+  // keyboard handler can read the current set without re-binding.
+  const [busy, setBusy] = useState<Set<string>>(() => new Set());
+  const busyRef = useRef<Set<string>>(busy);
+  busyRef.current = busy;
 
   const drafts = useMemo(() => Object.values(byId), [byId]);
   const visibleDrafts = useMemo(() => {
@@ -114,33 +120,52 @@ export function ReviewPanel({
     return map;
   }, [classes]);
 
-  async function applyReview(
-    draft: AnnotationDraft,
-    decision: ReviewDecision,
-  ): Promise<void> {
-    const id = draft.tempId;
-    const before = snapshotReview(draft);
-    // Optimistic flip.
-    setReviewState(id, {
-      status: decision === "accept" ? "accepted" : "rejected",
-    });
-    const target = draft.serverId ?? id;
-    try {
-      const updated = await annotationsApi.review(target, decision);
-      // Server is the source of truth for reviewer + timestamp +
-      // prev_geometry. Apply on top of the optimistic flip.
-      setReviewState(id, {
-        status:
-          updated.status ?? (decision === "accept" ? "accepted" : "rejected"),
-        reviewedById: updated.reviewedById ?? null,
-        reviewedAt: updated.reviewedAt ?? null,
-        prevGeometry: updated.prevGeometry ?? null,
+  const applyReview = useCallback(
+    async (
+      draft: AnnotationDraft,
+      decision: ReviewDecision,
+    ): Promise<void> => {
+      const id = draft.tempId;
+      // Race guard: if a review call is already in flight for this id,
+      // no-op. Whichever optimistic flip is mid-flight wins.
+      if (busyRef.current.has(id)) return;
+      const before = snapshotReview(draft);
+      // Mark in-flight (new Set for immutability + rerender).
+      setBusy((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
       });
-    } catch (err) {
-      revertReviewState(id, before);
-      showToast(describeApiError(err), { variant: "error", duration: 6000 });
-    }
-  }
+      // Optimistic flip.
+      setReviewState(id, {
+        status: decision === "accept" ? "accepted" : "rejected",
+      });
+      const target = draft.serverId ?? id;
+      try {
+        const updated = await annotationsApi.review(target, decision);
+        // Server is the source of truth for reviewer + timestamp +
+        // prev_geometry. Apply on top of the optimistic flip.
+        setReviewState(id, {
+          status:
+            updated.status ?? (decision === "accept" ? "accepted" : "rejected"),
+          reviewedById: updated.reviewedById ?? null,
+          reviewedAt: updated.reviewedAt ?? null,
+          prevGeometry: updated.prevGeometry ?? null,
+        });
+      } catch (err) {
+        revertReviewState(id, before);
+        showToast(describeApiError(err), { variant: "error", duration: 6000 });
+      } finally {
+        setBusy((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    },
+    [setReviewState, revertReviewState],
+  );
 
   async function handleBulkAccept(): Promise<void> {
     if (proposedDrafts.length === 0) return;
@@ -153,11 +178,25 @@ export function ReviewPanel({
       confirmLabel: "Accept all",
     });
     if (!ok) return;
+    // Filter out local-only drafts (no serverId): the server can't
+    // review what it doesn't know about. Surface a soft warning so the
+    // user knows some rows were skipped.
+    const persisted = proposedDrafts.filter((d) => Boolean(d.serverId));
+    const skippedUnsaved = proposedDrafts.length - persisted.length;
+    if (skippedUnsaved > 0) {
+      showToast(
+        `Skipped ${skippedUnsaved} unsaved annotation${
+          skippedUnsaved === 1 ? "" : "s"
+        } — save first.`,
+        { variant: "warning" },
+      );
+    }
+    if (persisted.length === 0) return;
     setBulkBusy(true);
-    const targets = proposedDrafts.map((d) => ({
+    const targets = persisted.map((d) => ({
       draft: d,
       before: snapshotReview(d),
-      serverId: d.serverId ?? d.tempId,
+      serverId: d.serverId as string,
     }));
     // Optimistic flip for every target.
     for (const t of targets) {
@@ -220,7 +259,8 @@ export function ReviewPanel({
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // deps intentional: handler reads live state via useAnnotations.getState()
+    // and busyRef.current, so a stale closure on selectedId/applyReview is fine.
   }, [selectedId, selectedIds.length]);
 
   return (
@@ -356,10 +396,12 @@ export function ReviewPanel({
                     aria-label={`Accept annotation ${cls?.name ?? d.classId}`}
                     data-testid={`review-row-accept-${d.tempId}`}
                     onClick={() => void applyReview(d, "accept")}
+                    disabled={busy.has(d.tempId)}
                     className={cn(
                       "inline-flex items-center justify-center h-6 w-6 rounded-full",
                       "text-[oklch(0.5_0.18_145)] hover:bg-[oklch(0.85_0.12_145_/0.25)]",
                       "transition-colors",
+                      "disabled:opacity-50 disabled:cursor-not-allowed",
                     )}
                   >
                     <Check className="h-3.5 w-3.5" />
@@ -370,10 +412,12 @@ export function ReviewPanel({
                     aria-label={`Reject annotation ${cls?.name ?? d.classId}`}
                     data-testid={`review-row-reject-${d.tempId}`}
                     onClick={() => void applyReview(d, "reject")}
+                    disabled={busy.has(d.tempId)}
                     className={cn(
                       "inline-flex items-center justify-center h-6 w-6 rounded-full",
                       "text-[oklch(0.5_0.2_25)] hover:bg-[oklch(0.85_0.16_25_/0.25)]",
                       "transition-colors",
+                      "disabled:opacity-50 disabled:cursor-not-allowed",
                     )}
                   >
                     <X className="h-3.5 w-3.5" />

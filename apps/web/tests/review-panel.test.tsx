@@ -191,6 +191,49 @@ describe("ReviewPanel — per-row Accept", () => {
   });
 });
 
+describe("ReviewPanel — race guard", () => {
+  it("ignores a second rapid click while the first review call is in flight", async () => {
+    seedThree();
+    // Make the review call hang until we release it.
+    let release: (v: unknown) => void = () => {};
+    reviewMock.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    renderPanel();
+    // Show "all" so the row stays visible after optimistic accept flip.
+    fireEvent.click(screen.getByTestId("review-filter-all"));
+
+    const acceptBtn = screen.getByTestId("review-row-accept-a-1");
+    fireEvent.click(acceptBtn);
+    // While in flight, the second click must be a no-op.
+    fireEvent.click(acceptBtn);
+    fireEvent.click(acceptBtn);
+
+    // Optimistic flip happened from the first click only.
+    expect(useAnnotations.getState().byId["a-1"].status).toBe("accepted");
+    // Button is disabled while in flight.
+    expect((acceptBtn as HTMLButtonElement).disabled).toBe(true);
+    // Only one API call.
+    expect(reviewMock).toHaveBeenCalledTimes(1);
+
+    // Release the in-flight promise; afterwards the busy flag clears.
+    release({
+      ...makeDraft("a-1", "accepted"),
+      reviewedById: "u-1",
+      reviewedAt: "2026-05-01T00:00:00Z",
+    });
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId("review-row-accept-a-1") as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    expect(reviewMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("ReviewPanel — bulk accept", () => {
   it("opens confirm dialog with the proposed count, then calls batchReview on confirm", async () => {
     useAnnotations.getState().reset([
