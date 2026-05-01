@@ -157,7 +157,7 @@ class AnnotationOut(BaseModel):
             z_order=int(getattr(a, "z_order", 0) or 0),
             created_by=str(a.created_by) if a.created_by else None,
             created_at=a.created_at, updated_at=a.updated_at,
-            status=getattr(a, "status", "proposed") or "proposed",
+            status=getattr(a, "status", "proposed"),
             reviewed_by_id=(
                 str(a.reviewed_by_id)
                 if getattr(a, "reviewed_by_id", None) is not None
