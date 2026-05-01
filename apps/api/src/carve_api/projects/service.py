@@ -133,6 +133,27 @@ class TaskNotFound(AppError):
     code = "task_not_found"
 
 
+def require_visible_task(
+    db: Session, user: User, task_id: uuid.UUID
+) -> "Task":
+    """Resolve a task only if visible to ``user``.
+
+    Canonical helper shared by ``annotations.router`` and
+    ``reviews.service`` so the visibility check has one home. Raises
+    :class:`TaskNotFound` (404) when the task doesn't exist; relies on
+    :class:`ProjectService.get` / :class:`TaskService.get` to surface
+    project-level access failures as their own AppErrors. The caller is
+    responsible for translating those AppErrors to HTTP responses (e.g.
+    via the ``_http()`` mapper in routers).
+    """
+    task = db.get(Task, task_id)
+    if task is None:
+        raise TaskNotFound("task not found")
+    project = ProjectService(db).get(actor=user, project_id=task.project_id)
+    TaskService(db).get(project=project, task_id=task.id)
+    return task
+
+
 class TaskService:
     def __init__(self, session: Session) -> None:
         self.session = session

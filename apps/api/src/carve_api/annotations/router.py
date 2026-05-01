@@ -13,7 +13,7 @@ from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.projects.models import Task as TaskModel, TaskKind
-from carve_api.projects.service import ProjectService, TaskService
+from carve_api.projects.service import require_visible_task
 
 router = APIRouter(prefix="/tasks", tags=["annotations"])
 ann_router = APIRouter(prefix="/annotations", tags=["annotations"])
@@ -24,12 +24,17 @@ def _http(err: AppError) -> HTTPException:
 
 
 def _require_visible_task(db: Session, user: User, task_id: uuid.UUID) -> TaskModel:
-    task = db.get(TaskModel, task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="task_not_found")
-    project = ProjectService(db).get(actor=user, project_id=task.project_id)
-    TaskService(db).get(project=project, task_id=task.id)
-    return task
+    """Thin HTTP-translating wrapper around the canonical helper.
+
+    Delegates to :func:`carve_api.projects.service.require_visible_task`
+    (the single source of truth for task visibility) and translates the
+    raised :class:`AppError` into an :class:`HTTPException` via the same
+    mapper the rest of this router uses.
+    """
+    try:
+        return require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
 
 
 def _require_frame_id_for_image_task(task: TaskModel, frame_id: str | None) -> None:
