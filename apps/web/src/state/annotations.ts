@@ -56,6 +56,19 @@ interface HistorySnapshot {
   pendingDeletes: string[];
 }
 
+/**
+ * Plan-09 Phase 5 Task 13 — undo grouping. Tracks the most recent
+ * grouping-eligible operation so that `update()` can decide whether to
+ * REPLACE the latest history entry (coalesce contiguous edits) instead
+ * of pushing a brand-new one. ``null`` means the next mutation pushes
+ * normally regardless of the timing window.
+ */
+interface LastEditMeta {
+  opName: string;
+  targetId: string;
+  timestamp: number;
+}
+
 interface State {
   byId: Record<string, AnnotationDraft>;
   selectedId: string | null;
@@ -64,6 +77,8 @@ interface State {
   hiddenAnnotationIds: string[];
   pendingDeletes: string[];
   history: { past: HistorySnapshot[]; future: HistorySnapshot[] };
+  /** See {@link LastEditMeta}. Plan-09 Phase 5 Task 13. */
+  lastEditMeta: LastEditMeta | null;
   add: (a: AnnotationDraft) => void;
   update: (id: string, patch: Partial<AnnotationDraft>) => void;
   remove: (id: string) => void;
@@ -102,6 +117,11 @@ interface State {
 }
 
 const HISTORY_CAP = 50;
+/**
+ * Plan-09 Phase 5 Task 13 — coalesce contiguous edits to the SAME
+ * annotation within this many milliseconds into one undo step.
+ */
+export const UNDO_GROUP_WINDOW_MS = 800;
 
 function snapshot(s: { byId: Record<string, AnnotationDraft>; pendingDeletes: string[] }): HistorySnapshot {
   return { byId: s.byId, pendingDeletes: s.pendingDeletes };
@@ -111,6 +131,36 @@ function pushPast(s: State): { past: HistorySnapshot[]; future: HistorySnapshot[
   const next = [...s.history.past, snapshot(s)];
   if (next.length > HISTORY_CAP) next.shift();
   return { past: next, future: [] };
+}
+
+/**
+ * Plan-09 Phase 5 Task 13 — append-or-replace history push for grouping
+ * eligible operations. If ``s.lastEditMeta`` matches ``opName`` +
+ * ``targetId`` and falls within ``UNDO_GROUP_WINDOW_MS`` of ``now``, the
+ * latest snapshot is REPLACED with the pre-update state (i.e. the new
+ * snapshot is dropped — the existing entry already represents the state
+ * before the run of edits started). Otherwise behaves exactly like
+ * ``pushPast``.
+ */
+function pushPastGrouped(
+  s: State,
+  opName: string,
+  targetId: string,
+  now: number,
+): { past: HistorySnapshot[]; future: HistorySnapshot[] } {
+  const meta = s.lastEditMeta;
+  const sameOp =
+    meta !== null &&
+    meta.opName === opName &&
+    meta.targetId === targetId &&
+    now - meta.timestamp <= UNDO_GROUP_WINDOW_MS &&
+    s.history.past.length > 0;
+  if (sameOp) {
+    // Drop the would-be new snapshot — the existing tail already holds
+    // the pre-edit state for this run of grouped edits.
+    return { past: s.history.past, future: [] };
+  }
+  return pushPast(s);
 }
 
 function neighborsByZ(byId: Record<string, AnnotationDraft>, target: AnnotationDraft) {
@@ -126,6 +176,7 @@ export const useAnnotations = create<State>((set) => ({
   hiddenAnnotationIds: [],
   pendingDeletes: [],
   history: { past: [], future: [] },
+  lastEditMeta: null,
   add: (a) =>
     set((s) => {
       // Plan-09 Phase 5 Task 3 — every new draft enters the review
@@ -144,15 +195,23 @@ export const useAnnotations = create<State>((set) => ({
         selectedId: a.tempId,
         selectedIds: [a.tempId],
         history: pushPast(s),
+        // Non-update op flushes the grouping window — the next update()
+        // will start a fresh undo entry.
+        lastEditMeta: null,
       };
     }),
   update: (id, patch) =>
     set((s) => {
       const cur = s.byId[id];
       if (!cur) return s;
+      const now = Date.now();
+      // Plan-09 Phase 5 Task 13 — coalesce contiguous edits to the same
+      // annotation within UNDO_GROUP_WINDOW_MS into one history entry.
+      const history = pushPastGrouped(s, "update", id, now);
       return {
         byId: { ...s.byId, [id]: { ...cur, ...patch, dirty: true } },
-        history: pushPast(s),
+        history,
+        lastEditMeta: { opName: "update", targetId: id, timestamp: now },
       };
     }),
   remove: (id) =>
@@ -168,12 +227,17 @@ export const useAnnotations = create<State>((set) => ({
           ? [...s.pendingDeletes, cur.serverId]
           : s.pendingDeletes,
         history: pushPast(s),
+        lastEditMeta: null,
       };
     }),
   select: (id) =>
     set({
       selectedId: id,
       selectedIds: id ? [id] : [],
+      // Selection move flushes the undo-grouping window so the next
+      // update() on the new selection starts a fresh entry. Plan-09
+      // Phase 5 Task 13.
+      lastEditMeta: null,
     }),
   toggleSelect: (id) =>
     set((s) => {
@@ -184,12 +248,14 @@ export const useAnnotations = create<State>((set) => ({
       return {
         selectedIds: nextIds,
         selectedId: nextIds.length > 0 ? nextIds[nextIds.length - 1] : null,
+        lastEditMeta: null,
       };
     }),
   selectMany: (ids) =>
     set({
       selectedIds: [...ids],
       selectedId: ids.length > 0 ? ids[ids.length - 1] : null,
+      lastEditMeta: null,
     }),
   selectAll: (frameId) =>
     set((s) => {
@@ -199,9 +265,11 @@ export const useAnnotations = create<State>((set) => ({
       return {
         selectedIds: ids,
         selectedId: ids.length > 0 ? ids[ids.length - 1] : null,
+        lastEditMeta: null,
       };
     }),
-  clearSelection: () => set({ selectedId: null, selectedIds: [] }),
+  clearSelection: () =>
+    set({ selectedId: null, selectedIds: [], lastEditMeta: null }),
   reset: (initial) =>
     set({
       byId: Object.fromEntries(
@@ -220,6 +288,7 @@ export const useAnnotations = create<State>((set) => ({
       selectedIds: [],
       pendingDeletes: [],
       history: { past: [], future: [] },
+      lastEditMeta: null,
     }),
   markPersisted: (tempId, serverId) =>
     set((s) => {
@@ -311,6 +380,7 @@ export const useAnnotations = create<State>((set) => ({
         byId: last.byId,
         pendingDeletes: last.pendingDeletes,
         history: { past, future: [...s.history.future, snapshot(s)] },
+        lastEditMeta: null,
       };
     }),
   redo: () =>
@@ -322,6 +392,7 @@ export const useAnnotations = create<State>((set) => ({
         byId: next.byId,
         pendingDeletes: next.pendingDeletes,
         history: { past: [...s.history.past, snapshot(s)], future },
+        lastEditMeta: null,
       };
     }),
 }));
