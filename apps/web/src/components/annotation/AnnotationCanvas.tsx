@@ -373,7 +373,9 @@ export function AnnotationCanvas({
   // Per-annotation label tag (a Pixi Container holding a fill rect + Text).
   // Rendered above each bbox when the `labels` visibility flag is on.
   // Audit bug O.
-  const labelGfxByIdRef = useRef<Map<string, { container: unknown; text: unknown; bg: unknown }>>(
+  const labelGfxByIdRef = useRef<
+    Map<string, { container: unknown; text: unknown; bg: unknown; check?: unknown }>
+  >(
     new Map(),
   );
 
@@ -1083,6 +1085,7 @@ export function AnnotationCanvas({
                   Graphics,
                   settings.labelFontSize,
                   settings.labelPosition,
+                  draft.status ?? "proposed",
                 );
                 seenLabels.add(id);
               }
@@ -3233,7 +3236,10 @@ interface AddChildSink {
 
 function renderLabel(
   layer: AddChildSink,
-  labelMap: Map<string, { container: unknown; text: unknown; bg: unknown }>,
+  labelMap: Map<
+    string,
+    { container: unknown; text: unknown; bg: unknown; check?: unknown }
+  >,
   id: string,
   bbox: { x: number; y: number; w: number; h: number },
   labelText: string,
@@ -3243,6 +3249,7 @@ function renderLabel(
   GraphicsCtor: typeof import("pixi.js").Graphics,
   fontSize = 11,
   position: "auto" | "above" | "below" | "left" | "right" = "auto",
+  status: "proposed" | "accepted" | "rejected" = "proposed",
 ): void {
   let entry = labelMap.get(id);
   if (!entry) {
@@ -3326,6 +3333,47 @@ function renderLabel(
   // Position text inside the bg.
   const tpos = (entry.text as { position: { set: (x: number, y: number) => void } }).position;
   tpos.set(padX, padY);
+  // Plan-09b Task 3 — accepted-status checkmark badge. A small green
+  // ✓ glyph drawn just to the right of the label bg with a hand-rolled
+  // two-segment polyline (no icon library on the canvas). The check
+  // graphics is a child of the label container so it auto-translates
+  // with the label and is destroyed when the label container is.
+  if (status === "accepted") {
+    let check = entry.check as
+      | InstanceType<typeof GraphicsCtor>
+      | undefined;
+    if (!check) {
+      check = new GraphicsCtor();
+      (entry.container as unknown as AddChildSink).addChild(check as never);
+      entry.check = check;
+    }
+    const cg = check as {
+      clear: () => void;
+      moveTo: (x: number, y: number) => void;
+      lineTo: (x: number, y: number) => void;
+      stroke: (opts: { color: number; width: number; alpha?: number }) => void;
+      visible?: boolean;
+    };
+    cg.clear();
+    // ~12px glyph. Two segments: short down-right then long up-right.
+    const cx0 = tw + 4; // 4px gap to the right of the bg
+    const cy0 = (th - 12) / 2; // vertically centered
+    cg.moveTo(cx0 + 1, cy0 + 6);
+    cg.lineTo(cx0 + 5, cy0 + 10);
+    cg.lineTo(cx0 + 11, cy0 + 2);
+    cg.stroke({ color: 0x22c55e, width: 2, alpha: 1 });
+    if (typeof cg.visible === "boolean") cg.visible = true;
+  } else if (entry.check) {
+    // Status changed away from accepted — hide the badge but keep the
+    // node parked on the container for cheap toggling.
+    const cg = entry.check as { clear?: () => void; visible?: boolean };
+    try {
+      cg.clear?.();
+    } catch {
+      /* ignore */
+    }
+    if (typeof cg.visible === "boolean") cg.visible = false;
+  }
 }
 
 /**
