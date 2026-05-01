@@ -10,6 +10,7 @@ import {
   Copy,
   Image as ImageIcon,
   MoreVertical,
+  RefreshCw,
   Settings,
   Sparkles,
   Trash2,
@@ -19,6 +20,8 @@ import { projectsApi } from "@/api/projects";
 import { classesApi } from "@/api/classes";
 import { tasksApi, type Task } from "@/api/tasks";
 import { statsApi, type ProjectStats } from "@/api/stats";
+import { weightsApi } from "@/api/phase2";
+import { RetrainDialog } from "@/components/annotation/RetrainDialog";
 import { Badge } from "@/components/ui/Badge";
 import {
   Dialog,
@@ -292,12 +295,15 @@ function TaskRowMenu({
   pending,
   onDuplicate,
   onEditClasses,
+  onRetrain,
   onDelete,
 }: {
   task: Task;
   pending: boolean;
   onDuplicate: () => void;
   onEditClasses: () => void;
+  // v3.4+ Phase 5 Task 6 -- Retrain YOLO on this task. Opens RetrainDialog.
+  onRetrain?: () => void;
   // v3.8 -- Delete the task. Caller handles the confirm + mutation.
   onDelete?: () => void;
 }) {
@@ -353,6 +359,20 @@ function TaskRowMenu({
             <Tag className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
             <span className="flex-1">Edit classes…</span>
           </DropdownMenu.Item>
+          {onRetrain && (
+            <DropdownMenu.Item
+              data-testid={`project-detail-task-retrain-${task.id}`}
+              onSelect={() => onRetrain()}
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
+                "cursor-pointer outline-none text-[color:var(--text-primary)]",
+                "data-[highlighted]:bg-[var(--bg-hover)]",
+              )}
+            >
+              <RefreshCw className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+              <span className="flex-1">Retrain YOLO on this task</span>
+            </DropdownMenu.Item>
+          )}
           {onDelete && (
             <DropdownMenu.Item
               data-testid={`project-detail-task-delete-${task.id}`}
@@ -721,6 +741,13 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     useState<boolean>(false);
   // v3.1 Issue 3 — per-task class subset dialog target.
   const [classesTarget, setClassesTarget] = useState<Task | null>(null);
+  // v3.4+ Phase 5 Task 6 — task targeted by the retrain dialog. Null
+  // closes the dialog. The dialog drives its own job-id polling.
+  const [retrainTarget, setRetrainTarget] = useState<Task | null>(null);
+  const projectWeightsQ = useQuery({
+    queryKey: ["project-weights", projectId],
+    queryFn: () => weightsApi.listForProject(projectId),
+  });
 
   // v3.2 Issue 4 — load the source task's effective classes (for
   // pre-fill) plus the project's full class list (for the picker grid).
@@ -983,6 +1010,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                         setDuplicateDraft(`${t.name} (copy)`);
                       }}
                       onEditClasses={() => setClassesTarget(t)}
+                      onRetrain={() => setRetrainTarget(t)}
                       onDelete={async () => {
                         const ok = await confirm({
                           title: "Delete task?",
@@ -1221,6 +1249,23 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
         task={classesTarget}
         open={classesTarget !== null}
         onClose={() => setClassesTarget(null)}
+      />
+
+      {/* v3.4+ Phase 5 Task 6 — Retrain YOLO dialog. */}
+      <RetrainDialog
+        open={retrainTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) setRetrainTarget(null);
+        }}
+        task={retrainTarget}
+        availableWeights={projectWeightsQ.data ?? []}
+        onSuccess={() => {
+          qc.invalidateQueries({ queryKey: ["project-weights", projectId] });
+          showToast("New weight created. Pick it from the weight picker.", {
+            variant: "success",
+            duration: 4000,
+          });
+        }}
       />
     </div>
   );
