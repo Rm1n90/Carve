@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from carve_api.weights.models import WeightTaskKind
 
@@ -21,6 +21,10 @@ class WeightOut(BaseModel):
     # against ``weight_project_defaults``. ``False`` when there's no
     # project context (e.g. workspace listing).
     is_default: bool = False
+    # Plan-09b Task 5 — opaque audit blob. Populated for retrain-trained
+    # weights with the trainer's metrics + hyperparameters; ``None`` for
+    # uploaded weights.
+    metadata: dict | None = None
 
     @classmethod
     def from_orm_weight(cls, w, *, is_default: bool = False) -> "WeightOut":
@@ -35,7 +39,27 @@ class WeightOut(BaseModel):
             created_by=str(w.created_by) if w.created_by else None,
             created_at=w.created_at,
             is_default=is_default,
+            # The ORM attribute is ``metadata_`` (trailing underscore) to
+            # avoid clashing with SQLAlchemy's reserved ``Base.metadata``;
+            # we expose it as ``metadata`` on the response.
+            metadata=getattr(w, "metadata_", None),
         )
+
+
+class WeightIn(BaseModel):
+    """Plan-09b Task 5 — request shape for client-driven weight registration.
+
+    ``metadata`` is intentionally **not** part of the writable surface; it
+    is server-derived (today, only the retrain pipeline populates it).
+    ``extra="forbid"`` enforces the rejection so a client passing
+    ``metadata`` gets a 422 instead of having the value silently dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    task_kind: WeightTaskKind
+    class_names: list[str] = []
 
 
 class WeightAssignmentOut(BaseModel):

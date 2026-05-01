@@ -19,11 +19,15 @@ following string fields:
   * ``error_traceback`` last few traceback lines, else empty string
   * ``weight_id``       new Weight row id on success, else empty string
 
-The ``Weight`` model has no JSONB ``metadata`` column today, so the
-``metrics`` returned by the trainer are NOT persisted on the weight row.
-This is intentional: the task spec says "drop the metrics silently and
-document the limitation in code comments" if no metadata column exists.
-The metrics are still surfaced in the job result and logged.
+Plan-09b Task 5 -- the ``Weight.metadata_`` JSONB column is now populated
+on retrain registration with::
+
+    {"retrain": {"task_id": ..., "epochs": ..., "imgsz": ...,
+                 "include_proposed": ..., "metrics": <dict>,
+                 "trained_at": "<utcnow().isoformat()>"}}
+
+The metrics dict is whatever the model service's ``/yolo/train`` returns
+under the ``metrics`` key.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ import uuid
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -280,15 +285,19 @@ def _register_trained_weight(
     descriptor: dict,
     weight_name: str | None,
     class_names: list[str],
+    payload: "RetrainJobPayload | None" = None,
 ) -> "uuid.UUID":
     """Insert a new ``Weight`` row pointing at the model service's already-
     uploaded blob. The model service has already computed the xxh3_128 and
     uploaded to ``weights/<xxh3>/<new_weight_id>.pt`` so we just record
     metadata.
 
-    The ``Weight`` model has no metadata/JSONB column today; the trainer's
-    metrics dict is logged but not persisted. If a metadata column is
-    added later, replace this comment with the real persistence call.
+    Plan-09b Task 5 -- the trainer's metrics dict + the retrain
+    hyperparameters are persisted on ``Weight.metadata_`` so audit /
+    comparison flows can introspect a weight's training context. The
+    ``payload`` kwarg is optional only to keep the function backward-
+    compatible with any direct test caller; production callers
+    (``retrain_job``) always pass it.
     """
     from carve_api.weights.models import Weight, WeightTaskKind
 
@@ -296,6 +305,19 @@ def _register_trained_weight(
     new_weight_external_id = str(descriptor["weight_id"])
     minio_key = f"weights/{xxh}/{new_weight_external_id}.pt"
     name = (weight_name or f"retrain-{task.name}-{new_weight_external_id[:8]}")[:120]
+
+    metadata: dict | None = None
+    if payload is not None:
+        metadata = {
+            "retrain": {
+                "task_id": payload.task_id,
+                "epochs": int(payload.epochs),
+                "imgsz": int(payload.imgsz),
+                "include_proposed": bool(payload.include_proposed),
+                "metrics": dict(descriptor.get("metrics") or {}),
+                "trained_at": datetime.now(timezone.utc).isoformat(),
+            }
+        }
 
     w = Weight(
         id=uuid.uuid4(),
@@ -306,6 +328,7 @@ def _register_trained_weight(
         size_bytes=int(descriptor.get("size_bytes", 0) or 0),
         class_names=list(class_names or []),
         created_by=actor_id,
+        metadata_=metadata,
     )
     session.add(w)
     session.flush()
@@ -459,6 +482,7 @@ def retrain_job(
             descriptor=descriptor,
             weight_name=payload.weight_name,
             class_names=class_names,
+            payload=payload,
         )
         session.commit()
     except Exception as exc:  # noqa: BLE001
