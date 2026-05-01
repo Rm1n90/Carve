@@ -14,7 +14,7 @@
  *   - On failure, revert the local flip and toast the error.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Loader2, X } from "lucide-react";
+import { Check, Eye, EyeOff, Loader2, X } from "lucide-react";
 
 import {
   annotationsApi,
@@ -29,6 +29,7 @@ import {
   type ReviewStatePatch,
   type ReviewStatus,
 } from "@/state/annotations";
+import { useReviewCompare } from "@/state/reviewCompare";
 import { useOptionalConfirm } from "@/components/ui/ConfirmDialog";
 import type { ClassRow } from "@/api/classes";
 
@@ -92,6 +93,11 @@ export function ReviewPanel({
   const selectedIds = useAnnotations((s) => s.selectedIds);
   const setReviewState = useAnnotations((s) => s.setReviewState);
   const revertReviewState = useAnnotations((s) => s.revertReviewState);
+  // Plan-09 Phase 5 Task 4 — prev-revision compare bridge.
+  const pinnedCompare = useReviewCompare((s) => s.pinned);
+  const setHoverCompare = useReviewCompare((s) => s.setHover);
+  const togglePinCompare = useReviewCompare((s) => s.togglePin);
+  const unpinCompare = useReviewCompare((s) => s.unpin);
   const confirm = useOptionalConfirm();
 
   const [filter, setFilter] = useState<ReviewFilter>("proposed");
@@ -232,6 +238,16 @@ export function ReviewPanel({
     }
   }
 
+  // Plan-09 Phase 5 Task 4 — drop pinned compare entries whose row is
+  // no longer in the store (annotation deleted). Hovered entries are
+  // always cleared by the row's mouse-leave; pinned entries persist
+  // across selection changes so we have to GC them here.
+  useEffect(() => {
+    for (const id of pinnedCompare) {
+      if (!byId[id]) unpinCompare(id);
+    }
+  }, [byId, pinnedCompare, unpinCompare]);
+
   // Keyboard: A/R when a SINGLE annotation is selected and the user
   // isn't typing into a text input.
   useEffect(() => {
@@ -353,11 +369,19 @@ export function ReviewPanel({
               d.reviewedById && resolveReviewerName
                 ? resolveReviewerName(d.reviewedById)
                 : null;
+            const hasPrev = Boolean(d.prevGeometry);
+            const isPinned = pinnedCompare.has(d.tempId);
             return (
               <li
                 key={d.tempId}
                 data-testid={`review-row-${d.tempId}`}
                 data-status={status}
+                onMouseEnter={
+                  hasPrev ? () => setHoverCompare(d.tempId, true) : undefined
+                }
+                onMouseLeave={
+                  hasPrev ? () => setHoverCompare(d.tempId, false) : undefined
+                }
                 className={cn(
                   "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-sm)]",
                   "border border-[var(--glass-border)] bg-[var(--bg-subtle)]/50",
@@ -390,6 +414,33 @@ export function ReviewPanel({
                   </span>
                 )}
                 <div className="flex items-center gap-0.5 shrink-0">
+                  {hasPrev && (
+                    <button
+                      type="button"
+                      title={isPinned ? "Hide prev" : "Show prev"}
+                      aria-label={
+                        isPinned
+                          ? `Hide previous geometry of ${cls?.name ?? d.classId}`
+                          : `Show previous geometry of ${cls?.name ?? d.classId}`
+                      }
+                      aria-pressed={isPinned}
+                      data-testid={`review-row-compare-${d.tempId}`}
+                      onClick={() => togglePinCompare(d.tempId)}
+                      className={cn(
+                        "inline-flex items-center justify-center h-6 w-6 rounded-full",
+                        "transition-colors",
+                        isPinned
+                          ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
+                          : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+                      )}
+                    >
+                      {isPinned ? (
+                        <EyeOff className="h-3.5 w-3.5" />
+                      ) : (
+                        <Eye className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  )}
                   <button
                     type="button"
                     title="Accept"

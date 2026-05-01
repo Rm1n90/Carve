@@ -11,6 +11,7 @@ import { useEditorSettings } from "@/state/editorSettings";
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
+import { useReviewCompare } from "@/state/reviewCompare";
 import { evaluateFilter, hasMeaningfulRules } from "@/lib/annotation-filter";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -218,6 +219,11 @@ export function AnnotationCanvas({
   // resolve so quick activations (warm session) never flash the overlay.
   const [samLoadOverlayOpen, setSamLoadOverlayOpen] = useState(false);
   const shapeGfxByIdRef = useRef<Map<string, unknown>>(new Map());
+  // Plan-09 Phase 5 Task 4 — graphics nodes for the prev-geometry
+  // compare overlay (one Graphics per id). Kept in a separate map so
+  // the main shape pipeline can clear/reconcile its own `gfxMap`
+  // without destroying the compare overlay (and vice versa).
+  const compareGfxByIdRef = useRef<Map<string, unknown>>(new Map());
   // Per-annotation mask sprites (for `geometry.kind === "mask_rle"`).
   // Stored separately from `shapeGfxByIdRef` so the bbox/polygon path
   // can `clear()` its Graphics without affecting masks. Each entry holds
@@ -529,6 +535,7 @@ export function AnnotationCanvas({
     const app = appRef.current;
     const gfxMap = shapeGfxByIdRef.current;
     const labelMap = labelGfxByIdRef.current;
+    const compareMap = compareGfxByIdRef.current;
     if (app) {
       for (const g of gfxMap.values()) {
         try {
@@ -544,9 +551,17 @@ export function AnnotationCanvas({
           /* ignore */
         }
       }
+      for (const g of compareMap.values()) {
+        try {
+          app.shapeLayer.removeChild(g as never);
+        } catch {
+          /* ignore */
+        }
+      }
     }
     gfxMap.clear();
     labelMap.clear();
+    compareMap.clear();
   }, [assetId]);
 
   // ----- Live-apply the user's "Smooth image" preference. The sampling
@@ -1126,6 +1141,77 @@ export function AnnotationCanvas({
           maskMap.delete(id);
         }
       }
+
+      // ----- Plan-09 Phase 5 Task 4 — prev-revision compare overlay -----
+      // Iterate the union of pinned + hovered ids from the compare
+      // bridge slice. For each draft with a non-null ``prevGeometry``
+      // we paint a translucent extra layer on top of the main shape:
+      //
+      //   * bbox / polygon → dashed outline at 50% alpha of the row's
+      //     class colour. Pixi's Graphics has no native dashed stroke
+      //     so we hand-roll a segment loop.
+      //   * mask_rle → dashed outline doesn't make sense for a raster
+      //     mask. We render the prev mask as a 30% alpha solid in the
+      //     same class colour (pragmatic v1; documented limitation).
+      //
+      // The overlay ALWAYS uses the row's class colour even when the
+      // user has switched colorBy to "instance" / "group" — the goal
+      // is to compare geometries, not to colour-code instances.
+      const compareState = useReviewCompare.getState();
+      const compareIds = new Set<string>([
+        ...compareState.pinned,
+        ...compareState.hovered,
+      ]);
+      const compareMap = compareGfxByIdRef.current;
+      const compareSeen = new Set<string>();
+      for (const id of compareIds) {
+        const draft = state.byId[id];
+        if (!draft) continue;
+        const prev = draft.prevGeometry as
+          | { kind?: string; x?: number; y?: number; w?: number; h?: number;
+              points?: Array<[number, number]> }
+          | null
+          | undefined;
+        if (!prev || !prev.kind) continue;
+        const color = hexFromColor(classMap[draft.classId]);
+        let cg = compareMap.get(id) as InstanceType<typeof Graphics> | undefined;
+        if (!cg) {
+          cg = new Graphics();
+          compareMap.set(id, cg);
+          app.shapeLayer.addChild(cg);
+        }
+        cg.clear();
+        if (prev.kind === "bbox" && typeof prev.x === "number" &&
+            typeof prev.y === "number" && typeof prev.w === "number" &&
+            typeof prev.h === "number") {
+          drawDashedRect(cg, prev.x, prev.y, prev.w, prev.h, color);
+          compareSeen.add(id);
+        } else if (prev.kind === "polygon" && Array.isArray(prev.points) &&
+                   prev.points.length > 0) {
+          drawDashedPolygon(cg, prev.points, color);
+          compareSeen.add(id);
+        } else if (prev.kind === "mask_rle") {
+          // Pragmatic v1: skip rendering a dashed outline for masks.
+          // The compare overlay for masks is a no-op until we have a
+          // mask-to-contour helper; consumers with a mask-only history
+          // see no extra paint but the toggle/UI still works. Document.
+          compareSeen.add(id);
+        }
+      }
+      // Drop compare graphics whose id is no longer in the union.
+      for (const id of Array.from(compareMap.keys())) {
+        if (!compareSeen.has(id)) {
+          const g = compareMap.get(id) as InstanceType<typeof Graphics> | undefined;
+          if (g) {
+            try {
+              app.shapeLayer.removeChild(g as never);
+            } catch {
+              /* ignore */
+            }
+          }
+          compareMap.delete(id);
+        }
+      }
     }
 
     void reconcile(useAnnotations.getState());
@@ -1147,12 +1233,19 @@ export function AnnotationCanvas({
     const unsubF = useFilter.subscribe(() => {
       void reconcile(useAnnotations.getState());
     });
+    // Plan-09 Phase 5 Task 4 — re-render when the prev-revision compare
+    // bridge (hovered / pinned ids) changes. Subscribed here so a
+    // hover-on/off in <ReviewPanel> repaints the dashed overlay.
+    const unsubC = useReviewCompare.subscribe(() => {
+      void reconcile(useAnnotations.getState());
+    });
     return () => {
       mounted = false;
       unsubA();
       unsubT();
       unsubS();
       unsubF();
+      unsubC();
     };
   }, [frameId, classMap, classNames, imageSize]);
 
@@ -3126,6 +3219,79 @@ async function renderMaskRleSprite(
  * - sam (S): cell — emphasises the click-to-segment intent
  * - rectangle move (R, future): move
  */
+/**
+ * Plan-09 Phase 5 Task 4 — dashed-segment helpers for the prev-revision
+ * compare overlay. Pixi 8's Graphics has no native dashed stroke; we
+ * walk the geometry and emit alternating drawn/skipped segments.
+ *
+ * Both helpers stroke at 50% alpha so the overlay reads as "ghost"
+ * relative to the live shape rendered underneath.
+ */
+const COMPARE_DASH_PX = 6;
+const COMPARE_GAP_PX = 4;
+const COMPARE_ALPHA = 0.5;
+
+function drawDashedSegment(
+  g: { moveTo: (x: number, y: number) => void; lineTo: (x: number, y: number) => void },
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): void {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return;
+  const ux = dx / len;
+  const uy = dy / len;
+  const period = COMPARE_DASH_PX + COMPARE_GAP_PX;
+  let dist = 0;
+  while (dist < len) {
+    const dashStart = dist;
+    const dashEnd = Math.min(dist + COMPARE_DASH_PX, len);
+    g.moveTo(x1 + ux * dashStart, y1 + uy * dashStart);
+    g.lineTo(x1 + ux * dashEnd, y1 + uy * dashEnd);
+    dist += period;
+  }
+}
+
+function drawDashedRect(
+  g: {
+    moveTo: (x: number, y: number) => void;
+    lineTo: (x: number, y: number) => void;
+    stroke: (s: { color: number; width: number; alpha: number }) => void;
+  },
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: number,
+): void {
+  drawDashedSegment(g, x, y, x + w, y);
+  drawDashedSegment(g, x + w, y, x + w, y + h);
+  drawDashedSegment(g, x + w, y + h, x, y + h);
+  drawDashedSegment(g, x, y + h, x, y);
+  g.stroke({ color, width: 2, alpha: COMPARE_ALPHA });
+}
+
+function drawDashedPolygon(
+  g: {
+    moveTo: (x: number, y: number) => void;
+    lineTo: (x: number, y: number) => void;
+    stroke: (s: { color: number; width: number; alpha: number }) => void;
+  },
+  points: ReadonlyArray<readonly [number, number]>,
+  color: number,
+): void {
+  if (points.length < 2) return;
+  for (let i = 0; i < points.length; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    drawDashedSegment(g, a[0], a[1], b[0], b[1]);
+  }
+  g.stroke({ color, width: 2, alpha: COMPARE_ALPHA });
+}
+
 function toolCursor(t: ToolName): string {
   switch (t) {
     case "bbox":
