@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import * as Tabs from "@radix-ui/react-tabs";
@@ -33,7 +33,11 @@ import {
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { ClassesEditor } from "./ClassesEditor";
 import { NewTaskDialog } from "./NewTaskDialog";
-import { StatsPanel } from "./StatsPanel";
+// StatsPanel is dynamically imported so the recharts chunk lands in
+// its own bundle and is fetched only when the stats UI is rendered.
+const StatsPanel = lazy(() =>
+  import("./StatsPanel").then((m) => ({ default: m.StatsPanel })),
+);
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
 import { Tag } from "lucide-react";
@@ -1049,7 +1053,9 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
           className="focus-visible:outline-none"
           data-testid="project-tab-content-stats"
         >
-          <StatsPanel projectId={projectId} />
+          <Suspense fallback={null}>
+            <StatsPanel projectId={projectId} />
+          </Suspense>
         </Tabs.Content>
 
         {/* ---- Settings tab ---- */}
