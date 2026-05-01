@@ -32,6 +32,7 @@ import {
   hitTestEdge,
   hitTestVertex,
   insertVertex,
+  shouldShowEdgeGhost,
 } from "@/canvas/polygonEdit";
 import { showToast } from "@/lib/toast";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
@@ -226,6 +227,10 @@ export function AnnotationCanvas({
   // the main shape pipeline can clear/reconcile its own `gfxMap`
   // without destroying the compare overlay (and vice versa).
   const compareGfxByIdRef = useRef<Map<string, unknown>>(new Map());
+  // Plan-09b Task 2 — single Graphics instance for the alt+hover edge-
+  // insert ghost dot. Lazily created on first paint so pure-pixi mocks
+  // that don't expose Graphics (e.g. v3.2 canvas-pan) don't crash.
+  const ghostEdgeGfxRef = useRef<unknown | null>(null);
   // Per-annotation mask sprites (for `geometry.kind === "mask_rle"`).
   // Stored separately from `shapeGfxByIdRef` so the bbox/polygon path
   // can `clear()` its Graphics without affecting masks. Each entry holds
@@ -2215,6 +2220,73 @@ export function AnnotationCanvas({
       }
     }
 
+    /**
+     * Plan-09b Task 2 — paint or clear the alt+hover edge-insert ghost.
+     * The ghost graphics is lazily created on first paint and parked on
+     * the overlay layer. ``hit`` is null when the cursor is not within
+     * INSERT_TOLERANCE_PX of any polygon edge (or when alt is released);
+     * we ``clear()`` in that case so the dot disappears without
+     * destroying the node.
+     */
+    async function paintEdgeGhost(
+      hit: { projected: { x: number; y: number } } | null,
+      color: number,
+    ): Promise<void> {
+      const app = appRef.current;
+      if (!app) return;
+      let Graphics: typeof import("pixi.js").Graphics | undefined;
+      try {
+        const pixi = await import("pixi.js");
+        Graphics = pixi.Graphics;
+      } catch {
+        return;
+      }
+      if (!Graphics) return;
+      let g = ghostEdgeGfxRef.current as
+        | InstanceType<typeof Graphics>
+        | null;
+      if (!g) {
+        g = new Graphics();
+        ghostEdgeGfxRef.current = g;
+        try {
+          (app.overlayLayer as { addChild: (c: never) => unknown }).addChild(
+            g as never,
+          );
+        } catch {
+          /* ignore — overlay may be unavailable in test mocks */
+        }
+      }
+      try {
+        (g as { clear?: () => void }).clear?.();
+      } catch {
+        /* ignore */
+      }
+      if (!hit) return;
+      try {
+        const gg = g as {
+          circle?: (x: number, y: number, r: number) => unknown;
+          fill?: (opts: { color: number; alpha: number }) => unknown;
+        };
+        gg.circle?.(hit.projected.x, hit.projected.y, 4);
+        gg.fill?.({ color, alpha: 0.5 });
+      } catch {
+        /* ignore — Graphics ops are best-effort under test mocks */
+      }
+    }
+
+    function clearEdgeGhost(): void {
+      const g = ghostEdgeGfxRef.current as
+        | { clear?: () => void }
+        | null;
+      if (g) {
+        try {
+          g.clear?.();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
     function onMove(e: PointerEvent) {
       // v3.2 Issue 2: pan-move branch. While a pan drag is in flight,
       // delta is computed against the captured origin (not the previous
@@ -2324,8 +2396,32 @@ export function AnnotationCanvas({
           if (idx !== null) {
             setDragCursor("grab");
             useTool.getState().setHoveredAnnotationId(null);
+            // Vertex hover takes priority over the edge-ghost — clear it
+            // so we don't show a ghost dot stacked on a real handle.
+            clearEdgeGhost();
             return;
           }
+        }
+        // Plan-09b Task 2 — alt+hover edge-insert ghost dot. Only when
+        // cursor tool is active, alt is held, a polygon is selected, and
+        // the cursor is within tolerance of an edge. Pure predicate plus
+        // a hitTestEdge call; cleanup-on-clear via clear().
+        const edgeHit = polySel ? hitTestEdge(polySel.poly, p) : null;
+        if (
+          shouldShowEdgeGhost({
+            tool: "cursor",
+            alt: e.altKey === true,
+            polygonSelected: !!polySel,
+            hit: edgeHit,
+          })
+        ) {
+          const cls = polySel
+            ? useAnnotations.getState().byId[polySel.id]?.classId
+            : null;
+          const color = hexFromColor(cls ? classMap[cls] : undefined);
+          void paintEdgeGhost(edgeHit, color);
+        } else {
+          clearEdgeGhost();
         }
         if (dragCursor !== null) setDragCursor(null);
         const hit = hitTest(p);
@@ -2584,20 +2680,47 @@ export function AnnotationCanvas({
       }
     }
 
+    // Plan-09b Task 2 — clear the edge-insert ghost when alt is released
+    // (no pointermove fires on key change alone) and when the pointer
+    // leaves the canvas host.
+    function onAltKeyUp(e: KeyboardEvent): void {
+      if (e.key === "Alt" || e.altKey === false) clearEdgeGhost();
+    }
+    function onPointerLeaveHost(): void {
+      clearEdgeGhost();
+    }
+    // Plan-09b Task 2 — selection change away from a polygon clears
+    // the ghost; without this it would linger until the next move.
+    const unsubSel = useAnnotations.subscribe((s, prev) => {
+      if (s.selectedIds !== prev.selectedIds) {
+        const stillPoly = s.selectedIds.some((id) => {
+          const d = s.byId[id];
+          return d && d.geometry.kind === "polygon";
+        });
+        if (!stillPoly) clearEdgeGhost();
+      }
+    });
+
     host.addEventListener("pointerdown", onDown);
     host.addEventListener("pointermove", onMove);
     host.addEventListener("pointerup", onUp);
+    host.addEventListener("pointerleave", onPointerLeaveHost);
     host.addEventListener("contextmenu", onContextMenu);
     // Capture-phase keydown so the bbox nudge runs BEFORE the page-level
     // ArrowLeft/Right asset-navigation handler — the canvas calls
     // stopPropagation() when it nudges, preventing accidental nav.
     window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onAltKeyUp);
     return () => {
       host.removeEventListener("pointerdown", onDown);
       host.removeEventListener("pointermove", onMove);
       host.removeEventListener("pointerup", onUp);
+      host.removeEventListener("pointerleave", onPointerLeaveHost);
       host.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onAltKeyUp);
+      clearEdgeGhost();
+      unsubSel();
       // Reset any in-flight polygon when the tool changes / the asset
       // unmounts so the preview doesn't linger.
       polygon.cancel();
