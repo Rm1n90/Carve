@@ -36,8 +36,15 @@ export interface SamPromptResult {
 }
 
 export const samApi = {
-  encode: async (assetId: string): Promise<SamEncodeResult> =>
-    (await api.post<SamEncodeResult>(`/assets/${assetId}/sam/encode`)).data,
+  encode: async (
+    assetId: string,
+    frameId?: string | null,
+  ): Promise<SamEncodeResult> =>
+    (
+      await api.post<SamEncodeResult>(
+        `/assets/${assetId}/sam/encode${frameId ? `?frame_id=${frameId}` : ""}`,
+      )
+    ).data,
   decode: async (
     assetId: string,
     imageHash: string,
@@ -75,11 +82,12 @@ export const samApi = {
   textPrompt: async (
     assetId: string,
     text: string,
+    frameId?: string | null,
   ): Promise<SamPromptResult[]> =>
     (
       await api.post<SamPromptResult[]>(
         `/assets/${assetId}/sam/text-prompt`,
-        { text },
+        frameId ? { text, frame_id: frameId } : { text },
       )
     ).data,
   /**
@@ -170,12 +178,14 @@ export const samApi = {
     boxes: [number, number, number, number][],
     boxLabels: number[],
     text?: string,
+    frameId?: string | null,
   ): Promise<SamPromptResult[]> => {
     const body: Record<string, unknown> = {
       boxes,
       box_labels: boxLabels,
     };
     if (text !== undefined) body.text = text;
+    if (frameId) body.frame_id = frameId;
     return (
       await api.post<SamPromptResult[]>(
         `/assets/${assetId}/sam/box-prompt`,

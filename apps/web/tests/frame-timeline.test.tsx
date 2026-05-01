@@ -16,9 +16,12 @@ describe("FrameTimeline", () => {
     render(
       <FrameTimeline totalFrames={4} currentIdx={0} onChange={onChange} />,
     );
+    // v3.8 Phase 4-video step F3 -- timeline now also has prev/next
+    // nav buttons in addition to the per-frame stripes.
     const buttons = screen.getAllByRole("button");
-    expect(buttons).toHaveLength(4);
-    fireEvent.click(buttons[2]);
+    expect(buttons).toHaveLength(4 + 2);
+    // The first two are the prev/next nav; frame buttons start at index 2.
+    fireEvent.click(buttons[2 + 2]);
     expect(onChange).toHaveBeenCalledWith(2);
   });
 

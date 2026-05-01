@@ -25,6 +25,9 @@ gpu = [
   "opencv-python-headless==4.10.0.84",
   "pycocotools==2.0.8",
   "ffmpeg-python==0.2.0",
+  # v3.8 Phase 4-video step F6 -- transformers.video_utils.load_video
+  # uses pyav by default; required for SAM 2/3 video tracker init_state.
+  "av==13.1.0",
   "transformers==5.0.0",
 ]
 

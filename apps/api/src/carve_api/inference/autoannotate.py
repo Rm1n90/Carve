@@ -291,9 +291,36 @@ def auto_annotate_asset(
     )
 
 
-def fetch_asset_bytes(asset: Asset) -> bytes:
-    """Read the asset's original bytes from MinIO."""
+def fetch_asset_bytes(asset: Asset, frame_id: uuid.UUID | None = None) -> bytes:
+    """Read asset bytes from MinIO.
+
+    When ``frame_id`` is None, reads the original file (image asset
+    direct path; legacy video path before per-frame extraction).
+
+    v3.8 Phase 4-video step F4 -- when ``frame_id`` is provided, looks
+    up the corresponding ``Frame`` row to find its ``idx`` and reads
+    ``assets/{hash}/frames/{idx:06d}.jpg`` instead. This is the path
+    used for SAM image-prompt operations (encode/decode, text-prompt,
+    box-prompt) on video frames so the model service receives an
+    image, not a multi-MB mp4.
+    """
     storage = MinioClient.from_settings()
+    if frame_id is not None:
+        from carve_api.assets.models import Frame
+        from carve_api.db import get_session_factory
+
+        SessionLocal = get_session_factory()
+        with SessionLocal() as s:
+            f = s.get(Frame, frame_id)
+            if f is None or f.asset_id != asset.id:
+                raise ValueError(
+                    f"frame_id {frame_id} does not belong to asset {asset.id}"
+                )
+            idx = int(f.idx)
+        body = storage.get_object(
+            f"assets/{asset.xxh3_128}/frames/{idx:06d}.jpg"
+        ).read()
+        return body
     ext = asset.original_name.rsplit(".", 1)[-1] if "." in asset.original_name else "bin"
     body = storage.get_object(f"assets/{asset.xxh3_128}/original.{ext}").read()
     return body

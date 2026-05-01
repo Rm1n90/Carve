@@ -11,6 +11,9 @@ export interface TrackObjectStep {
   counts: string;
   size: [number, number];
   score: number;
+  // v3.8 Phase 4.1 -- Douglas-Peucker simplified outer contour. Empty
+  // when the mask had no usable contour; client falls back to mask_rle.
+  polygon: [number, number][];
 }
 
 /** A frame's masks for all tracked objects. */

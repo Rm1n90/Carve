@@ -72,6 +72,10 @@ class TrackerSession:
     inference_state: Any
     last_frame_idx: int = 0
     propagation_iter: Any = None  # populated lazily on first step()
+    # v3.8 Phase 4-video step F6 -- temp dir of downloaded frame JPEGs
+    # for sessions started from a frame_urls list (post-extract videos
+    # whose original mp4 has been deleted). release_session() rmtrees it.
+    tmpdir: str | None = None
 
 
 _SESSIONS: dict[str, TrackerSession] = {}
@@ -166,11 +170,18 @@ def _get_tracker() -> TrackerProtocol:
     return _default_factory()
 
 
-def _start_empty_session(video_url: str) -> TrackerSession:
+def _start_empty_session(
+    video_url: str, tmpdir: str | None = None
+) -> TrackerSession:
     """Create a tracker session with no objects yet.
 
     Used directly by the multi-object code path (and indirectly by
     ``start_session`` when called without prompts).
+
+    v3.8 Phase 4-video step F6 — ``tmpdir`` is recorded on the session
+    so ``release_session`` can rmtree it. Caller is responsible for
+    populating the dir before calling this; ``video_url`` may point at
+    that dir or at a single video file.
     """
     tracker = _get_tracker()
     inference_state = tracker.init_state(video_url)
@@ -178,6 +189,7 @@ def _start_empty_session(video_url: str) -> TrackerSession:
         session_id=str(uuid.uuid4()),
         tracker=tracker,
         inference_state=inference_state,
+        tmpdir=tmpdir,
     )
     with _SESSIONS_LOCK:
         _SESSIONS[session.session_id] = session
@@ -191,6 +203,7 @@ def start_session(
     frame_idx: int = 0,
     points: list[Any] | None = None,
     labels: list[Any] | None = None,
+    tmpdir: str | None = None,
 ) -> TrackerSession:
     """Initialize a tracker session.
 
@@ -206,7 +219,7 @@ def start_session(
     (``list[str]``) — the underlying ``TrackerProtocol`` implementation
     interprets them according to which adapter is loaded.
     """
-    session = _start_empty_session(video_url)
+    session = _start_empty_session(video_url, tmpdir=tmpdir)
     if points:
         with autocast_ctx():
             # Prefer the new per-object entrypoint (always available on
@@ -263,9 +276,18 @@ def get_session(session_id: str) -> TrackerSession | None:
 
 def release_session(session_id: str) -> bool:
     with _SESSIONS_LOCK:
-        existed = _SESSIONS.pop(session_id, None) is not None
+        sess = _SESSIONS.pop(session_id, None)
         _SESSION_LAST_USED.pop(session_id, None)
-        return existed
+    # v3.8 Phase 4-video step F6 — rmtree the temp frames dir if the
+    # session was started from a frame_urls list. Outside the lock so a
+    # slow rmtree doesn't block other sessions.
+    if sess is not None and sess.tmpdir:
+        try:
+            import shutil
+            shutil.rmtree(sess.tmpdir, ignore_errors=True)
+        except Exception:  # noqa: BLE001
+            pass
+    return sess is not None
 
 
 def reset_for_test() -> None:

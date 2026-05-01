@@ -3,6 +3,8 @@ import { useDropzone } from "react-dropzone";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Upload, FileImage } from "lucide-react";
 import { assetsApi } from "@/api/assets";
+import { FrameExtractDialog } from "@/components/annotation/FrameExtractDialog";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -49,17 +51,26 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
   // succeeds or the file is given up on after MAX_RETRIES.
   const [retryNotice, setRetryNotice] = useState<string | null>(null);
 
+  // v3.8 Phase 4-video step E — track uploaded video asset ids so the
+  // post-upload dialog can offer a per-video frame-extraction strategy.
+  const [pendingVideoIds, setPendingVideoIds] = useState<string[]>([]);
+  const [extractDialogOpen, setExtractDialogOpen] = useState(false);
+
   const uploadOne = async (file: File): Promise<void> => {
-    const send = () =>
-      file.name.toLowerCase().endsWith(".zip")
-        ? assetsApi.uploadZip(taskId, file)
-        : assetsApi.upload(taskId, file);
+    const isZip = file.name.toLowerCase().endsWith(".zip");
+    const isVideo = /\.(mp4|webm|mov)$/i.test(file.name);
 
     let attempt = 0;
-    // Loop bound: initial attempt + up to MAX_RETRIES retries.
     while (true) {
       try {
-        await send();
+        if (isZip) {
+          await assetsApi.uploadZip(taskId, file);
+        } else {
+          const asset = await assetsApi.upload(taskId, file);
+          if (isVideo && asset?.id) {
+            setPendingVideoIds((prev) => [...prev, asset.id]);
+          }
+        }
         setRetryNotice(null);
         return;
       } catch (err: unknown) {
@@ -105,6 +116,15 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
       qc.invalidateQueries({ queryKey: ["task-assets-count", taskId] });
+      // v3.8 Phase 4-video step E — if any videos were uploaded, ask
+      // the user how many frames to extract. Auto extraction kicks in
+      // by default at upload (worker tail in jobs/thumbs.py); the
+      // dialog lets them override before that finishes (or refines
+      // afterwards via the same workflow).
+      setPendingVideoIds((ids) => {
+        if (ids.length > 0) setExtractDialogOpen(true);
+        return ids;
+      });
     },
   });
 
@@ -172,6 +192,37 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
             </li>
           ))}
         </ul>
+      )}
+      {/* v3.8 Phase 4-video step E — post-upload strategy picker for
+          videos. Controlled-open so we trigger it programmatically; on
+          submit, applies the chosen strategy to every uploaded video. */}
+      {pendingVideoIds.length > 0 && (
+        <FrameExtractDialog
+          open={extractDialogOpen}
+          onOpenChange={(o) => {
+            setExtractDialogOpen(o);
+            if (!o) setPendingVideoIds([]);
+          }}
+          onSubmit={async (body) => {
+            try {
+              await Promise.all(
+                pendingVideoIds.map((id) =>
+                  assetsApi.reextractFrames(id, body),
+                ),
+              );
+              showToast(
+                `Extracting frames for ${pendingVideoIds.length} video${pendingVideoIds.length === 1 ? "" : "s"}…`,
+                { variant: "success" },
+              );
+            } catch {
+              showToast("Failed to start frame extraction.", {
+                variant: "error",
+              });
+            }
+            setPendingVideoIds([]);
+            setExtractDialogOpen(false);
+          }}
+        />
       )}
     </section>
   );

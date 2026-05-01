@@ -6,13 +6,17 @@ POST /sam-track/{session}/step?frames=N — propagate N frames; per-object masks
 DELETE /sam-track/{session}           — release a session
 """
 
+import logging
 from typing import Any
 
 import numpy as np
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger(__name__)
+
 from carve_model.sam.codec import encode_mask_rle
+from carve_model.sam.polygonize import mask_to_polygon
 from carve_model.sam.predictor import autocast_ctx, get_sam_model
 from carve_model.sam.sam3_adapter import ConceptModeError
 from carve_model.sam.tracker import (
@@ -28,7 +32,13 @@ router = APIRouter(prefix="/sam-track", tags=["sam-track"])
 
 
 class StartIn(BaseModel):
-    video_url: str
+    # v3.8 Phase 4-video step F6 -- ``video_url`` is now optional. When
+    # ``frame_urls`` is non-empty, the router downloads each URL to a
+    # temp dir and uses that as the tracker's init_state path. This is
+    # how post-extract video assets (whose mp4 has been deleted) get
+    # tracked: the API supplies the per-frame JPEG URLs.
+    video_url: str = ""
+    frame_urls: list[str] = Field(default_factory=list)
     frame_idx: int = Field(default=0, ge=0)
     # ``points``/``labels`` are required for the SAM 2 click-based tracker
     # but unused for SAM 3 (concept tracking via ``text``). Both default to
@@ -68,6 +78,11 @@ class StepObjectEntry(BaseModel):
     counts: str
     size: list[int]
     score: float
+    # v3.8 Phase 4.1 — Douglas-Peucker simplified outer contour so the
+    # client commits editable polygon annotations (matches the Phase 1
+    # commit contract). Empty when the mask had no usable contour;
+    # client falls back to ``counts`` (mask_rle) in that case.
+    polygon: list[list[float]] = []
 
 
 class StepFrameEntry(BaseModel):
@@ -81,12 +96,83 @@ class StepOut(BaseModel):
 
 @router.post("/start", response_model=StartOut)
 def start(payload: StartIn) -> StartOut:
-    # Reject non-http(s) schemes first (block file:// / ftp:// SSRF-style abuse).
+    # v3.8 Phase 4-video step F6 -- prefer the per-frame URL list when
+    # provided. Download each to a temp dir; the tracker's init_state
+    # treats a directory of JPEGs as a frame sequence. Falls back to
+    # the single-video path for legacy callers / image-only assets.
     import urllib.parse
 
-    parsed = urllib.parse.urlparse(payload.video_url)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=422, detail="video_url_scheme_not_allowed")
+    init_path: str
+    tmpdir: str | None = None
+    if payload.frame_urls:
+        import os
+        import tempfile
+
+        import httpx
+
+        # Reject non-http(s) URLs to block file:// / ftp:// SSRF abuse.
+        for url in payload.frame_urls:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                raise HTTPException(
+                    status_code=422,
+                    detail="frame_url_scheme_not_allowed",
+                )
+        tmpdir = tempfile.mkdtemp(prefix="track-")
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                for i, url in enumerate(payload.frame_urls):
+                    r = client.get(url)
+                    r.raise_for_status()
+                    with open(
+                        os.path.join(tmpdir, f"{i:06d}.jpg"), "wb"
+                    ) as f:
+                        f.write(r.content)
+        except Exception as exc:  # noqa: BLE001
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise HTTPException(
+                status_code=502,
+                detail=f"frame_download_failed: {exc!r}",
+            ) from exc
+
+        # v3.8 Phase 4-video step F6 — transformers' Sam2VideoModel /
+        # Sam3VideoModel init_state goes through ``load_video``, which
+        # only accepts a video URL or a local video file path (NOT a
+        # directory of JPEGs, despite the upstream README implying so).
+        # Stitch the downloaded frames into a temp mp4 here so
+        # init_state has the format it expects.
+        try:
+            import ffmpeg as _ff
+
+            video_path = os.path.join(tmpdir, "__video.mp4")
+            (
+                _ff.input(
+                    os.path.join(tmpdir, "%06d.jpg"),
+                    framerate=30,
+                    pattern_type="sequence",
+                )
+                .output(video_path, vcodec="libx264", pix_fmt="yuv420p")
+                .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
+            )
+        except _ff.Error as exc:  # type: ignore[name-defined]
+            import shutil
+
+            err = (exc.stderr or b"").decode("utf-8", errors="replace")
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise HTTPException(
+                status_code=502,
+                detail=f"frames_to_video_failed: {err[-300:]}",
+            ) from exc
+        init_path = video_path
+    else:
+        # Legacy single-video path (image asset at idx=0, or pre-extract
+        # video). Reject non-http(s) schemes first (block file:// /
+        # ftp:// SSRF-style abuse).
+        parsed = urllib.parse.urlparse(payload.video_url)
+        if parsed.scheme not in ("http", "https"):
+            raise HTTPException(status_code=422, detail="video_url_scheme_not_allowed")
+        init_path = payload.video_url
 
     # SAM 3 supports BOTH point-based and text-based video tracking via a
     # dispatcher adapter (Sam3VideoDispatcherAdapter). The dispatcher routes:
@@ -122,12 +208,20 @@ def start(payload: StartIn) -> StartOut:
 
     try:
         session = start_session(
-            video_url=payload.video_url,
+            video_url=init_path,
+            tmpdir=tmpdir,
             frame_idx=payload.frame_idx,
             points=forwarded_points,
             labels=forwarded_labels,
         )
     except Exception as exc:  # noqa: BLE001 — wrap upstream init failure
+        # v3.8 Phase 4-video step F6 — clean up the downloaded frames
+        # if init_state failed; otherwise the tmpdir leaks until pod
+        # restart.
+        if tmpdir is not None:
+            import shutil as _sh
+            _sh.rmtree(tmpdir, ignore_errors=True)
+        logger.exception("tracker_init_failed")
         raise HTTPException(status_code=502, detail=f"tracker_init_failed: {exc!r}") from exc
 
     # The seed mask is the result of the add_new_points / add_inputs_at_frame
@@ -168,6 +262,7 @@ def add_object(session_id: str, payload: AddObjectIn) -> AddObjectOut:
             detail="add_object_unsupported_in_concept_mode",
         ) from exc
     except Exception as exc:  # noqa: BLE001 — wrap upstream failure
+        logger.exception("add_object_failed sid=%s obj_id=%s", session_id, payload.obj_id)
         raise HTTPException(status_code=502, detail=f"add_object_failed: {exc!r}") from exc
     return AddObjectOut(obj_id=payload.obj_id, frame_idx=payload.frame_idx)
 
@@ -201,11 +296,13 @@ def step(session_id: str, frames: int = 1) -> StepOut:
                 for obj_id, mask in masks_per_obj.items():
                     mask_np = _to_numpy(mask)
                     counts, size = encode_mask_rle(mask_np)
+                    polygon = mask_to_polygon(mask_np)
                     obj_entries.append(StepObjectEntry(
                         obj_id=int(obj_id),
                         counts=counts,
                         size=size,
                         score=1.0,
+                        polygon=polygon,
                     ))
                 out.append(StepFrameEntry(
                     frame_idx=int(frame_idx),
@@ -216,6 +313,7 @@ def step(session_id: str, frames: int = 1) -> StepOut:
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
+        logger.exception("tracker_step_failed sid=%s frames=%s", session_id, frames)
         raise HTTPException(status_code=502, detail=f"tracker_step_failed: {exc!r}") from exc
 
 
@@ -235,6 +333,19 @@ def _seed_mask_for(session: TrackerSession) -> dict:
 
 
 def _to_numpy(arr: Any) -> np.ndarray:
+    """Convert a torch tensor (or array-like) to numpy.
+
+    v3.8 Phase 4.1 -- bfloat16 / float16 tensors raise ``TypeError: Got
+    unsupported ScalarType BFloat16`` on ``.numpy()``. Cast to float32
+    first. Mirrors the same fix in ``sam/router.py`` and the SAM 3
+    factories.
+    """
     if hasattr(arr, "cpu"):
-        return arr.cpu().numpy()
+        cpu_arr = arr.cpu()
+        dtype = getattr(cpu_arr, "dtype", None)
+        if dtype is not None and hasattr(cpu_arr, "float"):
+            dname = str(dtype)
+            if "bfloat16" in dname or "float16" in dname:
+                cpu_arr = cpu_arr.float()
+        return cpu_arr.numpy()
     return np.asarray(arr)

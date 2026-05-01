@@ -486,6 +486,30 @@ class Sam3VideoDispatcherAdapter:
                 Sam3TrackerVideoProcessor,
             )
 
+            # v3.8 Phase 4-video step F8 — runtime patch for an upstream
+            # transformers typo. ``modeling_sam3_tracker_video.py`` line
+            # ~1912 reads ``image_outputs.fpn_position_embeddings`` but
+            # both ``Sam3VisionEncoderOutput`` and
+            # ``Sam3TrackerVideoVisionEncoderOutput`` actually expose the
+            # field as ``fpn_position_encoding``. Without this alias the
+            # tracker forward raises AttributeError on every step. We add
+            # a property so the wrong attribute name still resolves.
+            from transformers.models.sam3 import modeling_sam3 as _sam3_mod
+            from transformers.models.sam3_tracker_video import (
+                modeling_sam3_tracker_video as _sam3t_mod,
+            )
+
+            for cls in (
+                _sam3_mod.Sam3VisionEncoderOutput,
+                _sam3t_mod.Sam3TrackerVideoVisionEncoderOutput,
+            ):
+                if not hasattr(cls, "fpn_position_embeddings"):
+                    setattr(
+                        cls,
+                        "fpn_position_embeddings",
+                        property(lambda self: self.fpn_position_encoding),
+                    )
+
             dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
             self._tracker_model = Sam3TrackerVideoModel.from_pretrained(
                 "facebook/sam3",
@@ -580,6 +604,21 @@ class Sam3VideoDispatcherAdapter:
         previous implementation would silently switch to tracker mode and
         re-init the video session, orphaning the concept session.
         """
+        # v3.8 Phase 4-video step F7 — text seed at session start arrives
+        # here too (start_session forwards ``points=[<text>]`` for SAM 3
+        # callers). Detect it BEFORE the concept-mode guard so the very
+        # first text-seed call can lazily create the concept session.
+        is_text_mode = (
+            isinstance(points, str)
+            or (
+                isinstance(points, list)
+                and len(points) > 0
+                and all(isinstance(t, str) for t in points)
+            )
+        )
+        if is_text_mode:
+            self._add_text(inference_state, points)
+            return None
         if (
             isinstance(inference_state, dict)
             and inference_state.get("mode") == "concept"
@@ -660,6 +699,11 @@ class Sam3VideoDispatcherAdapter:
         #   input_points: [batch=1][num_obj=1][num_pts][xy]   (or None)
         #   input_labels: [batch=1][num_obj=1][num_pts]       (or None)
         #   input_boxes:  [batch=1][num_obj=1][4]             (or None)
+        # Record the seed frame_idx so propagate_in_video_iterator gets a
+        # start_frame_idx — without it Sam3TrackerVideoModel raises
+        # "Cannot determine the starting frame index".
+        if state.get("seed_frame_idx") is None:
+            state["seed_frame_idx"] = int(frame_idx)
         kwargs: dict[str, Any] = {
             "inference_session": state["session"],
             "frame_idx": int(frame_idx),
@@ -680,7 +724,10 @@ class Sam3VideoDispatcherAdapter:
         height = getattr(session, "video_height", 0) or 0
         width = getattr(session, "video_width", 0) or 0
         original_sizes = [[int(height), int(width)]] if height and width else None
-        for output in state["model"].propagate_in_video_iterator(session):
+        start_frame_idx = state.get("seed_frame_idx")
+        for output in state["model"].propagate_in_video_iterator(
+            session, start_frame_idx=start_frame_idx
+        ):
             pred_masks = output.pred_masks
             if hasattr(pred_masks, "cpu"):
                 pred_masks = pred_masks.cpu()

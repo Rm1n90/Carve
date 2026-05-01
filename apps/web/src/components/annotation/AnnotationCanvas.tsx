@@ -240,6 +240,11 @@ export function AnnotationCanvas({
   // BboxTool's anchor/current pair; lives in a ref so the tool-routing
   // useEffect doesn't recreate on every move event.
   const samBoxDraftRef = useRef<{ anchor: Point; current: Point } | null>(null);
+  // v3.8 Phase 4-video step F7 — bbox-seed drag in Track mode. On
+  // pointerdown we start a draft; on pointerup a small drag falls back
+  // to a positive-click prompt and a real drag is forwarded as a box
+  // prompt to the panel's box handler.
+  const samTrackBoxDraftRef = useRef<{ anchor: Point; current: Point } | null>(null);
   // Mirror of the ``samMode`` zustand slice so the tool-routing useEffect
   // can branch on it without re-running on every keystroke. We keep it as
   // a separate state read so React re-renders the floating text input
@@ -286,6 +291,7 @@ export function AnnotationCanvas({
     // modes mid-interaction. v3.6 — also drop the live mask preview +
     // point markers so a stale mask from the previous mode never lingers.
     samBoxDraftRef.current = null;
+    samTrackBoxDraftRef.current = null;
     // v3.8 Phase 3 — leaving Text mode clears the draft. We DO NOT
     // auto-fill on entry: the user controls their input. The "Use
     // class prompt" button on the floating panel is the explicit
@@ -1931,24 +1937,16 @@ export function AnnotationCanvas({
         e.preventDefault();
         const mode = useTool.getState().samMode;
         if (mode === "track") {
-          // v3.6 — canvas teach-back: route the click to the panel's
-          // registered handler, which auto-starts the session and calls
-          // addObjectAtFrame with the click as the positive prompt.
-          // Clamp to image bounds so an off-image click produces a
-          // sane in-image prompt.
+          // v3.6 — canvas teach-back. v3.8 Phase 4-video step F7: a
+          // drag now seeds a bbox prompt; a click (sub-threshold drag)
+          // falls back to the legacy point prompt. We start a draft
+          // here and resolve at pointer-up.
           const clamped = clampPointToImage(p);
-          const handler = useSamTrackBridge.getState().onCanvasClick;
-          if (handler) {
-            try {
-              handler([clamped.x, clamped.y]);
-            } catch {
-              /* best-effort — handler errors surface in panel toasts */
-            }
-            // Refresh marker overlay on next frame so the new marker
-            // (added asynchronously by the panel) becomes visible.
-            void drawSamTrackMarkers();
-          } else {
-            showToast("Open the Track panel first.", { variant: "warning" });
+          samTrackBoxDraftRef.current = { anchor: clamped, current: clamped };
+          try {
+            host!.setPointerCapture(e.pointerId);
+          } catch {
+            /* setPointerCapture not always available in jsdom */
           }
         } else if (mode === "box") {
           // v3.8 Phase 2 — once a box is committed, treat further
@@ -2051,6 +2049,17 @@ export function AnnotationCanvas({
           const color = hexFromColor(cls ? classMap[cls] : undefined);
           void drawMaskPreview(r.getCanvas(), color, 0.4);
         }
+      } else if (tool === "sam" && samTrackBoxDraftRef.current) {
+        // Track-mode bbox-seed in-flight drag — paint a live xyxy
+        // preview. Sub-4px drags fall back to a click-prompt at up.
+        const draft = samTrackBoxDraftRef.current;
+        const clamped = clampPointToImage(p);
+        draft.current = clamped;
+        const x = Math.min(draft.anchor.x, clamped.x);
+        const y = Math.min(draft.anchor.y, clamped.y);
+        const w = Math.abs(draft.anchor.x - clamped.x);
+        const h = Math.abs(draft.anchor.y - clamped.y);
+        if (w >= 4 || h >= 4) void drawPreviewRect({ x, y, w, h });
       } else if (tool === "sam" && samBoxDraftRef.current) {
         // SAM box-mode in-flight drag — paint a live xyxy preview using
         // the existing bbox preview Graphics so the user sees what
@@ -2145,6 +2154,50 @@ export function AnnotationCanvas({
         clearPreview();
       } else if (tool === "mask") {
         mask.onPointerUp(p);
+      } else if (tool === "sam" && samTrackBoxDraftRef.current) {
+        // Finalise the Track-mode drag — small drag = click prompt
+        // (legacy behaviour); real drag = box prompt to the panel.
+        const draft = samTrackBoxDraftRef.current;
+        samTrackBoxDraftRef.current = null;
+        try {
+          host!.releasePointerCapture(e.pointerId);
+        } catch {
+          /* not all environments implement releasePointerCapture */
+        }
+        const clamped = clampPointToImage(p);
+        const x1 = Math.min(draft.anchor.x, clamped.x);
+        const y1 = Math.min(draft.anchor.y, clamped.y);
+        const x2 = Math.max(draft.anchor.x, clamped.x);
+        const y2 = Math.max(draft.anchor.y, clamped.y);
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        clearPreview();
+        if (dx < 4 || dy < 4) {
+          // Click-prompt fallback — route to the panel's click handler.
+          const handler = useSamTrackBridge.getState().onCanvasClick;
+          if (handler) {
+            try {
+              handler([clamped.x, clamped.y]);
+            } catch {
+              /* handler errors surface as toasts in the panel */
+            }
+            void drawSamTrackMarkers();
+          } else {
+            showToast("Open the Track panel first.", { variant: "warning" });
+          }
+        } else {
+          const boxHandler = useSamTrackBridge.getState().onCanvasBox;
+          if (boxHandler) {
+            try {
+              boxHandler([x1, y1, x2, y2]);
+            } catch {
+              /* handler errors surface as toasts in the panel */
+            }
+            void drawSamTrackMarkers();
+          } else {
+            showToast("Open the Track panel first.", { variant: "warning" });
+          }
+        }
       } else if (tool === "sam" && samBoxDraftRef.current) {
         // Finalise the SAM box drag — drop minimum-size drags as noise
         // (mirrors BboxTool's MIN_DRAG_PX gate) and forward to the
@@ -3085,11 +3138,19 @@ function toolCursor(t: ToolName): string {
  * when the model service isn't running; everything else is treated as a
  * generic SAM failure.
  */
-function describeSamError(err: unknown): string {
-  // Axios error shape: ``err.response.data.error``.
-  const errObj = err as { response?: { status?: number; data?: { error?: string } } };
+export function describeSamError(err: unknown): string {
+  // Axios error shape: ``err.response.data.{error,detail}``.
+  const errObj = err as {
+    response?: {
+      status?: number;
+      data?: { error?: string; detail?: string };
+    };
+    message?: string;
+  };
   const status = errObj?.response?.status;
-  const errorCode = errObj?.response?.data?.error;
+  const data = errObj?.response?.data;
+  const errorCode = data?.error;
+  const detail = typeof data?.detail === "string" ? data.detail : undefined;
   if (status === 503 || errorCode === "model_service_unreachable") {
     return "SAM unavailable — model service is not running.";
   }
@@ -3098,6 +3159,15 @@ function describeSamError(err: unknown): string {
   // the user knows where to switch.
   if (status === 409 && errorCode === "sam3_not_enabled") {
     return "Text mode needs SAM 3. Switch the active model in Settings → Models.";
+  }
+  // v3.8 Phase 4-video step F7 — bubble the server's detail string when
+  // present. The api/model service emit "tracker_init_failed: ...",
+  // "add_object_failed: ...", etc. — those are far more actionable than
+  // a generic "SAM unavailable" fallback.
+  if (detail) return detail;
+  if (errorCode) return errorCode;
+  if (typeof errObj?.message === "string" && errObj.message) {
+    return errObj.message;
   }
   return "SAM unavailable — please try again later.";
 }

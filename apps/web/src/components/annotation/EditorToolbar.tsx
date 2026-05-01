@@ -36,6 +36,7 @@ import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDial
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
 import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import { AutoAnnotateDialog } from "@/components/annotation/AutoAnnotateDialog";
+import { FrameExtractDialog } from "@/components/annotation/FrameExtractDialog";
 import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
 import { useTool, type ToolName, type VisibilityFlags } from "@/state/tool";
@@ -2159,6 +2160,11 @@ export function EditorToolbar({
         classes={classesProp ?? []}
         onSuccess={onAfterYoloPredict}
       />
+
+      {/* v3.8 Phase 4-video step F5 — Re-extract removed per request:
+          the upload-time dialog is the single point of frame-strategy
+          choice; the original video is deleted after extraction so a
+          re-extract isn't possible anyway. */}
 
       <Tooltip content={filterActive ? "Filter (active)" : "Filter annotations"}>
         <button

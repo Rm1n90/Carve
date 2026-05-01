@@ -3,6 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from carve_api.assets.models import AssetKind
@@ -205,6 +206,166 @@ def get_asset(
         asset=AssetOut.from_orm_asset(a, thumbnail_url=svc.thumbnail_url_for(a)),
         url=svc.storage.presigned_get(f"assets/{a.xxh3_128}/original.{ext}"),
         frame_id=svc.primary_frame_id_for(a),
+    )
+
+
+# v3.8 Phase 4.1 -- frames-list endpoint. Track-mode commit needs the
+# frame_id for every frame_idx the propagation produced; this is the
+# query the editor calls when entering Track mode on a video asset.
+# v3.8 Phase 4-video step B -- now also returns a presigned image URL
+# per frame so the editor canvas can swap to that frame on scrub.
+class FrameOut(BaseModel):
+    idx: int
+    frame_id: str
+    pts_ms: int
+    url: str
+
+
+@asset_router.get("/{asset_id}/frames", response_model=list[FrameOut])
+def list_frames(
+    asset_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[FrameOut]:
+    from carve_api.assets.models import Asset, Frame
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, a.task_id)
+    rows = (
+        db.query(Frame)
+        .filter(Frame.asset_id == a.id)
+        .order_by(Frame.idx)
+        .all()
+    )
+    storage = MinioClient.from_settings()
+    out: list[FrameOut] = []
+    for r in rows:
+        # Per-frame JPEG keys live under assets/{hash}/frames/{idx:06d}.jpg
+        # (see jobs/frames.py). Use the public presign so the browser
+        # can fetch it directly.
+        key = f"assets/{a.xxh3_128}/frames/{r.idx:06d}.jpg"
+        url = storage.presigned_get(key, expires_seconds=3600)
+        out.append(
+            FrameOut(
+                idx=r.idx,
+                frame_id=str(r.id),
+                pts_ms=int(r.pts_ms or 0),
+                url=url,
+            )
+        )
+    return out
+
+
+# v3.8 Phase 4-video step D -- "Re-extract frames" endpoint. Enqueues
+# the same worker the upload pipeline uses, with caller-supplied
+# strategy + n. Used by the editor's Re-extract button (and by the
+# upload-time dialog when the user picks a non-default strategy).
+class FrameExtractIn(BaseModel):
+    strategy: Literal["all", "every_nth", "count", "auto"] = "auto"
+    n: int | None = None
+    # v3.8 Phase 4-video step F2 — JPEG quality 0..100 (higher=better).
+    # Maps to ffmpeg ``-q:v`` (1..31, lower=better). 75 is a balanced
+    # default; bump to 90+ for downstream model accuracy on small objects.
+    quality: int = 75
+
+
+@asset_router.post(
+    "/{asset_id}/frames/extract", status_code=202
+)
+def reextract_frames(
+    asset_id: uuid.UUID,
+    payload: FrameExtractIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from carve_api.assets.models import Asset, AssetKind
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, a.task_id)
+    if a.kind != AssetKind.video:
+        raise HTTPException(status_code=422, detail="asset_not_video")
+
+    try:
+        import os as _os
+
+        import redis as _redis
+        from rq import Queue as _Queue
+
+        from carve_api.jobs.frames import extract_frames_for_video
+
+        client = _redis.Redis(
+            host=_os.environ.get("REDIS_HOST", "redis"),
+            port=int(_os.environ.get("REDIS_PORT", "6379")),
+            decode_responses=True,
+        )
+        q = _Queue("default", connection=client)
+        job = q.enqueue(
+            extract_frames_for_video,
+            str(a.id),
+            payload.strategy,
+            payload.n,
+            payload.quality,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="enqueue_failed"
+        ) from exc
+
+    return {"job_id": job.id, "strategy": payload.strategy, "n": payload.n}
+
+
+# v3.8 Phase 4-video step F -- frame-extraction progress. The worker
+# writes to ``frame-extract:{asset_id}`` with status/phase/decoded/
+# expected/uploaded; this endpoint reads it back so the editor can
+# render a live progress bar.
+class FrameExtractStatusOut(BaseModel):
+    status: str  # "running" | "completed" | "failed" | "idle"
+    phase: str  # "decoding" | "uploading" | "done"
+    decoded: int
+    expected: int
+    uploaded: int
+    message: str | None = None
+
+
+@asset_router.get(
+    "/{asset_id}/frames/extract/status",
+    response_model=FrameExtractStatusOut,
+)
+def frame_extract_status(
+    asset_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FrameExtractStatusOut:
+    from carve_api.assets.models import Asset
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    _require_visible_task(db, user, a.task_id)
+    try:
+        import os as _os
+
+        import redis as _redis
+
+        client = _redis.Redis(
+            host=_os.environ.get("REDIS_HOST", "redis"),
+            port=int(_os.environ.get("REDIS_PORT", "6379")),
+            decode_responses=True,
+        )
+        h = client.hgetall(f"frame-extract:{asset_id}") or {}
+    except Exception:
+        h = {}
+    return FrameExtractStatusOut(
+        status=h.get("status") or "idle",
+        phase=h.get("phase") or "idle",
+        decoded=int(h.get("decoded") or 0),
+        expected=int(h.get("expected") or 0),
+        uploaded=int(h.get("uploaded") or 0),
+        message=h.get("message"),
     )
 
 

@@ -40,6 +40,34 @@ def _video_url_for(asset: Asset) -> str:
     )
 
 
+def _frame_urls_for(asset: Asset) -> list[str]:
+    """v3.8 Phase 4-video step F6 -- list per-frame JPEG URLs for a
+    video asset whose mp4 has been deleted (post-extract). The model
+    service downloads each URL into a temp dir and uses that as the
+    tracker's ``init_state`` path. Returns [] for image assets or
+    videos that haven't had frames extracted yet.
+    """
+    from carve_api.assets.models import Frame
+    from carve_api.db import get_session_factory
+
+    SessionLocal = get_session_factory()
+    storage = MinioClient.from_settings()
+    with SessionLocal() as s:
+        rows = (
+            s.query(Frame)
+            .filter(Frame.asset_id == asset.id)
+            .order_by(Frame.idx)
+            .all()
+        )
+    return [
+        storage.presigned_get_internal(
+            f"assets/{asset.xxh3_128}/frames/{r.idx:06d}.jpg",
+            expires_seconds=3600,
+        )
+        for r in rows
+    ]
+
+
 def start(
     asset: Asset,
     frame_idx: int,
@@ -47,8 +75,22 @@ def start(
     labels: list[int],
     text: str | None = None,
 ) -> dict:
-    url = _video_url_for(asset)
+    # v3.8 Phase 4-video step F6 -- frames-list path takes priority for
+    # video assets (whose original mp4 is deleted after extraction).
+    # Fall back to the legacy video URL for image assets / pre-extract
+    # videos that still have an original on disk.
+    frame_urls = _frame_urls_for(asset)
     try:
+        if frame_urls:
+            return _sam_track_start(
+                "",
+                frame_idx,
+                points,
+                labels,
+                text=text,
+                frame_urls=frame_urls,
+            )
+        url = _video_url_for(asset)
         return _sam_track_start(url, frame_idx, points, labels, text=text)
     except ModelServiceError as exc:
         if exc.status_code == 503:

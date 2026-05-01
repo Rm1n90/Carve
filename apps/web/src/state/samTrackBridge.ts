@@ -33,19 +33,29 @@ export interface SamTrackMarker {
 }
 
 export type SamTrackClickHandler = (point: [number, number]) => void;
+/** v3.8 Phase 4-video step F7 — bbox seed in track mode. The canvas
+ * publishes the drag rectangle (image-space xyxy) and the panel calls
+ * ``addObjectAtFrame`` with ``boxes=[[x1,y1,x2,y2]]`` and empty points. */
+export type SamTrackBoxHandler = (
+  box: [number, number, number, number],
+) => void;
 
 interface SamTrackBridgeState {
   onCanvasClick: SamTrackClickHandler | null;
+  onCanvasBox: SamTrackBoxHandler | null;
   markers: SamTrackMarker[];
   setHandler: (handler: SamTrackClickHandler | null) => void;
+  setBoxHandler: (handler: SamTrackBoxHandler | null) => void;
   setMarkers: (markers: SamTrackMarker[]) => void;
   clear: () => void;
 }
 
 export const useSamTrackBridge = create<SamTrackBridgeState>((set) => ({
   onCanvasClick: null,
+  onCanvasBox: null,
   markers: [],
   setHandler: (handler) => set({ onCanvasClick: handler }),
+  setBoxHandler: (handler) => set({ onCanvasBox: handler }),
   setMarkers: (markers) => set({ markers }),
-  clear: () => set({ onCanvasClick: null, markers: [] }),
+  clear: () => set({ onCanvasClick: null, onCanvasBox: null, markers: [] }),
 }));

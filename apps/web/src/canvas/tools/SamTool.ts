@@ -59,6 +59,9 @@ function getStatusCode(err: unknown): number | null {
 export class SamTool {
   private mode: SamMode = "point";
   private imageHash: string | null = null;
+  // v3.8 Phase 4-video step F4 — track which frame the imageHash was
+  // encoded for so we can invalidate on frame change.
+  private encodedFrameId: string | null = null;
   private positives: [number, number][] = [];
   private negatives: [number, number][] = [];
   // v3.8 Phase 1 — insertion order so Backspace can pop the most
@@ -120,11 +123,24 @@ export class SamTool {
   }
 
   async activate(): Promise<void> {
-    if (this.imageHash !== null || this.encoding) return;
+    const currentFrame = this.getFrameId();
+    // v3.8 Phase 4-video step F4 — re-encode when the user has
+    // scrubbed to a different frame; the previously-cached image_hash
+    // belongs to a stale frame's pixels.
+    if (
+      this.imageHash !== null &&
+      this.encodedFrameId === currentFrame &&
+      !this.encoding
+    ) {
+      return;
+    }
+    if (this.encoding) return;
+    this.imageHash = null;
     this.encoding = true;
     try {
-      const enc = await samApi.encode(this.assetId);
+      const enc = await samApi.encode(this.assetId, currentFrame);
       this.imageHash = enc.image_hash;
+      this.encodedFrameId = currentFrame;
       // Best-effort probe — never let the readiness check block activation.
       if (enc.embedding_b64) {
         try {
@@ -313,7 +329,11 @@ export class SamTool {
       return null;
     }
     this.text = trimmed;
-    const results = await samApi.textPrompt(this.assetId, this.text);
+    const results = await samApi.textPrompt(
+      this.assetId,
+      this.text,
+      this.getFrameId(),
+    );
     return this.applyPromptResult(results);
   }
 
@@ -338,7 +358,11 @@ export class SamTool {
     const trimmed = text.trim();
     if (trimmed.length === 0) return { created: 0, total: 0 };
     this.text = trimmed;
-    const results = await samApi.textPrompt(this.assetId, this.text);
+    const results = await samApi.textPrompt(
+      this.assetId,
+      this.text,
+      this.getFrameId(),
+    );
     const total = results.length;
     const kept = results.filter((r) => r.score >= threshold);
     const frameId = this.getFrameId();

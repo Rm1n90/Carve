@@ -85,7 +85,7 @@ describe("AnnotationCanvas — SAM tool wiring", () => {
     });
 
     await flushAsync();
-    expect(samApi.encode).toHaveBeenCalledWith("a-1");
+    expect(samApi.encode).toHaveBeenCalledWith("a-1", null);
   });
 
   it("a left pointerdown on the canvas (after activation) calls samApi.decode", async () => {
@@ -103,7 +103,7 @@ describe("AnnotationCanvas — SAM tool wiring", () => {
       useTool.getState().setActive("sam");
     });
     await flushAsync();
-    expect(samApi.encode).toHaveBeenCalledWith("a-1");
+    expect(samApi.encode).toHaveBeenCalledWith("a-1", null);
 
     const host = container.firstChild as HTMLElement;
     expect(host).toBeTruthy();

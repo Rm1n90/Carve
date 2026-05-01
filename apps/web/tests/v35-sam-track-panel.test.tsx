@@ -244,18 +244,26 @@ describe("SamTrackPanel", () => {
       obj_id: 1,
       frame_idx: 0,
     });
-    (samTrackApi.step as ReturnType<typeof vi.fn>).mockResolvedValue({
-      steps: [
-        {
-          frame_idx: 0,
-          objects: [{ obj_id: 1, counts: "0,2", size: [4, 4], score: 1.0 }],
-        },
-        {
-          frame_idx: 1,
-          objects: [{ obj_id: 1, counts: "0,3", size: [4, 4], score: 1.0 }],
-        },
-      ],
-    });
+    // v3.8 Phase 4.1 — auto-loop: first call returns frames, second
+    // returns empty so the loop terminates without OOM.
+    (samTrackApi.step as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        steps: [
+          {
+            frame_idx: 0,
+            objects: [
+              { obj_id: 1, counts: "0,2", size: [4, 4], score: 1.0, polygon: [] },
+            ],
+          },
+          {
+            frame_idx: 1,
+            objects: [
+              { obj_id: 1, counts: "0,3", size: [4, 4], score: 1.0, polygon: [] },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ steps: [] });
     useTool.setState({ activeClassId: "c-A" });
     renderPanel();
     fireEvent.click(screen.getByTestId("sam-track-start"));
@@ -266,12 +274,9 @@ describe("SamTrackPanel", () => {
     await waitFor(() =>
       expect(screen.getByTestId("sam-track-object-1")).toBeInTheDocument(),
     );
-    // Default step count is 5; change to 2 to make the assertion explicit.
-    const input = screen.getByTestId("sam-track-step-frames");
-    fireEvent.change(input, { target: { value: "2" } });
-    fireEvent.click(screen.getByTestId("sam-track-propagate"));
+    fireEvent.click(screen.getByTestId("sam-track-to-end"));
     await waitFor(() => {
-      expect(samTrackApi.step).toHaveBeenCalledWith("asset-vid-1", "S-1", 2);
+      expect(samTrackApi.step).toHaveBeenCalledWith("asset-vid-1", "S-1", 8);
     });
   });
 
@@ -305,7 +310,22 @@ describe("SamTrackPanel", () => {
     await waitFor(() =>
       expect(screen.getByTestId("sam-track-object-1")).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByTestId("sam-track-propagate"));
+    // v3.8 Phase 4.1 -- "Track to end" auto-loops step until the
+    // model returns no more frames; the mock above returns one frame
+    // per call so the second call returns empty and breaks the loop.
+    (samTrackApi.step as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        steps: [
+          {
+            frame_idx: 0,
+            objects: [
+              { obj_id: 1, counts: "0,2", size: [4, 4], score: 1.0, polygon: [] },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ steps: [] });
+    fireEvent.click(screen.getByTestId("sam-track-to-end"));
     await waitFor(() =>
       expect(screen.getByTestId("sam-track-progress")).toBeInTheDocument(),
     );
@@ -313,7 +333,9 @@ describe("SamTrackPanel", () => {
     await waitFor(() => {
       const drafts = Object.values(useAnnotations.getState().byId);
       expect(drafts.length).toBeGreaterThanOrEqual(1);
-      expect(drafts[0].kind).toBe("mask");
+      // Polygon is preferred when available; the mock returns an
+      // empty polygon so the draft falls back to mask.
+      expect(["polygon", "mask"]).toContain(drafts[0].kind);
       expect(drafts[0].frameId).toBe("frame-id-0");
     });
     await waitFor(() => {

@@ -29,7 +29,7 @@ describe("SamTool", () => {
     const tool = new SamTool("asset-1", () => "c-1", () => null);
     expect(tool.isReady()).toBe(false);
     await tool.activate();
-    expect(samApi.encode).toHaveBeenCalledWith("asset-1");
+    expect(samApi.encode).toHaveBeenCalledWith("asset-1", null);
     expect(tool.isReady()).toBe(true);
   });
 

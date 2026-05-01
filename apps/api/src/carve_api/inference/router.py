@@ -447,9 +447,13 @@ class SamTextIn(BaseModel):
     A single positive text concept describing the object (e.g. "person").
     Matches the model service's TextPromptIn — see
     ``apps/model/src/carve_model/sam/router.py``.
+
+    v3.8 Phase 4-video step F4 — ``frame_id`` selects a per-frame JPEG
+    when the asset is a video; omit (or null) for image assets.
     """
 
     text: str = Field(..., min_length=1, max_length=200)
+    frame_id: uuid.UUID | None = None
 
 
 class SamBoxIn(BaseModel):
@@ -465,6 +469,8 @@ class SamBoxIn(BaseModel):
     boxes: list[list[float]] = Field(..., min_length=1)
     box_labels: list[int] = Field(..., min_length=1)
     text: str | None = Field(default=None, max_length=200)
+    # v3.8 Phase 4-video step F4 -- per-frame JPEG selector.
+    frame_id: uuid.UUID | None = None
 
 
 # v3.8 Phase 3.5 — multi-class SAM 3 text-prompt auto-annotate (sync,
@@ -542,6 +548,7 @@ def sam_auto_text_endpoint(
 @router.post("/{asset_id}/sam/encode")
 def sam_encode_endpoint(
     asset_id: uuid.UUID,
+    frame_id: uuid.UUID | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -550,7 +557,7 @@ def sam_encode_endpoint(
         raise HTTPException(status_code=404, detail="asset_not_found")
     _require_visible_task(db, user, asset.task_id)
     try:
-        return sam_encode_for_asset(asset)
+        return sam_encode_for_asset(asset, frame_id=frame_id)
     except AppError as exc:
         raise _http(exc) from exc
 
@@ -595,7 +602,9 @@ def sam_text_prompt_endpoint(
         raise HTTPException(status_code=404, detail="asset_not_found")
     _require_visible_task(db, user, asset.task_id)
     try:
-        return sam_text_prompt_for_asset(asset, payload.text)
+        return sam_text_prompt_for_asset(
+            asset, payload.text, frame_id=payload.frame_id
+        )
     except AppError as exc:
         raise _http(exc) from exc
 
@@ -628,6 +637,7 @@ def sam_box_prompt_endpoint(
             payload.boxes,
             payload.box_labels,
             text=payload.text,
+            frame_id=payload.frame_id,
         )
     except AppError as exc:
         raise _http(exc) from exc

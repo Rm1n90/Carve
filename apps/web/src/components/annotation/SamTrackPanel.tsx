@@ -1,59 +1,45 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Play, Plus, X } from "lucide-react";
+import { Loader2, MousePointerClick, Play, Square, Trash2, X } from "lucide-react";
 
 import { TrackPropagateTool } from "@/canvas/tools/TrackPropagateTool";
 import { useTool } from "@/state/tool";
-import { useAnnotations } from "@/state/annotations";
 import {
   useSamTrackBridge,
   type SamTrackMarker,
 } from "@/state/samTrackBridge";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { describeSamError } from "@/components/annotation/AnnotationCanvas";
 
 /**
- * v3.5 Phase E — side-rail panel for SAM video tracking.
+ * v3.8 Phase 4-video step F8 — simplified tracker panel.
  *
- * Wires the existing {@link TrackPropagateTool} into the annotation editor
- * so users can:
- *   1. Open a tracking session on the active video asset.
- *   2. Mark one or more objects on the current frame (a positive point
- *      placed at the centre of the visible canvas — the user iterates
- *      by clicking "Add object" while the active class changes).
- *   3. Propagate forward N frames via the model service.
- *   4. Commit the resulting per-frame, per-object masks as
- *      {@link AnnotationDraft} rows in the in-memory store.
- *   5. Discard / release the session.
+ *  1. Click on the canvas → seeds a point object.
+ *  2. Drag a rectangle  → seeds a bbox object.
+ *  3. Repeat for additional objects (switch active class between adds
+ *     to track multi-class).
+ *  4. Press "Start tracking" — propagates to the end of the video,
+ *     auto-commits the per-frame masks, releases the session.
  *
- * MVP commit semantics: this panel only knows the ``frameId`` of the
- * currently visible frame because the API does not yet expose a
- * "list frames" endpoint for video assets. So commit only writes
- * annotations for steps whose ``frame_idx`` matches the current frame
- * (i.e. ``startFrameIdx``). That's enough to surface tracking and
- * unblock the audit gap; richer per-frame commit will need the
- * frames-list endpoint that's slated for the mapping-schema rework.
+ * No text mode, no concept-vs-tracker dispatch, no Discard/Commit
+ * buttons. The session is opened lazily on the first add and released
+ * on completion or panel unmount.
  */
 interface SamTrackPanelProps {
-  /** UUID of the open video asset. */
   assetId: string;
-  /** Frame.id of the currently visible frame, or null if unknown. */
   frameId: string | null;
-  /** Frame index (0-based) the user is currently on. */
   currentFrameIdx: number;
-  /** Total number of frames in the video. */
   totalFrames: number;
-  /**
-   * Map of frame_idx → frame_id for any frames whose ids are known to
-   * the page. The MVP only knows the current frame; future work fills
-   * in neighbouring ids once a frames-list endpoint exists.
-   */
   frameIdxToFrameId?: Record<number, string>;
+  classes?: import("@/api/classes").ClassRow[];
 }
+
+type SeedKind = "point" | "box";
 
 interface UiObject {
   objId: number;
   classId: string;
-  className: string;
+  seed: SeedKind;
 }
 
 export function SamTrackPanel({
@@ -62,30 +48,26 @@ export function SamTrackPanel({
   currentFrameIdx,
   totalFrames,
   frameIdxToFrameId,
+  classes,
 }: SamTrackPanelProps) {
   const activeClassId = useTool((s) => s.activeClassId);
-  const [sessionOpen, setSessionOpen] = useState(false);
+  const setActiveClassId = useTool((s) => s.setActiveClassId);
   const [starting, setStarting] = useState(false);
   const [stepping, setStepping] = useState(false);
-  const [stepFrames, setStepFrames] = useState(5);
+  const TRACK_BATCH = 8;
+  const cancelRef = useRef(false);
   const [objects, setObjects] = useState<UiObject[]>([]);
-  const [stepsCollected, setStepsCollected] = useState(0);
   const [framesPropagated, setFramesPropagated] = useState(0);
 
   const toolRef = useRef<TrackPropagateTool | null>(null);
   const [markers, setMarkersLocal] = useState<SamTrackMarker[]>([]);
   const setBridgeMarkers = useSamTrackBridge((s) => s.setMarkers);
   const setBridgeHandler = useSamTrackBridge((s) => s.setHandler);
+  const setBridgeBoxHandler = useSamTrackBridge((s) => s.setBoxHandler);
   const clearBridge = useSamTrackBridge((s) => s.clear);
-  // Refs let the canvas-click handler — registered once on mount —
-  // read live values without needing to re-register on every state
-  // change (which would defeat the pub/sub).
-  const sessionOpenRef = useRef(sessionOpen);
+
   const startingRef = useRef(starting);
   const currentFrameIdxRef = useRef(currentFrameIdx);
-  useEffect(() => {
-    sessionOpenRef.current = sessionOpen;
-  }, [sessionOpen]);
   useEffect(() => {
     startingRef.current = starting;
   }, [starting]);
@@ -93,149 +75,138 @@ export function SamTrackPanel({
     currentFrameIdxRef.current = currentFrameIdx;
   }, [currentFrameIdx]);
 
-  // Re-build the tool whenever the asset changes; the tool internally
-  // releases server-side state via release() but we also drop our
-  // local handle so a stale session can never leak across assets.
+  // Build the tool once per asset; release any leftover server session.
   useEffect(() => {
-    toolRef.current = new TrackPropagateTool(assetId, () => activeClassId);
+    toolRef.current = new TrackPropagateTool(assetId, () =>
+      useTool.getState().activeClassId,
+    );
     return () => {
       const t = toolRef.current;
       toolRef.current = null;
       if (t && t.isActive()) {
-        // Best-effort release; ignore errors (server may already be gone).
         void t.release();
       }
-      setSessionOpen(false);
       setObjects([]);
       setMarkersLocal([]);
-      setStepsCollected(0);
       setFramesPropagated(0);
     };
-    // ``activeClassId`` is read at click-time via the closure, so we don't
-    // include it in the deps — re-creating the tool every class change
-    // would orphan the in-flight session.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assetId]);
 
-  // Mirror local markers into the bridge slice so <AnnotationCanvas>
-  // can paint numbered teach-back markers at each prompted point.
   useEffect(() => {
     setBridgeMarkers(markers);
   }, [markers, setBridgeMarkers]);
 
-  // Register the canvas-click handler once per mount. The handler reads
-  // live ``sessionOpen`` / ``starting`` state via refs so we don't need
-  // to re-register on every render — re-registration would race with
-  // canvas-click events that fire mid-state-update.
-  useEffect(() => {
-    const handler = (point: [number, number]) => {
-      // If a start is mid-flight, drop the click — the user can re-click
-      // once the session is open. Re-entrancy here would create two
-      // server-side sessions.
-      if (startingRef.current) return;
-      // Auto-start: a click in track mode is the friendliest UX —
-      // it opens the session AND adds the first object.
-      const proceed = sessionOpenRef.current
-        ? Promise.resolve(true)
-        : handleStartSession();
-      void proceed.then((ok) => {
-        if (!ok) return;
-        void addObjectWithPoint(point);
-      });
-    };
-    setBridgeHandler(handler);
-    return () => {
-      clearBridge();
-    };
-    // The handler closes over component scope but reads live values via
-    // refs; re-registering on every state change is unnecessary.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Resolve which class to attach a new object to. Reads live so a
+  // class picked any time before the click counts. Falls back to the
+  // first known class if the user hasn't picked one yet — eliminates
+  // the "no class selected" dead-end and matches the user's mental
+  // model that the panel is the source of truth.
+  function resolveClassId(): string | null {
+    const live = useTool.getState().activeClassId;
+    if (live) return live;
+    const first = (classes ?? [])[0]?.id ?? null;
+    if (first) {
+      setActiveClassId(first);
+      return first;
+    }
+    return null;
+  }
 
-  const classNameForActive = useMemo(() => {
-    return activeClassId ?? "(no class selected)";
-  }, [activeClassId]);
-
-  async function handleStartSession(): Promise<boolean> {
+  async function ensureSession(): Promise<boolean> {
     const tool = toolRef.current;
     if (!tool) return false;
+    if (tool.isActive()) return true;
     setStarting(true);
     try {
-      await tool.startEmpty({ frameIdx: currentFrameIdx });
-      setSessionOpen(true);
-      setObjects([]);
-      setMarkersLocal([]);
-      setStepsCollected(0);
-      setFramesPropagated(0);
+      await tool.startEmpty({ frameIdx: currentFrameIdxRef.current });
       return true;
-    } catch {
-      showToast("Failed to start tracking session.", { variant: "error" });
+    } catch (err) {
+      showToast(`Failed to start tracking: ${describeSamError(err)}`, {
+        variant: "error",
+        duration: 6000,
+      });
       return false;
     } finally {
       setStarting(false);
     }
   }
 
-  async function addObjectWithPoint(
-    point: [number, number],
-  ): Promise<void> {
-    const tool = toolRef.current;
-    if (!tool) return;
-    if (!activeClassId) {
-      showToast("Pick a class first.", { variant: "warning" });
+  async function addObjectWithPoint(point: [number, number]): Promise<void> {
+    if (startingRef.current) return;
+    const classId = resolveClassId();
+    if (!classId) {
+      showToast("Create a class first.", { variant: "warning" });
       return;
     }
+    const ok = await ensureSession();
+    if (!ok) return;
+    const tool = toolRef.current;
+    if (!tool) return;
     try {
       const objId = await tool.addObjectAtFrame(
-        currentFrameIdx,
+        currentFrameIdxRef.current,
         [point],
         [1],
-        activeClassId,
+        classId,
       );
-      setObjects((prev) => [
-        ...prev,
-        { objId, classId: activeClassId, className: activeClassId },
-      ]);
-      setMarkersLocal((prev) => [
-        ...prev,
-        { objId, x: point[0], y: point[1] },
-      ]);
-    } catch {
-      showToast("Failed to add tracked object.", { variant: "error" });
+      setObjects((prev) => [...prev, { objId, classId, seed: "point" }]);
+      setMarkersLocal((prev) => [...prev, { objId, x: point[0], y: point[1] }]);
+    } catch (err) {
+      showToast(`Failed to add tracked object: ${describeSamError(err)}`, {
+        variant: "error",
+        duration: 6000,
+      });
     }
   }
 
-  async function handleAddObject() {
-    // Button click without a canvas point — keep the legacy MVP behaviour
-    // of seeding at (0, 0) so the wiring works without a class+canvas
-    // click. The canvas teach-back flow is preferred and goes through
-    // ``addObjectWithPoint`` directly.
-    await addObjectWithPoint([0, 0]);
-  }
-
-  async function handlePropagate() {
-    const tool = toolRef.current;
-    if (!tool) return;
-    if (objects.length === 0) {
-      showToast("Add at least one object first.", { variant: "warning" });
+  async function addObjectWithBox(
+    box: [number, number, number, number],
+  ): Promise<void> {
+    if (startingRef.current) return;
+    const classId = resolveClassId();
+    if (!classId) {
+      showToast("Create a class first.", { variant: "warning" });
       return;
     }
-    setStepping(true);
+    const ok = await ensureSession();
+    if (!ok) return;
+    const tool = toolRef.current;
+    if (!tool) return;
     try {
-      const steps = await tool.step(stepFrames);
-      setStepsCollected((n) => n + steps.length);
-      setFramesPropagated((n) => n + stepFrames);
-    } catch {
-      showToast("Propagation failed.", { variant: "error" });
-    } finally {
-      setStepping(false);
+      const objId = await tool.addObjectAtFrame(
+        currentFrameIdxRef.current,
+        [],
+        [],
+        classId,
+        [box],
+      );
+      const cx = (box[0] + box[2]) / 2;
+      const cy = (box[1] + box[3]) / 2;
+      setObjects((prev) => [...prev, { objId, classId, seed: "box" }]);
+      setMarkersLocal((prev) => [...prev, { objId, x: cx, y: cy }]);
+    } catch (err) {
+      showToast(`Failed to add tracked object: ${describeSamError(err)}`, {
+        variant: "error",
+        duration: 6000,
+      });
     }
+  }
+
+  async function clearAll(): Promise<void> {
+    const tool = toolRef.current;
+    if (tool && tool.isActive()) {
+      try {
+        await tool.release();
+      } catch {
+        /* best-effort */
+      }
+    }
+    setObjects([]);
+    setMarkersLocal([]);
+    setFramesPropagated(0);
   }
 
   function buildFrameMap(): Record<number, string> {
-    // Start with whatever ids the page already knows (current frame at
-    // minimum). The tool drops frames missing from this map, which is
-    // the documented MVP boundary.
     const base: Record<number, string> = { ...(frameIdxToFrameId ?? {}) };
     if (frameId !== null && base[currentFrameIdx] === undefined) {
       base[currentFrameIdx] = frameId;
@@ -243,43 +214,92 @@ export function SamTrackPanel({
     return base;
   }
 
-  function handleCommit() {
+  async function handleStartTracking() {
     const tool = toolRef.current;
-    if (!tool) return;
-    const map = buildFrameMap();
-    const created = tool.commit(map);
-    if (created === 0) {
-      showToast(
-        "No annotations committed — only the current frame's id is known.",
-        { variant: "warning" },
-      );
-    } else {
-      showToast(`Committed ${created} mask annotations from tracking.`, {
-        variant: "success",
+    if (!tool || objects.length === 0) {
+      showToast("Add at least one object first.", { variant: "warning" });
+      return;
+    }
+    cancelRef.current = false;
+    setStepping(true);
+    setFramesPropagated(0);
+    let stepsTotal = 0;
+    try {
+      while (true) {
+        if (cancelRef.current) break;
+        const steps = await tool.step(TRACK_BATCH);
+        if (steps.length === 0) break;
+        stepsTotal += steps.length;
+        setFramesPropagated((n) => n + steps.length);
+      }
+    } catch (err) {
+      showToast(`Tracking failed: ${describeSamError(err)}`, {
+        variant: "error",
+        duration: 6000,
+      });
+      setStepping(false);
+      cancelRef.current = false;
+      return;
+    }
+    setStepping(false);
+    cancelRef.current = false;
+    let created = 0;
+    try {
+      created = tool.commit(buildFrameMap());
+    } catch (err) {
+      showToast(`Commit failed: ${describeSamError(err)}`, {
+        variant: "error",
+        duration: 6000,
       });
     }
-    // After commit, end the session: the tool clears its internal
-    // collected[] but the server-side session is still open until we
-    // release it.
-    void handleDiscard();
-  }
-
-  async function handleDiscard() {
-    const tool = toolRef.current;
-    if (!tool) return;
     try {
       await tool.release();
     } catch {
-      // Best-effort.
+      /* best-effort */
     }
-    setSessionOpen(false);
+    if (stepsTotal > 0 && created > 0) {
+      showToast(`Tracked ${stepsTotal} frames, committed ${created} masks.`, {
+        variant: "success",
+      });
+    } else if (stepsTotal > 0) {
+      showToast(
+        `Tracked ${stepsTotal} frames but committed 0 — frame-id map missing.`,
+        { variant: "warning" },
+      );
+    }
     setObjects([]);
     setMarkersLocal([]);
-    setStepsCollected(0);
-    setFramesPropagated(0);
   }
 
-  const dirtyCount = useAnnotations((s) => Object.keys(s.byId).length);
+  function handleCancel() {
+    cancelRef.current = true;
+  }
+
+  // Stable bridge wrappers — refs always read the latest add fns so the
+  // canvas (which calls handlers from a one-time-registered slot) never
+  // captures a stale closure.
+  const addPointRef = useRef(addObjectWithPoint);
+  const addBoxRef = useRef(addObjectWithBox);
+  addPointRef.current = addObjectWithPoint;
+  addBoxRef.current = addObjectWithBox;
+
+  useEffect(() => {
+    setBridgeHandler((point) => void addPointRef.current(point));
+    setBridgeBoxHandler((box) => void addBoxRef.current(box));
+    return () => clearBridge();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const activeClass = useMemo(
+    () => (classes ?? []).find((c) => c.id === activeClassId) ?? null,
+    [classes, activeClassId],
+  );
+
+  const progressPct =
+    totalFrames > 0
+      ? Math.min(100, Math.round((framesPropagated / totalFrames) * 100))
+      : 0;
+  const canStart = objects.length > 0 && !stepping && !starting;
 
   return (
     <aside
@@ -293,7 +313,7 @@ export function SamTrackPanel({
     >
       <header className="flex items-center justify-between">
         <span className="font-medium tracking-tight text-[color:var(--text-primary)]">
-          Track mode
+          Track
         </span>
         <span
           data-testid="sam-track-frame-indicator"
@@ -303,177 +323,159 @@ export function SamTrackPanel({
         </span>
       </header>
 
-      {!sessionOpen && (
-        <div className="grid gap-2">
-          <p className="text-[11.5px] text-[color:var(--text-secondary)] leading-snug">
-            Start a tracking session on this video. You'll mark objects on the
-            current frame, then propagate masks forward.
-          </p>
-          <button
-            type="button"
-            onClick={handleStartSession}
-            disabled={starting}
-            data-testid="sam-track-start"
-            className={cn(
-              "inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-full",
-              "bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium",
-              "hover:bg-[var(--accent-hover)] transition-colors",
-              "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)]",
-            )}
+      <div className="flex items-center gap-2">
+        <span className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
+          Class
+        </span>
+        {activeClass ? (
+          <span
+            data-testid="sam-track-active-class"
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[var(--bg-subtle)]"
           >
-            {starting ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Play className="h-3.5 w-3.5" />
-            )}
-            {starting ? "Starting…" : "Start tracking"}
-          </button>
-        </div>
-      )}
+            <span
+              aria-hidden
+              className="h-2.5 w-2.5 rounded-full"
+              style={{ background: activeClass.color }}
+            />
+            <span className="text-[11.5px] text-[color:var(--text-primary)] truncate max-w-[140px]">
+              {activeClass.name}
+            </span>
+          </span>
+        ) : (
+          <span className="text-[11.5px] text-[color:var(--text-tertiary)]">
+            (will use first class)
+          </span>
+        )}
+      </div>
 
-      {sessionOpen && (
-        <>
-          <section className="grid gap-2">
-            <p className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
-              Step 1 — Mark objects
-            </p>
-            <button
-              type="button"
-              onClick={handleAddObject}
-              data-testid="sam-track-add-object"
-              disabled={!activeClassId}
-              className={cn(
-                "inline-flex items-center justify-center gap-1.5 h-7 px-2.5 rounded-[var(--radius-sm)]",
-                "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
-                "hover:bg-[var(--bg-hover)] transition-colors",
-                "disabled:opacity-50 disabled:cursor-not-allowed",
-              )}
+      {!stepping && (
+        <section className="grid gap-2">
+          <p className="text-[11px] leading-snug text-[color:var(--text-secondary)]">
+            Add objects on this frame, then press <strong>Start tracking</strong>.
+            Switch the active class between adds for multi-class tracking.
+          </p>
+
+          <ul className="grid gap-1 text-[11px] text-[color:var(--text-secondary)]">
+            <li className="flex items-center gap-1.5">
+              <MousePointerClick className="h-3.5 w-3.5 shrink-0 text-[color:var(--text-tertiary)]" />
+              <span>Click on the canvas → point seed</span>
+            </li>
+            <li className="flex items-center gap-1.5">
+              <Square className="h-3.5 w-3.5 shrink-0 text-[color:var(--text-tertiary)]" />
+              <span>Drag a rectangle → bbox seed</span>
+            </li>
+          </ul>
+
+          {objects.length > 0 && (
+            <ul
+              data-testid="sam-track-object-list"
+              className="grid gap-1 mt-1"
             >
-              <Plus className="h-3.5 w-3.5" />
-              Add object ({classNameForActive})
-            </button>
-            {objects.length > 0 && (
-              <ul
-                data-testid="sam-track-object-list"
-                className="grid gap-1 mt-1"
-              >
-                {objects.map((o) => (
+              <li className="flex items-center justify-between text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
+                <span>Selected</span>
+                <span
+                  data-testid="sam-track-object-count"
+                  className="font-mono tabular-nums normal-case tracking-normal"
+                >
+                  {objects.length}
+                </span>
+              </li>
+              {objects.map((o) => {
+                const cls = (classes ?? []).find((c) => c.id === o.classId);
+                return (
                   <li
                     key={o.objId}
                     data-testid={`sam-track-object-${o.objId}`}
                     className="flex items-center gap-1.5 text-[11.5px]"
                   >
-                    <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
+                    <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)] w-5">
                       #{o.objId}
                     </span>
-                    <span className="flex-1 truncate text-[color:var(--text-secondary)]">
-                      {o.className}
+                    <span
+                      aria-hidden
+                      className="h-2.5 w-2.5 shrink-0 rounded-full border border-[var(--border-strong)]"
+                      style={{ background: cls?.color ?? "var(--bg-hover)" }}
+                    />
+                    <span className="flex-1 truncate text-[color:var(--text-primary)]">
+                      {cls?.name ?? o.classId}
+                    </span>
+                    <span className="text-[10px] text-[color:var(--text-tertiary)] uppercase tracking-[0.08em] shrink-0">
+                      {o.seed}
                     </span>
                   </li>
-                ))}
-              </ul>
-            )}
-          </section>
+                );
+              })}
+              <li>
+                <button
+                  type="button"
+                  onClick={() => void clearAll()}
+                  data-testid="sam-track-clear-all"
+                  className={cn(
+                    "inline-flex items-center gap-1 h-6 px-2 rounded-[var(--radius-xs)]",
+                    "text-[11px] text-[color:var(--text-secondary)]",
+                    "hover:bg-[var(--bg-hover)] transition-colors",
+                  )}
+                >
+                  <Trash2 className="h-3 w-3" /> Clear all
+                </button>
+              </li>
+            </ul>
+          )}
+        </section>
+      )}
 
-          <section className="grid gap-2">
-            <p className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
-              Step 2 — Propagate
-            </p>
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="sam-track-step-frames"
-                className="text-[11.5px] text-[color:var(--text-secondary)]"
-              >
-                Frames
-              </label>
-              <input
-                id="sam-track-step-frames"
-                type="number"
-                min={1}
-                max={500}
-                value={stepFrames}
-                onChange={(e) =>
-                  setStepFrames(
-                    Math.max(1, Math.min(500, Number(e.target.value) || 1)),
-                  )
-                }
-                data-testid="sam-track-step-frames"
-                className={cn(
-                  "h-7 w-16 px-1.5 rounded-[var(--radius-sm)] font-mono tabular-nums",
-                  "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
-                  "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
-                )}
-              />
-              <button
-                type="button"
-                onClick={handlePropagate}
-                disabled={stepping || objects.length === 0}
-                data-testid="sam-track-propagate"
-                className={cn(
-                  "inline-flex flex-1 items-center justify-center gap-1.5 h-7 px-2.5 rounded-[var(--radius-sm)]",
-                  "bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium",
-                  "hover:bg-[var(--accent-hover)] transition-colors",
-                  "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
-                )}
-              >
-                {stepping ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Play className="h-3.5 w-3.5" />
-                )}
-                {stepping ? "Stepping…" : "Propagate"}
-              </button>
-            </div>
-            {stepsCollected > 0 && (
-              <p
-                data-testid="sam-track-progress"
-                className="text-[11px] text-[color:var(--text-tertiary)] tabular-nums"
-              >
-                Tracked {stepsCollected} frames ({framesPropagated} propagated)
-              </p>
-            )}
-          </section>
+      {!stepping ? (
+        <button
+          type="button"
+          onClick={handleStartTracking}
+          disabled={!canStart}
+          data-testid="sam-track-start"
+          className={cn(
+            "inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full",
+            "bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium",
+            "hover:bg-[var(--accent-hover)] transition-colors",
+            "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
+          )}
+        >
+          {starting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Play className="h-3.5 w-3.5" />
+          )}
+          Start tracking
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={handleCancel}
+          data-testid="sam-track-cancel"
+          className={cn(
+            "inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full",
+            "bg-[var(--danger,oklch(0.7_0.2_25))] text-white font-medium",
+            "hover:opacity-90 transition-opacity",
+          )}
+        >
+          <X className="h-3.5 w-3.5" /> Cancel
+        </button>
+      )}
 
-          <section className="grid gap-2 border-t border-[var(--glass-border)] pt-2">
-            <p className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
-              Step 3 — Review &amp; commit
-            </p>
-            <p className="text-[11px] text-[color:var(--text-tertiary)] leading-snug">
-              MVP: only the current frame's mask is committed locally; richer
-              per-frame review lands once the frames-list endpoint ships.
-              Existing drafts: <span className="tabular-nums">{dirtyCount}</span>.
-            </p>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={handleCommit}
-                disabled={objects.length === 0 || stepsCollected === 0}
-                data-testid="sam-track-commit"
-                className={cn(
-                  "inline-flex flex-1 items-center justify-center gap-1.5 h-7 px-2.5 rounded-full",
-                  "bg-[var(--success)] text-white font-medium",
-                  "hover:bg-[var(--success-hover)] transition-colors",
-                  "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
-                )}
-              >
-                Commit
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleDiscard()}
-                data-testid="sam-track-discard"
-                className={cn(
-                  "inline-flex items-center justify-center gap-1.5 h-7 px-2.5 rounded-[var(--radius-sm)]",
-                  "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
-                  "transition-colors",
-                )}
-              >
-                <X className="h-3.5 w-3.5" />
-                Discard
-              </button>
-            </div>
-          </section>
-        </>
+      {(stepping || framesPropagated > 0) && (
+        <div className="grid gap-1">
+          <div className="h-2 rounded-full bg-[var(--bg-sunken)] overflow-hidden">
+            <div
+              className="h-full bg-[var(--accent)] transition-[width] duration-200"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <p
+            data-testid="sam-track-progress"
+            className="text-[11px] text-[color:var(--text-tertiary)] tabular-nums"
+          >
+            {stepping
+              ? `Tracking… ${framesPropagated} / ${totalFrames} frames (${progressPct}%)`
+              : `Tracked ${framesPropagated} frames`}
+          </p>
+        </div>
       )}
     </aside>
   );

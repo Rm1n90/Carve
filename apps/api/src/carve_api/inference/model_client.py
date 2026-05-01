@@ -215,12 +215,17 @@ def sam_track_start(
     points: list[list[int]],
     labels: list[int],
     text: str | None = None,
+    frame_urls: list[str] | None = None,
 ) -> dict:
     """POST /sam-track/start — returns {session_id, mask_at_start}.
 
     Multi-object workflow: ``points`` and ``labels`` may be empty (objects are
     added afterward via :func:`sam_track_add_object`). ``text`` is forwarded
     for SAM 3 text-prompt callers.
+
+    v3.8 Phase 4-video step F6 — when ``frame_urls`` is non-empty, the
+    model service downloads each URL to a temp dir and uses it as the
+    init_state path (post-extract videos with deleted originals).
     """
     payload: dict = {
         "video_url": video_url,
@@ -230,6 +235,8 @@ def sam_track_start(
     }
     if text is not None:
         payload["text"] = text
+    if frame_urls:
+        payload["frame_urls"] = frame_urls
     with _wrap_unreachable("sam_track_start"), _client() as c:
         r = c.post("/sam-track/start", json=payload)
         if r.status_code >= 400:

@@ -17,6 +17,7 @@ latency for correctness.
 """
 
 import base64
+import uuid
 
 from carve_api.assets.models import Asset
 from carve_api.errors import AppError
@@ -68,14 +69,19 @@ class Sam3NotEnabled(AppError):
     code = "sam3_not_enabled"
 
 
-def sam_encode_for_asset(asset: Asset) -> dict:
+def sam_encode_for_asset(
+    asset: Asset, frame_id: uuid.UUID | None = None
+) -> dict:
     """Encode the asset on the model service.
 
     Always round-trips to the model service so the returned ``image_hash``
     corresponds to a predictor that has actually called ``set_image()``.
     No API-side cache — see module docstring for rationale.
+
+    v3.8 Phase 4-video step F4 — when ``frame_id`` is provided (video
+    asset path), reads the per-frame JPEG instead of the original file.
     """
-    body = fetch_asset_bytes(asset)
+    body = fetch_asset_bytes(asset, frame_id=frame_id)
     b64 = base64.b64encode(body).decode("ascii")
     try:
         return sam_encode(b64)
@@ -105,7 +111,9 @@ def sam_decode_with_hash(
         raise SamModelFailed(f"decode: {exc.body!r}") from exc
 
 
-def sam_text_prompt_for_asset(asset: Asset, text: str) -> list[dict]:
+def sam_text_prompt_for_asset(
+    asset: Asset, text: str, frame_id: uuid.UUID | None = None
+) -> list[dict]:
     """SAM 3 text-prompt entry point.
 
     Encodes the asset's bytes once and forwards them to the model
@@ -113,8 +121,11 @@ def sam_text_prompt_for_asset(asset: Asset, text: str) -> list[dict]:
     service's 409 (sam3_not_enabled) and 503 (unreachable / predictor
     not loaded) onto AppErrors so the router/web layer can render a
     consistent error envelope.
+
+    v3.8 Phase 4-video step F4 — ``frame_id`` selects a per-frame JPEG
+    for video assets.
     """
-    body = fetch_asset_bytes(asset)
+    body = fetch_asset_bytes(asset, frame_id=frame_id)
     b64 = base64.b64encode(body).decode("ascii")
     try:
         return sam_text_prompt(b64, text)
@@ -131,6 +142,7 @@ def sam_box_prompt_for_asset(
     boxes: list[list[float]],
     box_labels: list[int],
     text: str | None = None,
+    frame_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """SAM 3 box-prompt entry point.
 
@@ -142,7 +154,7 @@ def sam_box_prompt_for_asset(
         raise SamModelFailed("boxes and box_labels must have equal length")
     if any(label not in (0, 1) for label in box_labels):
         raise SamModelFailed("box_labels must be 0 or 1")
-    body = fetch_asset_bytes(asset)
+    body = fetch_asset_bytes(asset, frame_id=frame_id)
     b64 = base64.b64encode(body).decode("ascii")
     try:
         return sam_box_prompt(b64, boxes, box_labels, text=text)

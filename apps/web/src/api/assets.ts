@@ -79,6 +79,67 @@ export const assetsApi = {
   // every Asset row at once for huge tasks.
   listForTask: async (taskId: string): Promise<Asset[]> =>
     (await assetsApi.listPage(taskId, { limit: 5000 })).items,
+  /**
+   * v3.8 Phase 4.1 -- list frames for a video asset. Track-mode commit
+   * needs the {frame_idx -> frame_id} map so propagated masks land on
+   * the right frame rows. Single image assets typically return one
+   * frame at idx=0; videos return one row per extracted frame.
+   */
+  listFrames: async (
+    assetId: string,
+  ): Promise<
+    { idx: number; frame_id: string; pts_ms: number; url: string }[]
+  > =>
+    (
+      await api.get<
+        { idx: number; frame_id: string; pts_ms: number; url: string }[]
+      >(`/assets/${assetId}/frames`)
+    ).data,
+  /**
+   * v3.8 Phase 4-video step D — Re-extract frames for a video asset
+   * with the user's chosen strategy. Returns ``{job_id}``; the caller
+   * polls ``GET /assets/{id}/frames`` to see the new frames land
+   * (or wait for the worker to finish via a status indicator).
+   */
+  reextractFrames: async (
+    assetId: string,
+    body: {
+      strategy: "all" | "every_nth" | "count" | "auto";
+      n?: number | null;
+      quality?: number;
+    },
+  ): Promise<{ job_id: string; strategy: string; n: number | null }> =>
+    (
+      await api.post<{ job_id: string; strategy: string; n: number | null }>(
+        `/assets/${assetId}/frames/extract`,
+        body,
+      )
+    ).data,
+  /**
+   * v3.8 Phase 4-video step F — live progress for the extraction job.
+   * Polls the Redis hash the worker writes; returns status + decoded/
+   * uploaded counters + a phase label ("decoding" / "uploading" / "done").
+   */
+  frameExtractStatus: async (
+    assetId: string,
+  ): Promise<{
+    status: "running" | "completed" | "failed" | "idle";
+    phase: "decoding" | "uploading" | "done" | "idle";
+    decoded: number;
+    expected: number;
+    uploaded: number;
+    message: string | null;
+  }> =>
+    (
+      await api.get<{
+        status: "running" | "completed" | "failed" | "idle";
+        phase: "decoding" | "uploading" | "done" | "idle";
+        decoded: number;
+        expected: number;
+        uploaded: number;
+        message: string | null;
+      }>(`/assets/${assetId}/frames/extract/status`)
+    ).data,
   count: async (taskId: string): Promise<AssetCountResponse> =>
     (await api.get<AssetCountResponse>(`/tasks/${taskId}/assets/count`)).data,
   upload: async (taskId: string, file: File): Promise<Asset> => {

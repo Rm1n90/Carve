@@ -34,7 +34,17 @@ export class TrackPropagateTool {
     private assetId: string,
     private getActiveClassId: () => string | null,
     private generateTrackId: () => string = () =>
-      `tr-${Math.random().toString(36).slice(2)}`,
+      // v3.8 Phase 4-video step F8 — must be a valid UUID; the API
+      // parses with ``uuid.UUID(...)`` and 500s on the legacy
+      // ``tr-<base36>`` shape.
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Math.floor(Math.random() * 1e8).toString(16).padStart(8, "0")}-` +
+          `${Math.floor(Math.random() * 1e4).toString(16).padStart(4, "0")}-` +
+          `4${Math.floor(Math.random() * 1e3).toString(16).padStart(3, "0")}-` +
+          `${(8 + Math.floor(Math.random() * 4)).toString(16)}` +
+          `${Math.floor(Math.random() * 1e3).toString(16).padStart(3, "0")}-` +
+          `${Math.floor(Math.random() * 1e12).toString(16).padStart(12, "0")}`,
     private generateTempId: () => string = () =>
       `t-${Math.random().toString(36).slice(2)}`,
   ) {}
@@ -95,6 +105,36 @@ export class TrackPropagateTool {
   }
 
   /**
+   * v3.8 Phase 4.3 — open a SAM 3 *concept* tracking session seeded
+   * with a text prompt. The model service binds the prompt to obj_id=1
+   * automatically (concept mode does not accept later /objects calls).
+   * The classId snapshot is used at commit time so the tracked masks
+   * land on the right class.
+   */
+  async startWithText(
+    text: string,
+    classId: string,
+    opts?: { frameIdx?: number },
+  ): Promise<void> {
+    if (this.sessionId !== null) {
+      await this.release();
+    }
+    const r = await samTrackApi.start(
+      this.assetId,
+      opts?.frameIdx ?? 0,
+      [],
+      [],
+      text,
+    );
+    this.sessionId = r.session_id;
+    this.collected = [];
+    this.classByObjId.clear();
+    this.nextObjId = 2;
+    // Concept mode: the server seeds obj_id=1 from the text prompt.
+    this.classByObjId.set(1, classId);
+  }
+
+  /**
    * Add a new tracked object at a specific frame. Returns the assigned obj_id.
    * The session must already be open. The classId snapshot is used at commit
    * time so each obj_id's annotations land on the right class.
@@ -104,17 +144,34 @@ export class TrackPropagateTool {
     points: [number, number][],
     labels: number[],
     classId: string,
+    boxes?: [number, number, number, number][],
   ): Promise<number> {
     if (this.sessionId === null) {
       throw new Error("TrackPropagateTool: not started");
     }
     const sentObjId = this.nextObjId++;
-    const response = await samTrackApi.addObject(this.assetId, this.sessionId, {
+    // v3.8 Phase 4-video step F7 -- boxes are an alternative to points
+    // for seeding tracked objects (server's /sam-track/{sid}/objects
+    // accepts either or both). When boxes is provided, points/labels
+    // are typically empty.
+    const body: {
+      frame_idx: number;
+      obj_id: number;
+      points?: [number, number][];
+      labels?: number[];
+      boxes?: [number, number, number, number][];
+    } = {
       frame_idx: frameIdx,
       obj_id: sentObjId,
-      points,
-      labels,
-    });
+    };
+    if (points && points.length > 0) {
+      body.points = points;
+      body.labels = labels;
+    }
+    if (boxes && boxes.length > 0) {
+      body.boxes = boxes;
+    }
+    const response = await samTrackApi.addObject(this.assetId, this.sessionId, body);
     if (response.obj_id !== sentObjId) {
       // Defensive: don't mutate classByObjId — server returned an unexpected
       // id, so the mapping would key off the wrong obj_id at commit() time.
@@ -158,16 +215,33 @@ export class TrackPropagateTool {
           trackByObjId.set(obj.obj_id, this.generateTrackId());
         }
         const trackId = trackByObjId.get(obj.obj_id)!;
-        useAnnotations.getState().add({
-          tempId: this.generateTempId(),
-          classId,
-          kind: "mask",
-          geometry: { kind: "mask_rle", size: obj.size, counts: obj.counts },
-          frameId: fid,
-          serverId: null,
-          dirty: true,
-          trackId,
-        });
+        // v3.8 Phase 4.1 -- emit polygon when the model produced a
+        // usable contour so tracked annotations are immediately
+        // editable. Falls back to mask_rle when polygon is empty.
+        const poly = obj.polygon;
+        if (poly && poly.length >= 3) {
+          useAnnotations.getState().add({
+            tempId: this.generateTempId(),
+            classId,
+            kind: "polygon",
+            geometry: { kind: "polygon", points: poly },
+            frameId: fid,
+            serverId: null,
+            dirty: true,
+            trackId,
+          });
+        } else {
+          useAnnotations.getState().add({
+            tempId: this.generateTempId(),
+            classId,
+            kind: "mask",
+            geometry: { kind: "mask_rle", size: obj.size, counts: obj.counts },
+            frameId: fid,
+            serverId: null,
+            dirty: true,
+            trackId,
+          });
+        }
         count += 1;
       }
     }

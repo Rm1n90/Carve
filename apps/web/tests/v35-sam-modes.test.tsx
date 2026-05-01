@@ -100,7 +100,7 @@ describe("SamTool — setMode / setText / setBox", () => {
     tool.setMode("text");
     expect(tool.getMode()).toBe("text");
     const result = await tool.setText("person");
-    expect(samApi.textPrompt).toHaveBeenCalledWith("asset-1", "person");
+    expect(samApi.textPrompt).toHaveBeenCalledWith("asset-1", "person", null);
     expect(result).not.toBeNull();
     expect(result?.score).toBe(0.91);
   });

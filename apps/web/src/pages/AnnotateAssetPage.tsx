@@ -93,12 +93,16 @@ function SamTrackModeGate({
   currentFrameIdx,
   totalFrames,
   isVideo,
+  frameIdxToFrameId,
+  classes,
 }: {
   assetId: string;
   frameId: string | null;
   currentFrameIdx: number;
   totalFrames: number;
   isVideo: boolean;
+  frameIdxToFrameId?: Record<number, string>;
+  classes?: import("@/api/classes").ClassRow[];
 }) {
   const activeTool = useTool((s) => s.active);
   const samMode = useTool((s) => s.samMode);
@@ -111,6 +115,8 @@ function SamTrackModeGate({
       frameId={frameId}
       currentFrameIdx={currentFrameIdx}
       totalFrames={totalFrames}
+      frameIdxToFrameId={frameIdxToFrameId}
+      classes={classes}
     />
   );
 }
@@ -186,6 +192,51 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     // The autoFit logic is now gated on assetId, but disabling the
     // window-focus refetch also avoids needless network churn.
     refetchOnWindowFocus: false,
+  });
+  // v3.8 Phase 4-video step C — frames-list query for video assets.
+  // Returns ``[{idx, frame_id, pts_ms, url}, ...]`` ordered by idx.
+  // Polls every 3s while empty so the editor catches up to the
+  // background extraction worker without a manual refresh.
+  const framesQ = useQuery({
+    queryKey: ["frames", assetId],
+    queryFn: () => assetsApi.listFrames(assetId),
+    enabled: assetQ.data?.asset.kind === "video",
+    refetchInterval: (q) => {
+      // Fast-poll while no frames exist yet (extraction in flight or
+      // legacy upload pending Re-extract). Stop once any frame is
+      // present or once the asset isn't a video.
+      const data = q.state.data;
+      if (!data || data.length <= 1) return 3000;
+      return false;
+    },
+    staleTime: 30_000,
+  });
+  // v3.8 Phase 4-video step F8 — the SAM video tracker iterates over
+  // the stitched JPEG sequence and emits POSITIONAL frame indices
+  // (0..N-1), not the raw video indices stored on the Frame rows.
+  // Key the commit map by array position so every propagated frame
+  // matches a frame_id; otherwise sparse extractions drop almost all
+  // tracked frames at commit time ("Tracked N frames, committed 0").
+  const frameIdxToFrameId = useMemo(() => {
+    const map: Record<number, string> = {};
+    (framesQ.data ?? []).forEach((f, i) => {
+      map[i] = f.frame_id;
+    });
+    return map;
+  }, [framesQ.data]);
+
+  // v3.8 Phase 4-video step F — frame-extraction progress polling.
+  // Active only while we're a video asset AND frames are still empty
+  // (extraction in progress / not yet started). Stops once any frame
+  // is present so the editor doesn't keep hammering Redis.
+  const isVideoAsset = assetQ.data?.asset.kind === "video";
+  const noFramesYet = (framesQ.data ?? []).length === 0;
+  const extractStatusQ = useQuery({
+    queryKey: ["frame-extract-status", assetId],
+    queryFn: () => assetsApi.frameExtractStatus(assetId),
+    enabled: isVideoAsset && noFramesYet,
+    refetchInterval: isVideoAsset && noFramesYet ? 800 : false,
+    refetchIntervalInBackground: false,
   });
   // v3.1 Issue 3 (Option A) — the editor consumes the *task-effective*
   // class list. When the task has no subset configured (allowed_class_ids
@@ -571,7 +622,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         return;
       }
       // Prev/next asset navigation. Stop at boundaries (no wrap).
+      // v3.8 Phase 4-video step F8 — on video assets plain ArrowLeft/
+      // ArrowRight steps frames (FrameTimeline owns that handler);
+      // Shift+Arrow falls through to asset navigation. On image
+      // assets plain Arrow keeps the legacy asset-nav behaviour.
       if (!meta && e.key === "ArrowLeft") {
+        if (isVideoAsset && !e.shiftKey) return;
         const target = navAssetRef.current.prev;
         if (target) {
           e.preventDefault();
@@ -580,6 +636,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         return;
       }
       if (!meta && e.key === "ArrowRight") {
+        if (isVideoAsset && !e.shiftKey) return;
         const target = navAssetRef.current.next;
         if (target) {
           e.preventDefault();
@@ -686,7 +743,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const url = assetQ.data.url;
   const w = asset.width ?? 1024;
   const h = asset.height ?? 768;
-  const isVideo = asset.kind === "video" && (asset.frames ?? 0) > 1;
+  // v3.8 Phase 4-video — ANY video asset routes through the frames-list
+  // flow, even right after upload when only the poster row exists in DB.
+  // The "Extracting video frames..." overlay covers the canvas until
+  // the worker fills the table; the editor never falls back to the
+  // raw mp4 URL (which would just autoplay).
+  const isVideo = asset.kind === "video";
   const hasError = saveMutation.isError;
 
   return (
@@ -740,8 +802,33 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
               <AnnotationCanvas
                 width={w}
                 height={h}
-                imageUrl={url}
-                frameId={frameId}
+                imageUrl={(() => {
+                  // v3.8 Phase 4-video step C (revised) — for video
+                  // assets, currentFrameIdx is treated as a POSITION
+                  // within the extracted-frames list (0..N-1), not the
+                  // raw video frame index. This way scrubbing the
+                  // timeline always lands on a real extracted frame
+                  // even when extraction is sparse (auto strategy).
+                  // We deliberately do NOT fall back to the raw mp4
+                  // URL — that would let the browser play the video
+                  // instead of showing a still frame. When frames are
+                  // unavailable, the canvas gets an empty string and
+                  // the extraction-status overlay below covers the area.
+                  if (isVideo) {
+                    const frames = framesQ.data ?? [];
+                    const frame = frames[Math.min(currentFrameIdx, frames.length - 1)];
+                    return frame?.url ?? "";
+                  }
+                  return url;
+                })()}
+                frameId={(() => {
+                  if (isVideo) {
+                    const frames = framesQ.data ?? [];
+                    const frame = frames[Math.min(currentFrameIdx, frames.length - 1)];
+                    return frame?.frame_id ?? null;
+                  }
+                  return frameId;
+                })()}
                 assetId={assetId}
                 onZoomChange={setZoomPct}
                 onImageStatusChange={handleImageStatusChange}
@@ -751,7 +838,90 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 classes={classesQ.data ?? []}
               />
               <SelectionCountBadge />
-              {imageStatus === "error" && (
+              {/* v3.8 Phase 4-video step E — extraction-status overlay
+                  for video assets that don't have per-frame JPEGs yet.
+                  Replaces the misleading "Failed to load image" overlay
+                  that used to fire when the canvas tried to render the
+                  raw mp4 URL. The Re-extract button in the toolbar lets
+                  the user kick a fresh extraction; the framesQ poller
+                  picks up new rows automatically every ~3s. */}
+              {isVideo && (framesQ.data ?? []).length === 0 && (() => {
+                // v3.8 Phase 4-video step F — live extraction progress.
+                // Read the worker's Redis hash via extractStatusQ.
+                const s = extractStatusQ.data;
+                const phase = s?.phase ?? "idle";
+                const expected = s?.expected ?? 0;
+                const decoded = s?.decoded ?? 0;
+                const uploaded = s?.uploaded ?? 0;
+                const phaseLabel =
+                  phase === "decoding"
+                    ? "Decoding video…"
+                    : phase === "uploading"
+                      ? "Uploading frames…"
+                      : phase === "done"
+                        ? "Finishing up…"
+                        : s?.status === "failed"
+                          ? "Extraction failed"
+                          : "Waiting for worker…";
+                const progress =
+                  expected > 0
+                    ? phase === "uploading"
+                      ? uploaded / expected
+                      : decoded / expected
+                    : 0;
+                const pct = Math.min(
+                  100,
+                  Math.max(0, Math.round(progress * 100)),
+                );
+                const failed = s?.status === "failed";
+                return (
+                  <div
+                    data-testid="extracting-frames-overlay"
+                    className={cn(
+                      "absolute inset-0 z-30 flex items-center justify-center",
+                      "bg-[oklch(0_0_0/0.40)] backdrop-blur-[2px]",
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        "w-[min(92vw,460px)] rounded-[var(--radius-lg)]",
+                        "glass-surface-strong p-5 grid gap-3",
+                      )}
+                    >
+                      <div className="grid gap-1">
+                        <div className="text-[14px] font-medium tracking-tight text-[color:var(--text-primary)]">
+                          {failed ? "Frame extraction failed" : phaseLabel}
+                        </div>
+                        <p className="text-[12px] text-[color:var(--text-secondary)] leading-snug tabular-nums">
+                          {failed
+                            ? (s?.message ??
+                                "Check worker logs and try Re-extract.")
+                            : phase === "decoding"
+                              ? `${decoded}${
+                                  expected > 0 ? ` / ${expected}` : ""
+                                } frames decoded`
+                              : phase === "uploading"
+                                ? `${uploaded} / ${expected} frames uploaded`
+                                : "Worker is starting…"}
+                        </p>
+                      </div>
+                      {!failed && (
+                        <div className="h-2 rounded-full bg-[var(--bg-sunken)] overflow-hidden">
+                          <div
+                            className="h-full bg-[var(--accent)] transition-[width] duration-200"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      )}
+                      <p className="text-[11px] text-[color:var(--text-tertiary)] italic">
+                        Use the toolbar's <strong>Re-extract frames</strong>{" "}
+                        button to override the strategy.
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
+              {imageStatus === "error" && !(isVideo && (framesQ.data ?? []).length === 0) && (
                 <div
                   data-testid="canvas-image-error-overlay"
                   className={cn(
@@ -930,17 +1100,39 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   Keeps Phase D's other modes' UX untouched. */}
               <SamTrackModeGate
                 assetId={assetId}
-                frameId={frameId}
-                currentFrameIdx={currentFrameIdx}
+                frameId={
+                  // Pass the actual frame_id at the active position so
+                  // the panel's commit map seeds correctly.
+                  isVideo
+                    ? ((framesQ.data ?? [])[
+                        Math.min(currentFrameIdx, (framesQ.data ?? []).length - 1)
+                      ]?.frame_id ?? frameId)
+                    : frameId
+                }
+                // SAM Track talks to the model service in RAW VIDEO
+                // FRAME INDICES, not list-positions. Convert here.
+                currentFrameIdx={
+                  isVideo
+                    ? ((framesQ.data ?? [])[
+                        Math.min(currentFrameIdx, (framesQ.data ?? []).length - 1)
+                      ]?.idx ?? 0)
+                    : currentFrameIdx
+                }
                 totalFrames={asset.frames}
                 isVideo={isVideo}
+                frameIdxToFrameId={frameIdxToFrameId}
+                classes={classesQ.data ?? []}
               />
             </aside>
           </div>
 
           {isVideo && (
             <FrameTimeline
-              totalFrames={asset.frames}
+              // v3.8 Phase 4-video step C — index by EXTRACTED frame
+              // count, not the raw mp4 frame count. This makes the
+              // timeline a discrete walk through what's actually
+              // available (matters when auto strategy downsamples).
+              totalFrames={(framesQ.data ?? []).length || asset.frames}
               currentIdx={currentFrameIdx}
               onChange={setCurrentFrameIdx}
             />

@@ -12,6 +12,7 @@ import {
   MoreVertical,
   Settings,
   Sparkles,
+  Trash2,
   Video,
 } from "lucide-react";
 import { projectsApi } from "@/api/projects";
@@ -291,11 +292,14 @@ function TaskRowMenu({
   pending,
   onDuplicate,
   onEditClasses,
+  onDelete,
 }: {
   task: Task;
   pending: boolean;
   onDuplicate: () => void;
   onEditClasses: () => void;
+  // v3.8 -- Delete the task. Caller handles the confirm + mutation.
+  onDelete?: () => void;
 }) {
   return (
     <DropdownMenu.Root>
@@ -349,6 +353,20 @@ function TaskRowMenu({
             <Tag className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
             <span className="flex-1">Edit classes…</span>
           </DropdownMenu.Item>
+          {onDelete && (
+            <DropdownMenu.Item
+              data-testid={`project-detail-task-delete-${task.id}`}
+              onSelect={() => onDelete()}
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
+                "cursor-pointer outline-none text-[color:var(--danger)]",
+                "data-[highlighted]:bg-[var(--danger-bg)]",
+              )}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              <span className="flex-1">Delete task…</span>
+            </DropdownMenu.Item>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -684,6 +702,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     queryFn: () => statsApi.projectStats(projectId),
   });
   const qc = useQueryClient();
+  const confirm = useConfirm();
   // v3.1 Bug 2 — Duplicate opens a name dialog; ×3 was removed because
   // users only want a single, named copy.
   // v3.2 Issue 4 — the dialog also includes a class checkbox grid so
@@ -755,6 +774,19 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     },
     onError: () => {
       showToast("Failed to duplicate task", { variant: "error" });
+    },
+  });
+
+  // v3.8 — task delete. Wired from TaskRowMenu's "Delete task..." item.
+  const deleteTask = useMutation({
+    mutationFn: (taskId: string) => tasksApi.delete(projectId, taskId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tasks", projectId] });
+      qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
+      showToast("Task deleted.", { variant: "success" });
+    },
+    onError: () => {
+      showToast("Failed to delete task.", { variant: "error" });
     },
   });
 
@@ -951,6 +983,24 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                         setDuplicateDraft(`${t.name} (copy)`);
                       }}
                       onEditClasses={() => setClassesTarget(t)}
+                      onDelete={async () => {
+                        const ok = await confirm({
+                          title: "Delete task?",
+                          description: (
+                            <>
+                              Delete the task{" "}
+                              <span className="font-medium text-[color:var(--text-primary)]">
+                                {t.name}
+                              </span>
+                              ? All assets, frames, and annotations under it
+                              will be removed. This cannot be undone.
+                            </>
+                          ),
+                          variant: "danger",
+                          confirmLabel: "Delete task",
+                        });
+                        if (ok) deleteTask.mutate(t.id);
+                      }}
                     />
                   </li>
                 ))}
