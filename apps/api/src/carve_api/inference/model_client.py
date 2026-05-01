@@ -112,6 +112,42 @@ def yolo_predict(weight_id: str, image_b64: str, *, conf: float = 0.25, iou: flo
         return r.json()
 
 
+def yolo_train(
+    *,
+    weight_id_base: str | None,
+    dataset_zip_url: str,
+    epochs: int,
+    imgsz: int,
+    device: str = "auto",
+) -> dict:
+    """POST /yolo/train — plan-09 task-05 active-learning retrain.
+
+    Returns ``{weight_id, weights_url, xxh3_128, size_bytes, metrics}``.
+    The model service handles the dataset download, training, hashing and
+    MinIO upload; the api just registers a new ``Weight`` row pointing at
+    the produced object.
+
+    Training can take a long time — callers must run this from an RQ worker
+    (the retrain RQ job does that). We pass ``timeout=None`` so the request
+    is bounded only by the model service's own training duration.
+    """
+    body: dict = {
+        "weight_id_base": weight_id_base,
+        "dataset_zip_url": dataset_zip_url,
+        "epochs": int(epochs),
+        "imgsz": int(imgsz),
+        "device": device,
+    }
+    with _wrap_unreachable("yolo_train"), _client() as c:
+        try:
+            r = c.post("/yolo/train", json=body, timeout=None)
+        except TypeError:
+            r = c.post("/yolo/train", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
 def yolo_inspect(file_bytes: bytes, *, filename: str = "weight.pt") -> dict:
     """POST /yolo/inspect — returns ``{class_names: [...], task_kind: "..."}``.
 

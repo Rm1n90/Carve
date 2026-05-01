@@ -70,6 +70,10 @@ def create_app() -> FastAPI:
     from carve_api.inference.router import task_inference_router
     app.include_router(task_inference_router)
 
+    # Plan-09 task-05 — active-learning retrain endpoints.
+    from carve_api.inference.retrain_router import router as retrain_router
+    app.include_router(retrain_router)
+
     from carve_api.io.import_router import router as import_router
     app.include_router(import_router)
 
