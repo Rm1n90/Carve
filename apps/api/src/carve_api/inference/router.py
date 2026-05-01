@@ -385,10 +385,11 @@ def enqueue_sam_auto_text_batch(
     )
     try:
         from rq import Queue
+        from carve_api.jobs.queue import enqueue_with_defaults
         client = _redis_client_or_none()
         if client is not None:
             q = Queue("default", connection=client)
-            q.enqueue(run_auto_text_batch, job_payload)
+            enqueue_with_defaults(q, run_auto_text_batch, job_payload)
     except Exception:
         pass
     return {"job_id": job_payload.job_id}
