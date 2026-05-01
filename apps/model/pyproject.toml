@@ -30,10 +30,34 @@ gpu = [
   "av==13.1.0",
   "transformers==5.0.0",
 ]
+# Plan 11 (SAM 3.1 migration) — native sam3 package required for the
+# Object Multiplex multi-object joint tracker. The transformers
+# `Sam3VideoModel` cannot load `facebook/sam3.1`'s `sam3.1_multiplex.pt`
+# checkpoint (no model.safetensors is published). The pip install pulls
+# only the Python package; the multi-GB multiplex checkpoint is
+# downloaded lazily from the Hugging Face Hub at runtime.
+#
+# Kept in its own extras group because sam3 upstream pins `numpy<2`,
+# which conflicts with the project's `numpy==2.2.1`. The Dockerfile
+# installs `[sam3p1]` with `--no-deps` after the main resolve so the
+# resolver never sees the numpy conflict. Numpy 2.x is ABI-compatible
+# with sam3 in practice — the upstream cap is conservative.
+sam3p1 = [
+  "sam3 @ git+https://github.com/facebookresearch/sam3.git",
+  "ftfy==6.1.1",
+  "iopath>=0.1.10",
+  "einops>=0.7",
+  "timm>=1.0.17",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# Required so the `sam3p1` extra can declare `sam3 @ git+https://...` as
+# a direct VCS reference (Plan 11 / Task 1).
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/carve_model"]
