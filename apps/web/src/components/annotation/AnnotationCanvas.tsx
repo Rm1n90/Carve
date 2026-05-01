@@ -824,6 +824,32 @@ export function AnnotationCanvas({
     };
   }, []);
 
+  // ----- Plan 09 Task 10 — cheat-sheet hotkey ('?' / Shift+/).
+  //
+  // Lifted out of <KeyboardCheatSheet> so the binding only exists when
+  // the editor canvas is mounted (no global '?' hijack on other pages).
+  // Dispatches a CustomEvent the cheat-sheet dialog listens for; we
+  // skip the binding when an input / textarea / contenteditable has
+  // focus so users typing a literal '?' aren't interrupted.
+  useEffect(() => {
+    function isEditableTarget(target: EventTarget | null): boolean {
+      const el = target as HTMLElement | null;
+      if (!el || typeof el !== "object") return false;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") return true;
+      if (el.isContentEditable) return true;
+      return false;
+    }
+    function onKey(e: KeyboardEvent) {
+      if (isEditableTarget(e.target)) return;
+      if (e.key === "?" || (e.shiftKey && e.key === "/")) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("carve:open-cheat-sheet"));
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // ----- Toolbar / keyboard zoom commands. The toolbar dispatches
   // window CustomEvents (so the toolbar doesn't need a ref into the
   // canvas) and the canvas resolves them against the current frame.

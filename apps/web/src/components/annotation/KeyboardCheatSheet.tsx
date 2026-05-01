@@ -10,93 +10,124 @@ import {
 import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/lib/cn";
 
-interface ShortcutGroup {
+/**
+ * Plan 09 Task 10 — canonical shortcut list, exported as a single
+ * source of truth. The `?` hotkey itself is bound in
+ * `AnnotationCanvas.tsx` (only when the editor is mounted) and
+ * dispatches a `carve:open-cheat-sheet` window CustomEvent that this
+ * dialog listens for. Keeping the binding outside this component
+ * means it doesn't fire on pages where the cheat sheet isn't even
+ * mounted (e.g. project lists), and it's a single point of truth
+ * the AnnotationCanvas can suppress when an input has focus.
+ */
+export type ShortcutGroup = {
   title: string;
-  rows: { keys: string[]; label: string }[];
-}
+  items: { keys: string[]; desc: string }[];
+};
 
 // IMPORTANT: only document shortcuts that are actually wired up in the
 // app — see audit bug N. The handlers live in:
 //   - EditorToolbar.tsx (V/B/P/M/T/S tool hotkeys, A auto-apply, F fit)
 //   - AnnotateAssetPage.tsx (Cmd+S, Cmd+Z, Cmd+Shift+Z, Cmd+A, Backspace,
-//     Delete, Cmd+]/[, Cmd+Shift+]/[, ArrowLeft/Right asset nav, Esc)
+//     Delete, Cmd+]/[, Cmd+Shift+]/[, ArrowLeft/Right asset nav, Esc,
+//     Shift+Arrow video frame nav, comma / period frame step, A accept,
+//     R reject)
 //   - AnnotationCanvas.tsx (Arrow keys nudge selected bbox; Shift+arrow
-//     nudges 10px; Shift+click multi-selects)
+//     nudges 10px; Shift+click multi-selects; '?' opens this dialog;
+//     '[' / ']' brush radius)
 //   - PolygonTool.onKeyDown — Enter commits, Esc cancels in-flight polygon
 //   - ClassesPanel.tsx — number keys 1..9 switch active class
-const GROUPS: ShortcutGroup[] = [
+export const SHORTCUTS: ShortcutGroup[] = [
   {
-    title: "Tools",
-    rows: [
-      { keys: ["V"], label: "Drag / select" },
-      { keys: ["B"], label: "Bounding box" },
-      { keys: ["P"], label: "Polygon" },
-      { keys: ["M"], label: "Mask brush" },
-      { keys: ["T"], label: "Tag" },
-      { keys: ["S"], label: "Smart (SAM)" },
-      { keys: ["A"], label: "Auto-apply (smart)" },
-    ],
-  },
-  {
-    title: "Editing",
-    rows: [
-      { keys: ["Enter"], label: "Commit polygon" },
-      { keys: ["Esc"], label: "Cancel / clear selection" },
-      { keys: ["Delete"], label: "Delete selected" },
-      { keys: ["Backspace"], label: "Delete selected" },
-      { keys: ["←", "→", "↑", "↓"], label: "Nudge selected bbox" },
-      { keys: ["⇧", "+", "arrow"], label: "Nudge by 10px" },
+    title: "Tool",
+    items: [
+      { keys: ["V"], desc: "Drag / select" },
+      { keys: ["B"], desc: "Bounding box" },
+      { keys: ["P"], desc: "Polygon" },
+      { keys: ["M"], desc: "Mask brush" },
+      { keys: ["T"], desc: "Tag" },
+      { keys: ["S"], desc: "Smart (SAM)" },
+      { keys: ["A"], desc: "Auto-apply (smart)" },
+      { keys: ["F"], desc: "Fit to screen" },
+      { keys: ["Enter"], desc: "Commit polygon" },
     ],
   },
   {
     title: "Selection",
-    rows: [
-      { keys: ["1", "..", "9"], label: "Switch active class" },
-      { keys: ["⇧", "click"], label: "Multi-select" },
-      { keys: ["⌘", "A"], label: "Select all on frame" },
+    items: [
+      { keys: ["⌘", "A"], desc: "Select all on frame" },
+      { keys: ["Backspace"], desc: "Delete selected" },
+      { keys: ["Delete"], desc: "Delete selected" },
+      { keys: ["Esc"], desc: "Cancel / clear selection" },
+      { keys: ["⇧", "click"], desc: "Multi-select" },
+      { keys: ["1", "..", "9"], desc: "Switch active class" },
+      { keys: ["←", "→", "↑", "↓"], desc: "Nudge selected bbox" },
+      { keys: ["⇧", "+", "arrow"], desc: "Nudge by 10px" },
     ],
   },
   {
     title: "Navigation",
-    rows: [
-      { keys: ["←"], label: "Previous asset" },
-      { keys: ["→"], label: "Next asset" },
-      { keys: ["F"], label: "Fit to screen" },
+    items: [
+      { keys: ["←"], desc: "Previous asset" },
+      { keys: ["→"], desc: "Next asset" },
+      { keys: ["⇧", "←"], desc: "Previous asset (video)" },
+      { keys: ["⇧", "→"], desc: "Next asset (video)" },
+      { keys: ["["], desc: "Previous frame" },
+      { keys: ["]"], desc: "Next frame" },
+      { keys: [","], desc: "Step frame back" },
+      { keys: ["."], desc: "Step frame forward" },
+    ],
+  },
+  {
+    title: "Review",
+    items: [
+      { keys: ["A"], desc: "Accept selected" },
+      { keys: ["R"], desc: "Reject selected" },
+    ],
+  },
+  {
+    title: "SAM",
+    items: [
+      { keys: ["P"], desc: "Point mode" },
+      { keys: ["B"], desc: "Box mode" },
+      { keys: ["T"], desc: "Text mode" },
+      { keys: ["drag"], desc: "Track mode: bbox seed" },
+      { keys: ["click"], desc: "Track mode: point seed" },
     ],
   },
   {
     title: "Z-order",
-    rows: [
-      { keys: ["⌘", "⇧", "]"], label: "Bring to front" },
-      { keys: ["⌘", "⇧", "["], label: "Send to back" },
-      { keys: ["⌘", "]"], label: "Bring forward" },
-      { keys: ["⌘", "["], label: "Send backward" },
+    items: [
+      { keys: ["⌘", "⇧", "]"], desc: "Bring to front" },
+      { keys: ["⌘", "⇧", "["], desc: "Send to back" },
+      { keys: ["⌘", "]"], desc: "Bring forward" },
+      { keys: ["⌘", "["], desc: "Send backward" },
     ],
   },
   {
     title: "Files",
-    rows: [
-      { keys: ["⌘", "S"], label: "Save now" },
-      { keys: ["⌘", "Z"], label: "Undo" },
-      { keys: ["⌘", "⇧", "Z"], label: "Redo" },
+    items: [
+      { keys: ["⌘", "S"], desc: "Save now" },
+      { keys: ["⌘", "Z"], desc: "Undo" },
+      { keys: ["⌘", "⇧", "Z"], desc: "Redo" },
+      { keys: ["?"], desc: "Show this cheat sheet" },
     ],
   },
 ];
+
+// Backwards-compatible alias — the previous ``rows`` / ``label`` shape
+// is preserved by mapping in the renderer. The exported canonical
+// shape uses ``items`` / ``desc`` (Plan 09 Task 10 spec).
 
 export function KeyboardCheatSheet() {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    function handler(e: KeyboardEvent) {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      if (e.key === "?" || (e.shiftKey && e.key === "/")) {
-        e.preventDefault();
-        setOpen((v) => !v);
-      }
+    function onOpen() {
+      setOpen((v) => !v);
     }
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("carve:open-cheat-sheet", onOpen as EventListener);
+    return () => window.removeEventListener("carve:open-cheat-sheet", onOpen as EventListener);
   }, []);
 
   return (
@@ -122,19 +153,22 @@ export function KeyboardCheatSheet() {
               <DialogTitle>Keyboard shortcuts</DialogTitle>
               <DialogDescription>Press ? to toggle this dialog.</DialogDescription>
             </DialogHeader>
-            <div className="grid grid-cols-2 gap-x-8 gap-y-5">
-              {GROUPS.map((g) => (
+            <div
+              className="grid grid-cols-2 gap-x-8 gap-y-5"
+              data-testid="cheatsheet-groups"
+            >
+              {SHORTCUTS.map((g) => (
                 <div key={g.title} className="grid gap-2">
                   <p className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)] font-medium">
                     {g.title}
                   </p>
                   <ul className="grid gap-1.5">
-                    {g.rows.map((r, i) => (
+                    {g.items.map((r, i) => (
                       <li
                         key={`${g.title}-${i}`}
                         className="flex items-center justify-between gap-3 text-[12.5px] text-[color:var(--text-secondary)]"
                       >
-                        <span className="truncate">{r.label}</span>
+                        <span className="truncate">{r.desc}</span>
                         <span className="flex items-center gap-1 shrink-0">
                           {r.keys.map((k, j) => (
                             <Kbd key={`${i}-${j}`}>{k}</Kbd>
