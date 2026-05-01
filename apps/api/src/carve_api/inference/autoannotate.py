@@ -305,7 +305,12 @@ def fetch_asset_bytes(asset: Asset, frame_id: uuid.UUID | None = None) -> bytes:
     image, not a multi-MB mp4.
     """
     storage = MinioClient.from_settings()
-    if frame_id is not None:
+    # v3.9 — frame_id is only meaningful for video assets (which have
+    # per-frame JPEGs at ``assets/<hash>/frames/<idx>.jpg``). Image
+    # assets have a synthetic Frame row at idx=0 but no extracted JPEG;
+    # the SAM frontend may still pass that frame_id along — fall back
+    # to the original blob in that case instead of raising NoSuchKey.
+    if frame_id is not None and getattr(asset, "kind", None) == "video":
         from carve_api.assets.models import Frame
         from carve_api.db import get_session_factory
 
