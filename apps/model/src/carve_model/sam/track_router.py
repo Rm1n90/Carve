@@ -24,6 +24,8 @@ from carve_model.sam.tracker import (
     add_object_to_session,
     get_session,
     release_session,
+    remove_object_from_session,
+    reset_session_text,
     start_session,
     touch_session,
 )
@@ -62,14 +64,26 @@ class AddObjectIn(BaseModel):
     # video session is already unusual, and the bound prevents a buggy or
     # malicious caller from triggering unbounded dict growth in the
     # tracker's per-session state.
-    obj_id: int = Field(ge=1, le=256)
+    obj_id: int = Field(default=1, ge=1, le=256)
     points: list[list[int]] = Field(default_factory=list)
     labels: list[int] = Field(default_factory=list)
     boxes: list[list[float]] = Field(default_factory=list)
+    # Plan 11 Task 4 — multiplex text prompt. When provided, the router
+    # invokes the adapter's ``add_text_prompt`` (multiplex auto-creates
+    # obj_ids per detection) and returns ``{obj_ids: [...], frame_idx}``.
+    text: str | None = Field(default=None, max_length=200)
 
 
 class AddObjectOut(BaseModel):
     obj_id: int
+    frame_idx: int
+
+
+class AddObjectTextOut(BaseModel):
+    """Response shape when a text prompt is supplied. Multiplex auto-creates
+    obj_ids per detection so we return the list rather than a single id."""
+
+    obj_ids: list[int]
     frame_idx: int
 
 
@@ -232,12 +246,48 @@ def start(payload: StartIn) -> StartOut:
     return StartOut(session_id=session.session_id, mask_at_start=seed_mask)
 
 
-@router.post("/{session_id}/objects", response_model=AddObjectOut)
-def add_object(session_id: str, payload: AddObjectIn) -> AddObjectOut:
+@router.post("/{session_id}/objects")
+def add_object(session_id: str, payload: AddObjectIn) -> Any:
     session = get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session_not_found")
     touch_session(session_id)
+
+    # Plan 11 Task 4 — multiplex text prompt. When ``text`` is supplied the
+    # adapter routes to ``add_text_prompt``; multiplex auto-creates obj_ids.
+    # Response shape changes to ``{obj_ids: [...], frame_idx}``.
+    if payload.text is not None and payload.text != "":
+        if not hasattr(session.tracker, "add_text_prompt"):
+            raise HTTPException(
+                status_code=422,
+                detail="adapter_not_multiplex",
+            )
+        try:
+            resp = session.tracker.add_text_prompt(
+                session.inference_state,
+                frame_idx=payload.frame_idx,
+                text=payload.text,
+            )
+        except Exception as exc:  # noqa: BLE001 — wrap upstream failure
+            logger.exception(
+                "add_text_prompt_failed sid=%s text=%r", session_id, payload.text,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"add_text_prompt_failed: {exc!r}",
+            ) from exc
+        # Best-effort obj_id extraction from the multiplex predictor
+        # response. Fakes / production both expose ``outputs: {obj_id: ...}``;
+        # fall back to an empty list when the response shape is unfamiliar.
+        obj_ids: list[int] = []
+        if isinstance(resp, dict):
+            outputs = resp.get("outputs") or {}
+            if isinstance(outputs, dict):
+                obj_ids = sorted(int(k) for k in outputs.keys())
+            if not obj_ids and isinstance(resp.get("obj_ids"), list):
+                obj_ids = [int(x) for x in resp["obj_ids"]]
+        return AddObjectTextOut(obj_ids=obj_ids, frame_idx=payload.frame_idx)
+
     if not payload.points and not payload.boxes:
         raise HTTPException(status_code=422, detail="object_requires_points_or_boxes")
     if payload.points and len(payload.points) != len(payload.labels):
@@ -265,6 +315,50 @@ def add_object(session_id: str, payload: AddObjectIn) -> AddObjectOut:
         logger.exception("add_object_failed sid=%s obj_id=%s", session_id, payload.obj_id)
         raise HTTPException(status_code=502, detail=f"add_object_failed: {exc!r}") from exc
     return AddObjectOut(obj_id=payload.obj_id, frame_idx=payload.frame_idx)
+
+
+@router.delete("/{session_id}/objects/{obj_id}", status_code=204)
+def remove_object_endpoint(session_id: str, obj_id: int) -> None:
+    """Plan 11 Task 4 — remove a tracked object from a multiplex session."""
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    touch_session(session_id)
+    try:
+        remove_object_from_session(session, obj_id=obj_id)
+    except NotImplementedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="adapter_not_multiplex",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("remove_object_failed sid=%s obj_id=%s", session_id, obj_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"remove_object_failed: {exc!r}",
+        ) from exc
+
+
+@router.post("/{session_id}/reset", status_code=204)
+def reset_session_endpoint(session_id: str) -> None:
+    """Plan 11 Task 4 — reset text-prompt state on a multiplex session."""
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    touch_session(session_id)
+    try:
+        reset_session_text(session)
+    except NotImplementedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="adapter_not_multiplex",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("reset_session_failed sid=%s", session_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"reset_session_failed: {exc!r}",
+        ) from exc
 
 
 @router.post("/{session_id}/step", response_model=StepOut)

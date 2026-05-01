@@ -6,6 +6,8 @@ from carve_api.inference.model_client import (
     ModelServiceError,
     sam_track_add_object as _sam_track_add_object,
     sam_track_release as _sam_track_release,
+    sam_track_remove_object as _sam_track_remove_object,
+    sam_track_reset_session as _sam_track_reset_session,
     sam_track_start as _sam_track_start,
     sam_track_step as _sam_track_step,
 )
@@ -27,6 +29,16 @@ class SamTrackUnreachable(AppError):
 class SamTrackSessionMissing(AppError):
     http_status = 404
     code = "sam_track_session_not_found"
+
+
+class SamTrackUnsupported(AppError):
+    """Plan 11 Task 4 — the active model-service tracker adapter does not
+    support the requested operation (e.g. ``remove_object`` / ``reset``
+    when the active backend is the SAM 3 dispatcher rather than the
+    SAM 3.1 multiplex adapter)."""
+
+    http_status = 422
+    code = "tracker_not_multiplex"
 
 
 def _video_url_for(asset: Asset) -> str:
@@ -105,15 +117,48 @@ def add_object(
     points: list[list[int]],
     labels: list[int],
     boxes: list[list[float]],
+    text: str | None = None,
 ) -> dict:
     try:
-        return _sam_track_add_object(session_id, frame_idx, obj_id, points, labels, boxes)
+        return _sam_track_add_object(
+            session_id, frame_idx, obj_id, points, labels, boxes, text=text,
+        )
     except ModelServiceError as exc:
         if exc.status_code == 404:
             raise SamTrackSessionMissing("session not found") from exc
+        if exc.status_code == 422:
+            raise SamTrackUnsupported(f"add_object: {exc.body!r}") from exc
         if exc.status_code == 503:
             raise SamTrackUnreachable(f"add_object: {exc.body!r}") from exc
         raise SamTrackFailed(f"add_object: {exc.body!r}") from exc
+
+
+def remove_object(session_id: str, obj_id: int) -> None:
+    """Plan 11 Task 4 — proxy DELETE /sam-track/{sid}/objects/{oid}."""
+    try:
+        _sam_track_remove_object(session_id, obj_id)
+    except ModelServiceError as exc:
+        if exc.status_code == 404:
+            raise SamTrackSessionMissing("session not found") from exc
+        if exc.status_code == 422:
+            raise SamTrackUnsupported(f"remove_object: {exc.body!r}") from exc
+        if exc.status_code == 503:
+            raise SamTrackUnreachable(f"remove_object: {exc.body!r}") from exc
+        raise SamTrackFailed(f"remove_object: {exc.body!r}") from exc
+
+
+def reset_session(session_id: str) -> None:
+    """Plan 11 Task 4 — proxy POST /sam-track/{sid}/reset."""
+    try:
+        _sam_track_reset_session(session_id)
+    except ModelServiceError as exc:
+        if exc.status_code == 404:
+            raise SamTrackSessionMissing("session not found") from exc
+        if exc.status_code == 422:
+            raise SamTrackUnsupported(f"reset_session: {exc.body!r}") from exc
+        if exc.status_code == 503:
+            raise SamTrackUnreachable(f"reset_session: {exc.body!r}") from exc
+        raise SamTrackFailed(f"reset_session: {exc.body!r}") from exc
 
 
 def step(session_id: str, frames: int) -> dict:
