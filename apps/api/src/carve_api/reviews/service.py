@@ -12,14 +12,28 @@ import copy
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation
+from carve_api.annotations.service import AnnotationNotFound
 from carve_api.auth.models import User
 from carve_api.errors import AppError
-from carve_api.projects.models import Task as TaskModel
-from carve_api.projects.service import ProjectService, TaskService
+from carve_api.projects.service import (
+    TaskNotFound,
+    require_visible_task,
+)
+
+
+class ReviewForbidden(AppError):
+    """Raised when the actor's role isn't allowed to review.
+
+    Mirrors the project-wide pattern (e.g. ``SamTrackFailed``,
+    ``NotProjectOwner``) so the router can translate via ``_http()``
+    instead of constructing an ``HTTPException`` directly.
+    """
+
+    http_status = 403
+    code = "forbidden"
 
 
 _TERMINAL = {"accept": "accepted", "reject": "rejected"}
@@ -31,17 +45,6 @@ def _decision_to_status(decision: str) -> str:
         # this; reaching here means a programmer-side mistake.
         raise ValueError(f"unknown decision: {decision!r}")
     return _TERMINAL[decision]
-
-
-def _resolve_visible_task(db: Session, user: User, task_id: uuid.UUID) -> TaskModel:
-    """Mirror of ``annotations.router._require_visible_task`` — kept here
-    to avoid an import cycle through the router module."""
-    task = db.get(TaskModel, task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="task_not_found")
-    project = ProjectService(db).get(actor=user, project_id=task.project_id)
-    TaskService(db).get(project=project, task_id=task.id)
-    return task
 
 
 class ReviewService:
@@ -58,20 +61,22 @@ class ReviewService:
         """Flip a single annotation's review status.
 
         Caller is responsible for the role gate (member/admin) — this
-        method only checks task visibility. Raises ``HTTPException(404)``
-        when the annotation doesn't exist or its task isn't visible.
+        method only checks task visibility. Raises
+        :class:`AnnotationNotFound` when the annotation doesn't exist
+        OR when its task isn't visible (mask "task not found" as
+        "annotation not found" for IDOR mitigation, mirroring the
+        annotations router).
         """
         a = self.session.get(Annotation, annotation_id)
         if a is None:
-            raise HTTPException(status_code=404, detail="annotation_not_found")
+            raise AnnotationNotFound("annotation not found")
         try:
-            _resolve_visible_task(self.session, actor, a.task_id)
-        except HTTPException as exc:
-            # Mask "task not found" as "annotation not found" for the
-            # same IDOR-mitigation reason as the annotations router.
-            raise HTTPException(
-                status_code=404, detail="annotation_not_found"
-            ) from exc
+            require_visible_task(self.session, actor, a.task_id)
+        except AppError as exc:
+            # Mask "task not found" / project-level access failures as
+            # "annotation not found" for the same IDOR-mitigation reason
+            # as the annotations router.
+            raise AnnotationNotFound("annotation not found") from exc
 
         target_status = _decision_to_status(decision)
         # Snapshot the geometry as it stands NOW so a future edit can
@@ -97,7 +102,10 @@ class ReviewService:
         Returns ``(reviewed_count, skipped_count)``. Skipped entries are
         ids the caller can't access (or that don't exist) — they are
         deliberately NOT 404'd, since this is a best-effort bulk op
-        across a heterogeneous selection.
+        across a heterogeneous selection. Only the specific access
+        errors are swallowed; anything else propagates so the caller
+        sees real bugs (rather than them being silently miscounted as
+        "skipped").
         """
         reviewed = 0
         skipped = 0
@@ -106,9 +114,7 @@ class ReviewService:
                 self.review_one(
                     actor=actor, annotation_id=ann_id, decision=decision
                 )
-            except HTTPException:
-                skipped += 1
-            except AppError:
+            except (AnnotationNotFound, TaskNotFound):
                 skipped += 1
             else:
                 reviewed += 1
