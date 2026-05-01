@@ -134,10 +134,10 @@ def read_progress(redis_client, job_id: str) -> dict | None:
     if not raw:
         return None
 
-    def _b2s(v):
-        return v.decode() if isinstance(v, bytes) else v
-
-    parsed = {_b2s(k): _b2s(v) for k, v in raw.items()}
+    # Both producers (run_retrain_job worker) and consumers
+    # (retrain_router) build their Redis client with ``decode_responses=True``
+    # so values come back as ``str`` already. No bytes coercion needed.
+    parsed = dict(raw)
     try:
         progress_pct = int(parsed.get("progress_pct", "0"))
     except ValueError:
@@ -408,6 +408,21 @@ def retrain_job(
     # Phase 3 — train (long-running model-service call)
     _set_phase(redis_client, job_id, phase="training", progress_pct=40)
     try:
+        # If a base weight was specified, materialise it into the model
+        # service's LRU before train starts. Otherwise the model only
+        # resolves ``weight_id_base`` from its in-process cache and would
+        # silently fall back to ``yolov8n.pt`` if the user-supplied base
+        # hasn't been recently loaded.
+        if payload.base_weight_id:
+            from carve_api.inference.autoannotate import presigned_url_for_weight
+            from carve_api.weights.models import Weight
+
+            base_weight = session.get(
+                Weight, uuid.UUID(payload.base_weight_id)
+            )
+            if base_weight is not None:
+                base_url = presigned_url_for_weight(base_weight)
+                model_client.yolo_load(payload.base_weight_id, base_url)
         descriptor = model_client.yolo_train(
             weight_id_base=payload.base_weight_id,
             dataset_zip_url=dataset_url,

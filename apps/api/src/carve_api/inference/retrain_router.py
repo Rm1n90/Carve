@@ -40,7 +40,10 @@ def _redis_client_or_none() -> Redis | None:
     s = get_settings()
     try:
         client = Redis(
-            host=s.redis_host, port=s.redis_port, socket_connect_timeout=1
+            host=s.redis_host,
+            port=s.redis_port,
+            socket_connect_timeout=1,
+            decode_responses=True,
         )
         client.ping()
         return client

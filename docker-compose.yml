@@ -158,6 +158,14 @@ services:
       SAM_MODEL: ${SAM_MODEL:-sam2.1-large}
       # Optional: pin a specific GPU index. Default = use all visible GPUs.
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      # MinIO env — required so the model service's /yolo/train endpoint can
+      # upload the produced best.pt back to MinIO. Mirrors the api/worker
+      # service blocks. Without these, _yolo_train 502s at runtime.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-}
+      MINIO_BUCKET: ${MINIO_BUCKET}
     volumes:
       - hf_cache:/root/.cache/huggingface
     healthcheck:

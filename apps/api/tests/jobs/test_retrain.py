@@ -93,7 +93,9 @@ class _FakeRedis:
         return True
 
     def hgetall(self, key):
-        return {k.encode(): v.encode() for k, v in self.hashes.get(key, {}).items()}
+        # Mirror real Redis client built with ``decode_responses=True`` —
+        # returns ``str`` keys/values (no bytes coercion).
+        return dict(self.hashes.get(key, {}))
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +248,125 @@ def test_retrain_job_pipeline_happy_path(db_session, monkeypatch) -> None:
     assert snap["progress_pct"] == 100
     assert snap["weight_id"] == result["weight_id"]
     assert snap["error"] is None
+
+
+def test_retrain_preloads_base_weight_before_train(db_session, monkeypatch) -> None:
+    """When ``base_weight_id`` is provided, ``yolo_load`` must be called
+    with that id (and a presigned URL) BEFORE ``yolo_train`` runs.
+
+    This guards against the silent yolov8n fallback that happened when the
+    model service's LRU didn't already have the user-supplied base weight.
+    """
+    u, t, p = _seed_task_with_one_accepted(db_session)
+
+    # Create a base Weight row in the same project so the retrain can
+    # reference it.
+    from carve_api.weights.models import WeightTaskKind
+
+    base_w = Weight(
+        project_id=p.id,
+        name="base",
+        task_kind=WeightTaskKind.detect,
+        minio_key="weights/basehash/base.pt",
+        size_bytes=10,
+        class_names=["car"],
+        created_by=u.id,
+    )
+    db_session.add(base_w)
+    db_session.flush()
+
+    storage = _FakeStorage()
+    redis = _FakeRedis()
+    call_order: list[str] = []
+
+    def fake_yolo_load(weight_id, weights_url):
+        call_order.append("yolo_load")
+        assert weight_id == str(base_w.id)
+        assert "weights/basehash/base.pt" in weights_url
+        return {"ok": True}
+
+    def fake_yolo_train(*, weight_id_base, dataset_zip_url, epochs, imgsz, device="auto"):
+        call_order.append("yolo_train")
+        assert weight_id_base == str(base_w.id)
+        return {
+            "weight_id": "abcdef0123456789abcdef0123456789",
+            "weights_url": "https://fake-internal/weights/x/y.pt",
+            "xxh3_128": "ff" * 16,
+            "size_bytes": 1234,
+            "metrics": {},
+        }
+
+    monkeypatch.setattr(model_client_mod, "yolo_load", fake_yolo_load)
+    monkeypatch.setattr(model_client_mod, "yolo_train", fake_yolo_train)
+
+    # autoannotate.presigned_url_for_weight uses MinioClient.from_settings();
+    # patch it to return our fake to avoid hitting real MinIO.
+    from carve_api.inference import autoannotate as aa_mod
+
+    monkeypatch.setattr(aa_mod, "MinioClient", _FakeStorage)
+
+    payload = RetrainJobPayload(
+        job_id=str(uuid.uuid4()),
+        actor_id=str(u.id),
+        task_id=str(t.id),
+        base_weight_id=str(base_w.id),
+        epochs=2,
+        imgsz=640,
+        include_proposed=False,
+        weight_name=None,
+    )
+
+    result = retrain_job(
+        payload, session=db_session, storage=storage, redis_client=redis
+    )
+
+    assert result["ok"] is True
+    assert call_order == ["yolo_load", "yolo_train"]
+
+
+def test_retrain_does_not_preload_when_base_weight_is_null(db_session, monkeypatch) -> None:
+    """When ``base_weight_id`` is None, ``yolo_load`` must NOT be invoked.
+
+    The model service should fall through to its default (yolov8n.pt).
+    """
+    u, t, _p = _seed_task_with_one_accepted(db_session)
+    storage = _FakeStorage()
+    redis = _FakeRedis()
+    load_calls: list[Any] = []
+
+    def fake_yolo_load(weight_id, weights_url):
+        load_calls.append((weight_id, weights_url))
+        return {"ok": True}
+
+    def fake_yolo_train(*, weight_id_base, dataset_zip_url, epochs, imgsz, device="auto"):
+        assert weight_id_base is None
+        return {
+            "weight_id": "abcdef0123456789abcdef0123456789",
+            "weights_url": "https://fake-internal/weights/x/y.pt",
+            "xxh3_128": "ff" * 16,
+            "size_bytes": 1234,
+            "metrics": {},
+        }
+
+    monkeypatch.setattr(model_client_mod, "yolo_load", fake_yolo_load)
+    monkeypatch.setattr(model_client_mod, "yolo_train", fake_yolo_train)
+
+    payload = RetrainJobPayload(
+        job_id=str(uuid.uuid4()),
+        actor_id=str(u.id),
+        task_id=str(t.id),
+        base_weight_id=None,
+        epochs=2,
+        imgsz=640,
+        include_proposed=False,
+        weight_name=None,
+    )
+
+    result = retrain_job(
+        payload, session=db_session, storage=storage, redis_client=redis
+    )
+    assert result["ok"] is True
+    assert load_calls == []
 
 
 # ---------------------------------------------------------------------------
