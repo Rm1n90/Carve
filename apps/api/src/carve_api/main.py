@@ -56,6 +56,10 @@ def create_app() -> FastAPI:
     app.include_router(task_annotations_router)
     app.include_router(ann_router)
 
+    # Phase 5 review workflow (plan-09 task-02): single + batch review.
+    from carve_api.reviews.router import router as reviews_router
+    app.include_router(reviews_router)
+
     from carve_api.weights.router import project_weights_router, router as weights_router
     app.include_router(project_weights_router)
     app.include_router(weights_router)

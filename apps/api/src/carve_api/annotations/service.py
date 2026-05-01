@@ -64,10 +64,17 @@ class AnnotationService:
         self.session.flush()
         return a
 
-    def list_for_task(self, *, task: Task, frame_id=None) -> list[Annotation]:
+    def list_for_task(
+        self, *, task: Task, frame_id=None, status: str | None = None
+    ) -> list[Annotation]:
         q = select(Annotation).where(Annotation.task_id == task.id)
         if frame_id is not None:
             q = q.where(Annotation.frame_id == frame_id)
+        if status is not None:
+            # Phase 5 review-workflow filter (plan-09 task-02). Caller is
+            # responsible for validating ``status`` (Literal at the schema
+            # layer) — no defensive re-check here.
+            q = q.where(Annotation.status == status)
         return list(
             self.session.execute(
                 q.order_by(Annotation.z_order, Annotation.created_at)
@@ -83,6 +90,20 @@ class AnnotationService:
             cls = self.session.get(Class, patch["class_id"])
             if cls is None or cls.project_id != task.project_id:
                 raise AnnotationInvalid("class not in this project")
+
+        # Phase 5 review-workflow auto-reset (plan-09 task-02): when an
+        # already-reviewed annotation has its ``geometry`` or ``class_id``
+        # mutated, the prior review is no longer authoritative — flip
+        # status back to "proposed" and clear reviewer attribution. We
+        # PRESERVE ``prev_geometry`` so a future reviewer can still see
+        # the geometry the prior reviewer actually signed off on.
+        geometry_changed = patch.get("geometry") is not None
+        class_changed = patch.get("class_id") is not None
+        if (geometry_changed or class_changed) and a.status in ("accepted", "rejected"):
+            a.status = "proposed"
+            a.reviewed_by_id = None
+            a.reviewed_at = None
+
         if patch.get("geometry") is not None:
             _validate_geometry(a.kind, patch["geometry"])
             a.geometry = patch["geometry"]

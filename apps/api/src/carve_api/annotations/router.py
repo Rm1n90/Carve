@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation
 from carve_api.annotations.schemas import (
-    AnnotationIn, AnnotationOut, AnnotationPatch, BatchIn, BatchOut,
+    AnnotationIn, AnnotationOut, AnnotationPatch, AnnotationStatus, BatchIn, BatchOut,
 )
 from carve_api.annotations.service import AnnotationService
 from carve_api.auth.models import User
@@ -78,11 +78,17 @@ def create_annotation(
 def list_annotations(
     task_id: uuid.UUID,
     frame_id: uuid.UUID | None = None,
+    # Phase 5 (plan-09 task-02): optional status filter for the review
+    # workflow. ``AnnotationStatus`` is a Literal so FastAPI validates the
+    # value at the edge — invalid values come back as 422 automatically.
+    status: AnnotationStatus | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[AnnotationOut]:
     task = _require_visible_task(db, user, task_id)
-    rows = AnnotationService(db).list_for_task(task=task, frame_id=frame_id)
+    rows = AnnotationService(db).list_for_task(
+        task=task, frame_id=frame_id, status=status
+    )
     return [AnnotationOut.from_orm_annotation(a) for a in rows]
 
 
