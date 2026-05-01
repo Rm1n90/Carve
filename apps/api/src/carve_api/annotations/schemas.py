@@ -1,7 +1,12 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+
+# Phase 5 review workflow (plan-09 task-01). Kept as ``Literal`` rather
+# than an enum so we don't churn an enum just for the status field.
+AnnotationStatus = Literal["proposed", "accepted", "rejected"]
 
 from carve_api.annotations.models import AnnotationKind
 
@@ -90,6 +95,12 @@ def _validate_geometry_for_kind(kind: AnnotationKind, g: dict[str, Any]) -> None
 
 
 class AnnotationIn(BaseModel):
+    # ``extra="forbid"`` ensures inbound writes cannot smuggle review-
+    # workflow fields (``status``, ``reviewed_by_id``, ``reviewed_at``,
+    # ``prev_geometry``) through the create/batch-create paths. Those
+    # fields are only mutated by the dedicated review endpoint.
+    model_config = {"extra": "forbid"}
+
     frame_id: str | None = None
     class_id: str
     kind: AnnotationKind
@@ -130,6 +141,11 @@ class AnnotationOut(BaseModel):
     created_by: str | None
     created_at: datetime
     updated_at: datetime
+    # Phase 5 review-workflow fields (plan-09 task-01).
+    status: AnnotationStatus = "proposed"
+    reviewed_by_id: str | None = None
+    reviewed_at: datetime | None = None
+    prev_geometry: dict | None = None
 
     @classmethod
     def from_orm_annotation(cls, a):
@@ -141,6 +157,14 @@ class AnnotationOut(BaseModel):
             z_order=int(getattr(a, "z_order", 0) or 0),
             created_by=str(a.created_by) if a.created_by else None,
             created_at=a.created_at, updated_at=a.updated_at,
+            status=getattr(a, "status", "proposed") or "proposed",
+            reviewed_by_id=(
+                str(a.reviewed_by_id)
+                if getattr(a, "reviewed_by_id", None) is not None
+                else None
+            ),
+            reviewed_at=getattr(a, "reviewed_at", None),
+            prev_geometry=getattr(a, "prev_geometry", None),
         )
 
 
