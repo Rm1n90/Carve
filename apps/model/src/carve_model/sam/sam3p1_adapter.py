@@ -391,18 +391,27 @@ class Sam3p1NativeImagePredictorAdapter:
         """Cache the image inside the native processor's state dict.
 
         ``image`` is a numpy ``HxWx3`` RGB uint8 array (per router contract).
-        Converted to PIL before handing to the native processor. The
-        model + transform pipeline are both bf16 on cuda after build
-        (see ``build_sam3p1_image_predictor``) so the native fused
-        ``addmm_act`` MLP kernel and the surrounding linear/conv layers
-        operate on a consistent dtype.
+        Converted to PIL before handing to the native processor.
+
+        The forward pass is wrapped in ``torch.autocast(cuda, bf16)``:
+        the native sam3 image stack uses a fused ``addmm_act`` MLP
+        kernel that internally casts to bf16, plus
+        ``with autocast(enabled=False)`` blocks in the decoder that
+        force specific FFNs back to float32. PyTorch's autocast handles
+        the per-op rules; trying to manually cast everything to a
+        single dtype breaks the design.
         """
         from PIL import Image  # type: ignore[import-not-found]
+        import torch  # type: ignore[import-not-found]
 
         h, w = int(image.shape[0]), int(image.shape[1])
         self._original_size = (h, w)
         pil = Image.fromarray(image)
-        self._state = self._processor.set_image(pil)
+        if self._device == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                self._state = self._processor.set_image(pil)
+        else:
+            self._state = self._processor.set_image(pil)
 
     def predict(
         self,
@@ -435,13 +444,24 @@ class Sam3p1NativeImagePredictorAdapter:
         if box is not None:
             b = np.asarray(box, dtype=np.float32).reshape(-1)
 
-        masks, scores, logits = self._model.predict_inst(
-            self._state,
-            point_coords=pc,
-            point_labels=pl,
-            box=b,
-            multimask_output=multimask_output,
-        )
+        import torch  # type: ignore[import-not-found]
+        if self._device == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                masks, scores, logits = self._model.predict_inst(
+                    self._state,
+                    point_coords=pc,
+                    point_labels=pl,
+                    box=b,
+                    multimask_output=multimask_output,
+                )
+        else:
+            masks, scores, logits = self._model.predict_inst(
+                self._state,
+                point_coords=pc,
+                point_labels=pl,
+                box=b,
+                multimask_output=multimask_output,
+            )
         return masks, scores, logits
 
     def extract_embedding(self) -> dict | None:
@@ -475,37 +495,13 @@ def build_sam3p1_image_predictor(device: str | None = None) -> Sam3p1NativeImage
         enable_inst_interactivity=True,
         compile=perf.get_compile_enabled(),
     )
+    # Model + transform stay float32 (native default). The forward
+    # passes are wrapped in ``torch.autocast(cuda, bfloat16)`` inside
+    # ``Sam3p1NativeImagePredictorAdapter`` — that's what the native
+    # package's ``addmm_act`` fused MLP kernel and the
+    # ``with autocast(enabled=False)`` blocks in ``decoder.py`` were
+    # designed for: outer autocast(bf16), specific layers opt out.
     processor = Sam3Processor(model)
-
-    # ROOT-CAUSE FIX: ``sam3/perflib/fused.py:addmm_act`` (the fused MLP
-    # fc1+activation kernel used by every vitdet block) unconditionally
-    # casts mat1, mat2, and bias to bf16. Its output is therefore bf16,
-    # but the immediately-following ``fc2`` is a plain ``nn.Linear`` with
-    # the model's loaded dtype (float32 by default) — producing the
-    # ``RuntimeError: mat1 and mat2 must have the same dtype, but got
-    # BFloat16 and Float`` we kept hitting. The native package was
-    # designed to run the entire image model in bf16; the transform
-    # pipeline's final ``ToDtype(float32)`` and the model's float32 load
-    # are both wrong for inference. Cast both to bf16 to make the path
-    # internally consistent. CPU stays float32 because bf16 conv kernels
-    # are not provided on CPU by all torch builds.
-    if dev == "cuda":
-        try:
-            import torch  # type: ignore[import-not-found]
-            from torchvision.transforms import v2  # type: ignore[import-not-found]
-
-            model.to(dtype=torch.bfloat16)
-            # Replace processor.transform with a bf16-emitting variant.
-            resolution = getattr(processor, "resolution", 1008)
-            processor.transform = v2.Compose([
-                v2.ToDtype(torch.uint8, scale=True),
-                v2.Resize(size=(resolution, resolution)),
-                v2.ToDtype(torch.bfloat16, scale=True),
-                v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-            ])
-        except Exception:  # noqa: BLE001 — best effort; build still works in fp32 on cpu fallback
-            pass
-
     return Sam3p1NativeImagePredictorAdapter(model=model, processor=processor, device=dev)
 
 
@@ -587,6 +583,7 @@ def make_sam3p1_text_predictor():
         from carve_model.sam.perf import to_numpy_safe
         from carve_model.sam.polygonize import mask_to_polygon
 
+        import torch  # type: ignore[import-not-found]
         adapter = _get_or_build_native_image_predictor()
         image_np = _decode_image_b64_to_numpy(image_b64)
         adapter.set_image(image_np)
@@ -595,7 +592,11 @@ def make_sam3p1_text_predictor():
             return []
         # Reset any prior prompts before applying the new text concept.
         adapter._processor.reset_all_prompts(state)
-        adapter._processor.set_text_prompt(text, state)
+        if adapter._device == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                adapter._processor.set_text_prompt(text, state)
+        else:
+            adapter._processor.set_text_prompt(text, state)
 
         detections = _extract_text_detections(state)
         boxes = state.get("boxes")
@@ -644,6 +645,7 @@ def make_sam3p1_box_predictor():
         from carve_model.sam.codec import encode_mask_rle
         from carve_model.sam.polygonize import mask_to_polygon
 
+        import torch  # type: ignore[import-not-found]
         adapter = _get_or_build_native_image_predictor()
         image_np = _decode_image_b64_to_numpy(image_b64)
         adapter.set_image(image_np)
@@ -653,7 +655,11 @@ def make_sam3p1_box_predictor():
         adapter._processor.reset_all_prompts(state)
 
         if text:
-            adapter._processor.set_text_prompt(text, state)
+            if adapter._device == "cuda":
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    adapter._processor.set_text_prompt(text, state)
+            else:
+                adapter._processor.set_text_prompt(text, state)
 
         positive_masks: list[Any] = []
         negative_masks: list[Any] = []
@@ -662,13 +668,23 @@ def make_sam3p1_box_predictor():
 
         for box, label in zip(boxes, box_labels, strict=False):
             box_arr = np.asarray(box, dtype=np.float32).reshape(-1)
-            masks, scores, _ = adapter._model.predict_inst(
-                state,
-                point_coords=None,
-                point_labels=None,
-                box=box_arr,
-                multimask_output=False,
-            )
+            if adapter._device == "cuda":
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    masks, scores, _ = adapter._model.predict_inst(
+                        state,
+                        point_coords=None,
+                        point_labels=None,
+                        box=box_arr,
+                        multimask_output=False,
+                    )
+            else:
+                masks, scores, _ = adapter._model.predict_inst(
+                    state,
+                    point_coords=None,
+                    point_labels=None,
+                    box=box_arr,
+                    multimask_output=False,
+                )
             if masks is None or len(masks) == 0:
                 continue
             best_idx = int(np.argmax(np.asarray(scores)))
