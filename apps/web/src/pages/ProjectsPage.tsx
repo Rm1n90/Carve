@@ -113,24 +113,23 @@ export function ProjectsPage() {
       result = result.filter(
         (p) => currentUser?.id != null && p.owner_id !== currentUser.id,
       );
+    } else if (filter === "recent") {
+      const recentSet = new Set(recentIds);
+      const orderIndex = new Map(recentIds.map((id, i) => [id, i] as const));
+      return result
+        .filter((p) => recentSet.has(p.id))
+        .sort(
+          (a, b) =>
+            (orderIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+            (orderIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+        );
     }
 
     const next = [...result];
     next.sort((a, b) => compareProjects(sort, a, b));
     return next;
-  }, [projects, debouncedQuery, filter, sort, pinnedSet, currentUser?.id]);
+  }, [projects, debouncedQuery, filter, sort, pinnedSet, currentUser?.id, recentIds]);
 
-  const isSearchingOrFiltering =
-    debouncedQuery.trim() !== "" || filter !== "all";
-
-  const recentProjects = useMemo(() => {
-    if (isSearchingOrFiltering) return [];
-    const byId = new Map(projects.map((p) => [p.id, p]));
-    return recentIds
-      .map((id) => byId.get(id))
-      .filter((p): p is Project => p !== undefined)
-      .slice(0, 5);
-  }, [recentIds, projects, isSearchingOrFiltering]);
 
   return (
     <div className="mx-auto grid max-w-[1100px] gap-5">
@@ -233,25 +232,7 @@ export function ProjectsPage() {
             onViewChange={setView}
           />
 
-          {recentProjects.length > 0 && (
-            <section data-testid="projects-recent" className="grid gap-2">
-              <h2 className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
-                Recent
-              </h2>
-              <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] overflow-hidden">
-                {recentProjects.map((p) => (
-                  <ProjectCard
-                    key={`recent-${p.id}`}
-                    project={p}
-                    pinned={pinnedSet.has(p.id)}
-                    onTogglePin={() => togglePin(p.id)}
-                    onDelete={() => deleteM.mutate(p.id)}
-                    view="compact"
-                  />
-                ))}
-              </div>
-            </section>
-          )}
+          {/* Plan 15 Track E — Recent moved into the toolbar tabs. */}
 
           {filtered.length === 0 ? (
             <EmptyState

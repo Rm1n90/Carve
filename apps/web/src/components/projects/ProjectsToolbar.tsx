@@ -13,7 +13,7 @@ export type ProjectSort =
   | "updated-desc"
   | "created-desc";
 
-export type ProjectFilter = "all" | "owned" | "shared" | "pinned";
+export type ProjectFilter = "all" | "recent" | "owned" | "shared" | "pinned";
 
 export type ProjectView = "cards" | "compact";
 
@@ -30,6 +30,7 @@ interface Props {
 
 const FILTER_CHIPS: { value: ProjectFilter; label: string }[] = [
   { value: "all", label: "All" },
+  { value: "recent", label: "Recent" },
   { value: "owned", label: "Owned" },
   { value: "shared", label: "Shared" },
   { value: "pinned", label: "Pinned" },
