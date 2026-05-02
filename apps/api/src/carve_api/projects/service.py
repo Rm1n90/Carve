@@ -244,7 +244,15 @@ class TaskService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create(self, *, actor: User, project: Project, name: str, kind: TaskKind) -> Task:
+    def create(
+        self,
+        *,
+        actor: User,
+        project: Project,
+        name: str,
+        kind: TaskKind,
+        due_date: datetime | None = None,
+    ) -> Task:
         # v3.2 Issue 3 — snapshot the project's current class ids onto the
         # new task. Previously ``allowed_class_ids`` defaulted to ``NULL``,
         # which the effective-classes resolver treats as "all current
@@ -262,19 +270,58 @@ class TaskService:
             name=name,
             kind=kind,
             allowed_class_ids=project_class_ids,
+            due_date=due_date,
         )
         self.session.add(t)
         self.session.flush()
         return t
 
     def list_for_project(
-        self, *, project: Project, include_deleted: bool = False
+        self,
+        *,
+        project: Project,
+        include_deleted: bool = False,
+        include_archived: bool = False,
+        only_archived: bool = False,
     ) -> list[Task]:
         stmt = select(Task).where(Task.project_id == project.id)
         if not include_deleted:
             stmt = stmt.where(Task.deleted_at.is_(None))
+        if only_archived:
+            stmt = stmt.where(Task.archived_at.is_not(None))
+        elif not include_archived:
+            stmt = stmt.where(Task.archived_at.is_(None))
         stmt = stmt.order_by(Task.created_at.desc())
         return list(self.session.execute(stmt).scalars())
+
+    def update(
+        self,
+        *,
+        project: Project,
+        task_id: uuid.UUID,
+        name: str | None = None,
+        due_date: datetime | None = None,
+        clear_due_date: bool = False,
+        archived: bool | None = None,
+    ) -> Task:
+        """Patch a task. ``clear_due_date`` distinguishes "leave alone"
+        from "explicitly set to NULL" so the router can translate a
+        payload ``due_date=null`` (key present) into the latter.
+        ``archived=True`` sets ``archived_at`` to now; ``False`` clears.
+        """
+        t = self.get(project=project, task_id=task_id, include_deleted=False)
+        if name is not None:
+            t.name = name
+        if clear_due_date:
+            t.due_date = None
+        elif due_date is not None:
+            t.due_date = due_date
+        if archived is True and t.archived_at is None:
+            t.archived_at = datetime.now(timezone.utc)
+        elif archived is False:
+            t.archived_at = None
+        self.session.flush()
+        return t
 
     def get(
         self,

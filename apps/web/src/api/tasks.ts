@@ -9,11 +9,27 @@ export interface Task {
   name: string;
   kind: TaskKind;
   created_at: string;
+  // Plan-15 Track G — optional schedule + archive marker (ISO 8601).
+  due_date?: string | null;
+  archived_at?: string | null;
 }
 
 export interface TaskIn {
   name: string;
   kind: TaskKind;
+  due_date?: string | null;
+}
+
+export interface TaskPatch {
+  name?: string;
+  // ``null`` clears the schedule. Omit the key to leave unchanged.
+  due_date?: string | null;
+  archived?: boolean;
+}
+
+export interface ListTasksOptions {
+  includeArchived?: boolean;
+  onlyArchived?: boolean;
 }
 
 export interface TaskClassesResponse {
@@ -25,10 +41,44 @@ export interface TaskClassesResponse {
 }
 
 export const tasksApi = {
-  listForProject: async (projectId: string): Promise<Task[]> =>
-    (await api.get<Task[]>(`/projects/${projectId}/tasks`)).data,
+  listForProject: async (
+    projectId: string,
+    opts?: ListTasksOptions,
+  ): Promise<Task[]> => {
+    const params = new URLSearchParams();
+    if (opts?.includeArchived) params.set("include_archived", "true");
+    if (opts?.onlyArchived) params.set("only_archived", "true");
+    const qs = params.toString();
+    const url = qs
+      ? `/projects/${projectId}/tasks?${qs}`
+      : `/projects/${projectId}/tasks`;
+    return (await api.get<Task[]>(url)).data;
+  },
   create: async (projectId: string, input: TaskIn): Promise<Task> =>
     (await api.post<Task>(`/projects/${projectId}/tasks`, input)).data,
+  update: async (
+    projectId: string,
+    taskId: string,
+    patch: TaskPatch,
+  ): Promise<Task> =>
+    (
+      await api.patch<Task>(
+        `/projects/${projectId}/tasks/${taskId}`,
+        patch,
+      )
+    ).data,
+  archive: async (projectId: string, taskId: string): Promise<Task> =>
+    (
+      await api.patch<Task>(`/projects/${projectId}/tasks/${taskId}`, {
+        archived: true,
+      })
+    ).data,
+  unarchive: async (projectId: string, taskId: string): Promise<Task> =>
+    (
+      await api.patch<Task>(`/projects/${projectId}/tasks/${taskId}`, {
+        archived: false,
+      })
+    ).data,
   delete: async (projectId: string, taskId: string): Promise<void> => {
     await api.delete(`/projects/${projectId}/tasks/${taskId}`);
   },

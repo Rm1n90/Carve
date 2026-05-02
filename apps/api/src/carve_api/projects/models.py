@@ -70,6 +70,14 @@ class Task(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    # Plan-15 Track G — optional schedule + archive marker. Both
+    # nullable; archived rows are hidden from the default tasks list.
+    due_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
 
 class Class(Base):

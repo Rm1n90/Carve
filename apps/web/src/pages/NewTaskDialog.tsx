@@ -31,13 +31,21 @@ export function NewTaskDialog({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<TaskKind>("image");
+  const [dueDate, setDueDate] = useState(""); // YYYY-MM-DD; empty = no schedule
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
   const create = useMutation<Task, unknown, void>({
-    mutationFn: () => tasksApi.create(projectId, { name, kind }),
+    mutationFn: () =>
+      tasksApi.create(projectId, {
+        name,
+        kind,
+        // <input type="date"> emits "YYYY-MM-DD"; convert to an ISO
+        // datetime at UTC midnight so the API can store it as TIMESTAMPTZ.
+        due_date: dueDate ? `${dueDate}T00:00:00Z` : null,
+      }),
     onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ["tasks", projectId] });
       setName("");
@@ -57,7 +65,7 @@ export function NewTaskDialog({
   return (
     <form
       onSubmit={onSubmit}
-      className="grid gap-2 sm:grid-cols-[1fr_auto_auto] items-end rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2"
+      className="grid gap-2 sm:grid-cols-[1fr_auto_auto_auto] items-end rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2"
     >
       <Input
         ref={inputRef}
@@ -82,6 +90,23 @@ export function NewTaskDialog({
             <Select.Item value="video">Video</Select.Item>
           </Select.Content>
         </Select>
+      </div>
+      <div className="grid gap-1">
+        <label
+          htmlFor="new-task-due-date"
+          className="text-[10.5px] uppercase tracking-[0.08em] text-tertiary font-medium"
+        >
+          Due date
+        </label>
+        <input
+          id="new-task-due-date"
+          data-testid="new-task-due-date"
+          type="date"
+          value={dueDate}
+          onChange={(e) => setDueDate(e.target.value)}
+          className="h-9 px-2.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] text-[12.5px] text-[color:var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40 focus:border-[var(--accent)]"
+          aria-label="Task due date (optional)"
+        />
       </div>
       <Button
         type="submit"

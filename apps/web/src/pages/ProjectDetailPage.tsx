@@ -4,6 +4,8 @@ import { Link } from "@tanstack/react-router";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Archive,
+  ArchiveRestore,
   BarChart3,
   Copy,
   Database,
@@ -309,6 +311,7 @@ function TaskRowMenu({
   onDuplicate,
   onEditClasses,
   onRetrain,
+  onArchive,
   onDelete,
 }: {
   task: Task;
@@ -317,9 +320,13 @@ function TaskRowMenu({
   onEditClasses: () => void;
   // v3.4+ Phase 5 Task 6 -- Retrain YOLO on this task. Opens RetrainDialog.
   onRetrain?: () => void;
+  // Plan-15 Track G -- archive (true) / unarchive (false). Caller drives
+  // the mutation; the menu just toggles based on the task's current state.
+  onArchive?: (archive: boolean) => void;
   // v3.8 -- Delete the task. Caller handles the confirm + mutation.
   onDelete?: () => void;
 }) {
+  const isArchived = task.archived_at != null;
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
@@ -384,6 +391,26 @@ function TaskRowMenu({
             >
               <RefreshCw className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
               <span className="flex-1">Retrain YOLO on this task</span>
+            </DropdownMenu.Item>
+          )}
+          {onArchive && (
+            <DropdownMenu.Item
+              data-testid={`project-detail-task-archive-${task.id}`}
+              onSelect={() => onArchive(!isArchived)}
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
+                "cursor-pointer outline-none text-[color:var(--text-primary)]",
+                "data-[highlighted]:bg-[var(--bg-hover)]",
+              )}
+            >
+              {isArchived ? (
+                <ArchiveRestore className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+              ) : (
+                <Archive className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+              )}
+              <span className="flex-1">
+                {isArchived ? "Restore task" : "Archive task"}
+              </span>
             </DropdownMenu.Item>
           )}
           {onDelete && (
@@ -799,9 +826,12 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     queryKey: ["project", projectId],
     queryFn: () => projectsApi.get(projectId),
   });
+  // Plan-15 Track G — fetch with archived rows included; the toolbar
+  // status filter (active / all / archived) decides which to render.
   const tasksQ = useQuery({
-    queryKey: ["tasks", projectId],
-    queryFn: () => tasksApi.listForProject(projectId),
+    queryKey: ["tasks", projectId, "with-archived"],
+    queryFn: () =>
+      tasksApi.listForProject(projectId, { includeArchived: true }),
   });
   const statsQ = useQuery({
     queryKey: ["project-stats", projectId],
@@ -868,11 +898,8 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     recordVisit(projectId);
   }, [recordVisit, projectId]);
 
-  // Plan 14 Phase 8 Task 2 — derive the visible task list from the
-  // toolbar state. The status filter is best-effort: there is no
-  // archive flag exposed by the API yet, so "active"/"all" both show
-  // everything for now and "archived" shows nothing. Once the column
-  // lands this branch will switch over.
+  // Plan-15 Track G — honor the archived/active filter using the new
+  // ``archived_at`` column.
   const filteredTasks = useMemo(() => {
     const all = tasksQ.data ?? [];
     const q = tasksQuery.trim().toLowerCase();
@@ -881,7 +908,9 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
       result = result.filter((t) => t.name.toLowerCase().includes(q));
     }
     if (tasksStatus === "archived") {
-      result = [];
+      result = result.filter((t) => t.archived_at != null);
+    } else if (tasksStatus === "active") {
+      result = result.filter((t) => t.archived_at == null);
     }
     const next = [...result];
     next.sort((a, b) => {
@@ -965,6 +994,23 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     },
     onError: () => {
       showToast("Failed to delete task.", { variant: "error" });
+    },
+  });
+
+  // Plan-15 Track G — archive / unarchive task.
+  const setTaskArchived = useMutation({
+    mutationFn: ({ taskId, archived }: { taskId: string; archived: boolean }) =>
+      archived
+        ? tasksApi.archive(projectId, taskId)
+        : tasksApi.unarchive(projectId, taskId),
+    onSuccess: (_t, vars) => {
+      qc.invalidateQueries({ queryKey: ["tasks", projectId] });
+      showToast(vars.archived ? "Task archived." : "Task restored.", {
+        variant: "success",
+      });
+    },
+    onError: () => {
+      showToast("Failed to update task.", { variant: "error" });
     },
   });
 
@@ -1188,6 +1234,9 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                     }}
                     onEditClasses={() => setClassesTarget(t)}
                     onRetrain={() => setRetrainTarget(t)}
+                    onArchive={(archive) =>
+                      setTaskArchived.mutate({ taskId: t.id, archived: archive })
+                    }
                     onDelete={async () => {
                       const ok = await confirm({
                         title: "Delete task?",

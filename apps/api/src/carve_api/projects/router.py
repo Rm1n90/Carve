@@ -23,6 +23,7 @@ from carve_api.projects.schemas import (
     TaskClassesOut,
     TaskIn,
     TaskOut,
+    TaskPatch,
 )
 from carve_api.projects.service import (
     ClassService,
@@ -171,7 +172,11 @@ def create_task(
         # live Project so we don't pay a second ``session.get`` here.
         project = require_project_role(db, user, project_id, _MUTATING_ROLES)
         task = TaskService(db).create(
-            actor=user, project=project, name=payload.name, kind=payload.kind
+            actor=user,
+            project=project,
+            name=payload.name,
+            kind=payload.kind,
+            due_date=payload.due_date,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -182,6 +187,8 @@ def create_task(
 @router.get("/{project_id}/tasks", response_model=list[TaskOut])
 def list_tasks(
     project_id: uuid.UUID,
+    include_archived: bool = Query(default=False),
+    only_archived: bool = Query(default=False),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[TaskOut]:
@@ -191,8 +198,46 @@ def list_tasks(
         raise _http(exc) from exc
     return [
         TaskOut.from_orm_task(t)
-        for t in TaskService(db).list_for_project(project=project)
+        for t in TaskService(db).list_for_project(
+            project=project,
+            include_archived=include_archived,
+            only_archived=only_archived,
+        )
     ]
+
+
+@router.patch(
+    "/{project_id}/tasks/{task_id}", response_model=TaskOut
+)
+def patch_task(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: TaskPatch,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TaskOut:
+    """Plan-15 Track G — patch a task. Supports rename, schedule, and
+    archive/unarchive. ``payload.due_date`` of ``null`` clears the
+    schedule when the field is present in the request body.
+    """
+    try:
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
+        # Detect whether ``due_date`` was sent at all so we can clear it
+        # explicitly when the client sends ``null``.
+        sent = payload.model_dump(exclude_unset=True)
+        clear_due_date = "due_date" in sent and sent["due_date"] is None
+        task = TaskService(db).update(
+            project=project,
+            task_id=task_id,
+            name=payload.name,
+            due_date=payload.due_date,
+            clear_due_date=clear_due_date,
+            archived=payload.archived,
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+    return TaskOut.from_orm_task(task)
 
 
 @router.delete(
