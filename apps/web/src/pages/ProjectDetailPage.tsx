@@ -8,7 +8,7 @@ import {
   Copy,
   Database,
   Image as ImageIcon,
-  ListPlus,
+  ListChecks,
   MoreVertical,
   RefreshCw,
   Settings,
@@ -22,6 +22,7 @@ import { statsApi, type ProjectStats } from "@/api/stats";
 import { weightsApi } from "@/api/phase2";
 import { RetrainDialog } from "@/components/annotation/RetrainDialog";
 import { Badge } from "@/components/ui/Badge";
+import { EmptyState } from "@/components/ui/EmptyState";
 import {
   Dialog,
   DialogContent,
@@ -739,22 +740,25 @@ function FilteredTasksList({
 }) {
   if (!isLoading && !hasAnyTasks) {
     return (
-      <div
-        data-testid="project-detail-tasks-empty"
-        className={cn(
-          "grid place-items-center gap-2 px-6 py-10",
-          "rounded-[var(--radius-md)] border border-dashed border-[var(--border-subtle)]",
-          "bg-[var(--bg-subtle)] text-center",
-        )}
-      >
-        <ListPlus
-          className="h-5 w-5 text-[color:var(--text-tertiary)]"
-          aria-hidden
-        />
-        <span className="text-[12.5px] text-[color:var(--text-secondary)]">
-          No tasks yet — create your first one to start annotating.
-        </span>
-      </div>
+      <EmptyState
+        testId="project-detail-tasks-empty"
+        icon={<ListChecks className="h-6 w-6" />}
+        title="No tasks yet"
+        description="A task groups a slice of assets into a labelling job. Create one to start annotating with the editor and tracking review progress."
+        cta={{
+          label: "New task",
+          onClick: () => {
+            // Surfaces the existing inline "New task" form on the page.
+            // Dispatched as a custom event so the empty-state component
+            // doesn't need to thread the dialog opener through props.
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(
+                new CustomEvent("carve:open-new-task-form"),
+              );
+            }
+          },
+        }}
+      />
     );
   }
 
@@ -839,6 +843,23 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   // ``NewTaskDialog`` controls its own open state via internal state,
   // so we mirror it with a counter to bump-trigger via ``key``.
   const [newTaskOpenSignal, setNewTaskOpenSignal] = useState(0);
+
+  // Plan 14 Phase 8 Task 10 — the empty-state CTA dispatches this
+  // ``carve:open-new-task-form`` event so the dialog/form opens without
+  // having to thread the opener through deeply-nested props.
+  useEffect(() => {
+    function handler() {
+      setNewTaskOpenSignal((n) => n + 1);
+      if (typeof document !== "undefined") {
+        document
+          .querySelector('[data-testid="new-task-input"]')
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+    window.addEventListener("carve:open-new-task-form", handler);
+    return () =>
+      window.removeEventListener("carve:open-new-task-form", handler);
+  }, []);
 
   // Plan 14 Phase 8 Task 2 — record this project as visited so the
   // projects index can surface it in the recent strip.
@@ -1127,9 +1148,20 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                 onCreated={() => {}}
               />
               {tasksQ.isLoading && (
-                <p className="text-[color:var(--text-tertiary)] text-[13px]">
-                  Loading tasks…
-                </p>
+                <div
+                  data-testid="tasks-loading-skeleton"
+                  className="grid gap-1.5 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-2"
+                >
+                  {[0, 1, 2, 3].map((i) => (
+                    <div
+                      key={i}
+                      className={cn(
+                        "h-12 rounded-[var(--radius-sm)]",
+                        "bg-[var(--bg-subtle)] animate-pulse",
+                      )}
+                    />
+                  ))}
+                </div>
               )}
               <FilteredTasksList
                 projectId={projectId}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Plus, FolderPlus } from "lucide-react";
+import { Plus, FolderPlus, Search } from "lucide-react";
 import { projectsApi, type Project } from "@/api/projects";
 import { ProjectCard } from "@/components/projects/ProjectCard";
 import {
@@ -11,6 +11,7 @@ import {
   type ProjectView,
 } from "@/components/projects/ProjectsToolbar";
 import { Button } from "@/components/ui/Button";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { useAuth } from "@/auth/store";
 import { useProjectPrefs } from "@/state/projectPrefs";
@@ -190,11 +191,15 @@ export function ProjectsPage() {
 
       {/* ---- States ---- */}
       {projectsQ.isLoading && (
-        <div className="grid gap-2">
-          {[0, 1, 2].map((i) => (
+        <div className="grid gap-2" data-testid="projects-loading-skeleton">
+          {[0, 1, 2, 3].map((i) => (
             <div
               key={i}
-              className="h-[56px] rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-subtle)] animate-pulse"
+              className={cn(
+                "h-[56px] rounded-[var(--radius-md)]",
+                "border border-[var(--border-subtle)]",
+                "bg-[var(--bg-subtle)] animate-pulse",
+              )}
             />
           ))}
         </div>
@@ -206,34 +211,13 @@ export function ProjectsPage() {
       )}
 
       {!projectsQ.isLoading && projects.length === 0 && (
-        <div
-          className={cn(
-            "grid place-items-center gap-2 px-6 py-14",
-            "rounded-[var(--radius-lg)] border border-dashed border-[var(--border-strong)]",
-            "bg-[var(--bg-subtle)]",
-          )}
-        >
-          <FolderPlus
-            className="h-6 w-6 text-[color:var(--text-tertiary)]"
-            aria-hidden
-          />
-          <span className="text-[14px] font-medium text-[color:var(--text-primary)]">
-            No projects yet
-          </span>
-          <span className="text-[12.5px] text-[color:var(--text-tertiary)]">
-            Create your first one.
-          </span>
-          <div className="mt-1">
-            <Button
-              variant="primary"
-              size="md"
-              leftIcon={<Plus className="h-4 w-4" />}
-              onClick={() => setShowForm(true)}
-            >
-              New project
-            </Button>
-          </div>
-        </div>
+        <EmptyState
+          testId="projects-empty"
+          icon={<FolderPlus className="h-6 w-6" />}
+          title="Start your first project"
+          description="Carve datasets and annotation workspaces. Each project owns its classes, tasks, and assets — pick a name and start uploading."
+          cta={{ label: "Create project", onClick: () => setShowForm(true) }}
+        />
       )}
 
       {projects.length > 0 && (
@@ -270,20 +254,22 @@ export function ProjectsPage() {
           )}
 
           {filtered.length === 0 ? (
-            <div
-              data-testid="projects-empty-search"
-              className={cn(
-                "grid place-items-center gap-2 px-6 py-10",
-                "rounded-[var(--radius-md)] border border-dashed border-[var(--border-subtle)]",
-                "bg-[var(--bg-subtle)]",
-              )}
-            >
-              <span className="text-[12.5px] text-[color:var(--text-tertiary)]">
-                {debouncedQuery
-                  ? `No matches for "${debouncedQuery}".`
-                  : "No projects match the current filter."}
-              </span>
-            </div>
+            <EmptyState
+              testId="projects-empty-search"
+              variant="compact"
+              icon={<Search className="h-5 w-5" />}
+              title={debouncedQuery ? "No matches" : "No projects in view"}
+              description={
+                debouncedQuery
+                  ? `No projects match "${debouncedQuery}".`
+                  : "No projects match the current filter."
+              }
+              cta={
+                debouncedQuery
+                  ? { label: "Clear search", onClick: () => setQuery("") }
+                  : undefined
+              }
+            />
           ) : (
             <ProjectsList
               projects={filtered}
