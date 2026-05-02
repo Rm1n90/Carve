@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 import { cn } from "@/lib/cn";
-import { CarveMark } from "@/components/nav/CarveMark";
+import { Logo } from "@/components/brand/Logo";
 
 interface AuthShellProps {
   cardTitle: ReactNode;
@@ -53,8 +53,8 @@ export function AuthShell({
         )}
         style={{ maxWidth: `${maxWidth}px` }}
       >
-        <div className="mb-6 flex items-center">
-          <CarveMark />
+        <div className="mb-6 flex items-center justify-center">
+          <Logo variant="stacked" size={48} />
         </div>
         <header className="mb-6 grid gap-2">
           {eyebrow && (

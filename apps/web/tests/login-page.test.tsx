@@ -52,8 +52,10 @@ describe("LoginPage", () => {
 
   it("renders the editorial v2.9 chrome (wordmark, glass card, font-editorial title)", () => {
     render(<LoginPage onSuccess={() => {}} />);
-    // CarveMark wordmark (rendered as the editorial italic "Carve" text).
-    expect(screen.getByText("Carve")).toBeInTheDocument();
+    // Brand Logo (stacked variant) — the new Logo splits "Carve" across
+    // spans to apply tighter -v- letter-spacing, so we query by the
+    // brand-logo testid instead of by full-string text.
+    expect(screen.getByTestId("brand-logo")).toBeInTheDocument();
     // Title uses font-editorial italic.
     const title = screen.getByTestId("auth-card-title");
     expect(title.className).toContain("font-editorial");
