@@ -1756,16 +1756,21 @@ function AutoApplyToggle() {
   return (
     <Tooltip
       content={
-        <span className="flex items-center gap-1.5">
-          Auto-apply
-          <Kbd className="bg-white/10 text-white border-white/20">A</Kbd>
+        <span className="flex flex-col items-start gap-0.5 max-w-[220px]">
+          <span className="flex items-center gap-1.5">
+            Auto-apply SAM mask
+            <Kbd className="bg-white/10 text-white border-white/20">A</Kbd>
+          </span>
+          <span className="text-[10.5px] opacity-70">
+            When on, a SAM proposal commits as soon as it is generated — no Enter required.
+          </span>
         </span>
       }
     >
       <button
         type="button"
         data-testid="auto-apply-toggle"
-        aria-label="Toggle auto-apply"
+        aria-label="Toggle SAM auto-apply"
         aria-pressed={auto}
         onClick={() => setAuto(!auto)}
         className={cn(
@@ -2313,17 +2318,45 @@ export function EditorToolbar({
       />
 
       {!isNarrow && (
-        <Tooltip content="Editor settings">
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(true)}
-            aria-label="Editor settings"
-            data-testid="editor-settings-trigger"
-            className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
-          >
-            <Settings className="h-[16px] w-[16px]" />
-          </button>
-        </Tooltip>
+        <>
+          <Tooltip content="Keyboard shortcuts">
+            <button
+              type="button"
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("carve:open-cheatsheet"))
+              }
+              aria-label="Keyboard shortcuts"
+              data-testid="editor-cheatsheet-trigger"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+            >
+              <span className="font-mono text-[12px] leading-none">⌨</span>
+            </button>
+          </Tooltip>
+          <Tooltip content="Task info">
+            <button
+              type="button"
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("carve:open-info-dialog"))
+              }
+              aria-label="Task info"
+              data-testid="editor-info-trigger"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+            >
+              <span className="font-mono text-[12px] leading-none italic">i</span>
+            </button>
+          </Tooltip>
+          <Tooltip content="Editor settings">
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Editor settings"
+              data-testid="editor-settings-trigger"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+            >
+              <Settings className="h-[16px] w-[16px]" />
+            </button>
+          </Tooltip>
+        </>
       )}
       <EditorSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
 
