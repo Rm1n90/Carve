@@ -35,6 +35,8 @@ import {
   type TimeOnTaskRow,
 } from "@/api/stats";
 import { Select } from "@/components/ui/Select";
+import { QualityDashboard } from "@/components/stats/QualityDashboard";
+import { cn } from "@/lib/cn";
 
 // ---------------------------------------------------------------------------
 // Public props — accept either a single task or a project (project picks 1st task).
@@ -690,6 +692,49 @@ function ProjectStatsPanel({ projectId }: { projectId: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Plan-13 Phase 7 Task 11 — project-scope tabs (Stats vs. Quality).
+// ---------------------------------------------------------------------------
+function ProjectStatsTabs({ projectId }: { projectId: string }) {
+  const [tab, setTab] = useState<"stats" | "quality">("stats");
+  const tabs: Array<{ value: "stats" | "quality"; label: string }> = [
+    { value: "stats", label: "Overview" },
+    { value: "quality", label: "Quality" },
+  ];
+  return (
+    <section className="grid gap-4" data-testid="stats-panel-project">
+      <nav
+        aria-label="Stats tabs"
+        data-testid="stats-tabs"
+        className="inline-flex gap-1 self-start"
+      >
+        {tabs.map((t) => (
+          <button
+            key={t.value}
+            type="button"
+            data-testid={`stats-tab-${t.value}`}
+            aria-pressed={tab === t.value}
+            onClick={() => setTab(t.value)}
+            className={cn(
+              "px-3 py-1 rounded-full text-[12px] tracking-tight transition-colors",
+              tab === t.value
+                ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
+                : "bg-[var(--bg-subtle)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+      {tab === "stats" ? (
+        <ProjectStatsPanel projectId={projectId} />
+      ) : (
+        <QualityDashboard projectId={projectId} />
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point.
 // ---------------------------------------------------------------------------
 export function StatsPanel({ taskId, projectId }: StatsPanelProps) {
@@ -704,11 +749,7 @@ export function StatsPanel({ taskId, projectId }: StatsPanelProps) {
     );
   }
   if (projectId) {
-    return (
-      <section className="grid gap-4" data-testid="stats-panel-project">
-        <ProjectStatsPanel projectId={projectId} />
-      </section>
-    );
+    return <ProjectStatsTabs projectId={projectId} />;
   }
   return (
     <p className={errorClass}>StatsPanel requires either taskId or projectId.</p>
