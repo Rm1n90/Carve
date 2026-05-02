@@ -113,6 +113,8 @@ export const SHORTCUTS: ShortcutGroup[] = [
       { keys: ["⌘", "S"], desc: "Save now" },
       { keys: ["⌘", "Z"], desc: "Undo" },
       { keys: ["⌘", "⇧", "Z"], desc: "Redo" },
+      { keys: ["⌘", "D"], desc: "Duplicate selected" },
+      { keys: ["L"], desc: "Lock / unlock selected" },
       { keys: ["?"], desc: "Show this cheat sheet" },
     ],
   },

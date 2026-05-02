@@ -908,17 +908,33 @@ export function AnnotationCanvas({
       const offset = centeredOffset(hostSize, imageSize, targetScale);
       applyFrame({ scale: targetScale, offset });
     }
+    function onOpenPalette(e: Event) {
+      const detail = (e as CustomEvent<{ mode?: "set-active" | "reassign" }>)
+        .detail;
+      const mode = detail?.mode ?? "set-active";
+      setPaletteMode(mode);
+      setPaletteInitialQuery("");
+      setPaletteOpen(true);
+    }
     window.addEventListener("carve:zoom-in", onZoomIn);
     window.addEventListener("carve:zoom-out", onZoomOut);
     window.addEventListener("carve:fit-to-screen", onFit);
     window.addEventListener("carve:zoom-actual", onActual);
     window.addEventListener("carve:zoom-to", onZoomTo as EventListener);
+    window.addEventListener(
+      "carve:open-class-palette",
+      onOpenPalette as EventListener,
+    );
     return () => {
       window.removeEventListener("carve:zoom-in", onZoomIn);
       window.removeEventListener("carve:zoom-out", onZoomOut);
       window.removeEventListener("carve:fit-to-screen", onFit);
       window.removeEventListener("carve:zoom-actual", onActual);
       window.removeEventListener("carve:zoom-to", onZoomTo as EventListener);
+      window.removeEventListener(
+        "carve:open-class-palette",
+        onOpenPalette as EventListener,
+      );
     };
   }, [easeTo, applyFrame, hostSize, imageSize]);
 
@@ -1031,7 +1047,9 @@ export function AnnotationCanvas({
         } else if (settings.colorBy === "group") {
           color = DEFAULT_AMBER;
         } else {
-          color = hexFromColor(classMap[draft.classId]);
+          // Plan 14 Phase 8 Task 6 — per-annotation colorOverride wins
+          // when set; otherwise fall back to the class color.
+          color = hexFromColor(draft.colorOverride ?? classMap[draft.classId]);
         }
         // Plan-09 Phase 5 Task 3 — rejected annotations render dimmed
         // so the reviewer can SEE at a glance which proposals are
@@ -1939,9 +1957,19 @@ export function AnnotationCanvas({
       );
       const hidden = useAnnotations.getState().hiddenAnnotationIds;
       const hClass = useAnnotations.getState().hiddenClassIds;
+      // Plan 14 Phase 8 Task 6 — locked annotations are excluded from
+      // the body hit-test so a normal click cannot select them. Right-
+      // click still hits them (handled by the ContextMenu's separate
+      // hitTestClient path).
+      const locked = useAnnotations.getState().lockedIds;
       // Top-most (highest zOrder) wins.
       const sorted = drafts
-        .filter((d) => !hidden.includes(d.tempId) && !hClass.includes(d.classId))
+        .filter(
+          (d) =>
+            !hidden.includes(d.tempId) &&
+            !hClass.includes(d.classId) &&
+            !locked.has(d.tempId),
+        )
         .sort((a, b) => (b.zOrder ?? 0) - (a.zOrder ?? 0));
       for (const d of sorted) {
         if (d.geometry.kind === "bbox") {
@@ -2028,9 +2056,15 @@ export function AnnotationCanvas({
       }
       const p = pointerXY(e);
       if (tool === "cursor") {
+        // Plan 14 Phase 8 Task 6 — locked annotations are not draggable
+        // or resizable. Skip the handle / body / vertex drag-init paths
+        // when the currently selected target is locked; selection
+        // hit-testing below uses the locked-aware ``hitTest()`` so a
+        // normal click doesn't re-target a locked annotation either.
+        const lockedIds = useAnnotations.getState().lockedIds;
         // 1. If we have a selected bbox, did we click one of its handles?
         const sel = getSelectedBbox();
-        if (sel) {
+        if (sel && !lockedIds.has(sel.id)) {
           const handle = hitTestHandle(sel.bbox, p);
           if (handle) {
             dragRef.current = {
@@ -2066,7 +2100,7 @@ export function AnnotationCanvas({
 
         // 1b. If we have a selected polygon, did we click one of its vertex handles?
         const polySel = getSelectedPolygon();
-        if (polySel) {
+        if (polySel && !lockedIds.has(polySel.id)) {
           const idx = hitTestVertex(polySel.poly, p);
           if (idx !== null) {
             dragRef.current = {
@@ -2629,6 +2663,46 @@ export function AnnotationCanvas({
         }
       }
 
+      // Plan 14 Phase 8 Task 6 — L toggles lock on selected annotations.
+      if (
+        e.key.toLowerCase() === "l" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        const selIds = useAnnotations.getState().selectedIds;
+        if (selIds.length > 0) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          for (const id of selIds) {
+            useAnnotations.getState().toggleLock(id);
+          }
+          return;
+        }
+      }
+
+      // Plan 14 Phase 8 Task 6 — Cmd/Ctrl-D duplicates the selected
+      // annotations 16px right + 16px down.
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "d"
+      ) {
+        const selIds = useAnnotations.getState().selectedIds;
+        if (selIds.length > 0) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          const bounds =
+            imageSize.w > 1 && imageSize.h > 1 ? imageSize : undefined;
+          for (const id of selIds) {
+            useAnnotations.getState().duplicate(id, 16, 16, bounds);
+          }
+          return;
+        }
+      }
+
       // Plan 14 Phase 8 Task 5 — type-to-filter quick reassign. When
       // ≥1 annotation is selected and the user types a single letter
       // (a-z) outside any input, open the palette in reassign mode
@@ -3005,6 +3079,11 @@ export function AnnotationCanvas({
         hitTest={hitTestClient}
         vertexHitTest={vertexHitTestClient}
         classes={classesProp}
+        toImageXY={toImageXY}
+        frameId={frameId}
+        imageBounds={
+          imageSize.w > 1 && imageSize.h > 1 ? imageSize : undefined
+        }
       />
       {/* v3.8 Phase 3.6 — Class Command Palette. Plan 14 Phase 8 Task 4
           productized this: ``/`` and ``Cmd-Shift-C`` open it in

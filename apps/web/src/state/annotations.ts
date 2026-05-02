@@ -42,6 +42,12 @@ export interface AnnotationDraft {
   reviewedById?: string | null;
   reviewedAt?: string | null;
   prevGeometry?: Record<string, unknown> | null;
+  /**
+   * Plan 14 Phase 8 Task 6 — per-annotation color override. When non-null,
+   * the canvas paints this color instead of the class color. ``null``
+   * resets to the class color.
+   */
+  colorOverride?: string | null;
 }
 
 export interface ReviewStatePatch {
@@ -69,6 +75,17 @@ interface LastEditMeta {
   timestamp: number;
 }
 
+/**
+ * Plan 14 Phase 8 Task 6 — clipboard slice for the right-click "Copy" /
+ * "Paste annotation" actions. In-memory only (does not survive reload).
+ */
+export interface ClipboardEntry {
+  geometry: Geometry;
+  classId: string;
+  kind: AnnotationKind;
+  colorOverride: string | null;
+}
+
 interface State {
   byId: Record<string, AnnotationDraft>;
   selectedId: string | null;
@@ -76,6 +93,15 @@ interface State {
   hiddenClassIds: string[];
   hiddenAnnotationIds: string[];
   pendingDeletes: string[];
+  /**
+   * Plan 14 Phase 8 Task 6 — locked annotation ids. Locked annotations
+   * are excluded from the canvas's body hit-test (so a normal click can't
+   * select them), drag/resize handlers no-op early, and they paint with
+   * a small lock glyph + slightly distinct alpha. Right-click still hits
+   * them so the user can unlock from the context menu.
+   */
+  lockedIds: Set<string>;
+  clipboard: ClipboardEntry | null;
   history: { past: HistorySnapshot[]; future: HistorySnapshot[] };
   /** See {@link LastEditMeta}. Plan-09 Phase 5 Task 13. */
   lastEditMeta: LastEditMeta | null;
@@ -114,6 +140,36 @@ interface State {
    * when the API rejects.
    */
   revertReviewState: (id: string, prev: ReviewStatePatch) => void;
+  // Plan 14 Phase 8 Task 6 — lock / clipboard / duplicate actions.
+  isLocked: (id: string) => boolean;
+  lock: (id: string) => void;
+  unlock: (id: string) => void;
+  toggleLock: (id: string) => void;
+  /**
+   * Clones the annotation with ``id`` offset by (dx, dy) — defaults to
+   * (16, 16). Bbox/polygon geometries are clamped to image bounds when
+   * ``imageBounds`` is provided. Returns the new tempId, or ``null`` if
+   * the source annotation does not exist.
+   */
+  duplicate: (
+    id: string,
+    dx?: number,
+    dy?: number,
+    imageBounds?: { w: number; h: number },
+  ) => string | null;
+  copyToClipboard: (id: string) => void;
+  /**
+   * Paste the clipboard entry at the given image-space position. The
+   * pasted annotation's geometry is positioned so its top-left (bbox)
+   * or first vertex (polygon) lands at (atX, atY). Returns the new
+   * tempId, or ``null`` if the clipboard is empty.
+   */
+  pasteFromClipboard: (
+    atX: number,
+    atY: number,
+    frameId?: string | null,
+    imageBounds?: { w: number; h: number },
+  ) => string | null;
 }
 
 const HISTORY_CAP = 50;
@@ -168,13 +224,15 @@ function neighborsByZ(byId: Record<string, AnnotationDraft>, target: AnnotationD
   return sameFrame.sort((a, b) => (a.zOrder ?? 0) - (b.zOrder ?? 0));
 }
 
-export const useAnnotations = create<State>((set) => ({
+export const useAnnotations = create<State>((set, get) => ({
   byId: {},
   selectedId: null,
   selectedIds: [],
   hiddenClassIds: [],
   hiddenAnnotationIds: [],
   pendingDeletes: [],
+  lockedIds: new Set<string>(),
+  clipboard: null,
   history: { past: [], future: [] },
   lastEditMeta: null,
   add: (a) =>
@@ -287,6 +345,8 @@ export const useAnnotations = create<State>((set) => ({
       selectedId: null,
       selectedIds: [],
       pendingDeletes: [],
+      lockedIds: new Set<string>(),
+      clipboard: null,
       history: { past: [], future: [] },
       lastEditMeta: null,
     }),
@@ -395,4 +455,155 @@ export const useAnnotations = create<State>((set) => ({
         lastEditMeta: null,
       };
     }),
+  // ---- Plan 14 Phase 8 Task 6 ----
+  isLocked: (id: string): boolean => get().lockedIds.has(id),
+  lock: (id) =>
+    set((s) => {
+      if (s.lockedIds.has(id)) return s;
+      const next = new Set(s.lockedIds);
+      next.add(id);
+      return { lockedIds: next };
+    }),
+  unlock: (id) =>
+    set((s) => {
+      if (!s.lockedIds.has(id)) return s;
+      const next = new Set(s.lockedIds);
+      next.delete(id);
+      return { lockedIds: next };
+    }),
+  toggleLock: (id) =>
+    set((s) => {
+      const next = new Set(s.lockedIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { lockedIds: next };
+    }),
+  duplicate: (id, dx = 16, dy = 16, imageBounds) => {
+    const s0 = get();
+    const cur = s0.byId[id];
+    if (!cur) return null;
+    const newId = `dup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const shifted = shiftGeometry(cur.geometry, dx, dy, imageBounds);
+    const draft: AnnotationDraft = {
+      ...cur,
+      tempId: newId,
+      serverId: null,
+      dirty: true,
+      geometry: shifted,
+      // Fresh proposed status — the duplicate is a NEW proposal.
+      status: "proposed",
+      reviewedById: null,
+      reviewedAt: null,
+      prevGeometry: null,
+    };
+    set((s) => ({
+      byId: { ...s.byId, [newId]: draft },
+      selectedId: newId,
+      selectedIds: [newId],
+      history: pushPast(s),
+      lastEditMeta: null,
+    }));
+    return newId;
+  },
+  copyToClipboard: (id) =>
+    set((s) => {
+      const cur = s.byId[id];
+      if (!cur) return s;
+      return {
+        clipboard: {
+          geometry: cur.geometry,
+          classId: cur.classId,
+          kind: cur.kind,
+          colorOverride: cur.colorOverride ?? null,
+        },
+      };
+    }),
+  pasteFromClipboard: (atX, atY, frameId = null, imageBounds) => {
+    const s0 = get();
+    const cb = s0.clipboard;
+    if (!cb) return null;
+    const newId = `pst-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const placed = placeGeometryAt(cb.geometry, atX, atY, imageBounds);
+    const draft: AnnotationDraft = {
+      tempId: newId,
+      classId: cb.classId,
+      kind: cb.kind,
+      geometry: placed,
+      frameId,
+      serverId: null,
+      dirty: true,
+      status: "proposed",
+      reviewedById: null,
+      reviewedAt: null,
+      prevGeometry: null,
+      colorOverride: cb.colorOverride,
+    };
+    set((s) => ({
+      byId: { ...s.byId, [newId]: draft },
+      selectedId: newId,
+      selectedIds: [newId],
+      history: pushPast(s),
+      lastEditMeta: null,
+    }));
+    return newId;
+  },
 }));
+
+/**
+ * Plan 14 Phase 8 Task 6 — translate a geometry by (dx, dy) and clamp
+ * the result to ``imageBounds`` when provided. Mask + tag geometries are
+ * returned unchanged (mask shifting requires RLE rewriting; tags have no
+ * spatial position).
+ */
+function shiftGeometry(
+  g: Geometry,
+  dx: number,
+  dy: number,
+  bounds?: { w: number; h: number },
+): Geometry {
+  if (g.kind === "bbox") {
+    const w = g.w;
+    const h = g.h;
+    let x = g.x + dx;
+    let y = g.y + dy;
+    if (bounds) {
+      x = Math.max(0, Math.min(bounds.w - w, x));
+      y = Math.max(0, Math.min(bounds.h - h, y));
+    }
+    return { kind: "bbox", x, y, w, h };
+  }
+  if (g.kind === "polygon") {
+    const points = g.points.map(([px, py]) => {
+      let nx = px + dx;
+      let ny = py + dy;
+      if (bounds) {
+        nx = Math.max(0, Math.min(bounds.w, nx));
+        ny = Math.max(0, Math.min(bounds.h, ny));
+      }
+      return [nx, ny] as [number, number];
+    });
+    return { kind: "polygon", points };
+  }
+  return g;
+}
+
+/**
+ * Plan 14 Phase 8 Task 6 — re-anchor a geometry so its top-left lands at
+ * (atX, atY). For polygons, the first vertex is anchored. Mask + tag
+ * geometries are returned unchanged.
+ */
+function placeGeometryAt(
+  g: Geometry,
+  atX: number,
+  atY: number,
+  bounds?: { w: number; h: number },
+): Geometry {
+  if (g.kind === "bbox") {
+    return shiftGeometry(g, atX - g.x, atY - g.y, bounds);
+  }
+  if (g.kind === "polygon" && g.points.length > 0) {
+    const [ox, oy] = g.points[0];
+    return shiftGeometry(g, atX - ox, atY - oy, bounds);
+  }
+  return g;
+}
