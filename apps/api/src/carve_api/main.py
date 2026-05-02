@@ -88,6 +88,10 @@ def create_app() -> FastAPI:
     from carve_api.audit.router import router as audit_router
     app.include_router(audit_router)
 
+    # Plan-13 Phase 7 Task 4 — per-project invitations + member admin.
+    from carve_api.invites.router import router as invites_router
+    app.include_router(invites_router)
+
     from fastapi import APIRouter, Depends
 
     from carve_api.auth.models import UserRole
