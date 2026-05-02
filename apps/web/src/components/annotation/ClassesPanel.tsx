@@ -20,6 +20,7 @@ import {
   Check,
   MoreVertical,
   Eraser,
+  Star,
 } from "lucide-react";
 import {
   Popover,
@@ -29,6 +30,7 @@ import {
 import type { ClassRow } from "@/api/classes";
 import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
+import { useClassRecents } from "@/state/classRecents";
 import { Kbd } from "@/components/ui/Kbd";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
@@ -68,6 +70,7 @@ const KIND_ICON = {
 // doesn't allocate a new `[]` every render (and thus break referential
 // equality in downstream memoised consumers).
 const EMPTY_ARR: { tempId: string; kind: keyof typeof KIND_ICON }[] = [];
+const EMPTY_STR_ARR: string[] = [];
 
 // PALETTE is now imported from lib/swatch.ts as PALETTE_HEX so all color
 // surfaces share the same deterministic order. See bug F in the v2.1 audit.
@@ -253,6 +256,8 @@ function ClassRowItem({
   selectedAnnIds,
   hiddenAnnIds,
   onSavePrompt,
+  isPinned,
+  onTogglePin,
 }: {
   cls: ClassRow;
   index: number;
@@ -264,6 +269,8 @@ function ClassRowItem({
   onToggleHidden: () => void;
   onEditClass?: (cid: string) => void;
   onDeleteClass?: (cid: string) => void;
+  isPinned: boolean;
+  onTogglePin: () => void;
   /**
    * v3.0 B2 — invoked from the row's 3-dot menu. Removes every annotation of
    * this class on the current frame after a count-aware confirm dialog.
@@ -359,9 +366,30 @@ function ClassRowItem({
         <span
           className={cn(
             "flex items-center gap-0.5",
-            isActive ? "" : "opacity-0 group-hover:opacity-100",
+            // Pin star is always visible (when pinned) so users can find
+            // their pinned set at a glance; the rest of the action group
+            // still hides on hover.
+            isActive ? "" : isPinned ? "" : "opacity-0 group-hover:opacity-100",
           )}
         >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePin();
+            }}
+            aria-label={isPinned ? `Unpin class ${cls.name}` : `Pin class ${cls.name}`}
+            data-testid={`class-pin-${cls.id}`}
+            data-pinned={isPinned ? "true" : undefined}
+            className={cn(
+              "grid h-6 w-6 place-items-center rounded-[var(--radius-sm)]",
+              isPinned
+                ? "text-[color:var(--accent)] hover:bg-[var(--bg-app)]"
+                : "text-[color:var(--text-tertiary)] hover:bg-[var(--bg-app)] hover:text-[color:var(--text-primary)]",
+            )}
+          >
+            <Star className="h-3 w-3" fill={isPinned ? "currentColor" : "none"} />
+          </button>
           <button
             type="button"
             onClick={(e) => {
@@ -686,6 +714,24 @@ export function ClassesPanel({
   const [sort, setSort] = useState<SortMode>("idx");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showAdd, setShowAdd] = useState(false);
+  // Plan 14 Phase 8 Task 4 — when ``classes.length > 12`` collapse the
+  // "All classes" group behind a "Show all (N)" expander. Pinned and
+  // search-filtered views remain expanded regardless.
+  const [showAllExpanded, setShowAllExpanded] = useState(false);
+
+  // Project id is derived from the first class — every class on a
+  // project shares the same project_id, and the panel never mounts
+  // without at least one class once a project has been opened.
+  const projectId = classes[0]?.project_id ?? "";
+  // Important: select the *map* (stable reference) and read the slot
+  // inline with useMemo. Selecting ``map[pid] ?? []`` would return a
+  // new ``[]`` on every render and infinite-loop zustand's subscriber.
+  const pinnedByProject = useClassRecents((s) => s.pinnedByProject);
+  const pinnedIds = useMemo<string[]>(
+    () => (projectId ? (pinnedByProject[projectId] ?? EMPTY_STR_ARR) : EMPTY_STR_ARR),
+    [pinnedByProject, projectId],
+  );
+  const togglePin = useClassRecents((s) => s.togglePin);
 
   const counts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -871,40 +917,113 @@ export function ClassesPanel({
         </div>
       </div>
 
-      <ul className="flex-1 min-h-0 overflow-y-auto py-1">
+      <ul
+        className="flex-1 min-h-0 overflow-y-auto py-1"
+        data-testid="classes-panel-list"
+      >
         {filtered.length === 0 && (
           <li className="px-3 py-4 text-[12.5px] text-[color:var(--text-tertiary)] italic">
             {classes.length === 0 ? "No classes defined." : "No classes match."}
           </li>
         )}
-        {filtered.map((c, i) => {
-          const cAnns = annotationsByClass[c.id] ?? EMPTY_ARR;
+        {(() => {
+          // Plan 14 Phase 8 Task 4 — Pinned group + collapsible "All
+          // classes (N)" when the project has > 12 classes. Search /
+          // sort affect the All group only; pinned ordering matches the
+          // pin-history (most recently pinned at the bottom). When the
+          // user is searching, we skip the grouping and render the
+          // filtered hits flat — the user is clearly drilling into a
+          // specific match.
+          const isSearching = query.trim().length > 0;
+          const renderRow = (c: ClassRow, i: number) => {
+            const cAnns = annotationsByClass[c.id] ?? EMPTY_ARR;
+            return (
+              <ClassRowItem
+                key={c.id}
+                cls={c}
+                index={i}
+                count={counts[c.id] ?? 0}
+                isActive={c.id === activeClassId}
+                expanded={!!expanded[c.id]}
+                onToggleExpand={() =>
+                  setExpanded((prev) => ({ ...prev, [c.id]: !prev[c.id] }))
+                }
+                hidden={hiddenClassIds.includes(c.id)}
+                onToggleHidden={() =>
+                  setHiddenForClass(c.id, !hiddenClassIds.includes(c.id))
+                }
+                onEditClass={onEditClass}
+                onDeleteClass={onDeleteClass}
+                onClearOnFrame={handleClearOnFrame}
+                frameAnnotationCount={frameCounts[c.id] ?? 0}
+                onUpdateColor={onUpdateColor}
+                classAnnotations={cAnns}
+                hoveredAnnId={hoveredAnnotationId}
+                selectedAnnIds={selectedIds}
+                hiddenAnnIds={hiddenAnnotationIds}
+                onSavePrompt={onSavePrompt}
+                isPinned={pinnedIds.includes(c.id)}
+                onTogglePin={() =>
+                  projectId && togglePin(projectId, c.id)
+                }
+              />
+            );
+          };
+
+          if (isSearching) {
+            return filtered.map((c, i) => renderRow(c, i));
+          }
+
+          const pinnedSet = new Set(pinnedIds);
+          const pinned = pinnedIds
+            .map((id) => filtered.find((c) => c.id === id))
+            .filter((c): c is ClassRow => Boolean(c));
+          const rest = filtered.filter((c) => !pinnedSet.has(c.id));
+          const collapseAll = classes.length > 12 && !showAllExpanded;
           return (
-            <ClassRowItem
-              key={c.id}
-              cls={c}
-              index={i}
-              count={counts[c.id] ?? 0}
-              isActive={c.id === activeClassId}
-              expanded={!!expanded[c.id]}
-              onToggleExpand={() =>
-                setExpanded((prev) => ({ ...prev, [c.id]: !prev[c.id] }))
-              }
-              hidden={hiddenClassIds.includes(c.id)}
-              onToggleHidden={() => setHiddenForClass(c.id, !hiddenClassIds.includes(c.id))}
-              onEditClass={onEditClass}
-              onDeleteClass={onDeleteClass}
-              onClearOnFrame={handleClearOnFrame}
-              frameAnnotationCount={frameCounts[c.id] ?? 0}
-              onUpdateColor={onUpdateColor}
-              classAnnotations={cAnns}
-              hoveredAnnId={hoveredAnnotationId}
-              selectedAnnIds={selectedIds}
-              hiddenAnnIds={hiddenAnnotationIds}
-              onSavePrompt={onSavePrompt}
-            />
+            <>
+              {pinned.length > 0 && (
+                <li
+                  className="px-2.5 pt-1 pb-0.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--text-tertiary)]"
+                  data-testid="classes-pinned-header"
+                >
+                  Pinned
+                </li>
+              )}
+              {pinned.map((c, i) => renderRow(c, i))}
+              {pinned.length > 0 && rest.length > 0 && (
+                <li
+                  className="mx-2.5 my-1 border-t border-[var(--border-subtle)]"
+                  aria-hidden
+                />
+              )}
+              {classes.length > 12 ? (
+                <>
+                  <li className="px-2.5 pt-1 pb-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setShowAllExpanded((v) => !v)}
+                      data-testid="classes-show-all-toggle"
+                      className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]"
+                    >
+                      {showAllExpanded ? (
+                        <ChevronDown className="h-3 w-3" />
+                      ) : (
+                        <ChevronRight className="h-3 w-3" />
+                      )}
+                      <span>
+                        {showAllExpanded ? "Hide" : "Show"} all ({rest.length})
+                      </span>
+                    </button>
+                  </li>
+                  {!collapseAll && rest.map((c, i) => renderRow(c, i))}
+                </>
+              ) : (
+                rest.map((c, i) => renderRow(c, i))
+              )}
+            </>
           );
-        })}
+        })()}
       </ul>
 
       <div className="border-t border-[var(--border-subtle)] p-2">

@@ -267,7 +267,15 @@ export function AnnotationCanvas({
   const [samTextPending, setSamTextPending] = useState(false);
   // v3.8 Phase 3.6 — Class Command Palette open state. Opens via "/"
   // when a SAM candidate is active (or, future, polygon/bbox candidate).
+  // Plan 14 Phase 8 Task 4 — productized: now drives the universal
+  // set-active / reassign palette. ``mode`` selects between picking the
+  // next active class (``/`` and Cmd-Shift-C) and bulk-reassigning the
+  // current selection (``R`` and the type-to-filter flow from Task 5).
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteMode, setPaletteMode] = useState<"set-active" | "reassign">(
+    "set-active",
+  );
+  const [paletteInitialQuery, setPaletteInitialQuery] = useState("");
   // v3.8 Phase 3.7 — when true, Apply commits every result above
   // SAM_TEXT_FIND_ALL_THRESHOLD as a polygon (or mask) annotation
   // straight to the active class. Default true: addresses the user's
@@ -2566,6 +2574,61 @@ export function AnnotationCanvas({
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+
+      // Plan 14 Phase 8 Task 4 — universal class-palette triggers.
+      // ``/`` opens the palette in set-active mode (replaces the
+      // earlier SAM-only ``/`` binding); ``R`` opens it in reassign
+      // mode when at least one annotation is selected; Cmd-Shift-C is
+      // a power-user alt for set-active.
+      //
+      // These guard against modifier collisions so ⌘A still selects
+      // all and ⌘P still prints (etc.). We intentionally fire BEFORE
+      // the tool-specific switch so the palette is reachable from any
+      // tool.
+      if (
+        e.key === "/" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setPaletteMode("set-active");
+        setPaletteInitialQuery("");
+        setPaletteOpen(true);
+        return;
+      }
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "c"
+      ) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setPaletteMode("set-active");
+        setPaletteInitialQuery("");
+        setPaletteOpen(true);
+        return;
+      }
+      if (
+        e.key.toLowerCase() === "r" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        const selIds = useAnnotations.getState().selectedIds;
+        if (selIds.length > 0) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          setPaletteMode("reassign");
+          setPaletteInitialQuery("");
+          setPaletteOpen(true);
+          return;
+        }
+      }
+
       if (tool === "cursor") {
         // ArrowKey nudge — only when the cursor tool has a bbox selected
         // AND the user has no modifier (asset prev/next is non-modifier
@@ -2668,16 +2731,6 @@ export function AnnotationCanvas({
               // inherits it without an extra UI click.
               useTool.getState().setActiveClassId(target.id);
             }
-          }
-        } else if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-          // v3.8 Phase 3.6 — open the Class Command Palette. Universal
-          // class picker that scales past the 1-9 limit. Only opens
-          // when a SAM candidate is active (otherwise picking a class
-          // does nothing).
-          if (samTool.getLastResult()) {
-            e.preventDefault();
-            e.stopPropagation();
-            setPaletteOpen(true);
           }
         }
       }
@@ -2929,24 +2982,24 @@ export function AnnotationCanvas({
         vertexHitTest={vertexHitTestClient}
         classes={classesProp}
       />
-      {/* v3.8 Phase 3.6 — Class Command Palette. "/" opens it when a
-          SAM candidate is in flight; selecting a class commits the
-          candidate to it and updates the active class so the next
-          candidate inherits the choice. */}
+      {/* v3.8 Phase 3.6 — Class Command Palette. Plan 14 Phase 8 Task 4
+          productized this: ``/`` and ``Cmd-Shift-C`` open it in
+          set-active mode; ``R`` (and Task 5's type-to-filter flow)
+          opens it in reassign mode. The palette itself wires the
+          set-active / update calls — the canvas only owns the open
+          state and the source classes. */}
       <ClassCommandPalette
         open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        mode={paletteMode}
+        projectId={classesProp?.[0]?.project_id ?? ""}
         classes={classesProp ?? []}
-        onClose={() => setPaletteOpen(false)}
-        onPick={(classId) => {
-          const ok = samTool.commit(classId);
-          if (ok) {
-            clearSamPreview();
-            clearSamPoints();
-            clearPreview();
-            useTool.getState().setActiveClassId(classId);
-          }
-        }}
-        title="Commit SAM candidate to class"
+        selectedAnnotationIds={
+          paletteMode === "reassign"
+            ? useAnnotations.getState().selectedIds
+            : undefined
+        }
+        initialQuery={paletteInitialQuery}
       />
       <ModelLoadingOverlay
         open={samLoadOverlayOpen}
