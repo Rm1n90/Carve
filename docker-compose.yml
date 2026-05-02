@@ -156,6 +156,15 @@ services:
       # is the only way to change models. Default kept identical so
       # operators who never set SAM_MODEL see no behavior change.
       SAM_MODEL: ${SAM_MODEL:-sam2.1-large}
+      # Plan 11 Task 7 — SAM 3.1 perf knobs. Defaults match what the
+      # apps/model/src/carve_model/sam/perf.py helpers already pick on a
+      # cuda host (bf16 + sdpa, no torch.compile). Surfaced here so
+      # operators can flip them via .env without touching code.
+      # See apps/docs/sam3p1.md for details.
+      SAM_DTYPE: ${SAM_DTYPE:-bf16}
+      SAM_ATTN_IMPL: ${SAM_ATTN_IMPL:-sdpa}
+      SAM_COMPILE: ${SAM_COMPILE:-false}
+      SAM_VIDEO_BACKEND: ${SAM_VIDEO_BACKEND:-multiplex}
       # Optional: pin a specific GPU index. Default = use all visible GPUs.
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       # MinIO env — required so the model service's /yolo/train endpoint can
