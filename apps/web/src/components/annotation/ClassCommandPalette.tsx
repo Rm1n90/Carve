@@ -172,10 +172,17 @@ export function ClassCommandPalette({
     if (mode === "set-active") {
       useTool.getState().setActiveClassId(classId);
     } else {
-      for (const id of selectedAnnotationIds) {
-        useAnnotations.getState().update(id, { classId });
-      }
       const n = selectedAnnotationIds.length;
+      if (n > 1) {
+        // Plan 14 Phase 8 Task 7 — single history entry for bulk reassign.
+        useAnnotations
+          .getState()
+          .setActiveClassForSelected(classId, selectedAnnotationIds);
+      } else {
+        for (const id of selectedAnnotationIds) {
+          useAnnotations.getState().update(id, { classId });
+        }
+      }
       showToast(
         `Reassigned ${n} annotation${n === 1 ? "" : "s"} to ${cls.name}`,
         { variant: "success" },

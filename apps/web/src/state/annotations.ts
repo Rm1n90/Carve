@@ -170,6 +170,21 @@ interface State {
     frameId?: string | null,
     imageBounds?: { w: number; h: number },
   ) => string | null;
+  /**
+   * Plan 14 Phase 8 Task 7 — bulk class-reassign for the current
+   * ``selectedIds`` set. Mutates every selected draft's ``classId`` (and
+   * marks it dirty) and pushes a SINGLE history entry covering the whole
+   * batch — so an undo reverts the entire bulk reassign in one step
+   * instead of N steps.
+   *
+   * Drafts already on ``classId`` are skipped (no-op). If nothing
+   * actually changes, the call is a complete no-op (no history push).
+   *
+   * Pass an explicit ``ids`` array to bulk-reassign a caller-provided
+   * set (e.g. the palette's ``selectedAnnotationIds`` prop, which may
+   * not match the live ``selectedIds`` slice in test scenarios).
+   */
+  setActiveClassForSelected: (classId: string, ids?: ReadonlyArray<string>) => void;
 }
 
 const HISTORY_CAP = 50;
@@ -516,6 +531,25 @@ export const useAnnotations = create<State>((set, get) => ({
           kind: cur.kind,
           colorOverride: cur.colorOverride ?? null,
         },
+      };
+    }),
+  setActiveClassForSelected: (classId, ids) =>
+    set((s) => {
+      const targets = ids ?? s.selectedIds;
+      const next = { ...s.byId };
+      let changed = 0;
+      for (const id of targets) {
+        const draft = next[id];
+        if (draft && draft.classId !== classId) {
+          next[id] = { ...draft, classId, dirty: true };
+          changed++;
+        }
+      }
+      if (changed === 0) return s;
+      return {
+        byId: next,
+        history: pushPast(s),
+        lastEditMeta: null,
       };
     }),
   pasteFromClipboard: (atX, atY, frameId = null, imageBounds) => {

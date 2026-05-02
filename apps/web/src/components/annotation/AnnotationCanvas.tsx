@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import { CanvasApp } from "@/canvas/App";
 import { BboxTool, type Point } from "@/canvas/tools/BboxTool";
@@ -258,6 +258,23 @@ export function AnnotationCanvas({
   // to a positive-click prompt and a real drag is forwarded as a box
   // prompt to the panel's box handler.
   const samTrackBoxDraftRef = useRef<{ anchor: Point; current: Point } | null>(null);
+  // Plan 14 Phase 8 Task 7 — cursor-tool marquee (drag-rectangle) selection.
+  // ``shift`` snapshot is captured at pointerdown so a release that no
+  // longer carries shiftKey (rare on jsdom) still respects the original
+  // intent. ``startClient`` is used to compute the drag distance (so a
+  // sub-4px drag falls back to the click-to-select path).
+  const marqueeDraftRef = useRef<
+    | {
+        anchor: Point;
+        current: Point;
+        shift: boolean;
+        startClient: { x: number; y: number };
+      }
+    | null
+  >(null);
+  // Separate Graphics so the marquee outline doesn't fight the bbox
+  // preview rect. Lazily created on first paint.
+  const marqueeGfxRef = useRef<unknown | null>(null);
   // Mirror of the ``samMode`` zustand slice so the tool-routing useEffect
   // can branch on it without re-running on every keystroke. We keep it as
   // a separate state read so React re-renders the floating text input
@@ -302,6 +319,12 @@ export function AnnotationCanvas({
   // wave 2 item 5.
   useEffect(() => {
     setDragCursor(null);
+    // Plan 14 Phase 8 Task 7 — flushing tool state should also drop any
+    // in-flight marquee draft so flipping cursor → bbox mid-drag never
+    // leaves a stale outline floating on the overlay.
+    marqueeDraftRef.current = null;
+    clearMarquee();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tool]);
   // v3.5 Phase D — keep the SamTool instance's mode in sync with the
   // toolbar picker. Decoupling via the store (rather than a prop) keeps
@@ -1373,6 +1396,42 @@ export function AnnotationCanvas({
     if (g && typeof g.clear === "function") g.clear();
   }
 
+  // ----- Plan 14 Phase 8 Task 7 — marquee preview rectangle.
+  async function drawMarqueeRect(rect: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }) {
+    const app = appRef.current;
+    if (!app) return;
+    let Graphics: typeof import("pixi.js").Graphics | undefined;
+    try {
+      const pixi = await import("pixi.js");
+      Graphics = pixi.Graphics;
+    } catch {
+      return;
+    }
+    if (!Graphics) return;
+    let g = marqueeGfxRef.current as InstanceType<typeof Graphics> | null;
+    if (!g) {
+      g = new Graphics();
+      marqueeGfxRef.current = g;
+      app.overlayLayer.addChild(g);
+    }
+    g.clear();
+    g.rect(rect.x, rect.y, rect.w, rect.h);
+    // Lighter / dashed-feel stroke vs drawPreviewRect — visually distinct
+    // so the user knows this is a selection marquee, not a draft bbox.
+    g.stroke({ color: 0x60a5fa, width: 1, alpha: 0.95 });
+    g.fill({ color: 0x60a5fa, alpha: 0.08 });
+  }
+
+  function clearMarquee() {
+    const g = marqueeGfxRef.current as { clear?: () => void } | null;
+    if (g && typeof g.clear === "function") g.clear();
+  }
+
   // ----- Polygon in-progress preview (vertices + edges + rubber-band).
   async function drawPolygonPreview(
     vertices: readonly Point[],
@@ -2158,7 +2217,31 @@ export function AnnotationCanvas({
           } else {
             useAnnotations.getState().select(hit);
           }
-        } else if (!e.shiftKey) {
+          return;
+        }
+        // 3. Plan 14 Phase 8 Task 7 — empty-canvas LMB drag starts a
+        // marquee selection. We DEFER ``clearSelection`` to pointerup
+        // (sub-4px drag = click-to-clear); larger drags compute a hit
+        // set against the marquee rect. Modifier rules: only Shift is
+        // honoured (extends the existing selection) — Cmd / Ctrl / Alt
+        // bail out to the legacy click path so other tools (Alt-edge
+        // insert, etc.) keep working.
+        if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          marqueeDraftRef.current = {
+            anchor: p,
+            current: p,
+            shift: e.shiftKey,
+            startClient: { x: e.clientX, y: e.clientY },
+          };
+          try {
+            host!.setPointerCapture(e.pointerId);
+          } catch {
+            /* setPointerCapture not always available in jsdom */
+          }
+          return;
+        }
+        // Modifier-bearing empty-canvas click — preserve legacy behaviour.
+        if (!e.shiftKey) {
           useAnnotations.getState().clearSelection();
         }
         return;
@@ -2393,6 +2476,17 @@ export function AnnotationCanvas({
         const h = Math.abs(draft.anchor.y - clamped.y);
         void drawPreviewRect({ x, y, w, h });
       } else if (tool === "cursor") {
+        // Plan 14 Phase 8 Task 7 — live marquee preview while dragging.
+        const marquee = marqueeDraftRef.current;
+        if (marquee) {
+          marquee.current = p;
+          const x = Math.min(marquee.anchor.x, p.x);
+          const y = Math.min(marquee.anchor.y, p.y);
+          const w = Math.abs(marquee.anchor.x - p.x);
+          const h = Math.abs(marquee.anchor.y - p.y);
+          void drawMarqueeRect({ x, y, w, h });
+          return;
+        }
         const drag = dragRef.current;
         if (drag) {
           // Active drag — translate or resize the selected bbox, or move
@@ -2589,6 +2683,53 @@ export function AnnotationCanvas({
             });
         }
       } else if (tool === "cursor") {
+        // Plan 14 Phase 8 Task 7 — finalise marquee selection.
+        const marquee = marqueeDraftRef.current;
+        if (marquee) {
+          marqueeDraftRef.current = null;
+          try {
+            host!.releasePointerCapture(e.pointerId);
+          } catch {
+            /* not all environments implement releasePointerCapture */
+          }
+          clearMarquee();
+          const dxClient = e.clientX - marquee.startClient.x;
+          const dyClient = e.clientY - marquee.startClient.y;
+          const dragDist = Math.sqrt(dxClient * dxClient + dyClient * dyClient);
+          if (dragDist < 4) {
+            // Click, not a drag — preserve existing "click empty canvas
+            // to deselect" behaviour. Shift-click on empty canvas is a
+            // no-op (matches the legacy branch above).
+            if (!marquee.shift) {
+              useAnnotations.getState().clearSelection();
+            }
+            return;
+          }
+          // Real drag — hit-test all annotations on the current frame.
+          const state = useAnnotations.getState();
+          const matched = marqueeHitTest({
+            byId: state.byId,
+            frameId,
+            hidden: state.hiddenAnnotationIds,
+            hiddenClasses: state.hiddenClassIds,
+            locked: state.lockedIds,
+            rect: {
+              x1: marquee.anchor.x,
+              y1: marquee.anchor.y,
+              x2: marquee.current.x,
+              y2: marquee.current.y,
+            },
+          });
+          if (marquee.shift) {
+            const union = Array.from(
+              new Set([...state.selectedIds, ...matched]),
+            );
+            state.selectMany(union);
+          } else {
+            state.selectMany(matched);
+          }
+          return;
+        }
         if (dragRef.current) {
           dragRef.current = null;
           setDragCursor(null);
@@ -3262,6 +3403,43 @@ export function AnnotationCanvas({
           />
         </div>
       )}
+      {/* Plan 14 Phase 8 Task 7 — multi-select status chip. */}
+      <MultiSelectStatusChip />
+    </div>
+  );
+}
+
+/**
+ * Plan 14 Phase 8 Task 7 — small floating chip that surfaces multi-
+ * select shortcuts (R / Backspace / Esc) at the bottom-center of the
+ * canvas viewport. Only renders when ``selectedIds.length > 1``.
+ */
+function MultiSelectStatusChip(): ReactElement | null {
+  const count = useAnnotations((s) => s.selectedIds.length);
+  if (count <= 1) return null;
+  return (
+    <div
+      data-testid="multi-select-status-chip"
+      aria-live="polite"
+      style={{
+        position: "absolute",
+        bottom: 12,
+        left: "50%",
+        transform: "translateX(-50%)",
+        padding: "5px 12px",
+        borderRadius: 999,
+        fontSize: 11.5,
+        fontWeight: 500,
+        whiteSpace: "nowrap",
+        background: "var(--glass-bg-strong, rgba(20,20,22,0.85))",
+        backdropFilter: "blur(12px)",
+        boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+        color: "var(--text-primary, #fff)",
+        pointerEvents: "none",
+        zIndex: 30,
+      }}
+    >
+      {`${count} selected · R to reassign · Backspace to delete · Esc to clear`}
     </div>
   );
 }
@@ -3797,6 +3975,71 @@ function drawDashedPolygon(
     drawDashedSegment(g, a[0], a[1], b[0], b[1]);
   }
   g.stroke({ color, width: 2, alpha: COMPARE_ALPHA });
+}
+
+/**
+ * Plan 14 Phase 8 Task 7 — pure marquee hit-test. Returns the ids of
+ * annotations on ``frameId`` whose axis-aligned bounding box overlaps
+ * the marquee rect (any-overlap, not strict containment). Hidden
+ * annotations / hidden classes / locked annotations are filtered out
+ * (they can never be selected by a marquee). Exported so the unit
+ * tests can verify the math without driving Pixi pointer events.
+ */
+export function marqueeHitTest(args: {
+  byId: Record<string, import("@/state/annotations").AnnotationDraft>;
+  frameId: string | null;
+  hidden: ReadonlyArray<string>;
+  hiddenClasses: ReadonlyArray<string>;
+  locked: ReadonlySet<string>;
+  rect: { x1: number; y1: number; x2: number; y2: number };
+}): string[] {
+  const x1 = Math.min(args.rect.x1, args.rect.x2);
+  const y1 = Math.min(args.rect.y1, args.rect.y2);
+  const x2 = Math.max(args.rect.x1, args.rect.x2);
+  const y2 = Math.max(args.rect.y1, args.rect.y2);
+  const matched: string[] = [];
+  for (const d of Object.values(args.byId)) {
+    if (d.frameId !== args.frameId) continue;
+    if (args.hidden.includes(d.tempId)) continue;
+    if (args.hiddenClasses.includes(d.classId)) continue;
+    if (args.locked.has(d.tempId)) continue;
+    const bb = annotationBoundingBox(d.geometry);
+    if (!bb) continue;
+    const overlaps =
+      bb.x <= x2 && bb.x + bb.w >= x1 && bb.y <= y2 && bb.y + bb.h >= y1;
+    if (overlaps) matched.push(d.tempId);
+  }
+  return matched;
+}
+
+/**
+ * Plan 14 Phase 8 Task 7 — return an axis-aligned bounding rect for an
+ * annotation's geometry. Used by the cursor-tool marquee to test which
+ * annotations overlap the drag rectangle. Returns ``null`` for tag /
+ * mask geometries (mask bbox would require RLE decoding which is too
+ * heavy for a hover-rate hit-test; tags have no spatial position).
+ */
+export function annotationBoundingBox(
+  g: import("@/state/annotations").Geometry,
+): { x: number; y: number; w: number; h: number } | null {
+  if (g.kind === "bbox") {
+    return { x: g.x, y: g.y, w: g.w, h: g.h };
+  }
+  if (g.kind === "polygon") {
+    if (g.points.length === 0) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const [px, py] of g.points) {
+      if (px < minX) minX = px;
+      if (py < minY) minY = py;
+      if (px > maxX) maxX = px;
+      if (py > maxY) maxY = py;
+    }
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+  return null;
 }
 
 function toolCursor(t: ToolName): string {
