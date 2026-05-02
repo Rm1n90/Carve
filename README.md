@@ -2,13 +2,12 @@
 
 **On-premises, web-based annotation platform for computer-vision datasets.**
 
-Carve is a self-hosted, multi-user annotation suite for detection, segmentation, and classification — with SAM 2.1 / SAM 3 smart annotation, YOLO auto-annotate, active-learning retraining, QA review, and a full project-management layer. Built for teams who need complete data control and GPU inference on their own hardware.
+Carve is a self-hosted, multi-user annotation suite for detection, segmentation, and classification — with SAM 2.1 / SAM 3.1 smart annotation, YOLO auto-annotate, active-learning retraining, QA review, and a full project-management layer. Built for teams who need complete data control and GPU inference on their own hardware.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/Rm1n90)
 [![GitHub release](https://img.shields.io/github/v/release/Rm1n90/Carve)](https://github.com/Rm1n90/Carve/releases)
 
-> **Author**: [Armin Mehri](mailto:mehri.armin@gmail.com) · [github.com/Rm1n90](https://github.com/Rm1n90)
 
 ---
 
@@ -53,7 +52,7 @@ Carve is a self-hosted, multi-user annotation suite for detection, segmentation,
 ### SAM / AI smart annotation
 
 - **SAM 2.1** (tiny · small · base-plus · large) — positive/negative click prompts; browser-side WebGPU ONNX decoder; server-side fallback
-- **SAM 3** — text prompts ("person", "yellow truck") and box prompts; concept-based segmentation
+- **SAM 3.1** — text prompts ("person", "yellow truck") and box prompts; concept-based segmentation
 - **SAM mode selector** — switch between click, box, and text within the editor toolbar
 - **Auto-apply** — mask committed immediately on each click without a confirm step
 - **CVAT-style live preview** — mask outline updates while placing points
@@ -248,4 +247,4 @@ Carve is free and open-source under AGPL-3.0. If it saves you time or infrastruc
 
 ## License
 
-[AGPL-3.0](LICENSE) © 2024–2026 [Armin Mehri](mailto:mehri.armin@gmail.com)
+[AGPL-3.0](LICENSE) © 2026 [Armin Mehri](mailto:mehri.armin@gmail.com)
