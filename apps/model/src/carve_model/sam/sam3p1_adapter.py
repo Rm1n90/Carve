@@ -391,24 +391,18 @@ class Sam3p1NativeImagePredictorAdapter:
         """Cache the image inside the native processor's state dict.
 
         ``image`` is a numpy ``HxWx3`` RGB uint8 array (per router contract).
-        Converted to PIL before handing to the native processor.
-
-        Autocast is explicitly DISABLED inside the call: an upstream
-        ``with autocast_ctx()`` (used by /sam/decode and the tracker
-        helpers) leaves PyTorch's per-thread autocast flag flipped
-        when the same uvicorn worker thread later serves /sam/encode.
-        The native sam3 vision encoder is built in float32 and breaks
-        with ``RuntimeError: mat1 and mat2 must have the same dtype``
-        if autocast is on; turning it off here is the canonical fix.
+        Converted to PIL before handing to the native processor. The
+        model + transform pipeline are both bf16 on cuda after build
+        (see ``build_sam3p1_image_predictor``) so the native fused
+        ``addmm_act`` MLP kernel and the surrounding linear/conv layers
+        operate on a consistent dtype.
         """
         from PIL import Image  # type: ignore[import-not-found]
-        import torch  # type: ignore[import-not-found]
 
         h, w = int(image.shape[0]), int(image.shape[1])
         self._original_size = (h, w)
         pil = Image.fromarray(image)
-        with torch.autocast(device_type=self._device, enabled=False):
-            self._state = self._processor.set_image(pil)
+        self._state = self._processor.set_image(pil)
 
     def predict(
         self,
@@ -441,19 +435,13 @@ class Sam3p1NativeImagePredictorAdapter:
         if box is not None:
             b = np.asarray(box, dtype=np.float32).reshape(-1)
 
-        # Same autocast-off guard as set_image: /sam/decode wraps this
-        # call in ``autocast_ctx`` (bf16) for SAM 2 / SAM 3 transformers
-        # paths, but the native sam3 image stack runs pure float32 and
-        # mismatches under autocast.
-        import torch  # type: ignore[import-not-found]
-        with torch.autocast(device_type=self._device, enabled=False):
-            masks, scores, logits = self._model.predict_inst(
-                self._state,
-                point_coords=pc,
-                point_labels=pl,
-                box=b,
-                multimask_output=multimask_output,
-            )
+        masks, scores, logits = self._model.predict_inst(
+            self._state,
+            point_coords=pc,
+            point_labels=pl,
+            box=b,
+            multimask_output=multimask_output,
+        )
         return masks, scores, logits
 
     def extract_embedding(self) -> dict | None:
@@ -487,12 +475,37 @@ def build_sam3p1_image_predictor(device: str | None = None) -> Sam3p1NativeImage
         enable_inst_interactivity=True,
         compile=perf.get_compile_enabled(),
     )
-    # The native build returns a model with ALL params in float32; the
-    # bf16 mismatch we used to see came from PyTorch's global autocast
-    # being active at request time (``router.decode`` wraps ``predict``
-    # in ``autocast_ctx``). The native sam3 image stack handles its own
-    # FA3 / RoPE-real dtype management internally — no extra cast here.
     processor = Sam3Processor(model)
+
+    # ROOT-CAUSE FIX: ``sam3/perflib/fused.py:addmm_act`` (the fused MLP
+    # fc1+activation kernel used by every vitdet block) unconditionally
+    # casts mat1, mat2, and bias to bf16. Its output is therefore bf16,
+    # but the immediately-following ``fc2`` is a plain ``nn.Linear`` with
+    # the model's loaded dtype (float32 by default) — producing the
+    # ``RuntimeError: mat1 and mat2 must have the same dtype, but got
+    # BFloat16 and Float`` we kept hitting. The native package was
+    # designed to run the entire image model in bf16; the transform
+    # pipeline's final ``ToDtype(float32)`` and the model's float32 load
+    # are both wrong for inference. Cast both to bf16 to make the path
+    # internally consistent. CPU stays float32 because bf16 conv kernels
+    # are not provided on CPU by all torch builds.
+    if dev == "cuda":
+        try:
+            import torch  # type: ignore[import-not-found]
+            from torchvision.transforms import v2  # type: ignore[import-not-found]
+
+            model.to(dtype=torch.bfloat16)
+            # Replace processor.transform with a bf16-emitting variant.
+            resolution = getattr(processor, "resolution", 1008)
+            processor.transform = v2.Compose([
+                v2.ToDtype(torch.uint8, scale=True),
+                v2.Resize(size=(resolution, resolution)),
+                v2.ToDtype(torch.bfloat16, scale=True),
+                v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ])
+        except Exception:  # noqa: BLE001 — best effort; build still works in fp32 on cpu fallback
+            pass
+
     return Sam3p1NativeImagePredictorAdapter(model=model, processor=processor, device=dev)
 
 
@@ -574,7 +587,6 @@ def make_sam3p1_text_predictor():
         from carve_model.sam.perf import to_numpy_safe
         from carve_model.sam.polygonize import mask_to_polygon
 
-        import torch  # type: ignore[import-not-found]
         adapter = _get_or_build_native_image_predictor()
         image_np = _decode_image_b64_to_numpy(image_b64)
         adapter.set_image(image_np)
@@ -583,8 +595,7 @@ def make_sam3p1_text_predictor():
             return []
         # Reset any prior prompts before applying the new text concept.
         adapter._processor.reset_all_prompts(state)
-        with torch.autocast(device_type=adapter._device, enabled=False):
-            adapter._processor.set_text_prompt(text, state)
+        adapter._processor.set_text_prompt(text, state)
 
         detections = _extract_text_detections(state)
         boxes = state.get("boxes")
@@ -633,7 +644,6 @@ def make_sam3p1_box_predictor():
         from carve_model.sam.codec import encode_mask_rle
         from carve_model.sam.polygonize import mask_to_polygon
 
-        import torch  # type: ignore[import-not-found]
         adapter = _get_or_build_native_image_predictor()
         image_np = _decode_image_b64_to_numpy(image_b64)
         adapter.set_image(image_np)
@@ -643,8 +653,7 @@ def make_sam3p1_box_predictor():
         adapter._processor.reset_all_prompts(state)
 
         if text:
-            with torch.autocast(device_type=adapter._device, enabled=False):
-                adapter._processor.set_text_prompt(text, state)
+            adapter._processor.set_text_prompt(text, state)
 
         positive_masks: list[Any] = []
         negative_masks: list[Any] = []
