@@ -1,0 +1,232 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - region "Notifications (F8)":
+      - list
+    - banner [ref=e4]:
+      - link "Carve home" [ref=e5] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e6]:
+          - generic [ref=e7]: C
+          - generic [ref=e8]: Carve
+      - navigation "Breadcrumb" [ref=e9]:
+        - generic [ref=e10]:
+          - img [ref=e11]
+          - link "Projects" [ref=e13] [cursor=pointer]:
+            - /url: /projects
+        - generic [ref=e248]:
+          - img [ref=e249]
+          - link "Test" [ref=e251] [cursor=pointer]:
+            - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf
+      - button "Account menu for amehri@camaleonicanalytics.com" [ref=e14]:
+        - generic [ref=e15]: A
+        - img [ref=e16]
+    - generic [ref=e18]:
+      - complementary "Primary navigation" [ref=e19]:
+        - generic [ref=e21]:
+          - img
+          - searchbox "Search" [ref=e22]
+        - generic [ref=e23]:
+          - paragraph [ref=e24]: Workspace
+          - generic [ref=e25]:
+            - generic [ref=e26]: C
+            - generic [ref=e27]: Carve
+        - navigation [ref=e28]:
+          - generic [ref=e29]:
+            - button "Annotate" [expanded] [ref=e30]:
+              - img [ref=e32]
+              - generic [ref=e35]: Annotate
+              - img [ref=e36]
+            - list [ref=e38]:
+              - listitem [ref=e39]:
+                - link "Datasets" [ref=e40] [cursor=pointer]:
+                  - /url: /projects
+                  - generic [ref=e41]:
+                    - img [ref=e44]
+                    - generic [ref=e54]: Datasets
+              - listitem [ref=e55]:
+                - link "All projects" [ref=e56] [cursor=pointer]:
+                  - /url: /projects
+                  - generic [ref=e58]: All projects
+          - button "Models" [ref=e60]:
+            - img [ref=e62]
+            - generic [ref=e65]: Models
+            - img [ref=e66]
+          - generic "Cloud training is v2 — currently using local inference only." [ref=e68]:
+            - img [ref=e70]
+            - generic [ref=e73]: Train
+            - generic [ref=e74]: soon
+          - generic "Cloud training is v2 — currently using local inference only." [ref=e75]:
+            - img [ref=e77]
+            - generic [ref=e82]: Deploy
+            - generic [ref=e83]: soon
+          - button "Account" [ref=e85]:
+            - img [ref=e87]
+            - generic [ref=e90]: Account
+            - img [ref=e91]
+        - button "Account menu" [ref=e94]:
+          - generic [ref=e95]: A
+          - generic [ref=e96]:
+            - generic [ref=e97]: amehri@camaleonicanalytics.com
+            - generic [ref=e98]: admin
+          - img [ref=e99]
+      - main [ref=e101]:
+        - generic [ref=e103]:
+          - generic [ref=e104]:
+            - generic [ref=e105]: Task
+            - heading "Test/TESt" [level=1] [ref=e252]
+            - paragraph [ref=e253]: image task
+          - generic [ref=e107]:
+            - heading "Upload assets" [level=2] [ref=e108]
+            - generic [ref=e109] [cursor=pointer]:
+              - button "upload-input" [ref=e110]
+              - img [ref=e111]
+              - paragraph [ref=e116]: Drag & drop images, videos, or .zip — or click to choose
+          - generic [ref=e117]:
+            - heading "Import annotations" [level=2] [ref=e118]
+            - generic [ref=e119]:
+              - generic [ref=e120]: "Format:"
+              - combobox "import-format" [ref=e121]:
+                - option "YOLO" [selected]
+                - option "COCO"
+            - generic [ref=e122] [cursor=pointer]:
+              - button "import-input" [ref=e123]
+              - img [ref=e124]
+              - paragraph [ref=e128]: Drop a YOLO .zip — or click to choose
+          - generic [ref=e129]:
+            - heading "Export annotations" [level=2] [ref=e130]
+            - generic [ref=e131]:
+              - generic [ref=e132]:
+                - generic [ref=e133]: Format
+                - combobox "export-format" [ref=e134]:
+                  - option "YOLO" [selected]
+                  - option "COCO"
+              - generic [ref=e135] [cursor=pointer]:
+                - checkbox "include-images" [checked] [ref=e136]
+                - text: Include images
+            - generic [ref=e137]:
+              - generic [ref=e138]: Splits
+              - generic [ref=e139]:
+                - generic [ref=e140]: train
+                - spinbutton "split-train" [ref=e141]: "0.8"
+              - generic [ref=e142]:
+                - generic [ref=e143]: val
+                - spinbutton "split-val" [ref=e144]: "0.1"
+              - generic [ref=e145]:
+                - generic [ref=e146]: test
+                - spinbutton "split-test" [ref=e147]: "0.1"
+              - generic [ref=e148]: "Sum: 1.00"
+            - table [ref=e150]:
+              - rowgroup [ref=e151]:
+                - row "Source Export id Export name Skip" [ref=e152]:
+                  - columnheader "Source" [ref=e153]
+                  - columnheader "Export id" [ref=e154]
+                  - columnheader "Export name" [ref=e155]
+                  - columnheader "Skip" [ref=e156]
+              - rowgroup [ref=e157]:
+                - row "1B 1 B skip-ff0c25a9-d5ef-4ac6-9e67-cbcc9ae1fc6a" [ref=e158]:
+                  - cell "1B" [ref=e159]
+                  - cell "1" [ref=e160]:
+                    - spinbutton "export-id-ff0c25a9-d5ef-4ac6-9e67-cbcc9ae1fc6a" [ref=e161]: "1"
+                  - cell "B" [ref=e162]:
+                    - textbox "export-name-ff0c25a9-d5ef-4ac6-9e67-cbcc9ae1fc6a" [ref=e163]: B
+                  - cell "skip-ff0c25a9-d5ef-4ac6-9e67-cbcc9ae1fc6a" [ref=e164]:
+                    - checkbox "skip-ff0c25a9-d5ef-4ac6-9e67-cbcc9ae1fc6a" [ref=e165]
+                - row "2z 2 z skip-2a1af19d-4966-4318-b5ea-db654b3f394e" [ref=e166]:
+                  - cell "2z" [ref=e167]
+                  - cell "2" [ref=e168]:
+                    - spinbutton "export-id-2a1af19d-4966-4318-b5ea-db654b3f394e" [ref=e169]: "2"
+                  - cell "z" [ref=e170]:
+                    - textbox "export-name-2a1af19d-4966-4318-b5ea-db654b3f394e" [ref=e171]: z
+                  - cell "skip-2a1af19d-4966-4318-b5ea-db654b3f394e" [ref=e172]:
+                    - checkbox "skip-2a1af19d-4966-4318-b5ea-db654b3f394e" [ref=e173]
+            - button "Export" [ref=e175]:
+              - img [ref=e177]
+              - generic [ref=e181]: Export
+          - generic [ref=e182]:
+            - generic [ref=e183]:
+              - generic [ref=e184]:
+                - img [ref=e185]
+                - searchbox "Search by filename…" [ref=e188]
+              - tablist "Asset status filter" [ref=e189]:
+                - button "All514" [ref=e254]
+                - button "Annotated0" [ref=e255]
+                - button "Unannotated514" [ref=e256]
+            - paragraph [ref=e193]: 514 images · 0 annotated
+          - generic [ref=e207]:
+            - heading "Stats" [level=2] [ref=e208]
+            - generic [ref=e209]:
+              - generic [ref=e210]:
+                - heading "Class frequency" [level=3] [ref=e211]:
+                  - img [ref=e212]
+                  - text: Class frequency
+                - img [ref=e260]:
+                  - generic [ref=e262]:
+                    - generic [ref=e264]: B
+                    - generic [ref=e266]: z
+                - list [ref=e272]:
+                  - listitem [ref=e273]: "B: 10 (100%)"
+                  - listitem [ref=e274]: "z: 0 (0%)"
+              - generic [ref=e215]:
+                - heading "Task progress" [level=3] [ref=e216]:
+                  - img [ref=e217]
+                  - text: Task progress
+                - img [ref=e277]:
+                  - img [ref=e280]
+                - paragraph [ref=e281]: 0 / 514 frames
+              - generic [ref=e221]:
+                - heading "Size distribution" [level=3] [ref=e222]:
+                  - img [ref=e223]
+                  - text: Size distribution
+                - generic [ref=e283]:
+                  - img [ref=e284]:
+                    - generic [ref=e286]:
+                      - img [ref=e288]
+                      - img [ref=e290]
+                  - list [ref=e292]:
+                    - listitem [ref=e293]:
+                      - img [ref=e294]
+                      - text: small
+                    - listitem [ref=e296]:
+                      - img [ref=e297]
+                      - text: medium
+                    - listitem [ref=e299]:
+                      - img [ref=e300]
+                      - text: large
+                - list [ref=e302]:
+                  - listitem [ref=e303]: "small: 0"
+                  - listitem [ref=e304]: "medium: 5"
+                  - listitem [ref=e305]: "large: 5"
+              - generic [ref=e230]:
+                - heading "Spatial heatmap" [level=3] [ref=e231]:
+                  - img [ref=e232]
+                  - text: Spatial heatmap
+                - generic [ref=e306]:
+                  - img [ref=e308]
+                  - paragraph [ref=e311]: No spatial data yet
+                  - paragraph [ref=e312]: Annotation positions are aggregated into a 32x32 grid once you start labelling.
+              - generic [ref=e236]:
+                - heading "Aspect ratio" [level=3] [ref=e237]:
+                  - img [ref=e238]
+                  - text: Aspect ratio
+                - img [ref=e315]:
+                  - generic [ref=e317]:
+                    - generic [ref=e319]: <0.33
+                    - generic [ref=e321]: 0.33-0.67
+                    - generic [ref=e323]: 0.67-1.5
+                    - generic [ref=e325]: 1.5-3
+                    - generic [ref=e327]: ">=3"
+                  - generic [ref=e329]:
+                    - generic [ref=e331]: "0"
+                    - generic [ref=e333]: "1"
+                    - generic [ref=e335]: "2"
+                    - generic [ref=e337]: "3"
+                    - generic [ref=e339]: "4"
+              - generic [ref=e242]:
+                - heading "Time on task" [level=3] [ref=e243]:
+                  - img [ref=e244]
+                  - text: Time on task
+                - list [ref=e353]:
+                  - listitem [ref=e354]:
+                    - generic [ref=e355]: amehri@camaleonicanalytics.com
+                    - generic [ref=e356]: 0s
+  - generic [ref=e357]: "0"

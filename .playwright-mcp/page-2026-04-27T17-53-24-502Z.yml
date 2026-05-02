@@ -1,0 +1,6 @@
+- generic [ref=e3]:
+  - region "Notifications (F8)":
+    - list
+  - generic [ref=e5]:
+    - img [ref=e6]
+    - text: Loading…

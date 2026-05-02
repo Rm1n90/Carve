@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChevronsUp,
   ChevronUp,
@@ -13,7 +13,6 @@ import {
   CopyPlus,
   Lock,
   Unlock,
-  Palette,
   Maximize2,
   ZoomIn,
   Eye,
@@ -63,28 +62,6 @@ const Z_ITEMS: MenuItem[] = [
   },
 ];
 
-/**
- * Plan 14 Phase 8 Task 6 — stock palette for the "Change color" submenu.
- * 14 colors picked to be visually distinguishable on both light + dark
- * canvas backdrops. Hex values match the rest of the app's swatch system.
- */
-const STOCK_COLORS: { name: string; hex: string }[] = [
-  { name: "Red", hex: "#EF4444" },
-  { name: "Orange", hex: "#F97316" },
-  { name: "Amber", hex: "#F59E0B" },
-  { name: "Yellow", hex: "#EAB308" },
-  { name: "Lime", hex: "#84CC16" },
-  { name: "Green", hex: "#22C55E" },
-  { name: "Teal", hex: "#14B8A6" },
-  { name: "Cyan", hex: "#06B6D4" },
-  { name: "Sky", hex: "#0EA5E9" },
-  { name: "Blue", hex: "#3B82F6" },
-  { name: "Indigo", hex: "#6366F1" },
-  { name: "Violet", hex: "#8B5CF6" },
-  { name: "Pink", hex: "#EC4899" },
-  { name: "Slate", hex: "#64748B" },
-];
-
 interface Props {
   hostRef: React.RefObject<HTMLElement | null>;
   hitTest: (clientX: number, clientY: number) => string | null;
@@ -93,10 +70,6 @@ interface Props {
     clientY: number,
   ) => { annId: string; vertexIndex: number } | null;
   classes?: ClassRow[];
-  /**
-   * Plan 14 Phase 8 Task 6 — image-space cursor translator. The canvas
-   * passes this so "Paste annotation" can place into image coordinates.
-   */
   toImageXY?: (clientX: number, clientY: number) => { x: number; y: number };
   frameId?: string | null;
   imageBounds?: { w: number; h: number };
@@ -117,6 +90,9 @@ type MenuState =
       imageX: number;
       imageY: number;
     };
+
+const VIEWPORT_MARGIN = 8;
+const SUBMENU_WIDTH = 200;
 
 function MenuButton({
   testId,
@@ -160,12 +136,11 @@ function MenuButton({
 }
 
 /**
- * Plan 14 Phase 8 Task 6 — CVAT-quality right-click context menu.
+ * Plan 15 Phase 9 — refined right-click context menu.
  *
- * Uses a custom DOM listener (not Radix ContextMenu) because Radix wires
- * its own pointerdown which fights with the Pixi canvas event flow used
- * by AnnotationCanvas. The menu is a single position-absolute floating
- * layer with manual outside-click dismiss.
+ * - Hover-triggered "Pick class" submenu (no extra click required).
+ * - Custom Change-color removed; class color is the source of truth.
+ * - Position is clamped to the viewport so menus near edges stay usable.
  */
 export function AnnotationContextMenu({
   hostRef,
@@ -178,13 +153,20 @@ export function AnnotationContextMenu({
 }: Props) {
   const [state, setState] = useState<MenuState | null>(null);
   const [classMenuOpen, setClassMenuOpen] = useState(false);
-  const [colorMenuOpen, setColorMenuOpen] = useState(false);
+  const [submenuLeft, setSubmenuLeft] = useState(true);
   const menuRef = useRef<HTMLDivElement>(null);
+  const submenuRef = useRef<HTMLDivElement>(null);
+  const hoverCloseTimer = useRef<number | null>(null);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
   function close() {
     setState(null);
     setClassMenuOpen(false);
-    setColorMenuOpen(false);
+    setPos(null);
+    if (hoverCloseTimer.current) {
+      window.clearTimeout(hoverCloseTimer.current);
+      hoverCloseTimer.current = null;
+    }
   }
 
   useEffect(() => {
@@ -219,7 +201,6 @@ export function AnnotationContextMenu({
         });
         return;
       }
-      // Empty-canvas right-click — open the empty-mode menu.
       me.preventDefault();
       const img = toImageXY?.(me.clientX, me.clientY) ?? {
         x: me.clientX,
@@ -256,9 +237,34 @@ export function AnnotationContextMenu({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
-  if (!state) return null;
+  useLayoutEffect(() => {
+    if (!state) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = state.x;
+    let y = state.y;
+    if (x + rect.width + VIEWPORT_MARGIN > vw) {
+      x = Math.max(VIEWPORT_MARGIN, vw - rect.width - VIEWPORT_MARGIN);
+    }
+    if (y + rect.height + VIEWPORT_MARGIN > vh) {
+      y = Math.max(VIEWPORT_MARGIN, vh - rect.height - VIEWPORT_MARGIN);
+    }
+    setPos({ x, y });
+    setSubmenuLeft(x + rect.width + SUBMENU_WIDTH + VIEWPORT_MARGIN <= vw);
+  }, [state]);
 
-  // ----- Empty-canvas menu -----
+  if (!state) return null;
+  const top = pos?.y ?? state.y;
+  const left = pos?.x ?? state.x;
+  const menuStyle: React.CSSProperties = {
+    top,
+    left,
+    visibility: pos ? "visible" : "hidden",
+  };
+
   if (state.kind === "empty") {
     const clipboard = useAnnotations.getState().clipboard;
     const canPaste = clipboard !== null;
@@ -273,7 +279,7 @@ export function AnnotationContextMenu({
           "rounded-[var(--radius-md)]",
           "glass-surface-strong p-1",
         )}
-        style={{ top: state.y, left: state.x }}
+        style={menuStyle}
       >
         <MenuButton
           testId="ctx-paste"
@@ -329,10 +335,25 @@ export function AnnotationContextMenu({
     );
   }
 
-  // ----- Annotation menu -----
   const annId = state.annId;
   const draft = useAnnotations.getState().byId[annId];
   const isLocked = useAnnotations.getState().isLocked(annId);
+
+  function openClassSubmenu() {
+    if (hoverCloseTimer.current) {
+      window.clearTimeout(hoverCloseTimer.current);
+      hoverCloseTimer.current = null;
+    }
+    setClassMenuOpen(true);
+  }
+  function scheduleSubmenuClose() {
+    if (hoverCloseTimer.current) window.clearTimeout(hoverCloseTimer.current);
+    hoverCloseTimer.current = window.setTimeout(() => {
+      setClassMenuOpen(false);
+      hoverCloseTimer.current = null;
+    }, 120);
+  }
+
   return (
     <div
       ref={menuRef}
@@ -344,7 +365,7 @@ export function AnnotationContextMenu({
         "rounded-[var(--radius-md)]",
         "glass-surface-strong p-1",
       )}
-      style={{ top: state.y, left: state.x }}
+      style={menuStyle}
     >
       <MenuButton
         testId="ctx-change-class-palette"
@@ -363,14 +384,15 @@ export function AnnotationContextMenu({
       />
 
       {classes && classes.length > 0 && (
-        <div className="relative">
+        <div
+          className="relative"
+          onMouseEnter={openClassSubmenu}
+          onMouseLeave={scheduleSubmenuClose}
+        >
           <button
             type="button"
             data-testid="ctx-change-class"
-            onClick={() => {
-              setClassMenuOpen((v) => !v);
-              setColorMenuOpen(false);
-            }}
+            onFocus={openClassSubmenu}
             aria-haspopup="menu"
             aria-expanded={classMenuOpen}
             className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)]"
@@ -381,11 +403,15 @@ export function AnnotationContextMenu({
           </button>
           {classMenuOpen && (
             <div
+              ref={submenuRef}
               role="menu"
               aria-label="Change class submenu"
               data-testid="ctx-change-class-submenu"
+              onMouseEnter={openClassSubmenu}
+              onMouseLeave={scheduleSubmenuClose}
               className={cn(
-                "absolute left-full top-0 ml-1 min-w-[180px] max-h-[260px] overflow-y-auto",
+                "absolute top-0 min-w-[180px] max-h-[260px] overflow-y-auto",
+                submenuLeft ? "left-full ml-1" : "right-full mr-1",
                 "rounded-[var(--radius-md)]",
                 "glass-surface-strong p-1",
               )}
@@ -425,68 +451,6 @@ export function AnnotationContextMenu({
           )}
         </div>
       )}
-
-      <div className="relative">
-        <button
-          type="button"
-          data-testid="ctx-change-color"
-          onClick={() => {
-            setColorMenuOpen((v) => !v);
-            setClassMenuOpen(false);
-          }}
-          aria-haspopup="menu"
-          aria-expanded={colorMenuOpen}
-          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)]"
-        >
-          <Palette className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-          <span className="flex-1">Change color…</span>
-          <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-        </button>
-        {colorMenuOpen && (
-          <div
-            role="menu"
-            aria-label="Change color submenu"
-            data-testid="ctx-change-color-submenu"
-            className={cn(
-              "absolute left-full top-0 ml-1 min-w-[180px]",
-              "rounded-[var(--radius-md)]",
-              "glass-surface-strong p-1",
-            )}
-          >
-            <div className="grid grid-cols-7 gap-1 p-1">
-              {STOCK_COLORS.map((c) => (
-                <button
-                  key={c.hex}
-                  type="button"
-                  title={c.name}
-                  data-testid={`ctx-color-${c.hex.replace("#", "").toLowerCase()}`}
-                  onClick={() => {
-                    useAnnotations
-                      .getState()
-                      .update(annId, { colorOverride: c.hex });
-                    close();
-                  }}
-                  aria-label={`Set color to ${c.name}`}
-                  className="h-5 w-5 rounded-full border border-[var(--border-strong)] hover:scale-110 transition-transform"
-                  style={{ background: c.hex }}
-                />
-              ))}
-            </div>
-            <div className="my-1 h-px bg-[var(--border-subtle)]" />
-            <MenuButton
-              testId="ctx-color-reset"
-              icon={<Palette className="h-3.5 w-3.5" />}
-              label="Reset to class color"
-              onClick={() => {
-                useAnnotations
-                  .getState()
-                  .update(annId, { colorOverride: null });
-                close();
-              }}
-            />
-          </div>
-        )}
-      </div>
 
       <div className="my-1 h-px bg-[var(--border-subtle)]" />
 

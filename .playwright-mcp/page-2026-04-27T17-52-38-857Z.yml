@@ -1,0 +1,74 @@
+- generic [ref=e3]:
+  - region "Notifications (F8)":
+    - list
+  - banner [ref=e4]:
+    - link "Carve home" [ref=e5] [cursor=pointer]:
+      - /url: /
+      - generic [ref=e6]:
+        - generic [ref=e7]: C
+        - generic [ref=e8]: Carve
+    - navigation "Breadcrumb" [ref=e9]:
+      - generic [ref=e10]:
+        - img [ref=e11]
+        - link "Projects" [ref=e13] [cursor=pointer]:
+          - /url: /projects
+    - button "Account menu for amehri@camaleonicanalytics.com" [ref=e14]:
+      - generic [ref=e15]: A
+      - img [ref=e16]
+  - generic [ref=e18]:
+    - complementary "Primary navigation" [ref=e19]:
+      - generic [ref=e21]:
+        - img
+        - searchbox "Search" [ref=e22]
+      - generic [ref=e23]:
+        - paragraph [ref=e24]: Workspace
+        - generic [ref=e25]:
+          - generic [ref=e26]: C
+          - generic [ref=e27]: Carve
+      - navigation [ref=e28]:
+        - generic [ref=e29]:
+          - button "Annotate" [expanded] [ref=e30]:
+            - img [ref=e32]
+            - generic [ref=e35]: Annotate
+            - img [ref=e36]
+          - list [ref=e38]:
+            - listitem [ref=e39]:
+              - link "Datasets" [ref=e40] [cursor=pointer]:
+                - /url: /projects
+                - generic [ref=e41]:
+                  - img [ref=e44]
+                  - generic [ref=e54]: Datasets
+            - listitem [ref=e55]:
+              - link "All projects" [ref=e56] [cursor=pointer]:
+                - /url: /projects
+                - generic [ref=e59]: All projects
+        - button "Models" [ref=e61]:
+          - img [ref=e63]
+          - generic [ref=e66]: Models
+          - img [ref=e67]
+        - generic "Cloud training is v2 — currently using local inference only." [ref=e69]:
+          - img [ref=e71]
+          - generic [ref=e74]: Train
+          - generic [ref=e75]: soon
+        - generic "Cloud training is v2 — currently using local inference only." [ref=e76]:
+          - img [ref=e78]
+          - generic [ref=e83]: Deploy
+          - generic [ref=e84]: soon
+        - button "Account" [ref=e86]:
+          - img [ref=e88]
+          - generic [ref=e91]: Account
+          - img [ref=e92]
+      - button "Account menu" [ref=e95]:
+        - generic [ref=e96]: A
+        - generic [ref=e97]:
+          - generic [ref=e98]: amehri@camaleonicanalytics.com
+          - generic [ref=e99]: admin
+        - img [ref=e100]
+    - main [ref=e102]:
+      - generic [ref=e105]:
+        - generic [ref=e106]:
+          - heading "Projects" [level=1] [ref=e107]
+          - paragraph [ref=e108]: Carve datasets and annotation workspaces.
+        - button "New project" [ref=e109]:
+          - img [ref=e111]
+          - generic [ref=e112]: New project

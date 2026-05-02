@@ -1,0 +1,26 @@
+- generic [ref=e5]:
+  - generic [ref=e6]:
+    - generic [ref=e7]: C
+    - generic [ref=e8]: Carve
+  - banner [ref=e9]:
+    - heading "Sign in to Carve" [level=2] [ref=e10]
+    - paragraph [ref=e11]: Welcome back.
+  - generic [ref=e12]:
+    - generic [ref=e13]:
+      - generic [ref=e14]: Email
+      - textbox "Email" [ref=e16]:
+        - /placeholder: you@studio.com
+    - generic [ref=e17]:
+      - generic [ref=e18]: Password
+      - textbox "Password" [ref=e20]:
+        - /placeholder: ••••••••
+    - alert [ref=e26]:
+      - img [ref=e27]
+      - generic [ref=e29]: unknown_error
+    - button "Sign in" [ref=e21]:
+      - generic [ref=e22]: Sign in
+  - contentinfo [ref=e23]:
+    - generic [ref=e24]:
+      - text: Need an account?
+      - link "Register" [ref=e25] [cursor=pointer]:
+        - /url: /register

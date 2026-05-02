@@ -1,0 +1,464 @@
+- generic:
+  - generic:
+    - generic:
+      - generic:
+        - banner:
+          - link:
+            - /url: /
+            - generic:
+              - generic: C
+              - generic: Carve
+          - navigation:
+            - generic:
+              - img
+              - link:
+                - /url: /projects
+                - text: Projects
+            - generic:
+              - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf
+                - text: Test
+            - generic:
+              - img
+              - generic: light.png
+          - generic:
+            - generic: Image
+            - generic:
+              - button [disabled]:
+                - img
+              - button:
+                - text: "1"
+                - generic: / 500
+              - button:
+                - img
+          - button:
+            - generic: A
+            - img
+        - generic:
+          - complementary:
+            - generic:
+              - generic:
+                - img
+                - searchbox
+            - generic:
+              - paragraph: Workspace
+              - generic:
+                - generic: C
+                - generic: Carve
+            - navigation:
+              - generic:
+                - button [expanded]:
+                  - generic:
+                    - img
+                  - generic: Annotate
+                  - img
+                - list:
+                  - listitem:
+                    - link:
+                      - /url: /projects
+                      - generic:
+                        - generic:
+                          - img
+                        - generic: Datasets
+                  - listitem:
+                    - link:
+                      - /url: /projects
+                      - generic:
+                        - generic: All projects
+              - generic:
+                - button:
+                  - generic:
+                    - img
+                  - generic: Models
+                  - img
+              - generic:
+                - generic:
+                  - img
+                - generic: Train
+                - generic: soon
+              - generic:
+                - generic:
+                  - img
+                - generic: Deploy
+                - generic: soon
+              - generic:
+                - button:
+                  - generic:
+                    - img
+                  - generic: Account
+                  - img
+            - generic:
+              - button:
+                - generic: A
+                - generic:
+                  - generic: amehri@camaleonicanalytics.com
+                  - generic: admin
+                - img
+          - generic:
+            - toolbar:
+              - generic:
+                - button [disabled]:
+                  - img
+                - button [disabled]:
+                  - img
+              - button [pressed]:
+                - img
+              - button:
+                - img
+              - button:
+                - img
+              - button:
+                - img
+              - button:
+                - img
+              - button:
+                - img
+              - button:
+                - img
+                - generic: sam2.1-tiny
+                - img
+              - button:
+                - img
+              - button:
+                - img
+              - generic:
+                - button:
+                  - img
+                - button: 100%
+                - button:
+                  - img
+              - generic:
+                - img
+                - text: Saved
+              - button:
+                - img
+                - text: Predict
+              - button:
+                - img
+              - button [disabled]:
+                - img
+                - text: Save
+            - status:
+              - img
+              - generic:
+                - strong: Smart mode (SAM) is unavailable.
+                - generic:
+                  - text: The model service is not running. Start it with
+                  - code: docker compose --profile inference up -d
+                  - text: .
+              - button:
+                - img
+            - region:
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/f33c12c9-c2e9-4f78-abb3-1f6dc5fd1582
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/df5592ec-f0ac-402c-84e2-891c36fbba62
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/2dcd7508-ed09-49aa-87dc-7515a73b7415
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/6b61af94-d8ec-4b62-a1d3-31bb865ce6ef
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/1d52480f-8edd-4004-b9ad-c953449d52b2
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/ea875547-15f7-4f46-98a6-1d7c0112c369
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/a22f3a3a-93e1-4244-a4e9-af87d59b525e
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/e6a6b313-60cd-41ad-9737-aae78d23ddc4
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/b596433b-9278-4571-bd22-a6c7b34651ba
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/cead8962-d042-49be-bf13-92494a798d3f
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/40fea2de-ab03-4676-9def-b16fa1d2ddf7
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/db843ef8-13f9-4bd5-95d2-f8ea5d53f3c2
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/beeb64c1-40e2-4f2d-ab53-a0c6139c4bf4
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/0b598949-84e7-4cc6-b338-38183a6ff369
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/a5f11db8-1352-4d66-af53-e6163f574d1e
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/05a315da-162e-40b5-951c-718aece32eeb
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/a54f1ce6-dcc5-4de4-9591-95dc5cada802
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/02acd2cd-222b-4667-b356-fe413a8c5e24
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/3a165281-6181-4799-b2c4-023192be3c1d
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/557c49b2-8dfe-4d33-b582-6e522a2af9f1
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/eff82b68-1f35-4589-83fe-43e6a82a418d
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/3d4ec202-c5e7-4383-85ae-9cfcd48bd040
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/d46dc3b0-13b1-41ae-a0c1-9844915c04f6
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/c0e549e1-994b-445b-a5d9-70b96e5e3b36
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/fbc8c8cd-830f-40e7-ba11-c8c2d33b451b
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/abee20d1-f4a1-443d-a204-9659703af494
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/c3344d19-87a7-4051-b389-c7f363c959e3
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/acdf27de-305a-4d40-8b56-ed0b6b4b8684
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/aceb028d-475b-4fa4-bbc2-490f7be296b8
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/235b6ad7-2396-4301-8c44-0d4808f1a7ce
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/ff95cd29-8dab-4c2f-b1ed-05f27e66fdef
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/e9adc109-c4b0-4cdd-a3f6-986cb0e933d5
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/d095d0e2-fa26-4a3d-9722-ec7bca768ccb
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/e8f172ea-7da6-4f1b-956a-5463cc7485b6
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/6e96ba34-771e-440c-9c67-c5cf224c30f2
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/9adf07fd-768d-44f3-bcff-19e24817791a
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/30886a42-3f88-41aa-9e8d-69c84c94bac8
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/b417cf04-30a5-4f64-a6fa-bc63c3c6781d
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/b935f257-43fd-4048-9f4d-6c3d24edb514
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/c050c9be-5d67-4dd1-9147-eeddd5570e72
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/6cf16ed8-0703-4293-add1-198d0b392490
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/6ecb521f-49cb-4772-a388-1f6ec1d5cdd3
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/6bd224a1-d09c-4274-9d8b-c2fb1927777a
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/da16a5a7-3441-4f93-95d9-18ac3ea792f4
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/dd238bf0-b25e-482d-9d75-351316ae701c
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/696d35c2-f93c-4d56-b2aa-8fc541517a97
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/5357037e-b67d-48fd-ab03-fb1ca60aefac
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/c3a71f50-8ca5-4329-970f-b4d065ee69dc
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/31275dda-81c0-43d5-beae-2ff8ecd10e33
+                - img
+              - link:
+                - /url: /projects/9171d2a1-1bd0-4b25-b91c-fc8e0268d1cf/tasks/7570d12c-ce42-4b02-85b3-b0290ca2ec20/assets/f2a698d4-9d3e-4f52-a44f-5eaa9d98e2c0
+                - img
+            - generic:
+              - main:
+                - region
+                - generic:
+                  - button:
+                    - img
+              - complementary:
+                - generic:
+                  - tablist:
+                    - tab [selected]: Classes
+                    - tab: Objects
+                  - tabpanel:
+                    - complementary:
+                      - generic:
+                        - generic:
+                          - generic:
+                            - img
+                            - searchbox
+                          - button:
+                            - img
+                      - list:
+                        - listitem:
+                          - generic:
+                            - button:
+                              - img
+                            - button
+                            - generic: B
+                            - generic: "1"
+                            - generic:
+                              - button:
+                                - img
+                              - button:
+                                - img
+                              - button:
+                                - img
+                        - listitem:
+                          - generic:
+                            - button:
+                              - img
+                            - button
+                            - generic: z
+                            - generic: "2"
+                            - generic:
+                              - button:
+                                - img
+                              - button:
+                                - img
+                              - button:
+                                - img
+                      - generic:
+                        - button:
+                          - img
+                          - text: Add class
+            - contentinfo:
+              - generic:
+                - generic: light.png
+                - generic: 499 × 66
+                - generic: ·
+                - generic: 100.0%
+  - dialog "Editor settings" [ref=e584]:
+    - generic [ref=e585]:
+      - heading "Editor settings" [level=2] [ref=e586]
+      - paragraph [ref=e587]: Personal preferences applied to this device. Settings persist across sessions.
+    - generic [ref=e588]:
+      - tablist "Settings sections" [ref=e589]:
+        - tab "Player" [ref=e590]
+        - tab "Workspace" [active] [selected] [ref=e591]
+      - tabpanel "Workspace" [ref=e631]:
+        - generic [ref=e632]:
+          - generic [ref=e633]: Auto-save interval (seconds)
+          - spinbutton "Auto-save interval (seconds) Debounce time for the autosave fired after annotation changes." [ref=e634]: "1.5"
+          - generic [ref=e635]: Debounce time for the autosave fired after annotation changes.
+        - generic [ref=e636]:
+          - generic [ref=e637]: Color by
+          - radiogroup "Color by" [ref=e638]:
+            - generic [ref=e639] [cursor=pointer]:
+              - radio "Color by Color by Label" [checked] [ref=e640]
+              - text: Label
+            - generic [ref=e641] [cursor=pointer]:
+              - radio "Instance" [ref=e642]
+              - text: Instance
+            - generic [ref=e643] [cursor=pointer]:
+              - radio "Group" [ref=e644]
+              - text: Group
+        - generic [ref=e645]:
+          - generic [ref=e646]:
+            - generic [ref=e647]: Opacity
+            - generic [ref=e648]: 25%
+          - slider "Opacity" [ref=e649]: "25"
+        - generic [ref=e650]:
+          - generic [ref=e651]:
+            - generic [ref=e652]: Selected opacity
+            - generic [ref=e653]: 50%
+          - slider "Selected opacity" [ref=e654]: "50"
+        - generic [ref=e655]:
+          - generic [ref=e656]: Label text
+          - generic [ref=e657]:
+            - generic [ref=e658] [cursor=pointer]:
+              - checkbox "Label text ID Source Label Attributes Descriptions" [checked] [ref=e659]
+              - generic [ref=e660]: ID
+            - generic [ref=e661] [cursor=pointer]:
+              - checkbox "Source" [ref=e662]
+              - generic [ref=e663]: Source
+            - generic [ref=e664] [cursor=pointer]:
+              - checkbox "Label" [checked] [ref=e665]
+              - generic [ref=e666]: Label
+            - generic [ref=e667] [cursor=pointer]:
+              - checkbox "Attributes" [ref=e668]
+              - generic [ref=e669]: Attributes
+            - generic [ref=e670] [cursor=pointer]:
+              - checkbox "Descriptions" [ref=e671]
+              - generic [ref=e672]: Descriptions
+        - generic [ref=e673]:
+          - generic [ref=e674]: Label position
+          - combobox "Label position" [ref=e675]:
+            - option "Auto"
+            - option "Above"
+            - option "Below" [selected]
+            - option "Left"
+            - option "Right"
+        - generic [ref=e676]:
+          - generic [ref=e677]: Label font size
+          - spinbutton "Label font size" [ref=e678]: "12"
+        - generic [ref=e679] [cursor=pointer]:
+          - checkbox "Show tags on frame" [checked] [ref=e680]
+          - generic [ref=e681]: Show tags on frame
+        - generic [ref=e682]:
+          - generic [ref=e683]:
+            - generic [ref=e684]: Polygon approximation points
+            - generic [ref=e685]: 50%
+          - slider "Polygon approximation points" [ref=e686]: "50"
+        - paragraph [ref=e687]: Affects mask → polygon conversion fidelity (used by SAM commits). 0 = raw pixel boundary, 100 = aggressively smoothed.
+        - generic [ref=e688]:
+          - generic [ref=e689]: Control point size
+          - spinbutton "Control point size Pixel size of the vertex/handle squares on selected polygons and bboxes." [ref=e690]: "6"
+          - generic [ref=e691]: Pixel size of the vertex/handle squares on selected polygons and bboxes.
+        - generic [ref=e692]:
+          - generic [ref=e693]: Advanced (CVAT parity, deferred)
+          - generic [ref=e694]:
+            - generic [ref=e695]:
+              - checkbox "Advanced (CVAT parity, deferred) Show all interpolation tracks Automatic bordering Intelligent polygon cropping AAM zoom margin" [disabled] [ref=e696]
+              - generic [ref=e697]: Show all interpolation tracks
+              - img [ref=e698]
+            - generic [ref=e700]:
+              - checkbox "Automatic bordering" [disabled] [ref=e701]
+              - generic [ref=e702]: Automatic bordering
+              - img [ref=e703]
+            - generic [ref=e705]:
+              - checkbox "Intelligent polygon cropping" [disabled] [ref=e706]
+              - generic [ref=e707]: Intelligent polygon cropping
+              - img [ref=e708]
+            - generic [ref=e710]:
+              - checkbox "AAM zoom margin" [checked] [disabled] [ref=e711]
+              - generic [ref=e712]: AAM zoom margin
+              - img [ref=e713]
+    - generic [ref=e621]:
+      - button "Reset to defaults" [ref=e622]:
+        - img [ref=e623]
+        - text: Reset to defaults
+      - button "Done" [ref=e626]
+    - button "Close dialog" [ref=e627]:
+      - img [ref=e628]

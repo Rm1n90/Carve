@@ -1,0 +1,2 @@
+[     857ms] [WARNING]     at http://localhost:5173/assets/index-BwKzy7aw.js:3865:49278 @ http://localhost:5173/assets/index-BwKzy7aw.js:572
+[ 4209642ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://localhost:5173/api/assets/1f4c044d-f080-4d06-92df-396ae758698a:0

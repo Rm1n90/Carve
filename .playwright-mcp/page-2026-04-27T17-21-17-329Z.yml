@@ -1,0 +1,158 @@
+- generic [ref=e3]:
+  - region "Notifications (F8)":
+    - list
+  - banner [ref=e4]:
+    - link "Carve home" [ref=e5] [cursor=pointer]:
+      - /url: /
+      - generic [ref=e6]:
+        - generic [ref=e7]: C
+        - generic [ref=e8]: Carve
+    - navigation "Breadcrumb" [ref=e9]:
+      - generic [ref=e10]:
+        - img [ref=e11]
+        - link "Projects" [ref=e13] [cursor=pointer]:
+          - /url: /projects
+    - button "Account menu for amehri@camaleonicanalytics.com" [ref=e14]:
+      - generic [ref=e15]: A
+      - img [ref=e16]
+  - generic [ref=e18]:
+    - complementary "Primary navigation" [ref=e19]:
+      - generic [ref=e21]:
+        - img
+        - searchbox "Search" [ref=e22]
+      - generic [ref=e23]:
+        - paragraph [ref=e24]: Workspace
+        - generic [ref=e25]:
+          - generic [ref=e26]: C
+          - generic [ref=e27]: Carve
+      - navigation [ref=e28]:
+        - generic [ref=e29]:
+          - button "Annotate" [expanded] [ref=e30]:
+            - img [ref=e32]
+            - generic [ref=e35]: Annotate
+            - img [ref=e36]
+          - list [ref=e38]:
+            - listitem [ref=e39]:
+              - link "Datasets" [ref=e40] [cursor=pointer]:
+                - /url: /projects
+                - generic [ref=e41]:
+                  - img [ref=e44]
+                  - generic [ref=e54]: Datasets
+            - listitem [ref=e55]:
+              - link "All projects" [ref=e56] [cursor=pointer]:
+                - /url: /projects
+                - generic [ref=e58]: All projects
+        - button "Models" [ref=e60]:
+          - img [ref=e62]
+          - generic [ref=e65]: Models
+          - img [ref=e66]
+        - generic "Cloud training is v2 — currently using local inference only." [ref=e68]:
+          - img [ref=e70]
+          - generic [ref=e73]: Train
+          - generic [ref=e74]: soon
+        - generic "Cloud training is v2 — currently using local inference only." [ref=e75]:
+          - img [ref=e77]
+          - generic [ref=e82]: Deploy
+          - generic [ref=e83]: soon
+        - button "Account" [ref=e85]:
+          - img [ref=e87]
+          - generic [ref=e90]: Account
+          - img [ref=e91]
+      - button "Account menu" [ref=e94]:
+        - generic [ref=e95]: A
+        - generic [ref=e96]:
+          - generic [ref=e97]: amehri@camaleonicanalytics.com
+          - generic [ref=e98]: admin
+        - img [ref=e99]
+    - main [ref=e101]:
+      - generic [ref=e103]:
+        - generic [ref=e104]:
+          - generic [ref=e105]: Task
+          - heading "…/…" [level=1] [ref=e106]
+        - generic [ref=e107]:
+          - heading "Upload assets" [level=2] [ref=e108]
+          - generic [ref=e109] [cursor=pointer]:
+            - button "upload-input" [ref=e110]
+            - img [ref=e111]
+            - paragraph [ref=e116]: Drag & drop images, videos, or .zip — or click to choose
+        - generic [ref=e117]:
+          - heading "Import annotations" [level=2] [ref=e118]
+          - generic [ref=e119]:
+            - generic [ref=e120]: "Format:"
+            - combobox "import-format" [ref=e121]:
+              - option "YOLO" [selected]
+              - option "COCO"
+          - generic [ref=e122] [cursor=pointer]:
+            - button "import-input" [ref=e123]
+            - img [ref=e124]
+            - paragraph [ref=e128]: Drop a YOLO .zip — or click to choose
+        - generic [ref=e129]:
+          - heading "Export annotations" [level=2] [ref=e130]
+          - generic [ref=e131]:
+            - generic [ref=e132]:
+              - generic [ref=e133]: Format
+              - combobox "export-format" [ref=e134]:
+                - option "YOLO" [selected]
+                - option "COCO"
+            - generic [ref=e135] [cursor=pointer]:
+              - checkbox "include-images" [checked] [ref=e136]
+              - text: Include images
+          - generic [ref=e137]:
+            - generic [ref=e138]: Splits
+            - generic [ref=e139]:
+              - generic [ref=e140]: train
+              - spinbutton "split-train" [ref=e141]: "0.8"
+            - generic [ref=e142]:
+              - generic [ref=e143]: val
+              - spinbutton "split-val" [ref=e144]: "0.1"
+            - generic [ref=e145]:
+              - generic [ref=e146]: test
+              - spinbutton "split-test" [ref=e147]: "0.1"
+            - generic [ref=e148]: "Sum: 1.00"
+          - paragraph [ref=e149]: Loading classes…
+          - button "Export" [ref=e151]:
+            - img [ref=e153]
+            - generic [ref=e157]: Export
+        - generic [ref=e158]:
+          - generic [ref=e159]:
+            - generic [ref=e160]:
+              - img [ref=e161]
+              - searchbox "Search by filename…" [ref=e164]
+            - tablist "Asset status filter" [ref=e165]:
+              - button "All" [ref=e166]
+              - button "Annotated" [ref=e167]
+              - button "Unannotated" [ref=e168]
+          - paragraph [ref=e169]: …
+        - generic [ref=e183]:
+          - heading "Stats" [level=2] [ref=e184]
+          - generic [ref=e185]:
+            - generic [ref=e186]:
+              - heading "Class frequency" [level=3] [ref=e187]:
+                - img [ref=e188]
+                - text: Class frequency
+              - paragraph [ref=e190]: Loading…
+            - generic [ref=e191]:
+              - heading "Task progress" [level=3] [ref=e192]:
+                - img [ref=e193]
+                - text: Task progress
+              - paragraph [ref=e196]: Loading…
+            - generic [ref=e197]:
+              - heading "Size distribution" [level=3] [ref=e198]:
+                - img [ref=e199]
+                - text: Size distribution
+              - paragraph [ref=e205]: Loading…
+            - generic [ref=e206]:
+              - heading "Spatial heatmap" [level=3] [ref=e207]:
+                - img [ref=e208]
+                - text: Spatial heatmap
+              - paragraph [ref=e211]: Loading…
+            - generic [ref=e212]:
+              - heading "Aspect ratio" [level=3] [ref=e213]:
+                - img [ref=e214]
+                - text: Aspect ratio
+              - paragraph [ref=e217]: Loading…
+            - generic [ref=e218]:
+              - heading "Time on task" [level=3] [ref=e219]:
+                - img [ref=e220]
+                - text: Time on task
+              - paragraph [ref=e223]: Loading…
