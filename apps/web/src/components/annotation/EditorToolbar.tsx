@@ -32,6 +32,7 @@ import {
   Settings,
   X,
   Eraser,
+  MoreHorizontal,
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
@@ -2062,6 +2063,38 @@ export function EditorToolbar({
   // weight/overrides/scope state itself.
   const predictRef = useRef<YoloPredictHandle | null>(null);
 
+  // Plan 14 Phase 8 Task 9 — collapse less-used toolbar items into a
+  // `…` overflow DropdownMenu below 1280px. Inline matchMedia in a
+  // useEffect (the codebase has no shared `useMediaQuery` hook yet).
+  const [isNarrow, setIsNarrow] = useState<boolean>(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+    return window.matchMedia("(max-width: 1279px)").matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const mql = window.matchMedia("(max-width: 1279px)");
+    const update = () => setIsNarrow(mql.matches);
+    update();
+    // Use addEventListener for modern browsers; fall back to addListener
+    // for older Safari / jsdom polyfills that may not implement the
+    // newer API surface.
+    if (typeof mql.addEventListener === "function") {
+      mql.addEventListener("change", update);
+      return () => mql.removeEventListener("change", update);
+    }
+    type LegacyMql = MediaQueryList & {
+      addListener: (listener: (e: MediaQueryListEvent) => void) => void;
+      removeListener: (listener: (e: MediaQueryListEvent) => void) => void;
+    };
+    const legacy = mql as LegacyMql;
+    legacy.addListener(update);
+    return () => legacy.removeListener(update);
+  }, []);
+
   // Single-letter hotkeys (V/B/P/M/T/S/A/F) trigger tool selection,
   // plus zoom-related keys: + / - / 0 / 1 / Cmd|Ctrl + + / -. v2.6 zoom.
   // v3.7 Phase 2 Issue 2 — Cmd/Ctrl+Enter fires the YOLO quick predict.
@@ -2150,6 +2183,10 @@ export function EditorToolbar({
       className={cn(
         "relative h-11 shrink-0 mx-2 mt-2 flex items-center gap-1 px-2.5 rounded-2xl",
         "glass-surface-strong glass-specular",
+        // Plan 14 Phase 8 Task 9 — keep the toolbar pinned at the top of
+        // the canvas region during scroll. ``z-20`` keeps it above the
+        // canvas overlays (z-10) but below modal/dialog surfaces (z-50+).
+        "sticky top-0 z-20",
       )}
     >
       <UndoRedoControls onUndo={onUndo} onRedo={onRedo} />
@@ -2179,25 +2216,35 @@ export function EditorToolbar({
 
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
-      <VisibilityDropdown />
+      {/*
+        Plan 14 Phase 8 Task 9 — at >=1280px we render visibility +
+        fit-to-screen inline; below that they collapse into the trailing
+        overflow menu (see further down). Tool selector, zoom, save and
+        the SAM/auto-annotate widgets remain visible in both layouts.
+      */}
+      {!isNarrow && (
+        <>
+          <VisibilityDropdown />
 
-      <Tooltip
-        content={
-          <span className="flex items-center gap-1.5">
-            Fit to screen
-            <Kbd className="bg-white/10 text-white border-white/20">F</Kbd>
-          </span>
-        }
-      >
-        <button
-          type="button"
-          onClick={onFitToScreen}
-          aria-label="Fit to screen"
-          className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
-        >
-          <Maximize className="h-[18px] w-[18px]" />
-        </button>
-      </Tooltip>
+          <Tooltip
+            content={
+              <span className="flex items-center gap-1.5">
+                Fit to screen
+                <Kbd className="bg-white/10 text-white border-white/20">F</Kbd>
+              </span>
+            }
+          >
+            <button
+              type="button"
+              onClick={onFitToScreen}
+              aria-label="Fit to screen"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+            >
+              <Maximize className="h-[18px] w-[18px]" />
+            </button>
+          </Tooltip>
+        </>
+      )}
 
       <div className="flex-1" />
 
@@ -2241,40 +2288,153 @@ export function EditorToolbar({
           choice; the original video is deleted after extraction so a
           re-extract isn't possible anyway. */}
 
-      <Tooltip content={filterActive ? "Filter (active)" : "Filter annotations"}>
-        <button
-          type="button"
-          onClick={() => setFilterDialogOpen(true)}
-          aria-label="Filter annotations"
-          aria-pressed={filterActive}
-          data-testid="filter-trigger"
-          className={cn(
-            "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors",
-            filterActive
-              ? "text-[color:var(--accent)] bg-[var(--accent-bg)] hover:bg-[var(--bg-hover)]"
-              : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-          )}
-        >
-          <Filter className="h-[16px] w-[16px]" />
-        </button>
-      </Tooltip>
+      {!isNarrow && (
+        <Tooltip content={filterActive ? "Filter (active)" : "Filter annotations"}>
+          <button
+            type="button"
+            onClick={() => setFilterDialogOpen(true)}
+            aria-label="Filter annotations"
+            aria-pressed={filterActive}
+            data-testid="filter-trigger"
+            className={cn(
+              "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors",
+              filterActive
+                ? "text-[color:var(--accent)] bg-[var(--accent-bg)] hover:bg-[var(--bg-hover)]"
+                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+            )}
+          >
+            <Filter className="h-[16px] w-[16px]" />
+          </button>
+        </Tooltip>
+      )}
       <FilterBuilderDialog
         open={filterDialogOpen}
         onOpenChange={setFilterDialogOpen}
       />
 
-      <Tooltip content="Editor settings">
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          aria-label="Editor settings"
-          data-testid="editor-settings-trigger"
-          className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
-        >
-          <Settings className="h-[16px] w-[16px]" />
-        </button>
-      </Tooltip>
+      {!isNarrow && (
+        <Tooltip content="Editor settings">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Editor settings"
+            data-testid="editor-settings-trigger"
+            className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+          >
+            <Settings className="h-[16px] w-[16px]" />
+          </button>
+        </Tooltip>
+      )}
       <EditorSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+
+      {/*
+        Plan 14 Phase 8 Task 9 — overflow menu at <1280px. Surfaces the
+        items that were elided from the inline toolbar (visibility,
+        fit-to-screen, filter, editor settings) plus the editor's
+        cheat-sheet / command palette / info dialog triggers, which live
+        on the canvas at wider widths.
+      */}
+      {isNarrow && (
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <button
+              type="button"
+              data-testid="editor-toolbar-overflow-trigger"
+              aria-label="More toolbar actions"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+            >
+              <MoreHorizontal className="h-[18px] w-[18px]" />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={6}
+              data-testid="editor-toolbar-overflow-content"
+              className="z-[1000] min-w-[220px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+            >
+              <DropdownMenu.Item
+                data-testid="overflow-fit-to-screen"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  onFitToScreen?.();
+                }}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none hover:bg-[var(--bg-hover)] data-[highlighted]:bg-[var(--bg-hover)]"
+              >
+                <Maximize className="h-3.5 w-3.5" />
+                <span>Fit to screen</span>
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                data-testid="overflow-visibility"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  window.dispatchEvent(new CustomEvent("carve:open-visibility"));
+                }}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none hover:bg-[var(--bg-hover)] data-[highlighted]:bg-[var(--bg-hover)]"
+              >
+                <Eye className="h-3.5 w-3.5" />
+                <span>Visibility…</span>
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                data-testid="overflow-filter"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setFilterDialogOpen(true);
+                }}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none hover:bg-[var(--bg-hover)] data-[highlighted]:bg-[var(--bg-hover)]"
+              >
+                <Filter className="h-3.5 w-3.5" />
+                <span>Filter annotations</span>
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                data-testid="overflow-cheatsheet"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  window.dispatchEvent(new CustomEvent("carve:open-cheatsheet"));
+                }}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none hover:bg-[var(--bg-hover)] data-[highlighted]:bg-[var(--bg-hover)]"
+              >
+                <span className="font-mono text-[10px]">⌨</span>
+                <span>Keyboard shortcuts</span>
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                data-testid="overflow-command-palette"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  window.dispatchEvent(new CustomEvent("carve:open-command-palette"));
+                }}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none hover:bg-[var(--bg-hover)] data-[highlighted]:bg-[var(--bg-hover)]"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                <span>Command palette</span>
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                data-testid="overflow-info"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  window.dispatchEvent(new CustomEvent("carve:open-info-dialog"));
+                }}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none hover:bg-[var(--bg-hover)] data-[highlighted]:bg-[var(--bg-hover)]"
+              >
+                <span className="font-mono text-[10px]">i</span>
+                <span>Task info</span>
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
+              <DropdownMenu.Item
+                data-testid="overflow-settings"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setSettingsOpen(true);
+                }}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none hover:bg-[var(--bg-hover)] data-[highlighted]:bg-[var(--bg-hover)]"
+              >
+                <Settings className="h-3.5 w-3.5" />
+                <span>Editor settings</span>
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      )}
 
       <Tooltip
         content={

@@ -738,12 +738,57 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, taskId]);
 
-  const crumbs = useMemo(() => {
-    const c: { label: string; to?: string }[] = [{ label: "Projects", to: "/projects" }];
-    if (projectQ.data) c.push({ label: projectQ.data.name, to: `/projects/${projectId}` });
-    if (assetQ.data) c.push({ label: assetQ.data.asset.original_name });
-    return c;
-  }, [projectQ.data, assetQ.data, projectId]);
+  // Plan 14 Phase 8 Task 9 — typed editor breadcrumbs
+  // ``Workspace › <Project> › <Task> › Asset N/M``
+  // Wired via the new ``breadcrumbSegments`` prop on TopBar so the
+  // segments use the shared <Breadcrumbs> component (Task 2) and link
+  // back to each level in the navigation tree.
+  const taskListQ = useQuery({
+    queryKey: ["tasks", projectId],
+    queryFn: () => tasksApi.listForProject(projectId),
+    staleTime: 30_000,
+  });
+  const currentTask = useMemo(
+    () => (taskListQ.data ?? []).find((t) => t.id === taskId) ?? null,
+    [taskListQ.data, taskId],
+  );
+  const breadcrumbSegments = useMemo(() => {
+    const segments: import("@/components/nav/Breadcrumbs").BreadcrumbSegment[] = [
+      { label: "Workspace", to: "/projects", testId: "editor-bc-workspace" },
+    ];
+    if (projectQ.data) {
+      segments.push({
+        label: projectQ.data.name,
+        to: "/projects/$projectId",
+        params: { projectId },
+        testId: "editor-bc-project",
+      });
+    }
+    if (currentTask) {
+      // Tasks don't have a dedicated route at this time; link back to
+      // the parent project page where the task list lives.
+      segments.push({
+        label: currentTask.name,
+        to: "/projects/$projectId",
+        params: { projectId },
+        testId: "editor-bc-task",
+      });
+    }
+    const total = (taskAssetsQ.data ?? []).length;
+    const idx = (taskAssetsQ.data ?? []).findIndex((a) => a.id === assetId);
+    if (total > 0 && idx >= 0) {
+      segments.push({
+        label: `Asset ${idx + 1}/${total}`,
+        testId: "editor-bc-asset",
+      });
+    } else if (assetQ.data) {
+      segments.push({
+        label: assetQ.data.asset.original_name,
+        testId: "editor-bc-asset",
+      });
+    }
+    return segments;
+  }, [projectQ.data, currentTask, taskAssetsQ.data, assetQ.data, projectId, assetId]);
 
   // v2.9 P1-13 — memoize zoom callbacks. Inline arrows changed identity
   // every render, which forced EditorToolbar's keydown useEffect to
@@ -838,7 +883,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   return (
     <TooltipProvider delayDuration={250}>
     <div className="flex h-screen flex-col bg-[var(--bg-app)] overflow-hidden">
-      <TopBar crumbs={crumbs} rightAction={rightAction} />
+      <TopBar breadcrumbSegments={breadcrumbSegments} rightAction={rightAction} />
 
       <div className="flex flex-1 min-h-0">
         <LeftNav />

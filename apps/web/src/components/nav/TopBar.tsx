@@ -17,6 +17,7 @@ import { useTheme, type ThemePreference } from "@/components/theme/ThemeProvider
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { GlobalSearchBar } from "@/components/search/GlobalSearchBar";
 import { Logo } from "@/components/brand/Logo";
+import { Breadcrumbs, type BreadcrumbSegment } from "@/components/nav/Breadcrumbs";
 import { cn } from "@/lib/cn";
 
 interface BreadcrumbCrumb {
@@ -25,8 +26,14 @@ interface BreadcrumbCrumb {
 }
 
 interface TopBarProps {
-  /** Optional breadcrumb segments rendered between the wordmark and the right action group. */
+  /** Optional legacy breadcrumb segments rendered between the wordmark and the right action group. */
   crumbs?: BreadcrumbCrumb[];
+  /**
+   * Plan 14 Phase 8 Task 9 — typed breadcrumb segments rendered via the
+   * shared ``<Breadcrumbs>`` component (Task 2). When present, this takes
+   * precedence over the legacy ``crumbs`` prop.
+   */
+  breadcrumbSegments?: BreadcrumbSegment[];
   /** Optional right-side action node (e.g. a Save / Build button). */
   rightAction?: ReactNode;
 }
@@ -45,7 +52,7 @@ const THEME_OPTIONS: ReadonlyArray<{
   { value: "system", label: "System", Icon: Monitor },
 ];
 
-export function TopBar({ crumbs, rightAction }: TopBarProps) {
+export function TopBar({ crumbs, breadcrumbSegments, rightAction }: TopBarProps) {
   const user = useAuth((s) => s.user);
   const nav = useNavigate();
   const { theme, setTheme } = useTheme();
@@ -82,7 +89,14 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
         <Logo variant="full" size={20} />
       </Link>
 
-      {crumbs && crumbs.length > 0 && (
+      {breadcrumbSegments && breadcrumbSegments.length > 0 && (
+        <Breadcrumbs
+          segments={breadcrumbSegments}
+          className="relative z-10 min-w-0"
+        />
+      )}
+
+      {(!breadcrumbSegments || breadcrumbSegments.length === 0) && crumbs && crumbs.length > 0 && (
         <nav
           aria-label="Breadcrumb"
           className="relative z-10 flex items-center gap-1 min-w-0"
