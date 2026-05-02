@@ -172,6 +172,11 @@ export class TrackPropagateTool {
       body.boxes = boxes;
     }
     const response = await samTrackApi.addObject(this.assetId, this.sessionId, body);
+    if (!("obj_id" in response)) {
+      throw new Error(
+        "TrackPropagateTool: point/box addObject returned text-shape response",
+      );
+    }
     if (response.obj_id !== sentObjId) {
       // Defensive: don't mutate classByObjId — server returned an unexpected
       // id, so the mapping would key off the wrong obj_id at commit() time.
@@ -181,6 +186,58 @@ export class TrackPropagateTool {
     }
     this.classByObjId.set(sentObjId, classId);
     return sentObjId;
+  }
+
+  /**
+   * Plan 11 Task 5 — multiplex text seed. Sends ``{frame_idx, text}`` and
+   * registers each auto-assigned obj_id against the active class snapshot.
+   * Returns the obj_ids the server allocated (one per detection).
+   */
+  async addObjectAtFrameWithText(
+    frameIdx: number,
+    text: string,
+    classId: string,
+  ): Promise<number[]> {
+    if (this.sessionId === null) {
+      throw new Error("TrackPropagateTool: not started");
+    }
+    const response = await samTrackApi.addObject(this.assetId, this.sessionId, {
+      frame_idx: frameIdx,
+      text,
+    });
+    if (!("obj_ids" in response)) {
+      throw new Error(
+        "TrackPropagateTool: text addObject returned point/box-shape response",
+      );
+    }
+    for (const objId of response.obj_ids) {
+      this.classByObjId.set(objId, classId);
+      if (objId >= this.nextObjId) {
+        this.nextObjId = objId + 1;
+      }
+    }
+    return response.obj_ids;
+  }
+
+  /**
+   * Plan 11 Task 5 — remove a single tracked object from the multiplex
+   * session. No-op when no session is open.
+   */
+  async removeObject(objId: number): Promise<void> {
+    if (this.sessionId === null) return;
+    await samTrackApi.removeObject(this.assetId, this.sessionId, objId);
+    this.classByObjId.delete(objId);
+  }
+
+  /**
+   * Plan 11 Task 5 — clear all objects from a multiplex session without
+   * tearing down the session itself.
+   */
+  async resetSession(): Promise<void> {
+    if (this.sessionId === null) return;
+    await samTrackApi.resetSession(this.assetId, this.sessionId);
+    this.classByObjId.clear();
+    this.nextObjId = 1;
   }
 
   /** Advance N frames; returns the per-frame, per-object steps for this batch. */
