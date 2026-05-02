@@ -3,9 +3,19 @@ import {
   useInfiniteQuery,
   useQuery,
 } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type WheelEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type WheelEvent,
+} from "react";
+import { Trash2, FolderInput, Tag, X } from "lucide-react";
 import { assetsApi, type Asset, type AssetListPage } from "@/api/assets";
 import { cn } from "@/lib/cn";
 
@@ -13,6 +23,14 @@ interface Props {
   taskId: string;
   projectId: string;
   activeAssetId: string;
+  /**
+   * Plan 14 Phase 8 Task 3 — multi-select bulk actions. Each handler is
+   * optional so the host page can wire the ones it has APIs for and
+   * leave the rest as visible-but-toast-only affordances.
+   */
+  onBulkDelete?: (ids: string[]) => void;
+  onBulkMove?: (ids: string[]) => void;
+  onBulkTag?: (ids: string[]) => void;
 }
 
 // v3.9 Plan 09 Task 8: switched from a single eager `listForTask` query +
@@ -34,11 +52,20 @@ function ThumbItem({
   projectId,
   taskId,
   active,
+  selected,
+  onClick,
 }: {
   asset: Asset;
   projectId: string;
   taskId: string;
   active: boolean;
+  selected: boolean;
+  /**
+   * Plan 14 Phase 8 Task 3 — when the host's click handler returns
+   * ``true`` it has consumed the click for multi-select; the Link's
+   * default navigation must be suppressed.
+   */
+  onClick: (e: ReactMouseEvent<HTMLAnchorElement>) => boolean;
 }) {
   const q = useQuery({
     queryKey: ["asset", asset.id],
@@ -52,16 +79,25 @@ function ThumbItem({
     <Link
       to="/projects/$projectId/tasks/$taskId/assets/$assetId"
       params={{ projectId, taskId, assetId: asset.id }}
+      onClick={(e) => {
+        const consumed = onClick(e);
+        if (consumed) {
+          e.preventDefault();
+        }
+      }}
       className={cn(
         "shrink-0 block h-[56px] w-[80px] rounded-[var(--radius-sm)] border overflow-hidden",
         "bg-[var(--bg-subtle)] transition-all duration-150",
         active
           ? "border-[var(--accent)] outline-2 outline-offset-1 outline-[var(--accent)]"
-          : "border-[var(--border-subtle)] hover:border-[var(--border-strong)]",
+          : selected
+            ? "border-[var(--accent)] ring-2 ring-[var(--accent)]"
+            : "border-[var(--border-subtle)] hover:border-[var(--border-strong)]",
       )}
       aria-label={`Open ${asset.original_name}`}
       data-testid={`thumb-${asset.id}`}
       data-active={active ? "true" : undefined}
+      data-selected={selected ? "true" : undefined}
     >
       {url ? (
         <img
@@ -81,8 +117,26 @@ export function AssetThumbnailStrip({
   taskId,
   projectId,
   activeAssetId,
+  onBulkDelete,
+  onBulkMove,
+  onBulkTag,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const navigate = useNavigate();
+
+  // Plan 14 Phase 8 Task 3 — multi-select state. ``selectedAssetIds``
+  // survives virtualisation because off-screen tiles unmount but their
+  // ids stay in the Set; re-mounted tiles read ``selected`` from the
+  // same source of truth.
+  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  // ``anchorIndex`` is the last single-clicked / navigated-to asset.
+  // Shift-click expands a range from this index to the target.
+  const [anchorIndex, setAnchorIndex] = useState<number | null>(null);
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpDraft, setJumpDraft] = useState("");
+  const jumpInputRef = useRef<HTMLInputElement | null>(null);
 
   const pagesQ = useInfiniteQuery({
     queryKey: ["task-assets-strip", taskId],
@@ -147,61 +201,297 @@ export function AssetThumbnailStrip({
     }
   }, []);
 
+  // Plan 14 Phase 8 Task 3 — anchor tracks the active asset whenever
+  // the user navigates to a new one, mirroring the spec: "the anchor is
+  // the last asset that was navigated to or the last cmd-clicked asset".
+  useEffect(() => {
+    const idx = assets.findIndex((a) => a.id === activeAssetId);
+    if (idx >= 0) {
+      setAnchorIndex(idx);
+    }
+  }, [activeAssetId, assets]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedAssetIds(new Set());
+  }, []);
+
+  const handleThumbClick = useCallback(
+    (index: number, asset: Asset, e: ReactMouseEvent<HTMLAnchorElement>): boolean => {
+      // Cmd/Ctrl-click — toggle a single id. Anchor moves to the
+      // toggled asset so a subsequent shift-click extends from here.
+      if (e.metaKey || e.ctrlKey) {
+        setSelectedAssetIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(asset.id)) {
+            next.delete(asset.id);
+          } else {
+            next.add(asset.id);
+          }
+          return next;
+        });
+        setAnchorIndex(index);
+        return true;
+      }
+      // Shift-click — range from anchor (or current index if no anchor).
+      if (e.shiftKey) {
+        const start = anchorIndex ?? index;
+        const [lo, hi] = start <= index ? [start, index] : [index, start];
+        const range = new Set<string>();
+        for (let i = lo; i <= hi; i++) {
+          const a = assets[i];
+          if (a) range.add(a.id);
+        }
+        setSelectedAssetIds((prev) => {
+          const next = new Set(prev);
+          for (const id of range) next.add(id);
+          return next;
+        });
+        return true;
+      }
+      // Plain click — let the Link navigate normally; clear any active
+      // multi-selection so the user gets a clean slate when jumping
+      // back into single-asset edit mode.
+      if (selectedAssetIds.size > 0) {
+        setSelectedAssetIds(new Set());
+      }
+      setAnchorIndex(index);
+      return false;
+    },
+    [anchorIndex, assets, selectedAssetIds],
+  );
+
+  // Plan 14 Phase 8 Task 3 — global key handlers: ``Esc`` clears the
+  // multi-select set, ``g`` opens the jump-to prompt. We attach to
+  // document so the user doesn't have to focus the strip first.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const isTyping =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+      if (e.key === "Escape") {
+        if (selectedAssetIds.size > 0) {
+          setSelectedAssetIds(new Set());
+          e.preventDefault();
+        }
+        if (jumpOpen) {
+          setJumpOpen(false);
+          setJumpDraft("");
+        }
+        return;
+      }
+      if (isTyping) return;
+      if (e.key === "g" || e.key === "G") {
+        e.preventDefault();
+        setJumpOpen(true);
+        setJumpDraft("");
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [selectedAssetIds, jumpOpen]);
+
+  useEffect(() => {
+    if (jumpOpen) {
+      jumpInputRef.current?.focus();
+    }
+  }, [jumpOpen]);
+
+  const commitJump = useCallback(() => {
+    const n = parseInt(jumpDraft, 10);
+    setJumpOpen(false);
+    setJumpDraft("");
+    if (!Number.isFinite(n) || n < 1 || n > virtualCount) return;
+    const target = assets[n - 1];
+    if (!target) return;
+    void navigate({
+      to: "/projects/$projectId/tasks/$taskId/assets/$assetId",
+      params: { projectId, taskId, assetId: target.id },
+    });
+  }, [jumpDraft, virtualCount, assets, navigate, projectId, taskId]);
+
+  const selectedCount = selectedAssetIds.size;
+
   if (virtualCount <= 1) return null;
 
   return (
-    <div
-      ref={scrollRef}
-      role="region"
-      aria-label="Task thumbnails"
-      data-testid="asset-thumbnail-strip"
-      data-asset-count={virtualCount}
-      onWheel={onWheel}
-      className={cn(
-        "h-[64px] shrink-0 border-b border-[var(--border-subtle)]",
-        "bg-[var(--bg-app)] flex items-center px-3 overflow-x-auto overflow-y-hidden",
-      )}
-    >
+    <>
       <div
-        style={{
-          width: `${virtualizer.getTotalSize()}px`,
-          height: "56px",
-          position: "relative",
-        }}
+        ref={scrollRef}
+        role="region"
+        aria-label="Task thumbnails"
+        data-testid="asset-thumbnail-strip"
+        data-asset-count={virtualCount}
+        data-selected-count={selectedCount}
+        onWheel={onWheel}
+        className={cn(
+          "h-[64px] shrink-0 border-b border-[var(--border-subtle)]",
+          "bg-[var(--bg-app)] flex items-center px-3 overflow-x-auto overflow-y-hidden",
+        )}
       >
-        {items.map((virtualItem) => {
-          const asset = assets[virtualItem.index];
-          const style: CSSProperties = {
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: `${TILE_WIDTH}px`,
+        <div
+          style={{
+            width: `${virtualizer.getTotalSize()}px`,
             height: "56px",
-            transform: `translateX(${virtualItem.start}px)`,
-          };
-          if (!asset) {
+            position: "relative",
+          }}
+        >
+          {items.map((virtualItem) => {
+            const asset = assets[virtualItem.index];
+            const style: CSSProperties = {
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: `${TILE_WIDTH}px`,
+              height: "56px",
+              transform: `translateX(${virtualItem.start}px)`,
+            };
+            if (!asset) {
+              return (
+                <div
+                  key={`pending-${virtualItem.index}`}
+                  data-testid={`thumb-skeleton-${virtualItem.index}`}
+                  style={style}
+                  className="rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] border border-[var(--border-subtle)]"
+                  aria-hidden
+                />
+              );
+            }
+            const idx = virtualItem.index;
             return (
-              <div
-                key={`pending-${virtualItem.index}`}
-                data-testid={`thumb-skeleton-${virtualItem.index}`}
-                style={style}
-                className="rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] border border-[var(--border-subtle)]"
-                aria-hidden
-              />
+              <div key={asset.id} style={style}>
+                <ThumbItem
+                  asset={asset}
+                  projectId={projectId}
+                  taskId={taskId}
+                  active={asset.id === activeAssetId}
+                  selected={selectedAssetIds.has(asset.id)}
+                  onClick={(e) => handleThumbClick(idx, asset, e)}
+                />
+              </div>
             );
-          }
-          return (
-            <div key={asset.id} style={style}>
-              <ThumbItem
-                asset={asset}
-                projectId={projectId}
-                taskId={taskId}
-                active={asset.id === activeAssetId}
-              />
-            </div>
-          );
-        })}
+          })}
+        </div>
       </div>
-    </div>
+
+      {/* Plan 14 Phase 8 Task 3 — bottom-center multi-select action bar. */}
+      {selectedCount > 0 && (
+        <div
+          data-testid="asset-strip-multi-select-bar"
+          role="toolbar"
+          aria-label="Bulk asset actions"
+          className={cn(
+            "fixed left-1/2 bottom-6 -translate-x-1/2 z-50",
+            "flex items-center gap-1 px-2 py-1.5",
+            "rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
+            "bg-[var(--bg-elev)] shadow-lg",
+            "text-[12.5px] text-[color:var(--text-primary)]",
+          )}
+        >
+          <span
+            data-testid="asset-strip-multi-select-counter"
+            className="px-2 font-mono tabular-nums text-[color:var(--text-secondary)]"
+          >
+            {selectedCount} selected
+          </span>
+          <button
+            type="button"
+            data-testid="asset-strip-multi-select-delete"
+            onClick={() => {
+              const ids = Array.from(selectedAssetIds);
+              // TODO: wire to assetsApi.delete batch / page-level handler.
+              onBulkDelete?.(ids);
+            }}
+            className="inline-flex items-center gap-1 h-7 px-2 rounded-[var(--radius-sm)] text-[color:var(--danger)] hover:bg-[var(--danger-bg)]"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </button>
+          <button
+            type="button"
+            data-testid="asset-strip-multi-select-move"
+            onClick={() => {
+              const ids = Array.from(selectedAssetIds);
+              // TODO: surface a task-picker dropdown.
+              onBulkMove?.(ids);
+            }}
+            className="inline-flex items-center gap-1 h-7 px-2 rounded-[var(--radius-sm)] hover:bg-[var(--bg-hover)]"
+          >
+            <FolderInput className="h-3.5 w-3.5" />
+            Move to task…
+          </button>
+          <button
+            type="button"
+            data-testid="asset-strip-multi-select-tag"
+            onClick={() => {
+              const ids = Array.from(selectedAssetIds);
+              // TODO: surface a tag picker / inline create.
+              onBulkTag?.(ids);
+            }}
+            className="inline-flex items-center gap-1 h-7 px-2 rounded-[var(--radius-sm)] hover:bg-[var(--bg-hover)]"
+          >
+            <Tag className="h-3.5 w-3.5" />
+            Tag…
+          </button>
+          <button
+            type="button"
+            data-testid="asset-strip-multi-select-clear"
+            onClick={clearSelection}
+            aria-label="Clear selection"
+            className="inline-flex items-center gap-1 h-7 px-2 rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)]"
+          >
+            <X className="h-3.5 w-3.5" />
+            Clear
+          </button>
+        </div>
+      )}
+
+      {/* Plan 14 Phase 8 Task 3 — jump-to prompt. */}
+      {jumpOpen && (
+        <div
+          data-testid="asset-strip-jump-prompt"
+          role="dialog"
+          aria-label="Go to asset"
+          className={cn(
+            "fixed left-1/2 top-20 -translate-x-1/2 z-50",
+            "flex items-center gap-2 px-3 py-2",
+            "rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
+            "bg-[var(--bg-elev)] shadow-lg text-[12.5px]",
+          )}
+        >
+          <span className="text-[color:var(--text-tertiary)]">Go to asset</span>
+          <input
+            ref={jumpInputRef}
+            type="number"
+            min={1}
+            max={virtualCount}
+            value={jumpDraft}
+            onChange={(e) => setJumpDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitJump();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setJumpOpen(false);
+                setJumpDraft("");
+              }
+            }}
+            data-testid="asset-strip-jump-input"
+            aria-label="Asset number"
+            className={cn(
+              "w-20 h-7 px-2 rounded-[var(--radius-sm)]",
+              "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
+              "border border-[var(--border-subtle)]",
+              "focus:outline-none focus:border-[var(--accent)]",
+            )}
+          />
+          <span className="font-mono text-[color:var(--text-tertiary)]">
+            / {virtualCount}
+          </span>
+        </div>
+      )}
+    </>
   );
 }

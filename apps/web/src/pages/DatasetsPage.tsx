@@ -7,7 +7,9 @@ import {
 } from "@/api/datasets";
 import { membersApi, type Role } from "@/api/members";
 import { useAuth } from "@/auth/store";
+import { Database } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
+import { EmptyState } from "@/components/ui/EmptyState";
 import {
   Dialog,
   DialogContent,
@@ -409,9 +411,20 @@ export function DatasetsPage({ projectId }: DatasetsPageProps) {
       </header>
 
       {versionsQ.isLoading && (
-        <p className="text-[12.5px] text-[color:var(--text-tertiary)]">
-          Loading versions…
-        </p>
+        <div
+          data-testid="datasets-loading-skeleton"
+          className="grid gap-1.5 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-2"
+        >
+          {[0, 1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className={cn(
+                "h-10 rounded-[var(--radius-sm)]",
+                "bg-[var(--bg-subtle)] animate-pulse",
+              )}
+            />
+          ))}
+        </div>
       )}
       {versionsQ.isError && (
         <p className="text-[12.5px] text-[color:var(--danger)]">
@@ -419,10 +432,13 @@ export function DatasetsPage({ projectId }: DatasetsPageProps) {
         </p>
       )}
       {!versionsQ.isLoading && items.length === 0 && (
-        <p className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] p-3 text-[12.5px] italic text-[color:var(--text-tertiary)]">
-          No dataset versions yet — they appear automatically after a
-          retrain or export, and any time you take a manual snapshot.
-        </p>
+        <EmptyState
+          testId="datasets-empty"
+          variant="compact"
+          icon={<Database className="h-5 w-5" />}
+          title="No dataset versions yet"
+          description="They accrue automatically with each retrain or export, and any time you take a manual snapshot."
+        />
       )}
 
       {items.length > 0 && (
