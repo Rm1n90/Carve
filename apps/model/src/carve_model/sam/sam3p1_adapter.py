@@ -331,3 +331,349 @@ def build_sam3p1_multiplex_video_tracker() -> Sam3p1MultiplexVideoAdapter:
 
     predictor = build_sam3_multiplex_video_predictor()
     return Sam3p1MultiplexVideoAdapter(predictor=predictor)
+
+
+# ============================================================================
+# Plan 12 — native SAM 3.1 image predictor (point + box + text)
+# ============================================================================
+
+
+def _sam3_bpe_path() -> str:
+    """Resolve the bundled ``bpe_simple_vocab_16e6.txt.gz`` path inside the
+    installed ``sam3`` wheel.
+
+    The native sam3 package places its assets at ``<sam3>/assets/...`` (NOT
+    ``<sam3>/../assets/...``) — verified inside the model container.
+    """
+    import os
+    import sam3  # type: ignore[import-not-found]
+
+    return os.path.join(os.path.dirname(sam3.__file__), "assets", "bpe_simple_vocab_16e6.txt.gz")
+
+
+class Sam3p1NativeImagePredictorAdapter:
+    """Wrap the native ``sam3`` image model + ``Sam3Processor`` to look like
+    SAM 2's image predictor.
+
+    Mirrors the public surface of ``Sam3ImagePredictorAdapter`` so the
+    factory in ``predictor.py`` can swap them transparently. The native
+    package handles its own embedding caching internally; we don't expose
+    a usable ``extract_embedding`` for this path — the router handles
+    ``None`` by falling back to server-side decode.
+
+    Verified state-key contract for the native processor (Plan 12 probe):
+
+    - ``processor.set_image(pil_image)`` → returns dict with
+      ``original_height``, ``original_width``, ``backbone_out``.
+    - ``processor.set_text_prompt(prompt, state)`` → mutates state to add
+      ``geometric_prompt``, ``masks_logits``, ``masks``, ``boxes``,
+      ``scores``.
+    - ``model.predict_inst(state, point_coords=..., point_labels=...,
+      box=..., multimask_output=...)`` → returns
+      ``(masks: ndarray (K, H, W), scores: ndarray (K,), logits: ndarray)``.
+
+    The native processor expects **PIL images**, not numpy arrays — passing
+    a raw HxWx3 numpy array silently misinterprets dims (verified: it
+    writes ``original_width=3``, the channel count). We always convert.
+    """
+
+    def __init__(self, model: Any, processor: Any, device: str) -> None:
+        self._model = model
+        self._processor = processor
+        self._device = device
+        self._state: dict | None = None
+        self._original_size: tuple[int, int] | None = None  # (h, w)
+        # Native image model owns its own embedding cache; we don't expose
+        # one (router falls back to server-side decode without speedup).
+        self._features: dict | None = None
+
+    def set_image(self, image: Any) -> None:
+        """Cache the image inside the native processor's state dict.
+
+        ``image`` is a numpy ``HxWx3`` RGB uint8 array (per router contract).
+        Converted to PIL before handing to the native processor.
+        """
+        from PIL import Image  # type: ignore[import-not-found]
+
+        h, w = int(image.shape[0]), int(image.shape[1])
+        self._original_size = (h, w)
+        pil = Image.fromarray(image)
+        self._state = self._processor.set_image(pil)
+
+    def predict(
+        self,
+        point_coords: Any,
+        point_labels: Any,
+        multimask_output: bool = True,
+        box: Any = None,
+    ) -> tuple[Any, Any, Any]:
+        """Run a click/box prompt forward pass and return ``(masks, scores, logits)``.
+
+        Returns numpy arrays. Shape:
+          - ``multimask_output=True``  → masks (K, H, W), scores (K,)
+          - ``multimask_output=False`` → masks (1, H, W), scores (1,)
+        """
+        if self._state is None or self._original_size is None:
+            raise RuntimeError("set_image must be called before predict")
+        import numpy as np
+
+        pc: Any = None
+        pl: Any = None
+        if point_coords is not None:
+            arr = np.asarray(point_coords, dtype=np.float32).reshape(-1, 2)
+            if len(arr) > 0:
+                pc = arr
+        if point_labels is not None:
+            arr_l = np.asarray(point_labels, dtype=np.int64).reshape(-1)
+            if len(arr_l) > 0:
+                pl = arr_l
+        b: Any = None
+        if box is not None:
+            b = np.asarray(box, dtype=np.float32).reshape(-1)
+
+        masks, scores, logits = self._model.predict_inst(
+            self._state,
+            point_coords=pc,
+            point_labels=pl,
+            box=b,
+            multimask_output=multimask_output,
+        )
+        return masks, scores, logits
+
+    def extract_embedding(self) -> dict | None:
+        """The native image model's encoder cache is internal — no clean
+        serializable embedding handoff. Return None so the router falls
+        back to server-side decode (verified-acceptable per Plan 12).
+        """
+        return None
+
+
+def build_sam3p1_image_predictor(device: str | None = None) -> Sam3p1NativeImagePredictorAdapter:
+    """Build the native sam3 image model + processor and wrap them.
+
+    Imports ``sam3`` lazily — raises ``ImportError`` if the native package
+    is not installed. Honors ``SAM_COMPILE`` via ``perf.get_compile_enabled``;
+    dtype/attention selection is owned by the native package's build
+    flags (bf16-on-cuda is the default there).
+    """
+    from sam3 import build_sam3_image_model  # type: ignore[import-not-found]
+    from sam3.model.sam3_image_processor import Sam3Processor  # type: ignore[import-not-found]
+
+    from carve_model.sam import perf
+
+    dev = device or perf.get_device()
+    bpe = _sam3_bpe_path()
+
+    model = build_sam3_image_model(
+        bpe_path=bpe,
+        device=dev,
+        enable_segmentation=True,
+        enable_inst_interactivity=True,
+        compile=perf.get_compile_enabled(),
+    )
+    processor = Sam3Processor(model)
+    return Sam3p1NativeImagePredictorAdapter(model=model, processor=processor, device=dev)
+
+
+# --- module-level cache for text/box predictors -----------------------------
+
+
+_NATIVE_IMAGE_PREDICTOR: Sam3p1NativeImagePredictorAdapter | None = None
+
+
+def _get_or_build_native_image_predictor() -> Sam3p1NativeImagePredictorAdapter:
+    global _NATIVE_IMAGE_PREDICTOR
+    if _NATIVE_IMAGE_PREDICTOR is None:
+        _NATIVE_IMAGE_PREDICTOR = build_sam3p1_image_predictor()
+    return _NATIVE_IMAGE_PREDICTOR
+
+
+def _set_native_image_predictor_for_tests(adapter: Any) -> None:
+    """Test-only seam to inject a pre-built adapter."""
+    global _NATIVE_IMAGE_PREDICTOR
+    _NATIVE_IMAGE_PREDICTOR = adapter
+
+
+def _decode_image_b64_to_numpy(image_b64: str) -> Any:
+    import base64
+    from io import BytesIO
+
+    import numpy as np
+    from PIL import Image  # type: ignore[import-not-found]
+
+    img_bytes = base64.b64decode(image_b64)
+    pil = Image.open(BytesIO(img_bytes)).convert("RGB")
+    return np.asarray(pil, dtype="uint8")
+
+
+def _extract_text_detections(state: dict) -> list[tuple[Any, float]]:
+    """Pull (mask_HxW_uint8, score) pairs out of a post-set_text_prompt state.
+
+    Verified state keys (Plan 12 probe inside the model container):
+      ``masks_logits``, ``masks``, ``boxes``, ``scores``, ``geometric_prompt``,
+      ``backbone_out``, ``original_height``, ``original_width``.
+
+    ``masks`` is a torch tensor of shape ``(N, 1, H, W)`` dtype=bool.
+    ``scores`` is a torch tensor of shape ``(N,)`` (bf16 on cuda).
+    """
+    import numpy as np
+
+    from carve_model.sam.perf import to_numpy_safe
+
+    masks = state.get("masks")
+    scores = state.get("scores")
+    if masks is None or scores is None:
+        logger.warning(
+            "sam3.1 native text prompt: state missing 'masks'/'scores'; keys=%s",
+            list(state.keys()) if isinstance(state, dict) else type(state).__name__,
+        )
+        return []
+
+    masks_np = to_numpy_safe(masks)
+    scores_np = to_numpy_safe(scores)
+    n = int(masks_np.shape[0])
+    out: list[tuple[Any, float]] = []
+    for i in range(n):
+        m = masks_np[i]
+        # Squeeze possible (1, H, W) → (H, W).
+        if m.ndim == 3 and m.shape[0] == 1:
+            m = m[0]
+        out.append((m.astype(np.uint8), float(scores_np[i])))
+    return out
+
+
+def make_sam3p1_text_predictor():
+    """Return ``fn(*, image_b64, text) -> list[dict]`` for /sam/text-prompt.
+
+    Each dict: ``{counts, size, score, polygon, bbox}``. Sorted score desc.
+    """
+
+    def _predict_from_text(*, image_b64: str, text: str) -> list[dict]:
+        from carve_model.sam.codec import encode_mask_rle
+        from carve_model.sam.perf import to_numpy_safe
+        from carve_model.sam.polygonize import mask_to_polygon
+
+        adapter = _get_or_build_native_image_predictor()
+        image_np = _decode_image_b64_to_numpy(image_b64)
+        adapter.set_image(image_np)
+        state = adapter._state
+        if state is None:
+            return []
+        # Reset any prior prompts before applying the new text concept.
+        adapter._processor.reset_all_prompts(state)
+        adapter._processor.set_text_prompt(text, state)
+
+        detections = _extract_text_detections(state)
+        boxes = state.get("boxes")
+        boxes_np = to_numpy_safe(boxes) if boxes is not None else None
+
+        rows: list[dict] = []
+        for i, (mask_np, score) in enumerate(detections):
+            counts, size = encode_mask_rle(mask_np)
+            polygon = mask_to_polygon(mask_np)
+            if boxes_np is not None and i < len(boxes_np):
+                bbox = [float(x) for x in boxes_np[i].tolist()]
+            else:
+                bbox = [0.0, 0.0, 0.0, 0.0]
+            rows.append({
+                "counts": counts,
+                "size": size,
+                "score": score,
+                "bbox": bbox,
+                "polygon": polygon,
+            })
+        rows.sort(key=lambda r: r["score"], reverse=True)
+        return rows
+
+    return _predict_from_text
+
+
+def make_sam3p1_box_predictor():
+    """Return ``fn(*, image_b64, boxes, box_labels, text=None) -> list[dict]``.
+
+    For each positive box (label=1), runs ``model.predict_inst`` with
+    ``multimask_output=False`` and keeps the resulting mask. Optional
+    ``text`` is applied first via ``set_text_prompt`` to bias the
+    concept. Negative boxes (label=0) subtract from the union of
+    positive masks (mirrors the SAM 3 transformers dispatcher behavior).
+    """
+
+    def _predict_from_boxes(
+        *,
+        image_b64: str,
+        boxes,
+        box_labels,
+        text: str | None = None,
+    ) -> list[dict]:
+        import numpy as np
+
+        from carve_model.sam.codec import encode_mask_rle
+        from carve_model.sam.polygonize import mask_to_polygon
+
+        adapter = _get_or_build_native_image_predictor()
+        image_np = _decode_image_b64_to_numpy(image_b64)
+        adapter.set_image(image_np)
+        state = adapter._state
+        if state is None:
+            return []
+        adapter._processor.reset_all_prompts(state)
+
+        if text:
+            adapter._processor.set_text_prompt(text, state)
+
+        positive_masks: list[Any] = []
+        negative_masks: list[Any] = []
+        positive_scores: list[float] = []
+        positive_boxes: list[list[float]] = []
+
+        for box, label in zip(boxes, box_labels, strict=False):
+            box_arr = np.asarray(box, dtype=np.float32).reshape(-1)
+            masks, scores, _ = adapter._model.predict_inst(
+                state,
+                point_coords=None,
+                point_labels=None,
+                box=box_arr,
+                multimask_output=False,
+            )
+            if masks is None or len(masks) == 0:
+                continue
+            best_idx = int(np.argmax(np.asarray(scores)))
+            best_mask = np.asarray(masks[best_idx]).astype(np.uint8)
+            best_score = float(np.asarray(scores)[best_idx])
+            if int(label) == 1:
+                positive_masks.append(best_mask)
+                positive_scores.append(best_score)
+                positive_boxes.append([float(x) for x in box_arr.tolist()])
+            else:
+                negative_masks.append(best_mask)
+
+        if not positive_masks:
+            return []
+
+        # Subtract union of negatives from each positive mask.
+        if negative_masks:
+            neg_union = negative_masks[0].copy()
+            for m in negative_masks[1:]:
+                neg_union = np.logical_or(neg_union, m).astype(np.uint8)
+            for i, m in enumerate(positive_masks):
+                positive_masks[i] = np.logical_and(
+                    m, np.logical_not(neg_union),
+                ).astype(np.uint8)
+
+        rows: list[dict] = []
+        for mask_np, score, bbox in zip(
+            positive_masks, positive_scores, positive_boxes, strict=False,
+        ):
+            counts, size = encode_mask_rle(mask_np)
+            polygon = mask_to_polygon(mask_np)
+            rows.append({
+                "counts": counts,
+                "size": size,
+                "score": score,
+                "bbox": bbox,
+                "polygon": polygon,
+            })
+        rows.sort(key=lambda r: r["score"], reverse=True)
+        return rows
+
+    return _predict_from_boxes
