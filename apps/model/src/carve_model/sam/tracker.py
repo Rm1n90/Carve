@@ -22,6 +22,8 @@ v1.4 introduces multi-object support:
   to work without modification.
 """
 
+import logging
+import os
 import threading
 import time
 import uuid
@@ -34,6 +36,8 @@ from carve_model.sam.predictor import (
     autocast_ctx,
     get_sam_model,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TrackerProtocol(Protocol):
@@ -151,6 +155,29 @@ def _default_factory() -> TrackerProtocol:
     ``sam2`` git package path was removed in v3.4 commit 6.
     """
     model = get_sam_model()
+    backend = os.environ.get("SAM_VIDEO_BACKEND", "").lower()
+
+    # Plan 11 — SAM 3.1 native multiplex video adapter. Opt-in via
+    # ``SAM_VIDEO_BACKEND=multiplex`` (or ``SAM_MODEL=sam3.1``); requires
+    # the native ``sam3`` git package. Falls back to the SAM 3 transformers
+    # dispatcher when the native package is unavailable.
+    if backend == "multiplex" or model == "sam3.1":
+        try:
+            from carve_model.sam.sam3p1_adapter import (
+                build_sam3p1_multiplex_video_tracker,
+            )
+
+            return build_sam3p1_multiplex_video_tracker()
+        except ImportError as exc:
+            logger.warning(
+                "sam3.1 multiplex backend requested but native sam3 package not "
+                "available: %s; falling back to transformers SAM 3 dispatcher",
+                exc,
+            )
+            from carve_model.sam import sam3_adapter
+
+            return sam3_adapter.build_sam3_video_tracker()
+
     if model == "sam3":
         from carve_model.sam import sam3_adapter
 
@@ -267,6 +294,29 @@ def add_object_to_session(
             labels=labels,
             boxes=boxes,
         )
+
+
+def remove_object_from_session(session: TrackerSession, *, obj_id: int) -> None:
+    """Remove a tracked object from an in-flight session.
+
+    Only supported by adapters with a ``remove_object`` method (the SAM 3.1
+    multiplex adapter). Raises ``NotImplementedError`` otherwise — the router
+    translates that to HTTP 422 ``adapter_not_multiplex``.
+    """
+    if not hasattr(session.tracker, "remove_object"):
+        raise NotImplementedError("active tracker does not support remove_object")
+    session.tracker.remove_object(session.inference_state, obj_id=obj_id)
+
+
+def reset_session_text(session: TrackerSession) -> None:
+    """Reset a session's text-driven prompts (SAM 3.1 multiplex).
+
+    Raises ``NotImplementedError`` when the active adapter is not the
+    multiplex one — translated to HTTP 422 by the router.
+    """
+    if not hasattr(session.tracker, "reset_session"):
+        raise NotImplementedError("active tracker does not support reset_session")
+    session.tracker.reset_session(session.inference_state)
 
 
 def get_session(session_id: str) -> TrackerSession | None:

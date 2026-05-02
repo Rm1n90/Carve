@@ -34,7 +34,7 @@ interface SamTrackPanelProps {
   classes?: import("@/api/classes").ClassRow[];
 }
 
-type SeedKind = "point" | "box";
+type SeedKind = "point" | "box" | "text";
 
 interface UiObject {
   objId: number;
@@ -57,6 +57,7 @@ export function SamTrackPanel({
   const TRACK_BATCH = 8;
   const cancelRef = useRef(false);
   const [objects, setObjects] = useState<UiObject[]>([]);
+  const [textValue, setTextValue] = useState("");
   const [framesPropagated, setFramesPropagated] = useState(0);
 
   const toolRef = useRef<TrackPropagateTool | null>(null);
@@ -189,6 +190,70 @@ export function SamTrackPanel({
         variant: "error",
         duration: 6000,
       });
+    }
+  }
+
+  async function addObjectWithText(text: string): Promise<void> {
+    if (startingRef.current) return;
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return;
+    const classId = resolveClassId();
+    if (!classId) {
+      showToast("Create a class first.", { variant: "warning" });
+      return;
+    }
+    const ok = await ensureSession();
+    if (!ok) return;
+    const tool = toolRef.current;
+    if (!tool) return;
+    try {
+      const objIds = await tool.addObjectAtFrameWithText(
+        currentFrameIdxRef.current,
+        trimmed,
+        classId,
+      );
+      if (objIds.length === 0) {
+        showToast(`No matches for "${trimmed}".`, { variant: "warning" });
+        return;
+      }
+      setObjects((prev) => [
+        ...prev,
+        ...objIds.map((objId) => ({ objId, classId, seed: "text" as SeedKind })),
+      ]);
+    } catch (err) {
+      showToast(`Failed to seed text: ${describeSamError(err)}`, {
+        variant: "error",
+        duration: 6000,
+      });
+    }
+  }
+
+  async function removeObjectRow(objId: number): Promise<void> {
+    const tool = toolRef.current;
+    if (!tool) return;
+    const snapshot = objects;
+    setObjects((prev) => prev.filter((o) => o.objId !== objId));
+    setMarkersLocal((prev) => prev.filter((m) => m.objId !== objId));
+    try {
+      await tool.removeObject(objId);
+    } catch (err) {
+      // Revert optimistic update.
+      setObjects(snapshot);
+      const errObj = err as { response?: { status?: number; data?: { error?: string } } };
+      const isMultiplexErr =
+        errObj?.response?.status === 422 ||
+        errObj?.response?.data?.error === "tracker_not_multiplex";
+      if (isMultiplexErr) {
+        showToast("Remove requires SAM 3.1 multiplex backend.", {
+          variant: "warning",
+          duration: 6000,
+        });
+      } else {
+        showToast(`Failed to remove object: ${describeSamError(err)}`, {
+          variant: "error",
+          duration: 6000,
+        });
+      }
     }
   }
 
@@ -366,6 +431,42 @@ export function SamTrackPanel({
             </li>
           </ul>
 
+          <div className="flex items-center gap-1.5">
+            <input
+              type="text"
+              data-testid="sam-track-text-input"
+              placeholder="Type a concept (e.g. person)…"
+              value={textValue}
+              onChange={(e) => setTextValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void addObjectWithText(textValue).then(() => setTextValue(""));
+                }
+              }}
+              className={cn(
+                "flex-1 h-7 px-2 rounded-[var(--radius-xs)]",
+                "text-[11.5px] bg-[var(--bg-subtle)] border border-[var(--border-subtle)]",
+                "text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
+                "focus:outline-none focus:border-[var(--accent)]",
+              )}
+            />
+            <button
+              type="button"
+              data-testid="sam-track-text-submit"
+              onClick={() => void addObjectWithText(textValue).then(() => setTextValue(""))}
+              disabled={textValue.trim().length === 0}
+              className={cn(
+                "h-7 px-2 rounded-[var(--radius-xs)] text-[11px]",
+                "bg-[var(--bg-subtle)] hover:bg-[var(--bg-hover)] transition-colors",
+                "disabled:opacity-50 disabled:cursor-not-allowed",
+                "text-[color:var(--text-secondary)]",
+              )}
+            >
+              Add
+            </button>
+          </div>
+
           {objects.length > 0 && (
             <ul
               data-testid="sam-track-object-list"
@@ -402,6 +503,19 @@ export function SamTrackPanel({
                     <span className="text-[10px] text-[color:var(--text-tertiary)] uppercase tracking-[0.08em] shrink-0">
                       {o.seed}
                     </span>
+                    <button
+                      type="button"
+                      data-testid={`sam-track-remove-${o.objId}`}
+                      aria-label={`Remove object #${o.objId}`}
+                      onClick={() => void removeObjectRow(o.objId)}
+                      className={cn(
+                        "ml-1 inline-flex items-center justify-center h-5 w-5 rounded",
+                        "text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)]",
+                        "hover:text-[color:var(--text-primary)] transition-colors shrink-0",
+                      )}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
                   </li>
                 );
               })}

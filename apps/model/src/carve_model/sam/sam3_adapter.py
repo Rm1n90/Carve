@@ -212,16 +212,27 @@ def build_sam3_image_predictor(device: str | None = None) -> Sam3ImagePredictorA
         Sam3TrackerProcessor,
     )
 
+    from carve_model.sam.perf import (
+        apply_compile_to_image_encoder,
+        get_attn_impl,
+        get_dtype,
+    )
     from carve_model.sam.predictor import _set_load_progress
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.bfloat16 if dev == "cuda" else torch.float32
+    dtype = get_dtype()
+    attn_impl = get_attn_impl()
     _set_load_progress(progress_bytes=0, progress_total=-1)
     try:
-        model = Sam3TrackerModel.from_pretrained("facebook/sam3").to(dev, dtype=dtype)
+        model = Sam3TrackerModel.from_pretrained(
+            "facebook/sam3",
+            dtype=dtype,
+            attn_implementation=attn_impl,
+        ).to(dev, dtype=dtype)
         processor = Sam3TrackerProcessor.from_pretrained("facebook/sam3")
     finally:
         _set_load_progress(progress_bytes=None, progress_total=None)
+    apply_compile_to_image_encoder(model)
     return Sam3ImagePredictorAdapter(model=model, processor=processor, device=dev)
 
 
@@ -240,10 +251,22 @@ def _build_concept_image_pair() -> tuple[Any, Any, str]:
         Sam3Processor,
     )
 
+    from carve_model.sam.perf import (
+        apply_compile_to_image_encoder,
+        get_attn_impl,
+        get_dtype,
+    )
+
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if dev == "cuda" else torch.float32
-    model = Sam3Model.from_pretrained("facebook/sam3").to(dev, dtype=dtype)
+    dtype = get_dtype()
+    attn_impl = get_attn_impl()
+    model = Sam3Model.from_pretrained(
+        "facebook/sam3",
+        dtype=dtype,
+        attn_implementation=attn_impl,
+    ).to(dev, dtype=dtype)
     processor = Sam3Processor.from_pretrained("facebook/sam3")
+    apply_compile_to_image_encoder(model)
     return model, processor, dev
 
 
@@ -282,6 +305,7 @@ def make_sam3_text_predictor():
         from PIL import Image  # type: ignore[import-not-found]
 
         from carve_model.sam.codec import encode_mask_rle
+        from carve_model.sam.perf import to_numpy_safe
         from carve_model.sam.polygonize import mask_to_polygon
 
         _ensure_loaded()
@@ -308,20 +332,12 @@ def make_sam3_text_predictor():
         if masks is None:
             return out
         for i in range(len(masks)):
-            # v3.8 Phase 3 fix — bf16 / f16 tensors raise on .numpy().
-            # Cast to float32 before the bridge (mirrors the same fix
-            # applied to /sam/decode in sam/router.py).
-            mask_t = masks[i].cpu()
-            if "bfloat16" in str(mask_t.dtype) or "float16" in str(mask_t.dtype):
-                mask_t = mask_t.float()
-            mask_np = mask_t.numpy().astype(np.uint8)
+            # bf16 / f16 tensors raise on .numpy(); to_numpy_safe casts up.
+            mask_np = to_numpy_safe(masks[i]).astype(np.uint8)
             counts, size = encode_mask_rle(mask_np)
             polygon = mask_to_polygon(mask_np)
             if boxes is not None:
-                box_t = boxes[i].cpu()
-                if "bfloat16" in str(box_t.dtype) or "float16" in str(box_t.dtype):
-                    box_t = box_t.float()
-                box = box_t.numpy().tolist()
+                box = to_numpy_safe(boxes[i]).tolist()
             else:
                 box = [0, 0, 0, 0]
             score_val = float(scores[i].item()) if scores is not None else 1.0
@@ -380,6 +396,7 @@ def make_sam3_box_predictor():
         from PIL import Image  # type: ignore[import-not-found]
 
         from carve_model.sam.codec import encode_mask_rle
+        from carve_model.sam.perf import to_numpy_safe
         from carve_model.sam.polygonize import mask_to_polygon
 
         _ensure_loaded()
@@ -419,18 +436,12 @@ def make_sam3_box_predictor():
         if masks is None:
             return out
         for i in range(len(masks)):
-            # v3.8 Phase 3 fix — bf16 / f16 tensors raise on .numpy().
-            mask_t = masks[i].cpu()
-            if "bfloat16" in str(mask_t.dtype) or "float16" in str(mask_t.dtype):
-                mask_t = mask_t.float()
-            mask_np = mask_t.numpy().astype(np.uint8)
+            # bf16 / f16 tensors raise on .numpy(); to_numpy_safe casts up.
+            mask_np = to_numpy_safe(masks[i]).astype(np.uint8)
             counts, size = encode_mask_rle(mask_np)
             polygon = mask_to_polygon(mask_np)
             if boxes_out is not None:
-                box_t = boxes_out[i].cpu()
-                if "bfloat16" in str(box_t.dtype) or "float16" in str(box_t.dtype):
-                    box_t = box_t.float()
-                box = box_t.numpy().tolist()
+                box = to_numpy_safe(boxes_out[i]).tolist()
             else:
                 box = [0.0, 0.0, 0.0, 0.0]
             score_val = float(scores[i].item()) if scores is not None else 1.0
@@ -510,13 +521,23 @@ class Sam3VideoDispatcherAdapter:
                         property(lambda self: self.fpn_position_encoding),
                     )
 
-            dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
+            from carve_model.sam.perf import (
+                apply_compile_to_image_encoder,
+                get_attn_impl,
+                get_dtype,
+            )
+
+            dtype = get_dtype()
+            attn_impl = get_attn_impl()
             self._tracker_model = Sam3TrackerVideoModel.from_pretrained(
                 "facebook/sam3",
+                dtype=dtype,
+                attn_implementation=attn_impl,
             ).to(self._device, dtype=dtype)
             self._tracker_processor = Sam3TrackerVideoProcessor.from_pretrained(
                 "facebook/sam3",
             )
+            apply_compile_to_image_encoder(self._tracker_model)
         return self._tracker_model, self._tracker_processor
 
     def _load_concept(self) -> tuple[Any, Any]:
@@ -527,13 +548,23 @@ class Sam3VideoDispatcherAdapter:
                 Sam3VideoProcessor,
             )
 
-            dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
+            from carve_model.sam.perf import (
+                apply_compile_to_image_encoder,
+                get_attn_impl,
+                get_dtype,
+            )
+
+            dtype = get_dtype()
+            attn_impl = get_attn_impl()
             self._concept_model = Sam3VideoModel.from_pretrained(
                 "facebook/sam3",
+                dtype=dtype,
+                attn_implementation=attn_impl,
             ).to(self._device, dtype=dtype)
             self._concept_processor = Sam3VideoProcessor.from_pretrained(
                 "facebook/sam3",
             )
+            apply_compile_to_image_encoder(self._concept_model)
         return self._concept_model, self._concept_processor
 
     # -- TrackerProtocol -----------------------------------------------------
@@ -651,11 +682,11 @@ class Sam3VideoDispatcherAdapter:
     # -- internal helpers ----------------------------------------------------
 
     def _add_text(self, state: dict, points: Any) -> None:
-        import torch  # type: ignore[import-not-found]
+        from carve_model.sam.perf import get_dtype
 
         model, processor = self._load_concept()
         if state["session"] is None:
-            dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
+            dtype = get_dtype()
             state["session"] = processor.init_video_session(
                 video=state["video_frames"],
                 inference_device=self._device,
@@ -680,11 +711,11 @@ class Sam3VideoDispatcherAdapter:
         obj_id: int = 1,
         boxes: Any = None,
     ) -> None:
-        import torch  # type: ignore[import-not-found]
+        from carve_model.sam.perf import get_dtype
 
         model, processor = self._load_tracker()
         if state["session"] is None:
-            dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
+            dtype = get_dtype()
             state["session"] = processor.init_video_session(
                 video=state["video_frames"],
                 inference_device=self._device,

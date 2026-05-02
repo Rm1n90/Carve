@@ -287,22 +287,47 @@ def sam_track_add_object(
     points: list[list[int]],
     labels: list[int],
     boxes: list[list[float]],
+    text: str | None = None,
 ) -> dict:
-    """POST /sam-track/{session_id}/objects — returns {obj_id, frame_idx}."""
+    """POST /sam-track/{session_id}/objects.
+
+    Returns ``{obj_id, frame_idx}`` for point/box prompts, or
+    ``{obj_ids: [...], frame_idx}`` for text prompts (SAM 3.1 multiplex
+    auto-creates obj_ids per detection). When ``text`` is supplied the body
+    omits point/box keys so the model service routes to ``add_text_prompt``.
+    """
+    body: dict
+    if text is not None:
+        body = {"frame_idx": frame_idx, "text": text}
+    else:
+        body = {
+            "frame_idx": frame_idx,
+            "obj_id": obj_id,
+            "points": points,
+            "labels": labels,
+            "boxes": boxes,
+        }
     with _wrap_unreachable("sam_track_add_object"), _client() as c:
-        r = c.post(
-            f"/sam-track/{session_id}/objects",
-            json={
-                "frame_idx": frame_idx,
-                "obj_id": obj_id,
-                "points": points,
-                "labels": labels,
-                "boxes": boxes,
-            },
-        )
+        r = c.post(f"/sam-track/{session_id}/objects", json=body)
         if r.status_code >= 400:
             raise ModelServiceError(r.status_code, _safe_json(r))
         return r.json()
+
+
+def sam_track_remove_object(session_id: str, obj_id: int) -> None:
+    """DELETE /sam-track/{session_id}/objects/{obj_id} (Plan 11 Task 4)."""
+    with _wrap_unreachable("sam_track_remove_object"), _client() as c:
+        r = c.delete(f"/sam-track/{session_id}/objects/{obj_id}")
+        if r.status_code not in (204, 404):
+            raise ModelServiceError(r.status_code, _safe_json(r))
+
+
+def sam_track_reset_session(session_id: str) -> None:
+    """POST /sam-track/{session_id}/reset (Plan 11 Task 4)."""
+    with _wrap_unreachable("sam_track_reset_session"), _client() as c:
+        r = c.post(f"/sam-track/{session_id}/reset")
+        if r.status_code not in (204, 200):
+            raise ModelServiceError(r.status_code, _safe_json(r))
 
 
 def sam_track_step(session_id: str, frames: int) -> dict:

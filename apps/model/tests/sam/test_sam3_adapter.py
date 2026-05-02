@@ -508,14 +508,15 @@ def test_build_sam3_image_predictor_calls_from_pretrained_with_facebook_sam3(mon
 
     class _M:
         @classmethod
-        def from_pretrained(cls, repo: str):
+        def from_pretrained(cls, repo: str, **kwargs):
             captured["model_repo"] = repo
             captured["model_class"] = cls.__name__
+            captured["model_kwargs"] = kwargs
             return SimpleNamespace(to=lambda dev, dtype=None: cls())
 
     class _P:
         @classmethod
-        def from_pretrained(cls, repo: str):
+        def from_pretrained(cls, repo: str, **kwargs):
             captured["proc_repo"] = repo
             captured["proc_class"] = cls.__name__
             return cls()

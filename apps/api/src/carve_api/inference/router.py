@@ -37,6 +37,8 @@ from carve_api.inference.sam import (
 from carve_api.inference.sam_track import (
     add_object as _track_add_object,
     release as _track_release,
+    remove_object as _track_remove_object,
+    reset_session as _track_reset_session,
     start as _track_start,
     step as _track_step,
 )
@@ -697,10 +699,14 @@ class TrackAddObjectIn(BaseModel):
     # video session is already unusual, and the bound prevents a buggy or
     # malicious caller from triggering unbounded session-state growth on
     # the model side.
-    obj_id: int = Field(ge=1, le=256)
+    obj_id: int = Field(default=1, ge=1, le=256)
     points: list[list[int]] = Field(default_factory=list)
     labels: list[int] = Field(default_factory=list)
     boxes: list[list[float]] = Field(default_factory=list)
+    # Plan 11 Task 4 — multiplex text prompt (SAM 3.1). When supplied the
+    # model service routes to ``add_text_prompt`` and the response shape
+    # changes to ``{obj_ids: [...], frame_idx}``.
+    text: str | None = Field(default=None, max_length=200)
 
 
 @router.post("/{asset_id}/sam-track/start")
@@ -748,10 +754,14 @@ def sam_track_add_object_endpoint(
         require_visible_task(db, user, asset.task_id)
     except AppError as exc:
         raise _http(exc) from exc
-    if not payload.points and not payload.boxes:
-        raise HTTPException(status_code=422, detail="object_requires_points_or_boxes")
-    if payload.points and len(payload.points) != len(payload.labels):
-        raise HTTPException(status_code=422, detail="points and labels must have equal length")
+    # Plan 11 Task 4 — text prompts bypass point/box validation; multiplex
+    # auto-creates obj_ids per detection on the model service.
+    has_text = payload.text is not None and payload.text != ""
+    if not has_text:
+        if not payload.points and not payload.boxes:
+            raise HTTPException(status_code=422, detail="object_requires_points_or_boxes")
+        if payload.points and len(payload.points) != len(payload.labels):
+            raise HTTPException(status_code=422, detail="points and labels must have equal length")
     try:
         return _track_add_object(
             session_id,
@@ -760,6 +770,7 @@ def sam_track_add_object_endpoint(
             payload.points,
             payload.labels,
             payload.boxes,
+            text=payload.text if has_text else None,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -782,6 +793,53 @@ def sam_track_step_endpoint(
         raise _http(exc) from exc
     try:
         return _track_step(session_id, frames)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.delete(
+    "/{asset_id}/sam-track/{session_id}/objects/{obj_id}", status_code=204,
+)
+def sam_track_remove_object_endpoint(
+    asset_id: uuid.UUID,
+    session_id: str,
+    obj_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    """Plan 11 Task 4 — proxy DELETE to the model service. 422 when the
+    active backend is not the SAM 3.1 multiplex adapter."""
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        _track_remove_object(session_id, obj_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/{asset_id}/sam-track/{session_id}/reset", status_code=204)
+def sam_track_reset_endpoint(
+    asset_id: uuid.UUID,
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    """Plan 11 Task 4 — proxy POST to the model service to reset multiplex
+    session text prompts. 422 when the active backend is not multiplex."""
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        _track_reset_session(session_id)
     except AppError as exc:
         raise _http(exc) from exc
 

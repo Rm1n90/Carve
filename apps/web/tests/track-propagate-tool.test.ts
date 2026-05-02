@@ -369,6 +369,81 @@ describe("TrackPropagateTool", () => {
     expect(tool.getObjectIds()).toEqual([1]);
   });
 
+  it("commit writes 15 annotations for 3 objects across 5 frames with valid UUID track_ids", async () => {
+    // Plan 11 Task 6 — multi-object propagate commit verification.
+    (samTrackApi.start as any).mockResolvedValue({
+      session_id: "S-mux",
+      mask_at_start: { counts: "", size: [0, 0] },
+    });
+    (samTrackApi.addObject as any).mockImplementation(
+      async (_aid: string, _sid: string, body: any) => ({
+        obj_id: body.obj_id,
+        frame_idx: body.frame_idx,
+      }),
+    );
+    // 5 frames × 3 objects each
+    const steps = Array.from({ length: 5 }, (_, fi) => ({
+      frame_idx: fi,
+      objects: [1, 2, 3].map((oid) => ({
+        obj_id: oid,
+        counts: `0,${fi + oid}`,
+        size: [4, 4] as [number, number],
+        score: 1.0,
+        polygon: [] as [number, number][],
+      })),
+    }));
+    (samTrackApi.step as any).mockResolvedValue({ steps });
+
+    const tool = new TrackPropagateTool("a-mux", () => "c-active");
+    await tool.startEmpty();
+    await tool.addObjectAtFrame(0, [[1, 1]], [1], "c-A");
+    await tool.addObjectAtFrame(0, [[2, 2]], [1], "c-B");
+    await tool.addObjectAtFrame(0, [[3, 3]], [1], "c-C");
+    await tool.step(5);
+
+    const map: Record<number, string> = {
+      0: "f-0",
+      1: "f-1",
+      2: "f-2",
+      3: "f-3",
+      4: "f-4",
+    };
+    const count = tool.commit(map);
+    expect(count).toBe(15); // 5 frames × 3 objects
+
+    const drafts = Object.values(useAnnotations.getState().byId);
+    expect(drafts).toHaveLength(15);
+
+    // Each obj_id is identified by its classId in this test's setup.
+    const byClass: Record<string, typeof drafts> = {};
+    for (const d of drafts) {
+      const k = d.classId ?? "?";
+      (byClass[k] ||= []).push(d);
+    }
+    expect(byClass["c-A"]).toHaveLength(5);
+    expect(byClass["c-B"]).toHaveLength(5);
+    expect(byClass["c-C"]).toHaveLength(5);
+
+    // Per obj_id, all 5 frames share the same track_id.
+    const aTracks = new Set(byClass["c-A"].map((d) => d.trackId));
+    const bTracks = new Set(byClass["c-B"].map((d) => d.trackId));
+    const cTracks = new Set(byClass["c-C"].map((d) => d.trackId));
+    expect(aTracks.size).toBe(1);
+    expect(bTracks.size).toBe(1);
+    expect(cTracks.size).toBe(1);
+
+    // Distinct track_ids across obj_ids.
+    const allTracks = new Set([...aTracks, ...bTracks, ...cTracks]);
+    expect(allTracks.size).toBe(3);
+
+    // Each track_id is a valid UUID v4-ish: 8-4-4-4-12 hex.
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (const t of allTracks) {
+      expect(typeof t).toBe("string");
+      expect(t).toMatch(uuidRe);
+    }
+  });
+
   it("addObjectAtFrame succeeds when server returns the matching obj_id", async () => {
     (samTrackApi.start as any).mockResolvedValue({
       session_id: "S-ok",

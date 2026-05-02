@@ -233,6 +233,10 @@ class SamSession:
     loaded_hash: str | None = None
     loaded_shape: list[int] = field(default_factory=list)
     last_used_at: float = 0.0
+    # v3.4.1 Plan 11 Task 2 — build key captures (model_name, dtype, attn_impl)
+    # at predictor construction so the cache can detect env-driven drift and
+    # rebuild on the next get_predictor() call.
+    build_key: tuple[str, str, str] | None = None
 
 
 _SESSION: SamSession | None = None
@@ -669,6 +673,23 @@ def _default_factory() -> SamPredictor:
     )
 
 
+def _current_build_key() -> tuple[str, str, str]:
+    """Return the current ``(model_name, str(dtype), attn_impl)`` cache key.
+
+    Reads ``perf.get_dtype()`` and ``perf.get_attn_impl()`` lazily so the
+    test path (no torch installed) doesn't import torch on module load.
+    Falls back to a torch-free key when ``perf`` cannot be imported (e.g.
+    in the dev venv with no torch / numpy).
+    """
+    model_name = get_sam_model()
+    try:
+        from carve_model.sam import perf
+
+        return (model_name, str(perf.get_dtype()), perf.get_attn_impl())
+    except Exception:
+        return (model_name, "fp32", "sdpa")
+
+
 def get_predictor() -> SamPredictor:
     """Return the active predictor: test-injected if set, otherwise the lazily
     loaded production singleton.
@@ -700,6 +721,23 @@ def get_predictor() -> SamPredictor:
             )
         return _TEST_PREDICTOR
     with _PREDICTOR_LOCK:
+        # v3.4.1 Plan 11 Task 2 — drop a stale session when the active
+        # build key (model, dtype, attn_impl) drifted out from under us
+        # (operator changed SAM_DTYPE / SAM_ATTN_IMPL in-process). The
+        # next branch then rebuilds via _default_factory().
+        current_build_key = _current_build_key()
+        if (
+            _SESSION is not None
+            and _SESSION.build_key is not None
+            and _SESSION.build_key != current_build_key
+        ):
+            log.info(
+                "SAM build key changed (%s -> %s); rebuilding predictor",
+                _SESSION.build_key,
+                current_build_key,
+            )
+            _SESSION = None
+            _empty_cuda_cache()
         if _SESSION is None:
             # Lazy first build — flip the status to "loading" so the UI
             # can poll it. Releasing the lock before set_load_state would
@@ -712,6 +750,7 @@ def get_predictor() -> SamPredictor:
                 _SESSION = SamSession(
                     predictor=_default_factory(),
                     last_used_at=time.monotonic(),
+                    build_key=current_build_key,
                 )
             except Exception as exc:
                 _set_load_state(

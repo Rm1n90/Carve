@@ -28,11 +28,29 @@ export interface TrackStepResult {
 
 export interface AddObjectIn {
   frame_idx: number;
-  obj_id: number;
+  obj_id?: number;
   points?: [number, number][];
   labels?: number[];
   boxes?: [number, number, number, number][];
+  text?: string;
 }
+
+/** Response when seeding by point/box prompts — server echoes obj_id. */
+export interface AddObjectByPointOrBoxOut {
+  obj_id: number;
+  frame_idx: number;
+}
+
+/**
+ * Plan 11 Task 5 — multiplex text seeding can yield multiple obj_ids
+ * (one per detection in the concept's response).
+ */
+export interface AddObjectByTextOut {
+  obj_ids: number[];
+  frame_idx: number;
+}
+
+export type AddObjectOut = AddObjectByPointOrBoxOut | AddObjectByTextOut;
 
 export const samTrackApi = {
   /**
@@ -56,18 +74,46 @@ export const samTrackApi = {
       })
     ).data,
 
-  /** Add a tracked object to an existing session. Returns the assigned obj_id. */
+  /**
+   * Add a tracked object to an existing session.
+   *
+   * - When ``body.text`` is set, the multiplex backend auto-assigns one or
+   *   more obj_ids and returns them as ``{obj_ids, frame_idx}``.
+   * - Otherwise the server echoes the requested ``{obj_id, frame_idx}``.
+   */
   addObject: async (
     assetId: string,
     sessionId: string,
     body: AddObjectIn,
-  ): Promise<{ obj_id: number; frame_idx: number }> =>
+  ): Promise<AddObjectOut> =>
     (
-      await api.post<{ obj_id: number; frame_idx: number }>(
+      await api.post<AddObjectOut>(
         `/assets/${assetId}/sam-track/${sessionId}/objects`,
         body,
       )
     ).data,
+
+  /**
+   * Plan 11 Task 4 — remove a single object from an active multiplex
+   * session. 404 → unknown obj_id, 422 → adapter is not multiplex.
+   */
+  removeObject: async (
+    assetId: string,
+    sessionId: string,
+    objId: number,
+  ): Promise<void> => {
+    await api.delete(
+      `/assets/${assetId}/sam-track/${sessionId}/objects/${objId}`,
+    );
+  },
+
+  /**
+   * Plan 11 Task 4 — clear all objects from a multiplex session without
+   * tearing down the session itself. 422 when the adapter is not multiplex.
+   */
+  resetSession: async (assetId: string, sessionId: string): Promise<void> => {
+    await api.post(`/assets/${assetId}/sam-track/${sessionId}/reset`);
+  },
 
   step: async (
     assetId: string,

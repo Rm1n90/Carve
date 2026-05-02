@@ -11,6 +11,7 @@ export default defineConfig({
       { text: "Tools", link: "/tools" },
       { text: "Exports", link: "/exports" },
       { text: "Admin", link: "/admin" },
+      { text: "SAM 3.1", link: "/sam3p1" },
     ],
     sidebar: [
       {
@@ -21,6 +22,7 @@ export default defineConfig({
           { text: "Annotation tools", link: "/tools" },
           { text: "Imports & exports", link: "/exports" },
           { text: "Admin & operations", link: "/admin" },
+          { text: "SAM 3.1 Inference", link: "/sam3p1" },
         ],
       },
     ],
