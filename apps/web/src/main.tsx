@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRouter } from "@tanstack/react-router";

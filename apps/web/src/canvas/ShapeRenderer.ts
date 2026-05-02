@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import type { Graphics } from "pixi.js";
 import type { Bbox, Polygon as Poly } from "@/state/annotations";
 

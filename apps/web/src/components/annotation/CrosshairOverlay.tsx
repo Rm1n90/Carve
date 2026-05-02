@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useState, type RefObject } from "react";
 import { cn } from "@/lib/cn";
 

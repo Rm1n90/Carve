@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, ArrowRight } from "lucide-react";

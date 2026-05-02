@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field

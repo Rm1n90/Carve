@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Spatial heatmap aggregation: bucket bbox centers into a binned grid.
 
 The grid is row-major: ``grid[by * bins + bx]`` where ``(bx, by)`` is the

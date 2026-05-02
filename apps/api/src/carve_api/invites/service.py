@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Invitation service (Plan-13 Phase 7 Task 4).
 
 Encapsulates all DB-touching logic for project invitations:

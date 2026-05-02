@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Export RQ job — builds a ZIP archive and uploads to MinIO."""
 
 import io

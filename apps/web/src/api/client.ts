@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import axios, { AxiosError, AxiosHeaders, type AxiosInstance } from "axios";
 import { useAuth } from "@/auth/store";
 

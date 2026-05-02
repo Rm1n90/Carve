@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { api } from "./client";
 
 export interface ClassFrequencyRow {

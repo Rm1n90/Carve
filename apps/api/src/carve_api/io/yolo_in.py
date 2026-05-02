@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """YOLO importer.
 
 Parses a YOLO archive (data.yaml + labels/) into a list of AnnotationDraft

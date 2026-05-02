@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Search service (Plan-13 Phase 7 Task 8).
 
 Workspace-wide asset search bounded by project membership. Substring

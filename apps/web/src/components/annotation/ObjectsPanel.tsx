@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { Filter, Square, Pentagon, Brush, Tag, X, ChevronDown } from "lucide-react";
 import { useAnnotations } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";

@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 class AppError(Exception):
     """Base for application-level errors with an HTTP-friendly code."""
 

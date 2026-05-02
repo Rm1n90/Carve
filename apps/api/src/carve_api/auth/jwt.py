@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 

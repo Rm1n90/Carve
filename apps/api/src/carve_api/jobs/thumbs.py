@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Background jobs for image thumbnails and video metadata probing.
 
 Image thumbnails fetch the original from MinIO, downscale to a square

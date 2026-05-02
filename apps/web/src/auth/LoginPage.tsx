@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";

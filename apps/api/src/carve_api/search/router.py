@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """HTTP routes for workspace search (Plan-13 Phase 7 Task 8).
 
 Single endpoint:

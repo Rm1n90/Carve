@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Pydantic schemas for the workspace search API (Plan-13 Phase 7 Task 8)."""
 
 from __future__ import annotations

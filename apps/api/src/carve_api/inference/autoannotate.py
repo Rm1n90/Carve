@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Single-image auto-annotate orchestration."""
 
 import base64

@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * Pure math for bbox move/resize. Lives separately from AnnotationCanvas
  * so the geometry can be unit-tested without instantiating Pixi.

@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Canonical audit action strings (Plan-13 Phase 7 Task 3).
 
 Centralising these constants keeps producers (review / retrain / export

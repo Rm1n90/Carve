@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";

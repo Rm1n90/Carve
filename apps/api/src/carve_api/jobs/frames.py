@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Per-frame image extraction for video assets.
 
 Phase 4-video step A. Decodes video frames to JPEG via ffmpeg and writes

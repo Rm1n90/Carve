@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Per-task and per-project analytics endpoints."""
 import uuid
 from datetime import datetime

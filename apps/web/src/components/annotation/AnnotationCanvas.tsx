@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import { CanvasApp } from "@/canvas/App";

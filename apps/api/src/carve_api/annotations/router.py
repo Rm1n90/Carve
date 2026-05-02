@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status

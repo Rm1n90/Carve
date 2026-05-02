@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * Encode a uint8 column-major mask as a comma-separated RLE string of
  * alternating run lengths (zeros first). Decoder is the inverse.

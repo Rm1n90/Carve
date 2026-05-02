@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useState, type FormEvent } from "react";
 import { AlertCircle } from "lucide-react";
 import { AuthShell } from "@/components/layout/AuthShell";

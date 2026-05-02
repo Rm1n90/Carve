@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Plan-13 Phase 7 Task 3 -- audit log package.
 
 Exposes:

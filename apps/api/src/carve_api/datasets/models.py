@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """ORM mapping for the ``dataset_versions`` table (Plan-13 Phase 7 Task 6).
 
 The Postgres column is named ``summary`` but the ORM attribute is

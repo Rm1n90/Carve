@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { type ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { Logo } from "@/components/brand/Logo";

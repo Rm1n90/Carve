@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Differ for two ``DatasetVersion`` YOLO bundles (Plan-13 Phase 7 Task 6).
 
 Given two dataset versions whose ``blob_key`` points at a YOLO bundle in

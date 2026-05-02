@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Pydantic schemas for the Phase 5 review workflow (plan-09 task-02).
 
 Reviewers accept or reject proposed annotations. The endpoints accept an

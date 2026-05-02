@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import type { ReactNode } from "react";
 import { Image as ImageIcon } from "lucide-react";
 import { cn } from "@/lib/cn";

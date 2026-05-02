@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import * as React from "react";
 
 export type LogoVariant = "mark" | "full" | "stacked";

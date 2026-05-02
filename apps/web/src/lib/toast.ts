@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * Tiny module-level toast bus. Tools and other non-React contexts call
  * `showToast(...)`; the global `<Toaster />` (Radix Toast viewport) subscribes

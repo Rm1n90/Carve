@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * In-browser SAM 2 decoder shell.
  *

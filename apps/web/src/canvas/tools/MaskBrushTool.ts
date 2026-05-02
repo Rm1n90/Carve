@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useAnnotations } from "@/state/annotations";
 import type { Point } from "./BboxTool";
 import { MaskRasterizer } from "@/canvas/MaskRasterizer";

@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """ORM mapping for the ``audit_events`` table (Plan-13 Phase 7 Task 3).
 
 The Postgres column is named ``metadata`` (per spec) but the ORM

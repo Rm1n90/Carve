@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { Application, Container } from "pixi.js";
 
 export interface CanvasOptions {

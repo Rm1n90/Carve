@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Star } from "lucide-react";
 

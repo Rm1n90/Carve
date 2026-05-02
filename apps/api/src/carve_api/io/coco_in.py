@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """COCO importer.
 
 Parses a coco.json (or a ZIP containing one) into a list of AnnotationDraft

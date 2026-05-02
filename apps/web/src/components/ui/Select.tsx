@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * v3.0 — Select primitive (glass).
  *

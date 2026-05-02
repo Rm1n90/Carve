@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * Pure zoom-math helpers used by the AnnotationCanvas.
  *

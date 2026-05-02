@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 import { forwardRef, type ReactNode } from "react";

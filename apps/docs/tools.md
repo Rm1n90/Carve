@@ -1,6 +1,5 @@
 # Annotation tools
 
-> © Armin Mehri — [mehri.armin@gmail.com](mailto:mehri.armin@gmail.com) · [github.com/Rm1n90/Carve](https://github.com/Rm1n90/Carve)
 
 All tools operate on the annotation canvas (Chrome, WebGL2 required). Select a tool from the toolbar on the left side of the canvas.
 

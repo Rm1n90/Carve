@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useState, type ReactNode } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { Info, RotateCcw } from "lucide-react";

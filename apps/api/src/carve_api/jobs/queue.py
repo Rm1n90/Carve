@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """RQ queue + enqueue helpers (plan-09 task-09).
 
 ``enqueue_with_defaults`` wraps ``Queue.enqueue`` so every enqueue site

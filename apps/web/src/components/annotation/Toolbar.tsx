@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useEffect, type ReactNode } from "react";
 import { MousePointer2, Square, Pentagon, Brush, Tag, Wand2 } from "lucide-react";
 import { useTool, type ToolName } from "@/state/tool";

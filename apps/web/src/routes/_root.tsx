@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { Outlet, createRootRoute, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { AppShell, AppShellBleed } from "@/components/AppShell";

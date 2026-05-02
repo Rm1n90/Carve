@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 from functools import lru_cache
 
 from pydantic import Field, field_validator

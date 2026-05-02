@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";

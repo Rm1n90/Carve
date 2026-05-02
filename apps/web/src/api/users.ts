@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * Plan-09b Task 4 — Users / workspace-members API + reviewer-name resolver.
  *

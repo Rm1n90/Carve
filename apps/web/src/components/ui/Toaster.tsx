@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import * as ToastPrimitive from "@radix-ui/react-toast";
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";

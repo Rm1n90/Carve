@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """App-side SAM proxy.
 
 The api fetches the asset's bytes from MinIO and forwards a base64-encoded

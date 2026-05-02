@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Pydantic schemas for the project invitation flow (Plan-13 Phase 7 Task 4)."""
 
 from __future__ import annotations

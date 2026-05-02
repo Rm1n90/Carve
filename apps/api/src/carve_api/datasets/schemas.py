@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Pydantic schemas for the dataset versioning HTTP API (Task 6)."""
 
 from __future__ import annotations

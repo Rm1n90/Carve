@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { type ReactNode } from "react";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { useRouterState } from "@tanstack/react-router";

@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """SQLAlchemy model for the singleton workspace row.
 
 The table is created by Alembic migration ``0012_workspace`` which also

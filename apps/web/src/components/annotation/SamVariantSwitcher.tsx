@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * v3.5 Phase B — shared SAM variant switcher.
  *

@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """HTTP endpoints for the Phase 5 review workflow (plan-09 task-02).
 
 Mounted under the existing ``/annotations`` prefix so the routes live

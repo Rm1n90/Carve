@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useState } from "react";
 import { useDropzone, type Accept } from "react-dropzone";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

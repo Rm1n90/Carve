@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Pydantic schemas for the singleton workspace endpoints (v3.1 Bug 6).
 
 ``WorkspaceOut`` mirrors the column set in ``models.Workspace`` plus a

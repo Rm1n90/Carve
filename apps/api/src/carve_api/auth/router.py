@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status

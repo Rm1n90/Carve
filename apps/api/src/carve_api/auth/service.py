@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 import hmac
 from hashlib import sha256
 

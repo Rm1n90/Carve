@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Multi-class SAM 3 text-prompt auto-annotate.
 
 Phase 3.5 -- runs SAM 3 ``/sam/text-prompt`` once per selected class

@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """YOLO writer — converts annotations to YOLO label files + data.yaml.
 
 Pure functions over Annotation rows (or any duck-typed object exposing

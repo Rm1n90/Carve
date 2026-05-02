@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";

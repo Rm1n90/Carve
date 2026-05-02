@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """HTTP surface for the singleton workspace (v3.1 Bug 6).
 
 * ``GET /workspace`` — any authenticated user can read workspace metadata

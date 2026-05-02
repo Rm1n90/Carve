@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """COCO writer — builds a coco.json dict from Annotation rows + image metadata.
 
 Pure function. Caller groups annotations by image and supplies an ``images``

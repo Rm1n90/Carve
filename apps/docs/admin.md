@@ -1,6 +1,5 @@
 # Admin & operations
 
-> © Armin Mehri — [mehri.armin@gmail.com](mailto:mehri.armin@gmail.com) · [github.com/Rm1n90/Carve](https://github.com/Rm1n90/Carve)
 
 ## User management
 

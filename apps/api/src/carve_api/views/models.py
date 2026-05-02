@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """ORM mapping for ``saved_views`` (Plan-13 Phase 7 Task 8).
 
 A saved view is an opaque filter snapshot scoped to a single task.

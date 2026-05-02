@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Active-learning retrain RQ job (plan-09 task-05).
 
 Pipeline:

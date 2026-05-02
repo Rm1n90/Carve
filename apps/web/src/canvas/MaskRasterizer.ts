@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { decodeRLE as decodeRLEv1, encodeRLE as encodeRLEv1 } from "@/canvas/maskio";
 
 /**

@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Batch auto-annotate: RQ job + Redis progress hash."""
 
 import json

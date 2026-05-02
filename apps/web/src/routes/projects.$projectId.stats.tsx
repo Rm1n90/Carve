@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { lazy, Suspense } from "react";
 import { createRoute, Link, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";

@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {

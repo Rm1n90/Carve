@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { Search, X, LayoutGrid, List } from "lucide-react";
 import { cn } from "@/lib/cn";
 

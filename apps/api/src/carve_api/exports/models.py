@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 import uuid
 from datetime import datetime
 

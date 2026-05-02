@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """OIDC SSO entry point (Plan-13 Phase 7 Task 5).
 
 Wires the minimal moving parts needed to drive an Authorization-Code +

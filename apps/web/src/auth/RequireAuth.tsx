@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import type { ReactNode } from "react";
 import { Navigate } from "@tanstack/react-router";
 import { useAuth } from "./store";

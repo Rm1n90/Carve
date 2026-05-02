@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * v3.5 Phase C — SAM model load progress overlay.
  *

@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Service layer for the Phase 5 review workflow (plan-09 task-02).
 
 Single-call ``review_one`` flips a single annotation's status; ``batch_review``

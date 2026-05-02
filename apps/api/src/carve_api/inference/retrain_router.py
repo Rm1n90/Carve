@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Active-learning retrain REST endpoints (plan-09 task-05).
 
   * ``POST   /tasks/{tid}/retrain-yolo``           — enqueue a retrain RQ job.

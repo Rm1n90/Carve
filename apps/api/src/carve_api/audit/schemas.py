@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Pydantic response schemas for the audit log endpoint."""
 
 from __future__ import annotations

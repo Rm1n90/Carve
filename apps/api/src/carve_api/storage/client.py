@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 from typing import BinaryIO
 
 import boto3

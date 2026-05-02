@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { create } from "zustand";
 
 export type AnnotationKind = "bbox" | "polygon" | "mask" | "tag";

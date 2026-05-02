@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Audit log read endpoint (Plan-13 Phase 7 Task 3).
 
 Single endpoint:

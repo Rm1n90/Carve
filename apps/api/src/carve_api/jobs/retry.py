@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Retry helper for transient model-service failures (plan-09 task-09).
 
 Wrap a single model-service call (e.g. ``yolo_load``, ``yolo_predict``,

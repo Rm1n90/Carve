@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Film, Loader2 } from "lucide-react";

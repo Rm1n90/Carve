@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * Pure math + utilities for polygon vertex editing.
  *

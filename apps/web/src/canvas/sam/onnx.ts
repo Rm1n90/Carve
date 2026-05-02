@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * WebGPU + ONNX Runtime Web detection helpers for the in-browser SAM
  * decoder. The actual ONNX model file (`sam2_decoder.onnx`) is provisioned

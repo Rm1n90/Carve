@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Service helpers for ``DatasetVersion`` (Plan-13 Phase 7 Task 6).
 
 Stateless static methods so callers (retrain job, export job, router,

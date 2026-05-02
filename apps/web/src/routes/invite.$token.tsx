@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { createRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { rootRoute } from "./_root";
 import { InviteAcceptPage } from "@/pages/InviteAcceptPage";

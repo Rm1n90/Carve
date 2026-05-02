@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Service layer for the singleton workspace (v3.1 Bug 6).
 
 The migration in ``alembic/versions/0012_workspace.py`` seeds exactly one

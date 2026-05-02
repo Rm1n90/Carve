@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Synchronous HTTP client for the model service.
 
 We use sync httpx (not async) because FastAPI route handlers run in a thread

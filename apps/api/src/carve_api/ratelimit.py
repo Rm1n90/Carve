@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Rate limiter shared across routers (slowapi)."""
 from slowapi import Limiter
 from slowapi.util import get_remote_address

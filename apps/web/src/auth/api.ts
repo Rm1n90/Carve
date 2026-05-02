@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { api } from "@/api/client";
 import { useAuth, type User } from "./store";
 

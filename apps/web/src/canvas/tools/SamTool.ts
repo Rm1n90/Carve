@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useAnnotations } from "@/state/annotations";
 import { samApi, type SamDecodeResult, type SamPromptResult } from "@/api/sam";
 import { canDecodeLocally } from "@/canvas/sam/onnx";

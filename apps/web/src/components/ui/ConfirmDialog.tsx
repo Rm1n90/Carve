@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * v2.8 — ConfirmDialog primitive.
  *

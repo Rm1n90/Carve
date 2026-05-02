@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChevronsUp,

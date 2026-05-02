@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Workspace singleton module (v3.1 audit Bug 6).
 
 Exposes a single workspace row backing the Settings → Workspace UI. See

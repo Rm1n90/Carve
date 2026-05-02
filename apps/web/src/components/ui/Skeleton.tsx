@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * Tasteful loading skeleton used as a Suspense fallback for lazily
  * loaded route components. Keeps the visual language consistent with the

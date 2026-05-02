@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """Best-effort audit recorder (Plan-13 Phase 7 Task 3).
 
 ``record(...)`` is wired into review / retrain / export / task code

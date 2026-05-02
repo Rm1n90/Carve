@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * v3.3 Issue 2 — tiny relative-time formatter.
  *

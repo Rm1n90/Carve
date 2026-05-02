@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 /**
  * Deterministic class swatch palette — 12 perceptually-spaced OKLCH hues.
  * Used as a fallback when a class has no explicit color, and to keep the

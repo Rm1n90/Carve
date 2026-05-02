@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """ORM mapping for ``project_invites`` (Plan-13 Phase 7 Task 4).
 
 Maps the table created in migration 0025. The raw invitation token is

@@ -1,3 +1,4 @@
+// Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, MousePointerClick, Play, Square, Trash2, X } from "lucide-react";
 

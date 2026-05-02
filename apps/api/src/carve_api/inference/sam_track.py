@@ -1,3 +1,4 @@
+# Armin Mehri — mehri.armin@gmail.com
 """App-side SAM video-tracker proxy."""
 
 from carve_api.assets.models import Asset
