@@ -15,6 +15,7 @@ import { useAuth } from "@/auth/store";
 import { logout } from "@/auth/api";
 import { useTheme, type ThemePreference } from "@/components/theme/ThemeProvider";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { GlobalSearchBar } from "@/components/search/GlobalSearchBar";
 import { CarveMark } from "./CarveMark";
 import { cn } from "@/lib/cn";
 
@@ -116,6 +117,8 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
       )}
 
       <div className="flex-1" />
+
+      <GlobalSearchBar />
 
       <span className="relative z-10 inline-flex items-center gap-2">
         {rightAction}
