@@ -33,6 +33,8 @@ import {
   X,
   Eraser,
   MoreHorizontal,
+  Keyboard,
+  Info,
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
@@ -1527,16 +1529,17 @@ function MaskBrushSizeControl() {
   const active = useTool((s) => s.active);
   const radius = useTool((s) => s.maskBrushRadius);
   const setRadius = useTool((s) => s.setMaskBrushRadius);
-  const presets = [5, 10, 25, 50, 100];
   if (active !== "mask") return null;
+  // Plan-15 Phase 9 follow-up — shrunk to fit the main toolbar row in
+  // brush mode (preset chips moved into the popover below; the slider
+  // alone is enough for in-row tweaks).
   return (
     <div
       className="inline-flex items-center gap-1.5 h-8 px-2 rounded-[var(--radius-sm)] bg-[var(--bg-subtle)]"
       data-testid="mask-brush-size-control"
+      title={`Brush size — ${radius}px`}
     >
-      <span className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
-        Brush
-      </span>
+      <Brush aria-hidden className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
       <input
         type="range"
         min={1}
@@ -1546,31 +1549,13 @@ function MaskBrushSizeControl() {
         onChange={(e) => setRadius(Number(e.target.value))}
         aria-label="Brush radius"
         data-testid="mask-brush-size-slider"
-        className="w-24 accent-[var(--accent)]"
+        className="w-16 accent-[var(--accent)]"
       />
       <span
-        className="font-mono tabular-nums text-[11.5px] text-[color:var(--text-primary)] w-8 text-right"
+        className="font-mono tabular-nums text-[11px] text-[color:var(--text-primary)] w-7 text-right"
         data-testid="mask-brush-size-value"
       >
-        {radius}px
-      </span>
-      <span className="hidden sm:inline-flex items-center gap-1 ml-1">
-        {presets.map((p) => (
-          <button
-            key={p}
-            type="button"
-            onClick={() => setRadius(p)}
-            data-testid={`mask-brush-preset-${p}`}
-            className={cn(
-              "h-6 px-1.5 rounded-[var(--radius-xs)] text-[10.5px] font-mono",
-              radius === p
-                ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
-                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
-            )}
-          >
-            {p}
-          </button>
-        ))}
+        {radius}
       </span>
     </div>
   );
@@ -1591,9 +1576,10 @@ function MaskBrushHardnessControl() {
     <div
       className="inline-flex items-center gap-1.5 h-8 px-2 rounded-[var(--radius-sm)] bg-[var(--bg-subtle)]"
       data-testid="mask-brush-hardness-control"
+      title={`Brush hardness — ${Math.round(hardness * 100)}%`}
     >
-      <span className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
-        Hardness
+      <span className="text-[10px] tracking-tight text-[color:var(--text-tertiary)]">
+        Hard
       </span>
       <input
         type="range"
@@ -1604,10 +1590,10 @@ function MaskBrushHardnessControl() {
         onChange={(e) => setHardness(Number(e.target.value))}
         aria-label="Brush hardness"
         data-testid="mask-brush-hardness-slider"
-        className="w-24 accent-[var(--accent)]"
+        className="w-16 accent-[var(--accent)]"
       />
       <span
-        className="font-mono tabular-nums text-[11.5px] text-[color:var(--text-primary)] w-10 text-right"
+        className="font-mono tabular-nums text-[11px] text-[color:var(--text-primary)] w-8 text-right"
         data-testid="mask-brush-hardness-value"
       >
         {Math.round(hardness * 100)}%
@@ -2323,13 +2309,13 @@ export function EditorToolbar({
             <button
               type="button"
               onClick={() =>
-                window.dispatchEvent(new CustomEvent("carve:open-cheatsheet"))
+                window.dispatchEvent(new CustomEvent("carve:open-cheat-sheet"))
               }
               aria-label="Keyboard shortcuts"
               data-testid="editor-cheatsheet-trigger"
               className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
             >
-              <span className="font-mono text-[12px] leading-none">⌨</span>
+              <Keyboard className="h-[16px] w-[16px]" />
             </button>
           </Tooltip>
           <Tooltip content="Task info">
@@ -2342,7 +2328,7 @@ export function EditorToolbar({
               data-testid="editor-info-trigger"
               className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
             >
-              <span className="font-mono text-[12px] leading-none italic">i</span>
+              <Info className="h-[16px] w-[16px]" />
             </button>
           </Tooltip>
           <Tooltip content="Editor settings">

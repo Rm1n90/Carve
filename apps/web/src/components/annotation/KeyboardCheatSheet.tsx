@@ -124,33 +124,50 @@ export const SHORTCUTS: ShortcutGroup[] = [
 // is preserved by mapping in the renderer. The exported canonical
 // shape uses ``items`` / ``desc`` (Plan 09 Task 10 spec).
 
-export function KeyboardCheatSheet() {
+export function KeyboardCheatSheet({
+  hideTrigger = false,
+}: {
+  /**
+   * Plan-15 Phase 9 follow-up — when ``true`` the component renders the
+   * dialog mount + event listener but no visible button. Used by callers
+   * that surface the trigger elsewhere (e.g. the editor toolbar).
+   */
+  hideTrigger?: boolean;
+} = {}) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
     function onOpen() {
       setOpen((v) => !v);
     }
+    // Accept both spellings so legacy dispatchers (without the hyphen)
+    // still work alongside the canonical ``carve:open-cheat-sheet``.
     window.addEventListener("carve:open-cheat-sheet", onOpen as EventListener);
-    return () => window.removeEventListener("carve:open-cheat-sheet", onOpen as EventListener);
+    window.addEventListener("carve:open-cheatsheet", onOpen as EventListener);
+    return () => {
+      window.removeEventListener("carve:open-cheat-sheet", onOpen as EventListener);
+      window.removeEventListener("carve:open-cheatsheet", onOpen as EventListener);
+    };
   }, []);
 
   return (
     <>
-      <button
-        type="button"
-        aria-label="Show keyboard shortcuts"
-        data-testid="cheatsheet-trigger"
-        title="Shortcuts (?)"
-        onClick={() => setOpen(true)}
-        className={cn(
-          "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
-          "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
-        )}
-      >
-        <Keyboard className="h-[18px] w-[18px]" />
-      </button>
+      {!hideTrigger && (
+        <button
+          type="button"
+          aria-label="Show keyboard shortcuts"
+          data-testid="cheatsheet-trigger"
+          title="Shortcuts (?)"
+          onClick={() => setOpen(true)}
+          className={cn(
+            "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
+            "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
+          )}
+        >
+          <Keyboard className="h-[18px] w-[18px]" />
+        </button>
+      )}
       {open && (
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogContent className="w-[min(92vw,720px)]">

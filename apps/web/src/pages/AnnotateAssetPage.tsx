@@ -150,6 +150,17 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // v2.6 — Info dialog (CVAT-style task overview + per-class stats).
   // Aggregates from the in-memory annotations store; no extra API calls.
   const [infoOpen, setInfoOpen] = useState(false);
+  // Plan-15 Phase 9 follow-up — toolbar dispatches this event so the
+  // Info trigger can live next to the gear without prop-drilling.
+  useEffect(() => {
+    const onOpen = () => setInfoOpen((v) => !v);
+    window.addEventListener("carve:open-info-dialog", onOpen as EventListener);
+    return () =>
+      window.removeEventListener(
+        "carve:open-info-dialog",
+        onOpen as EventListener,
+      );
+  }, []);
   // v2.9 P0-4: replaces the previous `window.prompt("Rename class", …)`
   // with an in-app Radix Dialog. Local state is plenty — only one site
   // uses this flow.
@@ -1098,23 +1109,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   </div>
                 </div>
               )}
-              <div className="absolute top-2 right-2 z-20 flex items-center gap-1">
-                <button
-                  type="button"
-                  aria-label="Show task info"
-                  data-testid="info-dialog-trigger"
-                  title="Task info"
-                  onClick={() => setInfoOpen(true)}
-                  className={cn(
-                    "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
-                    "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-                    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
-                  )}
-                >
-                  <Info className="h-[18px] w-[18px]" />
-                </button>
-                <KeyboardCheatSheet />
-              </div>
+              {/* Plan-15 Phase 9 follow-up — Info / Cheatsheet triggers
+                  moved to the editor toolbar next to the gear. Mount
+                  the cheat-sheet dialog here without its own button so
+                  ``carve:open-cheat-sheet`` events still toggle it. */}
+              <KeyboardCheatSheet hideTrigger />
             </main>
 
             <div
