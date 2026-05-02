@@ -96,6 +96,12 @@ def create_app() -> FastAPI:
     from carve_api.datasets.router import router as datasets_router
     app.include_router(datasets_router)
 
+    # Plan-13 Phase 7 Task 8 — workspace search + saved views.
+    from carve_api.search.router import router as search_router
+    app.include_router(search_router)
+    from carve_api.views.router import router as views_router
+    app.include_router(views_router)
+
     from fastapi import APIRouter, Depends
 
     from carve_api.auth.models import UserRole
