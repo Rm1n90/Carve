@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Database,
   Image as ImageIcon,
   MoreVertical,
   RefreshCw,
@@ -33,6 +34,7 @@ import {
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { ClassesEditor } from "./ClassesEditor";
 import { NewTaskDialog } from "./NewTaskDialog";
+import { DatasetsPage } from "./DatasetsPage";
 // StatsPanel is dynamically imported so the recharts chunk lands in
 // its own bundle and is fetched only when the stats UI is rendered.
 const StatsPanel = lazy(() =>
@@ -917,6 +919,13 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
             <BarChart3 className="h-3.5 w-3.5" /> Stats
           </Tabs.Trigger>
           <Tabs.Trigger
+            value="datasets"
+            className={tabTriggerClass}
+            data-testid="project-tab-datasets"
+          >
+            <Database className="h-3.5 w-3.5" /> Datasets
+          </Tabs.Trigger>
+          <Tabs.Trigger
             value="settings"
             className={tabTriggerClass}
             data-testid="project-tab-settings"
@@ -1056,6 +1065,15 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
           <Suspense fallback={null}>
             <StatsPanel projectId={projectId} />
           </Suspense>
+        </Tabs.Content>
+
+        {/* ---- Datasets tab (Plan-13 Phase 7 Task 7) ---- */}
+        <Tabs.Content
+          value="datasets"
+          className="focus-visible:outline-none"
+          data-testid="project-tab-content-datasets"
+        >
+          <DatasetsPage projectId={projectId} />
         </Tabs.Content>
 
         {/* ---- Settings tab ---- */}
