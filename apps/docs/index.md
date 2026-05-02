@@ -25,4 +25,8 @@ features:
     details: Create projects, define a class palette (index + name + color), and collaborate with your team. Per-task analytics track annotation progress.
   - title: First-run admin wizard
     details: On first visit a setup wizard creates the bootstrap admin account. After that, public registration is locked to admin-only invite.
+  - title: SAM 3.1 Inference
+    details: Joint multi-object video tracking via Object Multiplex, plus the perf knobs (dtype, attn, compile, video backend) you can flip in docker-compose. See the SAM 3.1 Inference guide.
+    link: /sam3p1
+    linkText: Read the guide
 ---
