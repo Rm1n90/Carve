@@ -53,6 +53,7 @@ def engine():
     import carve_api.workspace.models  # noqa: F401
     import carve_api.audit.models  # noqa: F401
     import carve_api.invites.models  # noqa: F401
+    import carve_api.datasets.models  # noqa: F401
 
     # SAFETY GUARD (added 2026-04-30): the next lines call
     # `Base.metadata.drop_all(eng)` which permanently destroys every

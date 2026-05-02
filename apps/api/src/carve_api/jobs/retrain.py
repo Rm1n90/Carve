@@ -487,6 +487,62 @@ def retrain_job(
             class_names=class_names,
             payload=payload,
         )
+        # Plan-13 Phase 7 Task 6 — register a DatasetVersion for the
+        # bundle that just trained, and link it from Weight.metadata_.
+        try:
+            from carve_api.annotations.models import Annotation
+            from carve_api.assets.models import Asset
+            from carve_api.datasets.service import DatasetService
+            from carve_api.weights.models import Weight
+
+            ann_rows_for_summary = list(
+                session.execute(
+                    select(Annotation).where(Annotation.task_id == task.id)
+                ).scalars()
+            )
+            asset_count = len(
+                list(
+                    session.execute(
+                        select(Asset.id).where(Asset.task_id == task.id)
+                    ).scalars()
+                )
+            )
+            accepted_count = sum(
+                1 for a in ann_rows_for_summary if a.status == "accepted"
+            )
+            rejected_count = sum(
+                1 for a in ann_rows_for_summary if a.status == "rejected"
+            )
+            ds_now = datetime.now(timezone.utc)
+            ds_version = DatasetService.register(
+                session,
+                project_id=task.project_id,
+                task_id=task.id,
+                kind="retrain",
+                source=job_id,
+                created_by=actor_uuid,
+                label=f"Retrain {ds_now.isoformat(timespec='seconds')}",
+                summary={
+                    "annotations": len(ann_rows_for_summary),
+                    "accepted": accepted_count,
+                    "rejected": rejected_count,
+                    "classes": list(class_names),
+                    "asset_count": asset_count,
+                },
+                blob_key=dataset_key,
+            )
+            new_weight = session.get(Weight, new_weight_id)
+            if new_weight is not None:
+                meta = dict(new_weight.metadata_ or {})
+                retrain_meta = dict(meta.get("retrain") or {})
+                retrain_meta["dataset_version_id"] = str(ds_version.id)
+                meta["retrain"] = retrain_meta
+                new_weight.metadata_ = meta
+                session.flush()
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "retrain.dataset_version.register failed job_id=%s", job_id
+            )
         # Plan-13 Phase 7 Task 3 — best-effort audit on completion.
         # Recorded BEFORE commit so the audit row joins the same tx as
         # the new Weight; if either fails the rollback below covers both.

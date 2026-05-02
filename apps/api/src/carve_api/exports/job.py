@@ -401,6 +401,52 @@ def run_export_inline(
             minio_key, io.BytesIO(archive_bytes), len(archive_bytes), "application/zip"
         )
         svc.mark_completed(export_id=export.id, minio_key=minio_key)
+        # Plan-13 Phase 7 Task 6 — register a DatasetVersion for the
+        # exported bundle so it can be diffed / rolled back later.
+        try:
+            from datetime import datetime, timezone
+
+            from carve_api.datasets.service import DatasetService
+
+            accepted_count = sum(
+                1 for a in ann_rows if a.status == "accepted"
+            )
+            rejected_count = sum(
+                1 for a in ann_rows if a.status == "rejected"
+            )
+            class_name_list = list(
+                session.execute(
+                    select(Class.name)
+                    .where(Class.project_id == task.project_id)
+                    .order_by(Class.idx)
+                ).scalars()
+            )
+            DatasetService.register(
+                session,
+                project_id=task.project_id,
+                task_id=task.id,
+                kind="export",
+                source=str(export.id),
+                created_by=export.created_by,
+                label=(
+                    f"Export {payload.fmt} "
+                    f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}"
+                ),
+                summary={
+                    "annotations": len(ann_rows),
+                    "accepted": accepted_count,
+                    "rejected": rejected_count,
+                    "classes": class_name_list,
+                    "asset_count": len(assets),
+                    "format": payload.fmt,
+                },
+                blob_key=minio_key,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "export.dataset_version.register failed export_id=%s",
+                payload.export_id,
+            )
         # Plan-13 Phase 7 Task 3 — best-effort audit on export completion.
         try:
             from carve_api.audit import service as _audit

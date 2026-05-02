@@ -92,6 +92,10 @@ def create_app() -> FastAPI:
     from carve_api.invites.router import router as invites_router
     app.include_router(invites_router)
 
+    # Plan-13 Phase 7 Task 6 — dataset versioning + diff/rollback.
+    from carve_api.datasets.router import router as datasets_router
+    app.include_router(datasets_router)
+
     from fastapi import APIRouter, Depends
 
     from carve_api.auth.models import UserRole
