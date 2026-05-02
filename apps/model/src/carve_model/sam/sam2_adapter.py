@@ -115,6 +115,14 @@ class Sam2ImagePredictorAdapter:
             pix = inputs["pixel_values"] if isinstance(inputs, dict) else getattr(
                 inputs, "pixel_values", None,
             )
+            # Cast pixel_values to the model's parameter dtype so a bf16
+            # cast on the model (Sam2Model.from_pretrained(...).to(dev,
+            # dtype=bf16)) doesn't trip a ``mat1 and mat2 must have the
+            # same dtype`` error during the encoder forward pass.
+            if pix is not None:
+                model_dtype = next(self._model.parameters()).dtype
+                if pix.dtype != model_dtype:
+                    pix = pix.to(dtype=model_dtype)
             with torch.no_grad():
                 feats = self._model.get_image_embeddings(pixel_values=pix)
             self._features = {"image_embed": feats}
@@ -161,6 +169,21 @@ class Sam2ImagePredictorAdapter:
             x1, y1, x2, y2 = (float(v) for v in box)
             proc_kwargs["input_boxes"] = [[[x1, y1, x2, y2]]]
         inputs = self._processor(**proc_kwargs).to(self._device)
+        # Cast pixel_values to the model dtype (mirrors set_image()) so a
+        # bf16-cast model accepts the float32 processor output without a
+        # mat1/mat2 dtype mismatch on the encoder forward.
+        try:
+            model_dtype = next(self._model.parameters()).dtype
+            pv = inputs.get("pixel_values") if isinstance(inputs, dict) else getattr(
+                inputs, "pixel_values", None,
+            )
+            if pv is not None and pv.dtype != model_dtype:
+                if isinstance(inputs, dict):
+                    inputs["pixel_values"] = pv.to(dtype=model_dtype)
+                else:
+                    inputs.pixel_values = pv.to(dtype=model_dtype)
+        except StopIteration:
+            pass  # parameterless test stub
 
         with torch.no_grad():
             outputs = self._model(
