@@ -471,6 +471,22 @@ def build_sam3p1_image_predictor(device: str | None = None) -> Sam3p1NativeImage
         enable_inst_interactivity=True,
         compile=perf.get_compile_enabled(),
     )
+    # Force a unified dtype across all params + buffers. The native
+    # ``build_sam3_image_model`` doesn't expose a ``dtype`` kwarg and
+    # leaves a mix of bf16-loaded weights + float32 RoPE/buffers, which
+    # trips ``RuntimeError: mat1 and mat2 must have the same dtype``
+    # on the first MLP forward pass. Casting the whole model to
+    # ``perf.get_dtype()`` (bf16 on cuda by default) makes every linear
+    # see consistent dtypes.
+    if dev == "cuda":
+        try:
+            import torch  # type: ignore[import-not-found]
+
+            target_dtype = perf.get_dtype()
+            if target_dtype in (torch.bfloat16, torch.float16, torch.float32):
+                model.to(dtype=target_dtype)
+        except Exception:  # noqa: BLE001 — best effort; build still works
+            pass
     processor = Sam3Processor(model)
     return Sam3p1NativeImagePredictorAdapter(model=model, processor=processor, device=dev)
 
