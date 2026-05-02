@@ -1,21 +1,19 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   BarChart3,
-  ChevronLeft,
-  ChevronRight,
   Copy,
   Database,
   Image as ImageIcon,
+  ListPlus,
   MoreVertical,
   RefreshCw,
   Settings,
   Sparkles,
   Trash2,
-  Video,
 } from "lucide-react";
 import { projectsApi } from "@/api/projects";
 import { classesApi } from "@/api/classes";
@@ -40,6 +38,14 @@ import { DatasetsPage } from "./DatasetsPage";
 const StatsPanel = lazy(() =>
   import("./StatsPanel").then((m) => ({ default: m.StatsPanel })),
 );
+import { Breadcrumbs } from "@/components/nav/Breadcrumbs";
+import {
+  TasksToolbar,
+  type TaskSort,
+  type TaskStatusFilter,
+} from "@/components/tasks/TasksToolbar";
+import { TaskRow } from "@/components/tasks/TaskRow";
+import { useProjectPrefs } from "@/state/projectPrefs";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
 import { Tag } from "lucide-react";
@@ -712,6 +718,76 @@ const tabTriggerClass = cn(
 );
 
 // ---------------------------------------------------------------------------
+// Plan 14 Phase 8 Task 2 — task list rendered with extracted ``TaskRow``.
+// ``hasAnyTasks`` distinguishes "no tasks at all" (empty-state copy) from
+// "filtered to zero" (search/sort yielded nothing).
+// ---------------------------------------------------------------------------
+function FilteredTasksList({
+  projectId,
+  tasks,
+  isLoading,
+  hasAnyTasks,
+  renderClassesChip,
+  renderMenu,
+}: {
+  projectId: string;
+  tasks: Task[];
+  isLoading: boolean;
+  hasAnyTasks: boolean;
+  renderClassesChip: (t: Task) => ReactNode;
+  renderMenu: (t: Task) => ReactNode;
+}) {
+  if (!isLoading && !hasAnyTasks) {
+    return (
+      <div
+        data-testid="project-detail-tasks-empty"
+        className={cn(
+          "grid place-items-center gap-2 px-6 py-10",
+          "rounded-[var(--radius-md)] border border-dashed border-[var(--border-subtle)]",
+          "bg-[var(--bg-subtle)] text-center",
+        )}
+      >
+        <ListPlus
+          className="h-5 w-5 text-[color:var(--text-tertiary)]"
+          aria-hidden
+        />
+        <span className="text-[12.5px] text-[color:var(--text-secondary)]">
+          No tasks yet — create your first one to start annotating.
+        </span>
+      </div>
+    );
+  }
+
+  if (!isLoading && tasks.length === 0) {
+    return (
+      <div
+        data-testid="project-detail-tasks-no-match"
+        className={cn(
+          "rounded-[var(--radius-md)] border border-dashed border-[var(--border-subtle)]",
+          "bg-[var(--bg-subtle)] px-4 py-3 text-[12.5px] text-[color:var(--text-tertiary)] italic",
+        )}
+      >
+        No tasks match the current filter.
+      </div>
+    );
+  }
+
+  return (
+    <ul className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] overflow-hidden">
+      {tasks.map((t) => (
+        <TaskRow
+          key={t.id}
+          projectId={projectId}
+          task={t}
+          classesChip={renderClassesChip(t)}
+          menuSlot={renderMenu(t)}
+        />
+      ))}
+    </ul>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 export function ProjectDetailPage({ projectId }: { projectId: string }) {
@@ -750,6 +826,54 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   // v3.4+ Phase 5 Task 6 — task targeted by the retrain dialog. Null
   // closes the dialog. The dialog drives its own job-id polling.
   const [retrainTarget, setRetrainTarget] = useState<Task | null>(null);
+
+  // Plan 14 Phase 8 Task 2 — Tasks-toolbar state. Search is filtered
+  // case-insensitively against task name; status uses the existing
+  // task ``kind`` proxy (no archive flag in the API yet — falls back
+  // to "all" for non-active filters until backend support lands).
+  const [tasksQuery, setTasksQuery] = useState("");
+  const [tasksStatus, setTasksStatus] =
+    useState<TaskStatusFilter>("active");
+  const [tasksSort, setTasksSort] = useState<TaskSort>("updated-desc");
+  // Surface the new-task creator from the toolbar; the existing
+  // ``NewTaskDialog`` controls its own open state via internal state,
+  // so we mirror it with a counter to bump-trigger via ``key``.
+  const [newTaskOpenSignal, setNewTaskOpenSignal] = useState(0);
+
+  // Plan 14 Phase 8 Task 2 — record this project as visited so the
+  // projects index can surface it in the recent strip.
+  const recordVisit = useProjectPrefs((s) => s.recordVisit);
+  useEffect(() => {
+    recordVisit(projectId);
+  }, [recordVisit, projectId]);
+
+  // Plan 14 Phase 8 Task 2 — derive the visible task list from the
+  // toolbar state. The status filter is best-effort: there is no
+  // archive flag exposed by the API yet, so "active"/"all" both show
+  // everything for now and "archived" shows nothing. Once the column
+  // lands this branch will switch over.
+  const filteredTasks = useMemo(() => {
+    const all = tasksQ.data ?? [];
+    const q = tasksQuery.trim().toLowerCase();
+    let result = all;
+    if (q) {
+      result = result.filter((t) => t.name.toLowerCase().includes(q));
+    }
+    if (tasksStatus === "archived") {
+      result = [];
+    }
+    const next = [...result];
+    next.sort((a, b) => {
+      if (tasksSort === "name-asc") {
+        return a.name.localeCompare(b.name);
+      }
+      // updated-desc — proxy via created_at until updated_at exists.
+      return (
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    });
+    return next;
+  }, [tasksQ.data, tasksQuery, tasksStatus, tasksSort]);
   const projectWeightsQ = useQuery({
     queryKey: ["project-weights", projectId],
     queryFn: () => weightsApi.listForProject(projectId),
@@ -848,17 +972,22 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
 
   return (
     <div className="mx-auto grid max-w-[1100px] gap-5">
-      {/* v3.7 Issue 6 — back link to the projects list, mirroring the
-          stats-page pattern from v3.0 so users have a consistent
-          breadcrumb-style return path. */}
-      <Link
-        to="/projects"
-        data-testid="project-detail-back-link"
-        className="inline-flex items-center gap-1 text-[12.5px] tracking-tight text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] transition-colors w-fit"
-      >
-        <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
-        Back to projects
-      </Link>
+      {/* Plan 14 Phase 8 Task 2 — Workspace › <Project> breadcrumbs.
+          Replaces the v3.7 single back-link with a multi-segment trail
+          that scales as more nesting (task, asset) is added. */}
+      <Breadcrumbs
+        segments={[
+          {
+            label: "Workspace",
+            to: "/projects",
+            testId: "breadcrumb-workspace",
+          },
+          {
+            label: project.name,
+            testId: "breadcrumb-project",
+          },
+        ]}
+      />
       {/* ---- Header ---- */}
       <header className="flex items-baseline justify-between gap-4 flex-wrap">
         <div className="grid gap-1">
@@ -976,81 +1105,78 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                   {tasksQ.data?.length ?? 0} total
                 </span>
               </header>
-              <NewTaskDialog projectId={projectId} onCreated={() => {}} />
+              <TasksToolbar
+                query={tasksQuery}
+                onQueryChange={setTasksQuery}
+                status={tasksStatus}
+                onStatusChange={setTasksStatus}
+                sort={tasksSort}
+                onSortChange={setTasksSort}
+                onNewTask={() => {
+                  setNewTaskOpenSignal((n) => n + 1);
+                  // Scroll the inline new-task form into view as a
+                  // lightweight stand-in for a true modal trigger.
+                  document
+                    .querySelector('[data-testid="new-task-input"]')
+                    ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+              />
+              <NewTaskDialog
+                key={newTaskOpenSignal}
+                projectId={projectId}
+                onCreated={() => {}}
+              />
               {tasksQ.isLoading && (
                 <p className="text-[color:var(--text-tertiary)] text-[13px]">
                   Loading tasks…
                 </p>
               )}
-              <ul className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] overflow-hidden">
-                {tasksQ.data?.map((t) => (
-                  <li
-                    key={t.id}
-                    className="flex items-stretch border-b border-[var(--border-subtle)] last:border-b-0 hover:bg-[var(--bg-hover)] transition-colors group"
-                  >
-                    <Link
-                      to="/projects/$projectId/tasks/$taskId"
-                      params={{ projectId, taskId: t.id }}
-                      data-testid={`project-detail-task-row-${t.id}`}
-                      className="flex flex-1 items-center gap-3 px-3 py-2 min-w-0"
-                    >
-                      <span className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)]">
-                        {t.kind === "video" ? (
-                          <Video className="h-3 w-3" />
-                        ) : (
-                          <ImageIcon className="h-3 w-3" />
-                        )}
-                      </span>
-                      <span className="flex-1 text-[12.5px] tracking-tight text-[color:var(--text-primary)] truncate">
-                        {t.name}
-                      </span>
-                      <TaskClassesChip
-                        projectId={projectId}
-                        taskId={t.id}
-                        onClick={() => setClassesTarget(t)}
-                      />
-                      <Badge variant="ghost">{t.kind}</Badge>
-                      <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)] transition-transform group-hover:translate-x-0.5" />
-                    </Link>
-                    <TaskRowMenu
-                      task={t}
-                      pending={
-                        duplicateTask.isPending &&
-                        duplicateTask.variables?.taskId === t.id
-                      }
-                      onDuplicate={() => {
-                        setDuplicateTarget(t);
-                        setDuplicateDraft(`${t.name} (copy)`);
-                      }}
-                      onEditClasses={() => setClassesTarget(t)}
-                      onRetrain={() => setRetrainTarget(t)}
-                      onDelete={async () => {
-                        const ok = await confirm({
-                          title: "Delete task?",
-                          description: (
-                            <>
-                              Delete the task{" "}
-                              <span className="font-medium text-[color:var(--text-primary)]">
-                                {t.name}
-                              </span>
-                              ? All assets, frames, and annotations under it
-                              will be removed. This cannot be undone.
-                            </>
-                          ),
-                          variant: "danger",
-                          confirmLabel: "Delete task",
-                        });
-                        if (ok) deleteTask.mutate(t.id);
-                      }}
-                    />
-                  </li>
-                ))}
-                {(tasksQ.data?.length ?? 0) === 0 && !tasksQ.isLoading && (
-                  <li className="text-[color:var(--text-tertiary)] text-[13px] italic px-4 py-3">
-                    No tasks yet.
-                  </li>
+              <FilteredTasksList
+                projectId={projectId}
+                tasks={filteredTasks}
+                isLoading={tasksQ.isLoading}
+                hasAnyTasks={(tasksQ.data?.length ?? 0) > 0}
+                renderClassesChip={(t) => (
+                  <TaskClassesChip
+                    projectId={projectId}
+                    taskId={t.id}
+                    onClick={() => setClassesTarget(t)}
+                  />
                 )}
-              </ul>
+                renderMenu={(t) => (
+                  <TaskRowMenu
+                    task={t}
+                    pending={
+                      duplicateTask.isPending &&
+                      duplicateTask.variables?.taskId === t.id
+                    }
+                    onDuplicate={() => {
+                      setDuplicateTarget(t);
+                      setDuplicateDraft(`${t.name} (copy)`);
+                    }}
+                    onEditClasses={() => setClassesTarget(t)}
+                    onRetrain={() => setRetrainTarget(t)}
+                    onDelete={async () => {
+                      const ok = await confirm({
+                        title: "Delete task?",
+                        description: (
+                          <>
+                            Delete the task{" "}
+                            <span className="font-medium text-[color:var(--text-primary)]">
+                              {t.name}
+                            </span>
+                            ? All assets, frames, and annotations under it
+                            will be removed. This cannot be undone.
+                          </>
+                        ),
+                        variant: "danger",
+                        confirmLabel: "Delete task",
+                      });
+                      if (ok) deleteTask.mutate(t.id);
+                    }}
+                  />
+                )}
+              />
             </section>
             <ClassesEditor projectId={projectId} />
           </div>
