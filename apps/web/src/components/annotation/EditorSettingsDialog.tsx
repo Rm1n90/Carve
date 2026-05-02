@@ -546,37 +546,10 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
               />
             </Field>
 
-            <Field label="Advanced (CVAT parity, deferred)">
-              <div
-                className="flex flex-wrap gap-3 pt-1"
-                data-testid="settings-deferred-group"
-              >
-                <DeferredCheckbox
-                  checked={s.showAllInterpolationTracks}
-                  label="Show all interpolation tracks"
-                  testId="setting-showAllInterpolationTracks"
-                  reason="Interpolation tracks are not yet implemented in Carve."
-                />
-                <DeferredCheckbox
-                  checked={s.automaticBordering}
-                  label="Automatic bordering"
-                  testId="setting-automaticBordering"
-                  reason="Polygon auto-bordering helper is not yet implemented in Carve."
-                />
-                <DeferredCheckbox
-                  checked={s.intelligentPolygonCropping}
-                  label="Intelligent polygon cropping"
-                  testId="setting-intelligentPolygonCropping"
-                  reason="Intelligent polygon cropping is not yet implemented in Carve."
-                />
-                <DeferredCheckbox
-                  checked={s.aamZoomMargin > 0}
-                  label="AAM zoom margin"
-                  testId="setting-aamZoomMargin"
-                  reason="Attribute-Annotation Mode is not yet implemented in Carve."
-                />
-              </div>
-            </Field>
+            {/* Plan-15 Track C — removed the "Advanced (CVAT parity,
+                deferred)" group. Those toggles required underlying
+                engines (interpolation, AAM, polygon helpers) that
+                Carve does not implement, so they were inert. */}
           </Tabs.Content>
         </Tabs.Root>
 

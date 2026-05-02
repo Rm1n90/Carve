@@ -163,12 +163,10 @@ export function AutoAnnotateDialog({
             data-testid="auto-annotate-trigger"
             disabled={!assetId}
             className={cn(
-              "inline-flex items-center gap-1.5 h-8 px-3",
-              "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-              "text-[12.5px] tracking-tight text-[color:var(--text-secondary)]",
-              "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-              "disabled:opacity-40 disabled:cursor-not-allowed",
-              "transition-colors",
+              "inline-flex h-8 items-center gap-1.5 px-3 rounded-full",
+              "bg-[#7C3AED] text-white text-[12.5px] font-medium tracking-tight",
+              "hover:bg-[#6D28D9] transition-colors",
+              "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
             )}
             title="Auto-annotate with SAM 3 text prompts"
           >

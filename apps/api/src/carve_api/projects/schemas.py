@@ -80,6 +80,21 @@ class ProjectOut(BaseModel):
 class TaskIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     kind: TaskKind
+    # Plan-15 Track G — optional schedule. ISO 8601 datetime with tz.
+    due_date: datetime | None = None
+
+
+class TaskPatch(BaseModel):
+    """PATCH body for ``/projects/{p}/tasks/{t}``.
+
+    All fields optional. ``archived`` toggles ``archived_at``: ``True``
+    sets it to now, ``False`` clears it. ``due_date`` accepts ``None``
+    to clear the schedule.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    due_date: datetime | None = None
+    archived: bool | None = None
 
 
 class TaskOut(BaseModel):
@@ -88,6 +103,8 @@ class TaskOut(BaseModel):
     name: str
     kind: TaskKind
     created_at: datetime
+    due_date: datetime | None = None
+    archived_at: datetime | None = None
 
     @classmethod
     def from_orm_task(cls, t) -> "TaskOut":
@@ -97,6 +114,8 @@ class TaskOut(BaseModel):
             name=t.name,
             kind=t.kind,
             created_at=t.created_at,
+            due_date=getattr(t, "due_date", None),
+            archived_at=getattr(t, "archived_at", None),
         )
 
 

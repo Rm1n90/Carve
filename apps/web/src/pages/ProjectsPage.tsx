@@ -113,48 +113,119 @@ export function ProjectsPage() {
       result = result.filter(
         (p) => currentUser?.id != null && p.owner_id !== currentUser.id,
       );
+    } else if (filter === "recent") {
+      const recentSet = new Set(recentIds);
+      const orderIndex = new Map(recentIds.map((id, i) => [id, i] as const));
+      return result
+        .filter((p) => recentSet.has(p.id))
+        .sort(
+          (a, b) =>
+            (orderIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+            (orderIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+        );
     }
 
     const next = [...result];
     next.sort((a, b) => compareProjects(sort, a, b));
     return next;
-  }, [projects, debouncedQuery, filter, sort, pinnedSet, currentUser?.id]);
+  }, [projects, debouncedQuery, filter, sort, pinnedSet, currentUser?.id, recentIds]);
 
-  const isSearchingOrFiltering =
-    debouncedQuery.trim() !== "" || filter !== "all";
 
-  const recentProjects = useMemo(() => {
-    if (isSearchingOrFiltering) return [];
-    const byId = new Map(projects.map((p) => [p.id, p]));
-    return recentIds
-      .map((id) => byId.get(id))
-      .filter((p): p is Project => p !== undefined)
-      .slice(0, 5);
-  }, [recentIds, projects, isSearchingOrFiltering]);
+  // Plan-15 Phase 9 follow-up — page-level stats for the hero strip.
+  const ownedCount = currentUser?.id
+    ? projects.filter((p) => p.owner_id === currentUser.id).length
+    : 0;
+  const sharedCount = currentUser?.id
+    ? projects.filter((p) => p.owner_id !== currentUser.id).length
+    : 0;
+  const pinnedCount = projects.filter((p) => pinnedSet.has(p.id)).length;
 
   return (
     <div className="mx-auto grid max-w-[1100px] gap-5">
-      {/* ---- Header ---- */}
-      <header className="flex items-baseline justify-between gap-4 flex-wrap">
-        <div className="grid gap-1">
-          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
-            Workspace
-          </span>
-          <h1 className="font-editorial text-[36px] leading-[0.95] text-[color:var(--text-primary)]">
-            Projects
-          </h1>
-          <p className="text-[12.5px] text-[color:var(--text-tertiary)] mt-0.5">
-            Carve datasets and annotation workspaces.
-          </p>
+      {/* ---- Hero header ---- */}
+      <header
+        data-testid="projects-hero"
+        className={cn(
+          "relative overflow-hidden",
+          "rounded-[var(--radius-lg)] border border-[var(--border-subtle)]",
+          "bg-[var(--bg-elev)] px-6 py-7",
+        )}
+      >
+        {/* Atmospheric background — radial wash + subtle grid. */}
+        <div
+          aria-hidden
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle at 12% 0%, color-mix(in oklch, var(--accent) 22%, transparent), transparent 55%), radial-gradient(circle at 88% 100%, color-mix(in oklch, var(--accent) 12%, transparent), transparent 60%)",
+          }}
+        />
+        <div
+          aria-hidden
+          className="absolute inset-0 pointer-events-none opacity-[0.05]"
+          style={{
+            backgroundImage:
+              "linear-gradient(var(--text-primary) 1px, transparent 1px), linear-gradient(90deg, var(--text-primary) 1px, transparent 1px)",
+            backgroundSize: "32px 32px",
+            maskImage:
+              "linear-gradient(to bottom, black, transparent 80%)",
+          }}
+        />
+        <div className="relative flex items-end justify-between gap-4 flex-wrap">
+          <div className="grid gap-1.5">
+            <span className="font-mono text-[10px] tracking-[0.22em] uppercase text-[color:var(--text-tertiary)]">
+              Workspace · Projects
+            </span>
+            <h1 className="font-editorial text-[44px] leading-[0.95] text-[color:var(--text-primary)]">
+              Your Projects
+            </h1>
+            <p className="text-[13px] text-[color:var(--text-secondary)] max-w-prose mt-1">
+              Annotation workspaces for images and video. Pin the ones you
+              live in, archive the ones you don't.
+            </p>
+            <div className="flex items-center gap-3 mt-3 text-[11.5px] font-mono tabular-nums text-[color:var(--text-tertiary)]">
+              <span>
+                <span className="text-[color:var(--text-primary)] font-medium">
+                  {projects.length}
+                </span>{" "}
+                total
+              </span>
+              <span aria-hidden>·</span>
+              <span>
+                <span className="text-[color:var(--text-primary)] font-medium">
+                  {ownedCount}
+                </span>{" "}
+                owned
+              </span>
+              <span aria-hidden>·</span>
+              <span>
+                <span className="text-[color:var(--text-primary)] font-medium">
+                  {sharedCount}
+                </span>{" "}
+                shared
+              </span>
+              {pinnedCount > 0 && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>
+                    <span className="text-[color:var(--accent)] font-medium">
+                      {pinnedCount}
+                    </span>{" "}
+                    pinned
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+          <Button
+            variant={showForm ? "secondary" : "primary"}
+            size="md"
+            leftIcon={<Plus className="h-4 w-4" />}
+            onClick={() => setShowForm((s) => !s)}
+          >
+            {showForm ? "Cancel" : "New project"}
+          </Button>
         </div>
-        <Button
-          variant={showForm ? "secondary" : "primary"}
-          size="md"
-          leftIcon={<Plus className="h-4 w-4" />}
-          onClick={() => setShowForm((s) => !s)}
-        >
-          {showForm ? "Cancel" : "New project"}
-        </Button>
       </header>
 
       {/* ---- Inline create form ---- */}
@@ -233,25 +304,7 @@ export function ProjectsPage() {
             onViewChange={setView}
           />
 
-          {recentProjects.length > 0 && (
-            <section data-testid="projects-recent" className="grid gap-2">
-              <h2 className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
-                Recent
-              </h2>
-              <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] overflow-hidden">
-                {recentProjects.map((p) => (
-                  <ProjectCard
-                    key={`recent-${p.id}`}
-                    project={p}
-                    pinned={pinnedSet.has(p.id)}
-                    onTogglePin={() => togglePin(p.id)}
-                    onDelete={() => deleteM.mutate(p.id)}
-                    view="compact"
-                  />
-                ))}
-              </div>
-            </section>
-          )}
+          {/* Plan 15 Track E — Recent moved into the toolbar tabs. */}
 
           {filtered.length === 0 ? (
             <EmptyState

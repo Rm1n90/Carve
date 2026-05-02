@@ -1,10 +1,30 @@
 import { Link } from "@tanstack/react-router";
-import { ChevronRight, Image as ImageIcon, Video } from "lucide-react";
+import {
+  AlertTriangle,
+  Calendar,
+  ChevronRight,
+  Clock,
+  Image as ImageIcon,
+  Video,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import type { Task } from "@/api/tasks";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/cn";
 import { formatRelative } from "@/lib/relativeTime";
+
+function formatShortDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
 
 /**
  * Plan 14 Phase 8 Task 2 — task row used inside the project-detail
@@ -58,10 +78,23 @@ export function TaskRow({
   const accepted = formatPct(acceptedPct);
   const rejected = formatPct(rejectedPct);
 
+  // Plan-15 Phase 9 follow-up — overdue highlight. A task is "overdue"
+  // when its due_date has passed and it has not been archived.
+  const dueIso = task.due_date ?? null;
+  const dueMs = dueIso ? Date.parse(dueIso) : NaN;
+  const isOverdue =
+    !Number.isNaN(dueMs) && dueMs < Date.now() && task.archived_at == null;
+
   return (
     <li
       data-testid={`task-row-${task.id}`}
-      className="flex items-stretch border-b border-[var(--border-subtle)] last:border-b-0 hover:bg-[var(--bg-hover)] transition-colors group"
+      data-overdue={isOverdue ? "true" : undefined}
+      className={cn(
+        "flex items-stretch border-b border-[var(--border-subtle)] last:border-b-0 transition-colors group",
+        isOverdue
+          ? "bg-[color-mix(in_oklch,var(--danger)_10%,transparent)] hover:bg-[color-mix(in_oklch,var(--danger)_18%,transparent)]"
+          : "hover:bg-[var(--bg-hover)]",
+      )}
     >
       <Link
         to="/projects/$projectId/tasks/$taskId"
@@ -125,6 +158,34 @@ export function TaskRow({
             title={`Last activity ${lastActivityAt}`}
           >
             {formatRelative(lastActivityAt)}
+          </span>
+        )}
+        <span
+          data-testid={`task-row-created-${task.id}`}
+          className="hidden md:inline-flex items-center gap-1 font-mono text-[10.5px] tabular-nums text-[color:var(--text-tertiary)]"
+          title={`Created ${task.created_at}`}
+        >
+          <Clock aria-hidden className="h-3 w-3" />
+          {formatShortDate(task.created_at)}
+        </span>
+        {dueIso && (
+          <span
+            data-testid={`task-row-due-${task.id}`}
+            className={cn(
+              "inline-flex items-center gap-1 font-mono text-[10.5px] tabular-nums px-1.5 py-0.5 rounded-[var(--radius-xs)]",
+              isOverdue
+                ? "text-[color:var(--danger)] bg-[color-mix(in_oklch,var(--danger)_18%,transparent)] font-medium"
+                : "text-[color:var(--text-secondary)]",
+            )}
+            title={`Due ${dueIso}`}
+          >
+            {isOverdue ? (
+              <AlertTriangle aria-hidden className="h-3 w-3" />
+            ) : (
+              <Calendar aria-hidden className="h-3 w-3" />
+            )}
+            {isOverdue ? "Overdue · " : "Due "}
+            {formatShortDate(dueIso)}
           </span>
         )}
         {classesChip}

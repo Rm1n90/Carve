@@ -1,5 +1,7 @@
 # Imports & exports
 
+> © Armin Mehri — [mehri.armin@gmail.com](mailto:mehri.armin@gmail.com) · [github.com/Rm1n90/Carve](https://github.com/Rm1n90/Carve)
+
 ## YOLO export
 
 Exports a zip archive with the standard Ultralytics layout:
