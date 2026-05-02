@@ -40,6 +40,9 @@ vi.mock("@tanstack/react-router", () => ({
       {children}
     </a>
   ),
+  // Plan 14 Phase 8 Task 3 — the strip now uses ``useNavigate`` for the
+  // jump-to feature. Mock returns a no-op navigate.
+  useNavigate: () => vi.fn(),
 }));
 
 import { assetsApi, type Asset } from "@/api/assets";
