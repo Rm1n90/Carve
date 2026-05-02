@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from redis import Redis
 from sqlalchemy.orm import Session
 
+from carve_api.audit import service as audit_service
+from carve_api.audit.actions import RETRAIN_CANCELLED, RETRAIN_SUBMITTED
 from carve_api.auth.models import User
 from carve_api.config import get_settings
 from carve_api.deps import get_current_user, get_db
@@ -127,6 +129,25 @@ def enqueue_retrain(
     except Exception:  # noqa: BLE001
         pass
 
+    # Plan-13 Phase 7 Task 3 — best-effort audit; never raises.
+    audit_service.record(
+        db,
+        actor_id=user.id,
+        action=RETRAIN_SUBMITTED,
+        target_type="retrain_job",
+        target_id=None,
+        project_id=task.project_id,
+        summary=f"{RETRAIN_SUBMITTED} task={task.id} job={job_payload.job_id}",
+        metadata={
+            "job_id": job_payload.job_id,
+            "task_id": str(task.id),
+            "include_proposed": bool(payload.include_proposed),
+            "epochs": int(payload.epochs),
+            "imgsz": int(payload.imgsz),
+        },
+    )
+    db.commit()
+
     return RetrainEnqueueOut(job_id=job_payload.job_id)
 
 
@@ -198,5 +219,18 @@ def cancel_retrain(
         storage.remove_object(f"retrain/{task.id}/{job_id}/dataset.zip")
     except Exception:  # noqa: BLE001
         pass
+
+    # Plan-13 Phase 7 Task 3 — best-effort audit; never raises.
+    audit_service.record(
+        db,
+        actor_id=user.id,
+        action=RETRAIN_CANCELLED,
+        target_type="retrain_job",
+        target_id=None,
+        project_id=task.project_id,
+        summary=f"{RETRAIN_CANCELLED} task={task.id} job={job_id}",
+        metadata={"job_id": job_id, "task_id": str(task.id)},
+    )
+    db.commit()
 
     return {"job_id": job_id, "status": "canceled"}

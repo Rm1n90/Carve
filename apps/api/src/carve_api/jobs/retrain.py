@@ -474,6 +474,9 @@ def retrain_job(
 
     # Phase 4 — register the new Weight row
     _set_phase(redis_client, job_id, phase="registering", progress_pct=90)
+    from carve_api.audit import service as _audit
+    from carve_api.audit.actions import RETRAIN_COMPLETED, RETRAIN_FAILED
+
     try:
         new_weight_id = _register_trained_weight(
             session=session,
@@ -483,6 +486,27 @@ def retrain_job(
             weight_name=payload.weight_name,
             class_names=class_names,
             payload=payload,
+        )
+        # Plan-13 Phase 7 Task 3 — best-effort audit on completion.
+        # Recorded BEFORE commit so the audit row joins the same tx as
+        # the new Weight; if either fails the rollback below covers both.
+        _audit.record(
+            session,
+            actor_id=actor_uuid,
+            action=RETRAIN_COMPLETED,
+            target_type="retrain_job",
+            target_id=None,
+            project_id=task.project_id,
+            summary=(
+                f"{RETRAIN_COMPLETED} task={task.id} "
+                f"weight={new_weight_id}"
+            ),
+            metadata={
+                "job_id": job_id,
+                "task_id": str(task.id),
+                "weight_id": str(new_weight_id),
+                "metrics": dict(descriptor.get("metrics") or {}),
+            },
         )
         session.commit()
     except Exception as exc:  # noqa: BLE001
@@ -499,6 +523,26 @@ def retrain_job(
             error=f"register_failed: {exc}",
             error_traceback=traceback.format_exc(),
         )
+        # Plan-13 Phase 7 Task 3 — best-effort failure audit on a fresh
+        # tx so the rolled-back register doesn't drag the audit row down.
+        try:
+            _audit.record(
+                session,
+                actor_id=actor_uuid,
+                action=RETRAIN_FAILED,
+                target_type="retrain_job",
+                target_id=None,
+                project_id=task.project_id if task is not None else None,
+                summary=f"{RETRAIN_FAILED} task={payload.task_id} job={job_id}",
+                metadata={
+                    "job_id": job_id,
+                    "task_id": payload.task_id,
+                    "error": str(exc),
+                },
+            )
+            session.commit()
+        except Exception:  # noqa: BLE001
+            pass
         return {"ok": False, "error": "register_failed"}
 
     _set_phase(

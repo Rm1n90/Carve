@@ -84,6 +84,10 @@ def create_app() -> FastAPI:
     app.include_router(stats_router)
     app.include_router(stats_project_router)
 
+    # Plan-13 Phase 7 Task 3 — audit log read endpoint.
+    from carve_api.audit.router import router as audit_router
+    app.include_router(audit_router)
+
     from fastapi import APIRouter, Depends
 
     from carve_api.auth.models import UserRole

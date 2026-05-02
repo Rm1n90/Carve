@@ -3,6 +3,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from carve_api.audit import service as audit_service
+from carve_api.audit.actions import TASK_DELETED
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
@@ -208,6 +210,17 @@ def delete_task(
         TaskService(db).delete(actor=user, project=project, task_id=task_id)
     except AppError as exc:
         raise _http(exc) from exc
+    # Plan-13 Phase 7 Task 3 — best-effort audit on task delete.
+    audit_service.record(
+        db,
+        actor_id=user.id,
+        action=TASK_DELETED,
+        target_type="task",
+        target_id=task_id,
+        project_id=project_id,
+        summary=f"{TASK_DELETED} task={task_id}",
+        metadata={"task_id": str(task_id)},
+    )
     db.commit()
 
 

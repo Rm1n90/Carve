@@ -16,6 +16,12 @@ from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation
 from carve_api.annotations.service import AnnotationNotFound
+from carve_api.audit import service as audit_service
+from carve_api.audit.actions import (
+    ANNOTATION_ACCEPTED,
+    ANNOTATION_REJECTED,
+    ANNOTATIONS_BATCH_REVIEWED,
+)
 from carve_api.auth.models import User
 from carve_api.errors import AppError
 from carve_api.projects.service import (
@@ -99,6 +105,21 @@ class ReviewService:
         a.reviewed_by_id = actor.id
         a.reviewed_at = datetime.now(timezone.utc)
         self.session.flush()
+
+        # Plan-13 Phase 7 Task 3 — best-effort audit. Never raises.
+        action = (
+            ANNOTATION_ACCEPTED if decision == "accept" else ANNOTATION_REJECTED
+        )
+        audit_service.record(
+            self.session,
+            actor_id=actor.id,
+            action=action,
+            target_type="annotation",
+            target_id=a.id,
+            project_id=task.project_id,
+            summary=f"{action} annotation {a.id}",
+            metadata={"task_id": str(a.task_id), "decision": decision},
+        )
         return a
 
     def batch_review(
@@ -133,4 +154,27 @@ class ReviewService:
                 skipped += 1
             else:
                 reviewed += 1
+
+        # Plan-13 Phase 7 Task 3 — one summary audit row per batch call.
+        # ``project_id`` is intentionally None: a batch can span ids
+        # belonging to different projects, and we don't want to pick one
+        # arbitrarily. Per-id review_one() events still record the
+        # project, so per-project audit timelines remain populated.
+        audit_service.record(
+            self.session,
+            actor_id=actor.id,
+            action=ANNOTATIONS_BATCH_REVIEWED,
+            target_type="annotation_batch",
+            target_id=None,
+            project_id=None,
+            summary=(
+                f"{ANNOTATIONS_BATCH_REVIEWED} reviewed={reviewed} "
+                f"skipped={skipped}"
+            ),
+            metadata={
+                "reviewed": reviewed,
+                "skipped": skipped,
+                "decision": decision,
+            },
+        )
         return reviewed, skipped

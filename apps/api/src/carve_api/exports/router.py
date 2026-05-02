@@ -5,6 +5,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from carve_api.audit import service as audit_service
+from carve_api.audit.actions import EXPORT_SUBMITTED
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
@@ -58,6 +60,22 @@ def enqueue_export(
         actor_id=user.id,
         fmt=payload.format,
         class_remap=payload.class_remap,
+    )
+    # Plan-13 Phase 7 Task 3 — best-effort audit on export submit.
+    audit_service.record(
+        db,
+        actor_id=user.id,
+        action=EXPORT_SUBMITTED,
+        target_type="export",
+        target_id=e.id,
+        project_id=task.project_id,
+        summary=f"{EXPORT_SUBMITTED} task={task.id} export={e.id} fmt={payload.format}",
+        metadata={
+            "export_id": str(e.id),
+            "task_id": str(task.id),
+            "format": payload.format,
+            "include_images": bool(payload.include_images),
+        },
     )
     db.commit()
 
