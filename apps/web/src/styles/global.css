@@ -548,6 +548,56 @@ input:where([type="number"])::-webkit-inner-spin-button {
   margin: 0;
 }
 
+/* Plan-15 Track F — house style for native <select> elements so the
+   ad-hoc dropdowns scattered around the app pick up the same surface
+   treatment as Radix Select / DropdownMenu. Radix triggers and any
+   element with ``data-no-default-style`` are skipped. */
+select:not([data-radix-select-trigger]):not([data-no-default-style]) {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  height: 32px;
+  padding: 0 28px 0 10px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease,
+    background-color 120ms ease;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+select:not([data-radix-select-trigger]):not([data-no-default-style]):hover {
+  border-color: var(--border-strong);
+  background-color: var(--bg-hover);
+}
+
+select:not([data-radix-select-trigger]):not([data-no-default-style]):focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 30%, transparent);
+}
+
+select:not([data-radix-select-trigger]):not([data-no-default-style]):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+select:not([data-radix-select-trigger]):not([data-no-default-style]) option {
+  background-color: var(--bg-elev);
+  color: var(--text-primary);
+}
+
 .font-mono-data {
   font-family: var(--font-mono);
   font-feature-settings: "tnum", "ss01";
