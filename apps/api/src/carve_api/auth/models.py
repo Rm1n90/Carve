@@ -35,3 +35,11 @@ class User(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+    # Plan-13 Phase 7 Task 5 -- OIDC subject identifier for SSO-linked
+    # users. NULL for locally-registered accounts. Uniqueness is enforced
+    # by a partial unique index (see migration 0026); not declared with
+    # ``unique=True`` here because that would translate to an ALL-rows
+    # unique constraint and break multiple NULL rows on some dialects.
+    sso_subject: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, default=None
+    )

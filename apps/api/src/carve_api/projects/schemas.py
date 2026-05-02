@@ -1,10 +1,40 @@
 import re
 import uuid
 from datetime import datetime
+from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from carve_api.projects.models import TaskKind
+
+# Plan-13 Phase 7 Task 1 -- canonical role tuple + literal type. Mirrors
+# the CHECK constraint on ``project_members.role``. Keep these two
+# definitions in sync if a new role is ever added.
+PROJECT_MEMBER_ROLES: tuple[str, ...] = ("owner", "admin", "member", "viewer")
+ProjectMemberRoleLiteral = Literal["owner", "admin", "member", "viewer"]
+
+
+class ProjectMemberInIn(BaseModel):
+    """One member entry on the create-project payload."""
+
+    user_id: UUID
+    role: ProjectMemberRoleLiteral
+
+
+class ProjectMemberRow(BaseModel):
+    """Read-side row for project membership listings.
+
+    ``user_id`` is serialised as a plain string for symmetry with the
+    rest of the project read schemas (see ``ProjectOut.owner_id``).
+    """
+
+    user_id: str
+    email: str
+    role: ProjectMemberRoleLiteral
+    added_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
@@ -12,6 +42,11 @@ _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 class ProjectIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=4000)
+    # Plan-13 Phase 7 Task 1 -- optional initial member set on the
+    # create-project path only. Validated by the router (Task 2 wires up
+    # access checks; this task only adds the schema field). ``None``
+    # means "no extra members; only the implicit creator/owner row".
+    members: list[ProjectMemberInIn] | None = None
 
 
 class ProjectPatch(BaseModel):

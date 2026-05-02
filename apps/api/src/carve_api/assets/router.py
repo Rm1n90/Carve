@@ -87,6 +87,17 @@ def list_assets(
     offset: int = Query(default=0, ge=0),
     q: str | None = Query(default=None, max_length=255),
     status: Literal["all", "annotated", "unannotated"] = Query(default="all"),
+    # Plan-13 Phase 7 Task 8 -- richer filter set used by the per-task
+    # filter sidebar. ``class_id`` narrows the list to assets that have
+    # at least one annotation for that class. ``annotation_status``
+    # narrows to assets with at least one annotation in that review
+    # state. ``min_size`` / ``max_size`` filter on the asset byte size.
+    class_id: uuid.UUID | None = Query(default=None),
+    annotation_status: Literal["proposed", "accepted", "rejected"] | None = Query(
+        default=None
+    ),
+    min_size: int | None = Query(default=None, ge=0),
+    max_size: int | None = Query(default=None, ge=0),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AssetListPage:
@@ -101,8 +112,26 @@ def list_assets(
     except AppError as exc:
         raise _http(exc) from exc
     svc = AssetService(db)
-    items = svc.list_for_task(task=task, limit=limit, offset=offset, q=q, status=status)
-    total = svc.count_for_task(task=task, q=q, status=status)
+    items = svc.list_for_task(
+        task=task,
+        limit=limit,
+        offset=offset,
+        q=q,
+        status=status,
+        class_id=class_id,
+        annotation_status=annotation_status,
+        min_size=min_size,
+        max_size=max_size,
+    )
+    total = svc.count_for_task(
+        task=task,
+        q=q,
+        status=status,
+        class_id=class_id,
+        annotation_status=annotation_status,
+        min_size=min_size,
+        max_size=max_size,
+    )
     return AssetListPage(
         items=[
             AssetOut.from_orm_asset(a, thumbnail_url=svc.thumbnail_url_for(a)) for a in items

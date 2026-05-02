@@ -16,10 +16,18 @@ from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation
 from carve_api.annotations.service import AnnotationNotFound
+from carve_api.audit import service as audit_service
+from carve_api.audit.actions import (
+    ANNOTATION_ACCEPTED,
+    ANNOTATION_REJECTED,
+    ANNOTATIONS_BATCH_REVIEWED,
+)
 from carve_api.auth.models import User
 from carve_api.errors import AppError
 from carve_api.projects.service import (
     TaskNotFound,
+    _MUTATING_ROLES,
+    get_project_role,
     require_visible_task,
 )
 
@@ -71,12 +79,21 @@ class ReviewService:
         if a is None:
             raise AnnotationNotFound("annotation not found")
         try:
-            require_visible_task(self.session, actor, a.task_id)
+            task = require_visible_task(self.session, actor, a.task_id)
         except AppError as exc:
             # Mask "task not found" / project-level access failures as
             # "annotation not found" for the same IDOR-mitigation reason
             # as the annotations router.
             raise AnnotationNotFound("annotation not found") from exc
+
+        # Plan-13 Phase 7 Task 2 — viewers (project-role) cannot review.
+        # ``require_visible_task`` already enforced membership; here we
+        # additionally require a *mutating* role.
+        role = get_project_role(self.session, actor.id, task.project_id)
+        if role is None or role not in _MUTATING_ROLES:
+            raise ReviewForbidden(
+                "only project member/admin/owner can review"
+            )
 
         target_status = _decision_to_status(decision)
         # Snapshot the geometry as it stands NOW so a future edit can
@@ -88,6 +105,21 @@ class ReviewService:
         a.reviewed_by_id = actor.id
         a.reviewed_at = datetime.now(timezone.utc)
         self.session.flush()
+
+        # Plan-13 Phase 7 Task 3 — best-effort audit. Never raises.
+        action = (
+            ANNOTATION_ACCEPTED if decision == "accept" else ANNOTATION_REJECTED
+        )
+        audit_service.record(
+            self.session,
+            actor_id=actor.id,
+            action=action,
+            target_type="annotation",
+            target_id=a.id,
+            project_id=task.project_id,
+            summary=f"{action} annotation {a.id}",
+            metadata={"task_id": str(a.task_id), "decision": decision},
+        )
         return a
 
     def batch_review(
@@ -114,8 +146,35 @@ class ReviewService:
                 self.review_one(
                     actor=actor, annotation_id=ann_id, decision=decision
                 )
-            except (AnnotationNotFound, TaskNotFound):
+            except (AnnotationNotFound, TaskNotFound, ReviewForbidden):
+                # Plan-13 Phase 7 Task 2 — ReviewForbidden also counts as
+                # "skipped" so a mixed batch (some ids in projects where
+                # the actor has the role, some where they don't) doesn't
+                # 403 the entire request.
                 skipped += 1
             else:
                 reviewed += 1
+
+        # Plan-13 Phase 7 Task 3 — one summary audit row per batch call.
+        # ``project_id`` is intentionally None: a batch can span ids
+        # belonging to different projects, and we don't want to pick one
+        # arbitrarily. Per-id review_one() events still record the
+        # project, so per-project audit timelines remain populated.
+        audit_service.record(
+            self.session,
+            actor_id=actor.id,
+            action=ANNOTATIONS_BATCH_REVIEWED,
+            target_type="annotation_batch",
+            target_id=None,
+            project_id=None,
+            summary=(
+                f"{ANNOTATIONS_BATCH_REVIEWED} reviewed={reviewed} "
+                f"skipped={skipped}"
+            ),
+            metadata={
+                "reviewed": reviewed,
+                "skipped": skipped,
+                "decision": decision,
+            },
+        )
         return reviewed, skipped

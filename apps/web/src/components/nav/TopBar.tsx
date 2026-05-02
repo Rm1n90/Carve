@@ -15,7 +15,8 @@ import { useAuth } from "@/auth/store";
 import { logout } from "@/auth/api";
 import { useTheme, type ThemePreference } from "@/components/theme/ThemeProvider";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
-import { CarveMark } from "./CarveMark";
+import { GlobalSearchBar } from "@/components/search/GlobalSearchBar";
+import { Logo } from "@/components/brand/Logo";
 import { cn } from "@/lib/cn";
 
 interface BreadcrumbCrumb {
@@ -78,7 +79,7 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
       )}
     >
       <Link to="/" aria-label="Carve home" className="shrink-0 relative z-10">
-        <CarveMark />
+        <Logo variant="full" size={20} />
       </Link>
 
       {crumbs && crumbs.length > 0 && (
@@ -116,6 +117,8 @@ export function TopBar({ crumbs, rightAction }: TopBarProps) {
       )}
 
       <div className="flex-1" />
+
+      <GlobalSearchBar />
 
       <span className="relative z-10 inline-flex items-center gap-2">
         {rightAction}

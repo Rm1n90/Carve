@@ -1,5 +1,6 @@
 """Per-task and per-project analytics endpoints."""
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -111,6 +112,58 @@ def time_on_task(
     except AppError as exc:
         raise _http(exc) from exc
     return StatsService(db).time_on_task(task_id=task.id)
+
+
+# ---------------------------------------------------------------------------
+# Plan-13 Phase 7 Task 10 — quality dashboard endpoints.
+# ---------------------------------------------------------------------------
+@project_router.get("/{project_id}/stats/reviewer-quality")
+def reviewer_quality(
+    project_id: uuid.UUID,
+    from_ts: datetime | None = Query(default=None, alias="from"),
+    to_ts: datetime | None = Query(default=None, alias="to"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    items = StatsService(db).reviewer_quality(
+        project_id=project.id, from_ts=from_ts, to_ts=to_ts
+    )
+    return {"items": items}
+
+
+@project_router.get("/{project_id}/stats/retrain-history")
+def retrain_history(
+    project_id: uuid.UUID,
+    limit: int = Query(default=20, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    items = StatsService(db).retrain_history(project_id=project.id, limit=limit)
+    return {"items": items}
+
+
+@router.get("/{task_id}/stats/per-class-quality")
+def per_class_quality(
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    items = StatsService(db).per_class_quality(
+        project_id=task.project_id, task_id=task.id
+    )
+    return {"items": items}
 
 
 @project_router.get("/{project_id}/stats")

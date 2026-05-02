@@ -11,7 +11,11 @@ from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.io.import_job import ImportJobPayload, read_progress, run_import_job
-from carve_api.projects.service import require_visible_task
+from carve_api.projects.service import (
+    _MUTATING_ROLES,
+    require_project_role,
+    require_visible_task,
+)
 from carve_api.storage.client import MinioClient
 
 
@@ -51,6 +55,8 @@ async def enqueue_import(
 ) -> dict:
     try:
         task = require_visible_task(db, user, task_id)
+        # Plan-13 Phase 7 Task 2 — import submit is a mutation; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
     body = await file.read()

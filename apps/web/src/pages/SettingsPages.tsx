@@ -33,6 +33,14 @@ import {
   type Member,
   type Role,
 } from "@/api/members";
+import {
+  invitesApi,
+  projectMembersApi,
+  type InviteListItem,
+  type InviteRole,
+  type ProjectMemberRole,
+} from "@/api/invites";
+import { projectsApi, type Project } from "@/api/projects";
 import { workspaceApi } from "@/api/workspace";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
@@ -563,9 +571,230 @@ export function SettingsMembersPage() {
           })
         }
       />
+
+      <ProjectMembersSection />
     </SettingsLayout>
   );
 }
+
+// ---------------------- Per-project members (Plan-13 Phase 7 Task 4) -----
+
+const PROJECT_INVITE_ROLES: InviteRole[] = ["admin", "member", "viewer"];
+
+function ProjectMembersSection() {
+  const projectsQ = useQuery({
+    queryKey: ["projects"],
+    queryFn: projectsApi.list,
+  });
+  const projects = projectsQ.data ?? [];
+  if (!projects.length) return null;
+  return (
+    <Card variant="surface" radius="lg" className="p-6 grid gap-4">
+      <div>
+        <h2 className="text-[16px] font-medium tracking-tight">
+          Per-project members
+        </h2>
+        <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
+          Manage who can access each project. Invite by email; the link
+          you receive can be shared with the recipient.
+        </p>
+      </div>
+      <ul className="grid gap-6" data-testid="project-members-list">
+        {projects.map((p) => (
+          <ProjectMembersRow key={p.id} project={p} />
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+function ProjectMembersRow({ project }: { project: Project }) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<InviteRole>("member");
+  const [createdLink, setCreatedLink] = useState<string | null>(null);
+
+  const invitesQ = useQuery({
+    queryKey: ["project-invites", project.id],
+    queryFn: () => invitesApi.list(project.id),
+  });
+  const createInviteM = useMutation({
+    mutationFn: () => invitesApi.create(project.id, email.trim(), role),
+    onSuccess: (created) => {
+      const link = `${window.location.origin}/invite/${created.token}`;
+      setCreatedLink(link);
+      setEmail("");
+      invitesQ.refetch();
+      showToast("Invitation created", { variant: "success" });
+    },
+    onError: (err: unknown) => {
+      const status = (err as { response?: { status?: number } })?.response
+        ?.status;
+      if (status === 409) {
+        showToast("Already a member or invited", { variant: "error" });
+      } else if (status === 403) {
+        showToast("Only owners or admins can invite", { variant: "error" });
+      } else {
+        showToast("Failed to create invitation", { variant: "error" });
+      }
+    },
+  });
+  const revokeM = useMutation({
+    mutationFn: (inviteId: string) => invitesApi.revoke(project.id, inviteId),
+    onSuccess: () => {
+      invitesQ.refetch();
+      showToast("Invitation revoked", { variant: "success" });
+    },
+  });
+
+  const invites = invitesQ.data ?? [];
+
+  return (
+    <li className="grid gap-3" data-testid={`project-row-${project.id}`}>
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="grid gap-0.5">
+          <span className="text-[14px] font-medium tracking-tight">
+            {project.name}
+          </span>
+          <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-[color:var(--text-tertiary)]">
+            Project
+          </span>
+        </div>
+      </div>
+
+      <form
+        className="grid grid-cols-[1fr_auto_auto] gap-2 items-end"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!email.trim()) return;
+          createInviteM.mutate();
+        }}
+      >
+        <Input
+          label="Invite email"
+          type="email"
+          placeholder="teammate@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          data-testid={`project-${project.id}-invite-email`}
+        />
+        <div className="grid gap-1.5">
+          <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
+            Role
+          </span>
+          <Select
+            value={role}
+            onValueChange={(v) => setRole(v as InviteRole)}
+          >
+            <Select.Trigger
+              aria-label="Invite role"
+              data-testid={`project-${project.id}-invite-role`}
+            >
+              <Select.Value />
+            </Select.Trigger>
+            <Select.Content>
+              {PROJECT_INVITE_ROLES.map((r) => (
+                <Select.Item key={r} value={r}>
+                  {r}
+                </Select.Item>
+              ))}
+            </Select.Content>
+          </Select>
+        </div>
+        <Button
+          type="submit"
+          variant="primary"
+          size="md"
+          loading={createInviteM.isPending}
+          data-testid={`project-${project.id}-invite-submit`}
+        >
+          Invite
+        </Button>
+      </form>
+
+      {createdLink && (
+        <div
+          className="flex items-center gap-2 rounded-[var(--radius-md)] border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 py-2"
+          data-testid={`project-${project.id}-invite-link`}
+        >
+          <code className="text-[12px] font-mono break-all flex-1">
+            {createdLink}
+          </code>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            leftIcon={<Copy className="h-3.5 w-3.5" />}
+            onClick={() => {
+              navigator.clipboard?.writeText(createdLink);
+              showToast("Copied", { variant: "success" });
+            }}
+          >
+            Copy
+          </Button>
+        </div>
+      )}
+
+      {invites.length > 0 && (
+        <ul className="grid gap-1.5" data-testid={`project-${project.id}-pending`}>
+          {invites.map((inv) => (
+            <PendingInviteRow
+              key={inv.id}
+              invite={inv}
+              onRevoke={() => revokeM.mutate(inv.id)}
+              pending={revokeM.isPending}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function PendingInviteRow({
+  invite,
+  onRevoke,
+  pending,
+}: {
+  invite: InviteListItem;
+  onRevoke: () => void;
+  pending: boolean;
+}) {
+  return (
+    <li className="flex items-center justify-between gap-3 text-[13px]">
+      <div className="flex items-center gap-2">
+        <Badge variant="neutral">{invite.role}</Badge>
+        <span>{invite.email}</span>
+        <span className="text-[11px] text-[color:var(--text-tertiary)]">
+          pending
+        </span>
+      </div>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        loading={pending}
+        onClick={onRevoke}
+        data-testid={`revoke-invite-${invite.id}`}
+      >
+        Revoke
+      </Button>
+    </li>
+  );
+}
+
+// Currently unused but exported for future role-change UI integration.
+export const PROJECT_MEMBER_ROLE_OPTIONS: ProjectMemberRole[] = [
+  "owner",
+  "admin",
+  "member",
+  "viewer",
+];
+
+// Re-export for tests / future UI hookups.
+export const __projectMembersInternals = {
+  setRole: projectMembersApi.setRole,
+  remove: projectMembersApi.remove,
+};
 
 interface InviteMemberDialogProps {
   open: boolean;

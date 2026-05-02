@@ -72,7 +72,10 @@ def test_delete_asset_owner_or_admin_only(db_session, monkeypatch) -> None:
         "/auth/login", json={"email": "intruder@x.com", "password": "hunter22"}
     ).json()["access_token"]
     r = client.delete(f"/assets/{aid}", headers=_hdr(other))
-    assert r.status_code == 403
+    # Plan-13 Phase 7 Task 2 — non-member sees 404 (TaskNotFound mask)
+    # rather than 403, so we never leak project existence to anyone
+    # outside the project. Workspace-admin still gets owner shortcut.
+    assert r.status_code == 404
 
     # Owner can delete
     r = client.delete(f"/assets/{aid}", headers=_hdr(token))

@@ -9,6 +9,7 @@ import { rootRoute } from "./routes/_root";
 import { indexRoute } from "./routes/index";
 import { loginRoute } from "./routes/login";
 import { registerRoute } from "./routes/register";
+import { inviteAcceptRoute } from "./routes/invite.$token";
 import { projectsRoute } from "./routes/projects";
 import { projectDetailRoute } from "./routes/projects.$projectId";
 import { projectStatsRoute } from "./routes/projects.$projectId.stats";
@@ -32,6 +33,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
   registerRoute,
+  inviteAcceptRoute,
   projectsRoute,
   projectDetailRoute,
   projectStatsRoute,

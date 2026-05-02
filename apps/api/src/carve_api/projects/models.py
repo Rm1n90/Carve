@@ -3,9 +3,11 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -95,5 +97,45 @@ class Class(Base):
         String(200), nullable=True, default=None
     )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ProjectMember(Base):
+    """Per-project membership with a role.
+
+    Plan-13 Phase 7 Task 1. Composite PK ``(project_id, user_id)``;
+    secondary index on ``user_id`` to support "what projects am I a
+    member of?" lookups. Roles are stored as plain text guarded by a
+    CHECK constraint (no PG enum) so future role additions don't
+    require an ALTER TYPE migration.
+    """
+
+    __tablename__ = "project_members"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member', 'viewer')",
+            name="ck_project_members_role",
+        ),
+        Index("ix_project_members_user_id", "user_id"),
+    )
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    added_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

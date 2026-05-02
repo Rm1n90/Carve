@@ -26,6 +26,8 @@ import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { SelectionCountBadge } from "@/components/annotation/SelectionCountBadge";
 import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip";
 import { SamUnavailableBanner } from "@/components/annotation/SamUnavailableBanner";
+import { SavedViewsMenu } from "@/components/search/SavedViewsMenu";
+import { viewsApi, type SavedView, type SavedViewQuery } from "@/api/views";
 import { TopBar } from "@/components/nav/TopBar";
 import { LeftNav } from "@/components/nav/LeftNav";
 import { BottomBar } from "@/components/nav/BottomBar";
@@ -153,6 +155,68 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // uses this flow.
   const [renameClass, setRenameClass] = useState<{ id: string; name: string } | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+
+  // ----- Plan-13 Phase 7 Task 9: saved views ---------------------------------
+  // The active view's filters are tracked at the page level so future child
+  // components (e.g. ReviewPanel) can consume them; the URL is kept in sync
+  // with `?view=<id>` so reloading the page restores the user's selection.
+  const initialViewId =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("view")
+      : null;
+  const initialStatus =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("status")
+      : null;
+  const [activeViewId, setActiveViewId] = useState<string | null>(initialViewId);
+  const [appliedQuery, setAppliedQuery] = useState<SavedViewQuery>(() => {
+    if (initialViewId) return {};
+    if (
+      initialStatus === "proposed" ||
+      initialStatus === "accepted" ||
+      initialStatus === "rejected"
+    ) {
+      return { status: initialStatus };
+    }
+    return {};
+  });
+
+  // Resolve `?view=<id>` on mount → load the view, apply filters, hydrate URL.
+  useEffect(() => {
+    if (!initialViewId) return;
+    let cancelled = false;
+    void viewsApi
+      .get(initialViewId)
+      .then((view) => {
+        if (cancelled) return;
+        setAppliedQuery(view.query ?? {});
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Fallback silently — bad/expired view IDs shouldn't break the page.
+        setActiveViewId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // We intentionally only run this once on mount. Subsequent selections go
+    // through `applySavedView` below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const applySavedView = useCallback((view: SavedView) => {
+    setActiveViewId(view.id);
+    setAppliedQuery(view.query ?? {});
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", view.id);
+      url.searchParams.delete("status");
+      window.history.replaceState(window.history.state, "", url.toString());
+    }
+  }, []);
+  // Intentionally read so the linter doesn't drop the reference; future
+  // children consume `appliedQuery` to drive their filters.
+  void appliedQuery;
   // Image load lifecycle. Phase A core 1 — without this, image load failures
   // were invisible and the user just saw an empty canvas.
   const [imageStatus, setImageStatus] = useState<ImageLoadStatus>("loading");
@@ -804,6 +868,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
           />
 
           <SamUnavailableBanner />
+
+          <div className="flex items-center justify-end gap-2 px-3 pt-2">
+            <SavedViewsMenu
+              taskId={taskId}
+              currentQuery={appliedQuery}
+              activeViewId={activeViewId}
+              onSelect={applySavedView}
+            />
+          </div>
 
           <ThumbnailStripGate
             taskId={taskId}

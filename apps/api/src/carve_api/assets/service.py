@@ -1,3 +1,4 @@
+import uuid
 import zipfile
 from io import BytesIO
 from typing import Literal
@@ -88,8 +89,20 @@ class AssetService:
         offset: int = 0,
         q: str | None = None,
         status: AssetStatusFilter = "all",
+        class_id: uuid.UUID | None = None,
+        annotation_status: str | None = None,
+        min_size: int | None = None,
+        max_size: int | None = None,
     ) -> list[Asset]:
-        stmt = self._task_assets_query(task=task, q=q, status=status).order_by(Asset.created_at)
+        stmt = self._task_assets_query(
+            task=task,
+            q=q,
+            status=status,
+            class_id=class_id,
+            annotation_status=annotation_status,
+            min_size=min_size,
+            max_size=max_size,
+        ).order_by(Asset.created_at)
         if offset:
             stmt = stmt.offset(offset)
         if limit is not None:
@@ -102,9 +115,21 @@ class AssetService:
         task: Task,
         q: str | None = None,
         status: AssetStatusFilter = "all",
+        class_id: uuid.UUID | None = None,
+        annotation_status: str | None = None,
+        min_size: int | None = None,
+        max_size: int | None = None,
     ) -> int:
         """Total number of assets matching the same filters as ``list_for_task``."""
-        sub = self._task_assets_query(task=task, q=q, status=status).subquery()
+        sub = self._task_assets_query(
+            task=task,
+            q=q,
+            status=status,
+            class_id=class_id,
+            annotation_status=annotation_status,
+            min_size=min_size,
+            max_size=max_size,
+        ).subquery()
         return int(self.session.execute(select(func.count()).select_from(sub)).scalar() or 0)
 
     def annotated_count_for_task(self, *, task: Task) -> int:
@@ -162,11 +187,23 @@ class AssetService:
         return None
 
     def _task_assets_query(
-        self, *, task: Task, q: str | None, status: AssetStatusFilter
+        self,
+        *,
+        task: Task,
+        q: str | None,
+        status: AssetStatusFilter,
+        class_id: uuid.UUID | None = None,
+        annotation_status: str | None = None,
+        min_size: int | None = None,
+        max_size: int | None = None,
     ):
         stmt = select(Asset).where(Asset.task_id == task.id)
         if q:
             stmt = stmt.where(Asset.original_name.ilike(f"%{q}%"))
+        if min_size is not None:
+            stmt = stmt.where(Asset.size_bytes >= min_size)
+        if max_size is not None:
+            stmt = stmt.where(Asset.size_bytes <= max_size)
         if status != "all":
             ann_exists = exists().where(
                 Annotation.frame_id == Frame.id, Frame.asset_id == Asset.id
@@ -175,6 +212,17 @@ class AssetService:
                 stmt = stmt.where(ann_exists)
             else:  # "unannotated"
                 stmt = stmt.where(~ann_exists)
+        if class_id is not None or annotation_status is not None:
+            ann_q = (
+                select(Annotation.id)
+                .join(Frame, Frame.id == Annotation.frame_id)
+                .where(Frame.asset_id == Asset.id)
+            )
+            if class_id is not None:
+                ann_q = ann_q.where(Annotation.class_id == class_id)
+            if annotation_status is not None:
+                ann_q = ann_q.where(Annotation.status == annotation_status)
+            stmt = stmt.where(ann_q.exists())
         return stmt
 
     def delete(self, *, asset: Asset) -> None:

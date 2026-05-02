@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from redis import Redis
 from sqlalchemy.orm import Session
 
+from carve_api.audit import service as audit_service
+from carve_api.audit.actions import RETRAIN_CANCELLED, RETRAIN_SUBMITTED
 from carve_api.auth.models import User
 from carve_api.config import get_settings
 from carve_api.deps import get_current_user, get_db
@@ -26,7 +28,11 @@ from carve_api.jobs.retrain import (
     read_progress,
     run_retrain_job,
 )
-from carve_api.projects.service import require_visible_task
+from carve_api.projects.service import (
+    _MUTATING_ROLES,
+    require_project_role,
+    require_visible_task,
+)
 
 
 router = APIRouter(prefix="/tasks", tags=["retrain"])
@@ -89,6 +95,8 @@ def enqueue_retrain(
         )
     try:
         task = require_visible_task(db, user, task_id)
+        # Plan-13 Phase 7 Task 2 — retrain enqueue is a mutation; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
 
@@ -120,6 +128,25 @@ def enqueue_retrain(
             )
     except Exception:  # noqa: BLE001
         pass
+
+    # Plan-13 Phase 7 Task 3 — best-effort audit; never raises.
+    audit_service.record(
+        db,
+        actor_id=user.id,
+        action=RETRAIN_SUBMITTED,
+        target_type="retrain_job",
+        target_id=None,
+        project_id=task.project_id,
+        summary=f"{RETRAIN_SUBMITTED} task={task.id} job={job_payload.job_id}",
+        metadata={
+            "job_id": job_payload.job_id,
+            "task_id": str(task.id),
+            "include_proposed": bool(payload.include_proposed),
+            "epochs": int(payload.epochs),
+            "imgsz": int(payload.imgsz),
+        },
+    )
+    db.commit()
 
     return RetrainEnqueueOut(job_id=job_payload.job_id)
 
@@ -156,6 +183,8 @@ def cancel_retrain(
 ) -> dict:
     try:
         task = require_visible_task(db, user, task_id)
+        # Plan-13 Phase 7 Task 2 — cancelling a retrain is a mutation; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
 
@@ -190,5 +219,18 @@ def cancel_retrain(
         storage.remove_object(f"retrain/{task.id}/{job_id}/dataset.zip")
     except Exception:  # noqa: BLE001
         pass
+
+    # Plan-13 Phase 7 Task 3 — best-effort audit; never raises.
+    audit_service.record(
+        db,
+        actor_id=user.id,
+        action=RETRAIN_CANCELLED,
+        target_type="retrain_job",
+        target_id=None,
+        project_id=task.project_id,
+        summary=f"{RETRAIN_CANCELLED} task={task.id} job={job_id}",
+        metadata={"job_id": job_id, "task_id": str(task.id)},
+    )
+    db.commit()
 
     return {"job_id": job_id, "status": "canceled"}

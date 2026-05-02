@@ -107,6 +107,69 @@ ORDER BY t.created_at ASC
 """)
 
 
+# Plan-13 Phase 7 Task 10 — reviewer accept-rate per project window.
+# Counts annotations whose status is accepted/rejected within the
+# half-open interval [from_ts, to_ts). Reviewers with zero matching rows
+# are filtered out by the inner ``HAVING`` clause.
+REVIEWER_QUALITY_SQL = text("""
+SELECT
+    a.reviewed_by_id::text AS reviewer_id,
+    u.email                AS email,
+    SUM(CASE WHEN a.status IN ('accepted','rejected') THEN 1 ELSE 0 END) AS total_reviewed,
+    SUM(CASE WHEN a.status = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+    SUM(CASE WHEN a.status = 'rejected' THEN 1 ELSE 0 END) AS rejected
+FROM annotations a
+JOIN tasks t ON t.id = a.task_id
+JOIN users u ON u.id = a.reviewed_by_id
+WHERE t.project_id = :project_id
+  AND a.reviewed_by_id IS NOT NULL
+  AND a.reviewed_at >= :from_ts
+  AND a.reviewed_at <  :to_ts
+GROUP BY a.reviewed_by_id, u.email
+HAVING SUM(CASE WHEN a.status IN ('accepted','rejected') THEN 1 ELSE 0 END) > 0
+ORDER BY u.email ASC
+""")
+
+
+# Plan-13 Phase 7 Task 10 — retrain history per project. Returns weights
+# whose ``metadata->'retrain'`` blob is populated, ordered by ``created_at``
+# ASC so charts plot in chronological order.
+RETRAIN_HISTORY_SQL = text("""
+SELECT
+    w.id::text AS weight_id,
+    w.created_at AS created_at,
+    w.metadata AS metadata
+FROM weights w
+WHERE w.project_id = :project_id
+  AND w.metadata IS NOT NULL
+  AND w.metadata ? 'retrain'
+ORDER BY w.created_at ASC
+LIMIT :limit
+""")
+
+
+# Plan-13 Phase 7 Task 10 — per-class proxy precision for a single task.
+# proxy_precision = accepted / (accepted + rejected); null when nothing
+# has been reviewed yet for the class. Includes zero-count classes so
+# the dashboard renders the full taxonomy.
+PER_CLASS_QUALITY_SQL = text("""
+SELECT
+    c.id::text AS class_id,
+    c.name     AS name,
+    c.color    AS color,
+    SUM(CASE WHEN a.id IS NOT NULL AND a.status = 'proposed' THEN 1 ELSE 0 END) AS proposed,
+    SUM(CASE WHEN a.id IS NOT NULL AND a.status = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+    SUM(CASE WHEN a.id IS NOT NULL AND a.status = 'rejected' THEN 1 ELSE 0 END) AS rejected
+FROM classes c
+LEFT JOIN annotations a
+       ON a.class_id = c.id
+      AND a.task_id = :task_id
+WHERE c.project_id = :project_id
+GROUP BY c.id, c.idx, c.name, c.color
+ORDER BY c.idx ASC
+""")
+
+
 # Time-on-task: SUM(per-user gaps <= 300s) using LAG() window function.
 # Annotations with NULL created_by are excluded (anonymous edits don't count).
 # A user's first annotation has no LAG predecessor -> CASE branch is NULL,

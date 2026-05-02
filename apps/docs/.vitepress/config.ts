@@ -6,6 +6,7 @@ export default defineConfig({
   base: "/docs/",
   cleanUrls: true,
   themeConfig: {
+    logo: "/logo.svg",
     nav: [
       { text: "Getting started", link: "/getting-started" },
       { text: "Tools", link: "/tools" },

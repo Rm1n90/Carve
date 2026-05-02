@@ -474,6 +474,9 @@ def retrain_job(
 
     # Phase 4 — register the new Weight row
     _set_phase(redis_client, job_id, phase="registering", progress_pct=90)
+    from carve_api.audit import service as _audit
+    from carve_api.audit.actions import RETRAIN_COMPLETED, RETRAIN_FAILED
+
     try:
         new_weight_id = _register_trained_weight(
             session=session,
@@ -483,6 +486,83 @@ def retrain_job(
             weight_name=payload.weight_name,
             class_names=class_names,
             payload=payload,
+        )
+        # Plan-13 Phase 7 Task 6 — register a DatasetVersion for the
+        # bundle that just trained, and link it from Weight.metadata_.
+        try:
+            from carve_api.annotations.models import Annotation
+            from carve_api.assets.models import Asset
+            from carve_api.datasets.service import DatasetService
+            from carve_api.weights.models import Weight
+
+            ann_rows_for_summary = list(
+                session.execute(
+                    select(Annotation).where(Annotation.task_id == task.id)
+                ).scalars()
+            )
+            asset_count = len(
+                list(
+                    session.execute(
+                        select(Asset.id).where(Asset.task_id == task.id)
+                    ).scalars()
+                )
+            )
+            accepted_count = sum(
+                1 for a in ann_rows_for_summary if a.status == "accepted"
+            )
+            rejected_count = sum(
+                1 for a in ann_rows_for_summary if a.status == "rejected"
+            )
+            ds_now = datetime.now(timezone.utc)
+            ds_version = DatasetService.register(
+                session,
+                project_id=task.project_id,
+                task_id=task.id,
+                kind="retrain",
+                source=job_id,
+                created_by=actor_uuid,
+                label=f"Retrain {ds_now.isoformat(timespec='seconds')}",
+                summary={
+                    "annotations": len(ann_rows_for_summary),
+                    "accepted": accepted_count,
+                    "rejected": rejected_count,
+                    "classes": list(class_names),
+                    "asset_count": asset_count,
+                },
+                blob_key=dataset_key,
+            )
+            new_weight = session.get(Weight, new_weight_id)
+            if new_weight is not None:
+                meta = dict(new_weight.metadata_ or {})
+                retrain_meta = dict(meta.get("retrain") or {})
+                retrain_meta["dataset_version_id"] = str(ds_version.id)
+                meta["retrain"] = retrain_meta
+                new_weight.metadata_ = meta
+                session.flush()
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "retrain.dataset_version.register failed job_id=%s", job_id
+            )
+        # Plan-13 Phase 7 Task 3 — best-effort audit on completion.
+        # Recorded BEFORE commit so the audit row joins the same tx as
+        # the new Weight; if either fails the rollback below covers both.
+        _audit.record(
+            session,
+            actor_id=actor_uuid,
+            action=RETRAIN_COMPLETED,
+            target_type="retrain_job",
+            target_id=None,
+            project_id=task.project_id,
+            summary=(
+                f"{RETRAIN_COMPLETED} task={task.id} "
+                f"weight={new_weight_id}"
+            ),
+            metadata={
+                "job_id": job_id,
+                "task_id": str(task.id),
+                "weight_id": str(new_weight_id),
+                "metrics": dict(descriptor.get("metrics") or {}),
+            },
         )
         session.commit()
     except Exception as exc:  # noqa: BLE001
@@ -499,6 +579,26 @@ def retrain_job(
             error=f"register_failed: {exc}",
             error_traceback=traceback.format_exc(),
         )
+        # Plan-13 Phase 7 Task 3 — best-effort failure audit on a fresh
+        # tx so the rolled-back register doesn't drag the audit row down.
+        try:
+            _audit.record(
+                session,
+                actor_id=actor_uuid,
+                action=RETRAIN_FAILED,
+                target_type="retrain_job",
+                target_id=None,
+                project_id=task.project_id if task is not None else None,
+                summary=f"{RETRAIN_FAILED} task={payload.task_id} job={job_id}",
+                metadata={
+                    "job_id": job_id,
+                    "task_id": payload.task_id,
+                    "error": str(exc),
+                },
+            )
+            session.commit()
+        except Exception:  # noqa: BLE001
+            pass
         return {"ok": False, "error": "register_failed"}
 
     _set_phase(
