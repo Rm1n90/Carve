@@ -35,6 +35,36 @@ class Settings(BaseSettings):
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
     api_env: str = Field(default="development", alias="API_ENV")
 
+    # Plan-13 Phase 7 Task 5 -- OIDC SSO entry point. Comma-separated list
+    # of provider names enabled for SSO (e.g. "google,microsoft"). When
+    # empty, all /auth/sso/* routes return 404. Per-provider OIDC settings
+    # follow the OIDC_<PROVIDER>_* convention; only Google is wired by
+    # default but additional providers can be added by environment alone.
+    sso_providers: str = Field(default="", alias="SSO_PROVIDERS")
+    oidc_google_client_id: str = Field(default="", alias="OIDC_GOOGLE_CLIENT_ID")
+    oidc_google_client_secret: str = Field(
+        default="", alias="OIDC_GOOGLE_CLIENT_SECRET"
+    )
+    oidc_google_discovery_url: str = Field(
+        default="https://accounts.google.com/.well-known/openid-configuration",
+        alias="OIDC_GOOGLE_DISCOVERY_URL",
+    )
+    oidc_google_redirect_uri: str = Field(
+        default="", alias="OIDC_GOOGLE_REDIRECT_URI"
+    )
+    oidc_microsoft_client_id: str = Field(
+        default="", alias="OIDC_MICROSOFT_CLIENT_ID"
+    )
+    oidc_microsoft_client_secret: str = Field(
+        default="", alias="OIDC_MICROSOFT_CLIENT_SECRET"
+    )
+    oidc_microsoft_discovery_url: str = Field(
+        default="", alias="OIDC_MICROSOFT_DISCOVERY_URL"
+    )
+    oidc_microsoft_redirect_uri: str = Field(
+        default="", alias="OIDC_MICROSOFT_REDIRECT_URI"
+    )
+
     @field_validator("jwt_secret")
     @classmethod
     def _jwt_long(cls, v: str) -> str:
@@ -59,6 +89,21 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def sso_provider_list(self) -> list[str]:
+        return [p.strip().lower() for p in self.sso_providers.split(",") if p.strip()]
+
+
+def get_enabled_sso_providers() -> list[str]:
+    """Return the list of enabled OIDC SSO providers (lowercase, deduped).
+
+    Empty list disables all /auth/sso/* routes (they return 404). Read at
+    request time -- ``get_settings()`` is lru-cached so this stays cheap,
+    but tests that monkeypatch the env then ``get_settings.cache_clear()``
+    will see the new value immediately.
+    """
+    return list(dict.fromkeys(get_settings().sso_provider_list))
 
 
 @lru_cache
