@@ -657,27 +657,25 @@ def _default_factory() -> SamPredictor:
     model = get_sam_model()
     if model == "sam3.1":
         # Plan 12: native sam3 image predictor (point + box + text).
+        # Re-register text/box unconditionally so a prior variant's
+        # predictor (e.g. transformers SAM 3) doesn't shadow the
+        # native sam3.1 implementation after /sam/switch.
         from carve_model.sam import sam3p1_adapter
 
         adapter = sam3p1_adapter.build_sam3p1_image_predictor()
-        if _TEXT_PREDICTOR_FACTORY is None:
-            set_text_predictor(sam3p1_adapter.make_sam3p1_text_predictor())
-        if _BOX_PREDICTOR_FACTORY is None:
-            set_box_predictor(sam3p1_adapter.make_sam3p1_box_predictor())
+        set_text_predictor(sam3p1_adapter.make_sam3p1_text_predictor())
+        set_box_predictor(sam3p1_adapter.make_sam3p1_box_predictor())
         return adapter
 
     if model == "sam3":
         from carve_model.sam import sam3_adapter
 
         adapter = sam3_adapter.build_sam3_image_predictor()
-        # Side effect: ensure /sam/text-prompt has a working predictor.
-        # If the operator pre-registered a custom one, leave it alone.
-        if _TEXT_PREDICTOR_FACTORY is None:
-            set_text_predictor(sam3_adapter.make_sam3_text_predictor())
-        # Side effect: ensure /sam/box-prompt has a working predictor.
-        # If the operator pre-registered a custom one, leave it alone.
-        if _BOX_PREDICTOR_FACTORY is None:
-            set_box_predictor(sam3_adapter.make_sam3_box_predictor())
+        # Re-register text/box unconditionally on every variant load
+        # so a prior sam3.1 native predictor (or other) doesn't leak
+        # into the SAM 3 transformers path.
+        set_text_predictor(sam3_adapter.make_sam3_text_predictor())
+        set_box_predictor(sam3_adapter.make_sam3_box_predictor())
         return adapter
 
     if model.startswith("sam2"):
