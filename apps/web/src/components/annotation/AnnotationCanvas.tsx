@@ -2629,6 +2629,30 @@ export function AnnotationCanvas({
         }
       }
 
+      // Plan 14 Phase 8 Task 5 — type-to-filter quick reassign. When
+      // ≥1 annotation is selected and the user types a single letter
+      // (a-z) outside any input, open the palette in reassign mode
+      // with the letter pre-filled. Numbers 1..9 keep their existing
+      // ``set active class N`` behavior; modifier keys (⌘/Ctrl/Alt/Meta)
+      // are ignored so ⌘A still selects all.
+      if (
+        e.key.length === 1 &&
+        /^[a-z]$/i.test(e.key) &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        const selIds = useAnnotations.getState().selectedIds;
+        if (selIds.length > 0) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          setPaletteMode("reassign");
+          setPaletteInitialQuery(e.key.toLowerCase());
+          setPaletteOpen(true);
+          return;
+        }
+      }
+
       if (tool === "cursor") {
         // ArrowKey nudge — only when the cursor tool has a bbox selected
         // AND the user has no modifier (asset prev/next is non-modifier
