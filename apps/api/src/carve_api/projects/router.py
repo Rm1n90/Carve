@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.projects.models import ProjectMember
 from carve_api.projects.schemas import (
     ClassIn,
     ClassOut,
@@ -21,7 +22,13 @@ from carve_api.projects.schemas import (
     TaskIn,
     TaskOut,
 )
-from carve_api.projects.service import ClassService, ProjectService, TaskService
+from carve_api.projects.service import (
+    ClassService,
+    ProjectService,
+    TaskService,
+    _MUTATING_ROLES,
+    require_project_role,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -39,6 +46,29 @@ def create_project(
     p = ProjectService(db).create(
         actor=user, name=payload.name, description=payload.description
     )
+    # Plan-13 Phase 7 Task 2 — auto-insert the creator as ``owner`` so
+    # the membership-aware ACL recognises them. Then add any explicit
+    # members from the payload (skipping the creator if they appear, so
+    # we never collide with the implicit owner row).
+    db.add(
+        ProjectMember(
+            project_id=p.id, user_id=user.id, role="owner", added_by=user.id
+        )
+    )
+    if payload.members:
+        seen_user_ids = {user.id}
+        for m in payload.members:
+            if m.user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(m.user_id)
+            db.add(
+                ProjectMember(
+                    project_id=p.id,
+                    user_id=m.user_id,
+                    role=m.role,
+                    added_by=user.id,
+                )
+            )
     db.commit()
     # v3.3 Issue 2 — newly-created project's owner is the current actor;
     # surface their email so the response shape matches list/get.
@@ -84,11 +114,15 @@ def patch_project(
     db: Session = Depends(get_db),
 ) -> ProjectOut:
     try:
+        # Plan-13 Phase 7 Task 2 — membership gate. Non-members get 403
+        # NotProjectMember; viewers get 403 InsufficientRole.
+        require_project_role(db, user, project_id, _MUTATING_ROLES)
         p = ProjectService(db).update(
             actor=user,
             project_id=project_id,
             name=payload.name,
             description=payload.description,
+            skip_owner_check=True,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -108,7 +142,11 @@ def delete_project(
     db: Session = Depends(get_db),
 ) -> None:
     try:
-        ProjectService(db).delete(actor=user, project_id=project_id)
+        # Plan-13 Phase 7 Task 2 — only owner/admin/member may delete a project.
+        require_project_role(db, user, project_id, _MUTATING_ROLES)
+        ProjectService(db).delete(
+            actor=user, project_id=project_id, skip_owner_check=True
+        )
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
@@ -126,7 +164,10 @@ def create_task(
     db: Session = Depends(get_db),
 ) -> TaskOut:
     try:
-        project = ProjectService(db).get(actor=user, project_id=project_id)
+        # Plan-13 Phase 7 Task 2 — gate task creation behind the
+        # membership role check. ``require_project_role`` returns the
+        # live Project so we don't pay a second ``session.get`` here.
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
         task = TaskService(db).create(
             actor=user, project=project, name=payload.name, kind=payload.kind
         )
@@ -162,7 +203,8 @@ def delete_task(
     db: Session = Depends(get_db),
 ) -> None:
     try:
-        project = ProjectService(db).get(actor=user, project_id=project_id)
+        # Plan-13 Phase 7 Task 2 — gate task deletion on membership.
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
         TaskService(db).delete(actor=user, project=project, task_id=task_id)
     except AppError as exc:
         raise _http(exc) from exc
@@ -181,7 +223,8 @@ def create_class(
     db: Session = Depends(get_db),
 ) -> ClassOut:
     try:
-        project = ProjectService(db).get(actor=user, project_id=project_id)
+        # Plan-13 Phase 7 Task 2 — class CRUD is a project mutation.
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
         c = ClassService(db).create(
             project=project,
             idx=payload.idx,
@@ -223,7 +266,8 @@ def patch_class(
     db: Session = Depends(get_db),
 ) -> ClassOut:
     try:
-        project = ProjectService(db).get(actor=user, project_id=project_id)
+        # Plan-13 Phase 7 Task 2 — class PATCH is a project mutation.
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
         # v3.8 Phase 3 — text_prompt uses Pydantic's `model_fields_set`
         # so an explicit `null` from the client clears the prompt while
         # an omitted field preserves the current value.
@@ -256,7 +300,8 @@ def delete_class(
     db: Session = Depends(get_db),
 ) -> None:
     try:
-        project = ProjectService(db).get(actor=user, project_id=project_id)
+        # Plan-13 Phase 7 Task 2 — class DELETE is a project mutation.
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
         ClassService(db).delete(project=project, class_id=class_id)
     except AppError as exc:
         raise _http(exc) from exc
@@ -281,9 +326,12 @@ def import_classes(
     able to read both projects (v1 ACL = all authenticated users).
     """
     try:
-        dest = ProjectService(db).get(actor=user, project_id=project_id)
-        source = ProjectService(db).get(
-            actor=user, project_id=payload.source_project_id
+        # Plan-13 Phase 7 Task 2 — caller must be a project member of
+        # BOTH the source and destination (any role suffices for the
+        # source read; the destination write requires a mutating role).
+        dest = require_project_role(db, user, project_id, _MUTATING_ROLES)
+        source = require_project_role(
+            db, user, payload.source_project_id, _MUTATING_ROLES
         )
         imported, skipped = ClassService(db).import_from_project(
             source=source, dest=dest
@@ -351,7 +399,8 @@ def set_task_classes(
     does not destroy data on this call.
     """
     try:
-        project = ProjectService(db).get(actor=user, project_id=project_id)
+        # Plan-13 Phase 7 Task 2 — editing a task's class subset is a mutation.
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
         task_svc = TaskService(db)
         task = task_svc.get(project=project, task_id=task_id)
         task_svc.set_allowed_classes(
@@ -403,7 +452,8 @@ def duplicate_task(
     if name_override is not None:
         count = 1
     try:
-        project = ProjectService(db).get(actor=user, project_id=project_id)
+        # Plan-13 Phase 7 Task 2 — duplicate creates new tasks; mutation gate.
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
         new_tasks = TaskService(db).duplicate(
             actor=user,
             project=project,

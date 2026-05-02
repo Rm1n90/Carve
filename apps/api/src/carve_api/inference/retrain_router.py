@@ -26,7 +26,11 @@ from carve_api.jobs.retrain import (
     read_progress,
     run_retrain_job,
 )
-from carve_api.projects.service import require_visible_task
+from carve_api.projects.service import (
+    _MUTATING_ROLES,
+    require_project_role,
+    require_visible_task,
+)
 
 
 router = APIRouter(prefix="/tasks", tags=["retrain"])
@@ -89,6 +93,8 @@ def enqueue_retrain(
         )
     try:
         task = require_visible_task(db, user, task_id)
+        # Plan-13 Phase 7 Task 2 — retrain enqueue is a mutation; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
 
@@ -156,6 +162,8 @@ def cancel_retrain(
 ) -> dict:
     try:
         task = require_visible_task(db, user, task_id)
+        # Plan-13 Phase 7 Task 2 — cancelling a retrain is a mutation; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
 

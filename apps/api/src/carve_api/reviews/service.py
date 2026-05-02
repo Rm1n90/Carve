@@ -20,6 +20,8 @@ from carve_api.auth.models import User
 from carve_api.errors import AppError
 from carve_api.projects.service import (
     TaskNotFound,
+    _MUTATING_ROLES,
+    get_project_role,
     require_visible_task,
 )
 
@@ -71,12 +73,21 @@ class ReviewService:
         if a is None:
             raise AnnotationNotFound("annotation not found")
         try:
-            require_visible_task(self.session, actor, a.task_id)
+            task = require_visible_task(self.session, actor, a.task_id)
         except AppError as exc:
             # Mask "task not found" / project-level access failures as
             # "annotation not found" for the same IDOR-mitigation reason
             # as the annotations router.
             raise AnnotationNotFound("annotation not found") from exc
+
+        # Plan-13 Phase 7 Task 2 — viewers (project-role) cannot review.
+        # ``require_visible_task`` already enforced membership; here we
+        # additionally require a *mutating* role.
+        role = get_project_role(self.session, actor.id, task.project_id)
+        if role is None or role not in _MUTATING_ROLES:
+            raise ReviewForbidden(
+                "only project member/admin/owner can review"
+            )
 
         target_status = _decision_to_status(decision)
         # Snapshot the geometry as it stands NOW so a future edit can
@@ -114,7 +125,11 @@ class ReviewService:
                 self.review_one(
                     actor=actor, annotation_id=ann_id, decision=decision
                 )
-            except (AnnotationNotFound, TaskNotFound):
+            except (AnnotationNotFound, TaskNotFound, ReviewForbidden):
+                # Plan-13 Phase 7 Task 2 — ReviewForbidden also counts as
+                # "skipped" so a mixed batch (some ids in projects where
+                # the actor has the role, some where they don't) doesn't
+                # 403 the entire request.
                 skipped += 1
             else:
                 reviewed += 1

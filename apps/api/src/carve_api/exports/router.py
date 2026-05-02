@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.projects.service import require_visible_task
+from carve_api.projects.service import (
+    _MUTATING_ROLES,
+    require_project_role,
+    require_visible_task,
+)
 from carve_api.exports.job import ExportJobPayload, run_export_job
 from carve_api.exports.schemas import ExportIn, ExportProgressOut
 from carve_api.exports.service import ExportService
@@ -45,6 +49,8 @@ def enqueue_export(
 ) -> dict:
     try:
         task = require_visible_task(db, user, task_id)
+        # Plan-13 Phase 7 Task 2 — export submit is a mutation; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
     e = ExportService(db).create(

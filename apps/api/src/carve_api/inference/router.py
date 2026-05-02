@@ -42,7 +42,11 @@ from carve_api.inference.sam_track import (
     start as _track_start,
     step as _track_step,
 )
-from carve_api.projects.service import require_visible_task
+from carve_api.projects.service import (
+    _MUTATING_ROLES,
+    require_project_role,
+    require_visible_task,
+)
 from carve_api.weights.models import Weight, WeightAssignment
 
 
@@ -116,6 +120,8 @@ def auto_annotate(
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
         task = require_visible_task(db, user, asset.task_id)
+        # Plan-13 Phase 7 Task 2 — auto-annotate is a mutation; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
     # v3.5 Phase F5 — `weight_id` is now optional. When omitted, fall
@@ -221,6 +227,8 @@ def enqueue_batch_auto_annotate(
 ) -> dict:
     try:
         task = require_visible_task(db, user, task_id)
+        # Plan-13 Phase 7 Task 2 — batch auto-annotate is a mutation; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
     weight = db.get(Weight, weight_id)
@@ -371,6 +379,8 @@ def enqueue_sam_auto_text_batch(
     """
     try:
         task = require_visible_task(db, user, task_id)
+        # Plan-13 Phase 7 Task 2 — SAM auto-text batch is a mutation; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
     from carve_api.projects.models import Class as ClassModel
@@ -542,6 +552,8 @@ def sam_auto_text_endpoint(
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
         task = require_visible_task(db, user, asset.task_id)
+        # Plan-13 Phase 7 Task 2 — sync SAM auto-text mutates annotations; viewers 403.
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
     # Resolve classes from the task's project, preserving the user's

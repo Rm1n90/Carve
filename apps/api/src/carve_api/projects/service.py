@@ -6,8 +6,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from carve_api.auth.models import User, UserRole
-from carve_api.errors import AppError
-from carve_api.projects.models import Class, Project, Task, TaskKind
+from carve_api.errors import AppError, InsufficientRole, NotProjectMember
+from carve_api.projects.models import Class, Project, ProjectMember, Task, TaskKind
+
+
+# Plan-13 Phase 7 Task 2 — canonical role tuples used by ``require_project_role``.
+# Mirror the CHECK constraint on ``project_members.role`` (see models.py).
+_MUTATING_ROLES: tuple[str, ...] = ("owner", "admin", "member")
+_READ_ROLES: tuple[str, ...] = ("owner", "admin", "member", "viewer")
+_ADMIN_ROLES: tuple[str, ...] = ("owner", "admin")
 
 
 class ProjectNotFound(AppError):
@@ -32,32 +39,45 @@ class ProjectService:
 
     def list_visible(
         self, *, actor: User, include_deleted: bool = False
-    ) -> list[Project]:  # noqa: ARG002
-        # v1 simplification: all authenticated users see all projects.
-        # `actor` reserved for the future per-project ACL (Plan 03+).
+    ) -> list[Project]:
+        # Plan-13 Phase 7 Task 2 — workspace admins still see every project;
+        # non-admin users see only projects with a matching ``project_members``
+        # row (any role suffices for read).
         stmt = select(Project)
+        if actor.role != UserRole.admin:
+            stmt = stmt.join(
+                ProjectMember, ProjectMember.project_id == Project.id
+            ).where(ProjectMember.user_id == actor.id)
         if not include_deleted:
             stmt = stmt.where(Project.deleted_at.is_(None))
         stmt = stmt.order_by(Project.created_at.desc())
-        return list(self.session.execute(stmt).scalars())
+        return list(self.session.execute(stmt).scalars().unique())
 
     def list_visible_with_owner_email(
         self, *, actor: User, include_deleted: bool = False
-    ) -> list[tuple[Project, str | None]]:  # noqa: ARG002
+    ) -> list[tuple[Project, str | None]]:
         """v3.3 Issue 2 — list visible projects with each owner's email.
 
         JOINs ``users`` to populate ``owner_email`` so the API can return
         a friendly label without forcing the client to N+1 GET each user.
         Uses an outer join so a soft-deleted owner row still yields the
         project with ``owner_email = None``.
+
+        Plan-13 Phase 7 Task 2 — additionally filters by project membership
+        for non-admin users so the listing matches ``list_visible``.
         """
         stmt = select(Project, User.email).outerjoin(
             User, User.id == Project.owner_id
         )
+        if actor.role != UserRole.admin:
+            stmt = stmt.join(
+                ProjectMember, ProjectMember.project_id == Project.id
+            ).where(ProjectMember.user_id == actor.id)
         if not include_deleted:
             stmt = stmt.where(Project.deleted_at.is_(None))
         stmt = stmt.order_by(Project.created_at.desc())
-        return [(p, email) for p, email in self.session.execute(stmt).all()]
+        rows = self.session.execute(stmt).unique().all()
+        return [(p, email) for p, email in rows]
 
     def get(
         self,
@@ -98,9 +118,15 @@ class ProjectService:
         project_id: uuid.UUID,
         name: str | None = None,
         description: str | None = None,
+        skip_owner_check: bool = False,
     ) -> Project:
         p = self.get(actor=actor, project_id=project_id)
-        if not _can_modify(actor, p):
+        # Plan-13 Phase 7 Task 2 — when called from the router the
+        # ``require_project_role`` gate has already authenticated the
+        # caller against the project_members table. The legacy owner
+        # check below remains for any direct service caller that has
+        # not migrated yet (e.g. older test fixtures).
+        if not skip_owner_check and not _can_modify(actor, p):
             raise NotProjectOwner("only owner or admin can modify a project")
         if name is not None:
             p.name = name
@@ -109,10 +135,13 @@ class ProjectService:
         self.session.flush()
         return p
 
-    def delete(self, *, actor: User, project_id: uuid.UUID) -> None:
+    def delete(
+        self, *, actor: User, project_id: uuid.UUID, skip_owner_check: bool = False
+    ) -> None:
         """Soft-delete: set ``deleted_at = now()``. Restorable via /trash."""
         p = self.get(actor=actor, project_id=project_id)
-        if not _can_modify(actor, p):
+        # Plan-13 Phase 7 Task 2 — see ``update`` for the rationale.
+        if not skip_owner_check and not _can_modify(actor, p):
             raise NotProjectOwner("only owner or admin can delete a project")
         p.deleted_at = datetime.now(timezone.utc)
         # Cascade-soft-delete tasks belonging to this project so they stop
@@ -145,13 +174,70 @@ def require_visible_task(
     project-level access failures as their own AppErrors. The caller is
     responsible for translating those AppErrors to HTTP responses (e.g.
     via the ``_http()`` mapper in routers).
+
+    Plan-13 Phase 7 Task 2 — additionally enforces project membership.
+    A user with no ``project_members`` row on the task's project gets
+    :class:`TaskNotFound` (NOT a 403) so we never leak project existence
+    via the auth boundary. Workspace admins are implicit members.
     """
     task = db.get(Task, task_id)
     if task is None:
         raise TaskNotFound("task not found")
     project = ProjectService(db).get(actor=user, project_id=task.project_id)
     TaskService(db).get(project=project, task_id=task.id)
+    role = get_project_role(db, user.id, task.project_id)
+    if role is None:
+        # IDOR-safe: non-members must not be able to distinguish "task
+        # exists in another project" from "task does not exist".
+        raise TaskNotFound("task not found")
     return task
+
+
+def get_project_role(
+    db: Session, user_id: uuid.UUID, project_id: uuid.UUID
+) -> str | None:
+    """Return the user's role on the project, or ``None`` if not a member.
+
+    Plan-13 Phase 7 Task 2 — workspace admins get an implicit ``"owner"``
+    role on every project so existing test fixtures (and break-glass
+    workspace admin operations) keep working without backfilling rows.
+    """
+    user = db.get(User, user_id)
+    if user is not None and user.role == UserRole.admin:
+        return "owner"
+    return db.execute(
+        select(ProjectMember.role).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        )
+    ).scalar_one_or_none()
+
+
+def require_project_role(
+    db: Session,
+    user: User,
+    project_id: uuid.UUID,
+    allowed: tuple[str, ...] = _MUTATING_ROLES,
+) -> "Project":
+    """Resolve a project and enforce that ``user`` has one of ``allowed`` roles.
+
+    Plan-13 Phase 7 Task 2. Raises:
+      * :class:`ProjectNotFound` (404) if the project doesn't exist or is soft-deleted
+      * :class:`NotProjectMember` (403) if the user has no membership row
+      * :class:`InsufficientRole` (403) if their role is not in ``allowed``
+
+    Returns the live :class:`Project` so callers don't pay a second
+    ``session.get`` round-trip.
+    """
+    project = db.get(Project, project_id)
+    if project is None or project.deleted_at is not None:
+        raise ProjectNotFound("project not found")
+    role = get_project_role(db, user.id, project.id)
+    if role is None:
+        raise NotProjectMember("not a project member")
+    if role not in allowed:
+        raise InsufficientRole("insufficient role for this action")
+    return project
 
 
 class TaskService:
@@ -204,10 +290,13 @@ class TaskService:
             raise TaskNotFound("task not found")
         return t
 
-    def delete(self, *, actor: User, project: Project, task_id: uuid.UUID) -> None:
-        """Soft-delete: set ``deleted_at = now()``. Restorable via /trash."""
-        if not _can_modify(actor, project):
-            raise NotProjectOwner("only owner or admin can delete a task")
+    def delete(self, *, actor: User, project: Project, task_id: uuid.UUID) -> None:  # noqa: ARG002
+        """Soft-delete: set ``deleted_at = now()``. Restorable via /trash.
+
+        Plan-13 Phase 7 Task 2 — authorisation moved to the router via
+        ``require_project_role(_MUTATING_ROLES)``. The ``actor`` argument
+        is retained for API stability but no longer drives the gate.
+        """
         t = self.get(project=project, task_id=task_id)
         t.deleted_at = datetime.now(timezone.utc)
         self.session.flush()
@@ -244,8 +333,10 @@ class TaskService:
         source project's class ids — cross-project ids raise
         ``ValueError`` so the router can return 422.
         """
-        if not _can_modify(actor, project):
-            raise NotProjectOwner("only owner or admin can duplicate a task")
+        # Plan-13 Phase 7 Task 2 — authorisation moved to the router via
+        # ``require_project_role(_MUTATING_ROLES)``. The ``actor`` argument
+        # is retained for API stability but no longer drives the gate.
+        _ = actor
         src = self.get(project=project, task_id=task_id)
         # v3.2 Issue 4 — override path. ``None`` = "keep source snapshot";
         # any list (including ``[]``) replaces it.
@@ -336,8 +427,10 @@ class TaskService:
         same project — cross-project ids raise ``ValueError`` so the
         router can surface a 422.
         """
-        if not _can_modify(actor, project):
-            raise NotProjectOwner("only owner or admin can edit task classes")
+        # Plan-13 Phase 7 Task 2 — authorisation moved to the router via
+        # ``require_project_role(_MUTATING_ROLES)``. The ``actor`` argument
+        # is retained for API stability but no longer drives the gate.
+        _ = actor
         if allowed_class_ids is not None:
             project_class_ids = {
                 c.id

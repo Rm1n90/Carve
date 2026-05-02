@@ -27,14 +27,33 @@ def test_create_project(db_session) -> None:
 
 
 def test_list_returns_all_projects(db_session) -> None:
+    """Plan-13 Phase 7 Task 2 — ``list_visible`` is membership-aware.
+
+    Workspace admins still see every project. Plain ``member`` users
+    only see projects they have a ``project_members`` row on (the
+    router auto-inserts that row on create; the service test exercises
+    it explicitly here).
+    """
+    from carve_api.projects.models import ProjectMember
+
     db_session.query(Project).delete()
     a = _user(db_session, "a@x.com")
     b = _user(db_session, "b@x.com")
+    admin = _user(db_session, "wsadmin@x.com", role=UserRole.admin)
     svc = ProjectService(db_session)
-    svc.create(actor=a, name="A1")
-    svc.create(actor=b, name="B1")
-    rows = svc.list_visible(actor=a)
-    assert {r.name for r in rows} == {"A1", "B1"}
+    pa = svc.create(actor=a, name="A1")
+    pb = svc.create(actor=b, name="B1")
+    db_session.add(ProjectMember(project_id=pa.id, user_id=a.id, role="owner"))
+    db_session.add(ProjectMember(project_id=pb.id, user_id=b.id, role="owner"))
+    db_session.flush()
+
+    # Plain member ``a`` only sees the project they own.
+    rows_a = svc.list_visible(actor=a)
+    assert {r.name for r in rows_a} == {"A1"}
+
+    # Workspace-admin sees every project regardless of membership rows.
+    rows_admin = svc.list_visible(actor=admin)
+    assert {r.name for r in rows_admin} == {"A1", "B1"}
 
 
 def test_get_returns_project(db_session) -> None:

@@ -10,7 +10,13 @@ from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.projects.models import Class
-from carve_api.projects.service import ProjectService, TaskService, require_visible_task
+from carve_api.projects.service import (
+    ProjectService,
+    TaskService,
+    _ADMIN_ROLES,
+    get_project_role,
+    require_visible_task,
+)
 from carve_api.ratelimit import limiter
 from carve_api.weights.models import Weight, WeightTaskKind
 from carve_api.weights.schemas import (
@@ -132,6 +138,12 @@ async def upload_weight(
 
     body = await file.read()
     project = ProjectService(db).get(actor=user, project_id=project_id)
+    # Plan-13 Phase 7 Task 2 — project-scoped weight upload requires
+    # owner/admin on the target project. Viewers + members cannot manage
+    # weights yet.
+    role = get_project_role(db, user.id, project.id)
+    if role is None or role not in _ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="weight_forbidden")
     try:
         w = WeightService(db).upload(
             project=project,
@@ -180,18 +192,20 @@ def list_weights(
 def _weight_can_modify(user: User, w: Weight, db: Session) -> bool:
     """Permission check for delete / rename on a weight.
 
-    Workspace-wide weights (``project_id IS NULL``) require admin role.
-    Project-scoped weights use the existing per-project owner/admin
-    gate. Centralising the rule here so the router endpoints don't
-    drift apart.
+    Workspace-wide weights (``project_id IS NULL``) require workspace-
+    admin role.
+
+    Plan-13 Phase 7 Task 2 — project-scoped weights now use the
+    membership-aware role check: only project owners or admins can
+    manage them. Members and viewers can RUN inference / retrain via
+    the inference router but cannot upload/delete weights.
     """
     from carve_api.auth.models import UserRole
-    from carve_api.projects.service import _can_modify
 
     if w.project_id is None:
         return user.role == UserRole.admin
-    project = ProjectService(db).get(actor=user, project_id=w.project_id)
-    return _can_modify(user, project)
+    role = get_project_role(db, user.id, w.project_id)
+    return role is not None and role in _ADMIN_ROLES
 
 
 @router.delete(
@@ -359,18 +373,18 @@ def set_weight_default(
     the weight must be visible from the target project (workspace-wide
     or scoped to that same project).
     """
-    from carve_api.projects.service import _can_modify
-
     svc = WeightService(db)
     try:
         w = svc.get(weight_id=weight_id)
     except AppError as exc:
         raise _http(exc) from exc
-    # Permission check uses the *target* project, not the weight's
-    # project, because workspace weights have no project_id of their
-    # own. Owner/admin of the target project may pin any visible weight.
+    # Plan-13 Phase 7 Task 2 — permission check uses the *target*
+    # project, not the weight's project, because workspace weights have
+    # no project_id of their own. Owner/admin of the target project may
+    # pin any visible weight.
     project = ProjectService(db).get(actor=user, project_id=payload.project_id)
-    if not _can_modify(user, project):
+    role = get_project_role(db, user.id, project.id)
+    if role is None or role not in _ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="weight_forbidden")
     try:
         updated = svc.set_default(
@@ -441,7 +455,6 @@ def add_weight_assignment(
     project's owner; same gate as ``set_weight_default``.
     """
     from carve_api.projects.models import Project as _Project
-    from carve_api.projects.service import _can_modify
 
     svc = WeightService(db)
     try:
@@ -449,8 +462,10 @@ def add_weight_assignment(
     except AppError as exc:
         raise _http(exc) from exc
 
+    # Plan-13 Phase 7 Task 2 — owner/admin on the target project only.
     project = ProjectService(db).get(actor=user, project_id=payload.project_id)
-    if not _can_modify(user, project):
+    role = get_project_role(db, user.id, project.id)
+    if role is None or role not in _ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="weight_forbidden")
 
     row = svc.add_assignment(weight_id=weight_id, project_id=payload.project_id)
@@ -482,15 +497,15 @@ def remove_weight_assignment(
     v3.7 Phase 3 Issue 4 — same admin-or-owner gate as ``add_weight_assignment``.
     A missing row is a no-op (still returns 204).
     """
-    from carve_api.projects.service import _can_modify
-
     svc = WeightService(db)
     try:
         svc.get(weight_id=weight_id)
     except AppError as exc:
         raise _http(exc) from exc
+    # Plan-13 Phase 7 Task 2 — owner/admin on the target project only.
     project = ProjectService(db).get(actor=user, project_id=project_id)
-    if not _can_modify(user, project):
+    role = get_project_role(db, user.id, project.id)
+    if role is None or role not in _ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="weight_forbidden")
     svc.remove_assignment(weight_id=weight_id, project_id=project_id)
     db.commit()
