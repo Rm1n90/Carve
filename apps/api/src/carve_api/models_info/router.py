@@ -18,6 +18,7 @@ _AVAILABLE_SAM_VARIANTS: tuple[str, ...] = (
     "sam2.1-base+",
     "sam2.1-large",
     "sam3",
+    "sam3.1",
 )
 
 # Module-level override of the active variant. Populated by a successful

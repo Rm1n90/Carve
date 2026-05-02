@@ -32,18 +32,25 @@ ALLOWED_SAM_MODELS = (
     "sam2.1-base-plus",
     "sam2.1-large",
     "sam3",
+    "sam3.1",
 )
 DEFAULT_SAM_MODEL = "sam2.1-large"
 
 # Hugging Face repo ids for each variant. The four sam2.1 entries follow
-# the canonical naming on HF; sam3 is a separate (gated) repo whose
-# weights are loaded by the operator-registered SAM 3 text predictor.
+# the canonical naming on HF; sam3 / sam3.1 are gated repos. The
+# ``facebook/sam3.1`` repo is checkpoint-only (single multiplex .pt; no
+# transformers safetensors), so the IMAGE-side path keeps using the
+# transformers-loadable ``facebook/sam3`` weights — image segmentation
+# quality is unchanged between sam3 and sam3.1. The video-side multiplex
+# tracker reads its own checkpoint via the native ``sam3`` git package
+# (Plan 11 Track B); see ``tracker._default_factory``'s sam3.1 branch.
 _HF_REPO_BY_MODEL = {
     "sam2.1-tiny":      "facebook/sam2.1-hiera-tiny",
     "sam2.1-small":     "facebook/sam2.1-hiera-small",
     "sam2.1-base-plus": "facebook/sam2.1-hiera-base-plus",
     "sam2.1-large":     "facebook/sam2.1-hiera-large",
     "sam3":             "facebook/sam3",
+    "sam3.1":           "facebook/sam3",
 }
 
 
@@ -70,7 +77,7 @@ def get_sam_variant() -> str:
 
     Preserves the Plan 08 contract used by the SAM 3 text-prompt 409 gate.
     """
-    return "sam3" if get_sam_model() == "sam3" else "sam2"
+    return "sam3" if get_sam_model() in ("sam3", "sam3.1") else "sam2"
 
 
 # --- bf16 autocast gate -----------------------------------------------------
