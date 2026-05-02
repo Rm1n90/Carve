@@ -392,13 +392,23 @@ class Sam3p1NativeImagePredictorAdapter:
 
         ``image`` is a numpy ``HxWx3`` RGB uint8 array (per router contract).
         Converted to PIL before handing to the native processor.
+
+        Autocast is explicitly DISABLED inside the call: an upstream
+        ``with autocast_ctx()`` (used by /sam/decode and the tracker
+        helpers) leaves PyTorch's per-thread autocast flag flipped
+        when the same uvicorn worker thread later serves /sam/encode.
+        The native sam3 vision encoder is built in float32 and breaks
+        with ``RuntimeError: mat1 and mat2 must have the same dtype``
+        if autocast is on; turning it off here is the canonical fix.
         """
         from PIL import Image  # type: ignore[import-not-found]
+        import torch  # type: ignore[import-not-found]
 
         h, w = int(image.shape[0]), int(image.shape[1])
         self._original_size = (h, w)
         pil = Image.fromarray(image)
-        self._state = self._processor.set_image(pil)
+        with torch.autocast(device_type=self._device, enabled=False):
+            self._state = self._processor.set_image(pil)
 
     def predict(
         self,
@@ -431,13 +441,19 @@ class Sam3p1NativeImagePredictorAdapter:
         if box is not None:
             b = np.asarray(box, dtype=np.float32).reshape(-1)
 
-        masks, scores, logits = self._model.predict_inst(
-            self._state,
-            point_coords=pc,
-            point_labels=pl,
-            box=b,
-            multimask_output=multimask_output,
-        )
+        # Same autocast-off guard as set_image: /sam/decode wraps this
+        # call in ``autocast_ctx`` (bf16) for SAM 2 / SAM 3 transformers
+        # paths, but the native sam3 image stack runs pure float32 and
+        # mismatches under autocast.
+        import torch  # type: ignore[import-not-found]
+        with torch.autocast(device_type=self._device, enabled=False):
+            masks, scores, logits = self._model.predict_inst(
+                self._state,
+                point_coords=pc,
+                point_labels=pl,
+                box=b,
+                multimask_output=multimask_output,
+            )
         return masks, scores, logits
 
     def extract_embedding(self) -> dict | None:
@@ -558,6 +574,7 @@ def make_sam3p1_text_predictor():
         from carve_model.sam.perf import to_numpy_safe
         from carve_model.sam.polygonize import mask_to_polygon
 
+        import torch  # type: ignore[import-not-found]
         adapter = _get_or_build_native_image_predictor()
         image_np = _decode_image_b64_to_numpy(image_b64)
         adapter.set_image(image_np)
@@ -566,7 +583,8 @@ def make_sam3p1_text_predictor():
             return []
         # Reset any prior prompts before applying the new text concept.
         adapter._processor.reset_all_prompts(state)
-        adapter._processor.set_text_prompt(text, state)
+        with torch.autocast(device_type=adapter._device, enabled=False):
+            adapter._processor.set_text_prompt(text, state)
 
         detections = _extract_text_detections(state)
         boxes = state.get("boxes")
@@ -615,6 +633,7 @@ def make_sam3p1_box_predictor():
         from carve_model.sam.codec import encode_mask_rle
         from carve_model.sam.polygonize import mask_to_polygon
 
+        import torch  # type: ignore[import-not-found]
         adapter = _get_or_build_native_image_predictor()
         image_np = _decode_image_b64_to_numpy(image_b64)
         adapter.set_image(image_np)
@@ -624,7 +643,8 @@ def make_sam3p1_box_predictor():
         adapter._processor.reset_all_prompts(state)
 
         if text:
-            adapter._processor.set_text_prompt(text, state)
+            with torch.autocast(device_type=adapter._device, enabled=False):
+                adapter._processor.set_text_prompt(text, state)
 
         positive_masks: list[Any] = []
         negative_masks: list[Any] = []
