@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
@@ -7,9 +8,12 @@ from carve_api.stats.sql import (
     BBOX_GEOMETRIES_SQL,
     CLASS_FREQUENCY_SQL,
     GEOMETRY_BY_KIND_SQL,
+    PER_CLASS_QUALITY_SQL,
     PROJECT_BY_CLASS_SQL,
     PROJECT_TASK_PROGRESS_SQL,
     PROJECT_TOTALS_SQL,
+    RETRAIN_HISTORY_SQL,
+    REVIEWER_QUALITY_SQL,
     SIZE_DISTRIBUTION_BBOX_SQL,
     TASK_PROGRESS_SQL,
     TIME_ON_TASK_SQL,
@@ -209,6 +213,116 @@ class StatsService:
         ]
 
         return {"totals": totals, "by_class": by_class, "tasks": tasks}
+
+    # ------------------------------------------------------------------
+    # Plan-13 Phase 7 Task 10 — quality dashboard endpoints.
+    # ------------------------------------------------------------------
+    def reviewer_quality(
+        self,
+        *,
+        project_id: uuid.UUID,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+    ) -> list[dict]:
+        """Per-reviewer accept-rate within ``[from_ts, to_ts)``.
+
+        Defaults to the last 30 days when either bound is ``None``. The
+        underlying SQL filters out reviewers with zero reviews; we then
+        compute ``accept_rate`` in Python so we can return ``None`` for
+        the impossible-but-defensive zero-total case.
+        """
+        now = datetime.now(timezone.utc)
+        if to_ts is None:
+            to_ts = now
+        if from_ts is None:
+            from_ts = to_ts - timedelta(days=30)
+        rows = self.session.execute(
+            REVIEWER_QUALITY_SQL,
+            {"project_id": project_id, "from_ts": from_ts, "to_ts": to_ts},
+        ).all()
+        out: list[dict] = []
+        for r in rows:
+            m = r._mapping
+            total = int(m["total_reviewed"] or 0)
+            accepted = int(m["accepted"] or 0)
+            rejected = int(m["rejected"] or 0)
+            rate = (accepted / total) if total > 0 else 0.0
+            out.append(
+                {
+                    "reviewer_id": m["reviewer_id"],
+                    "email": m["email"],
+                    "total_reviewed": total,
+                    "accepted": accepted,
+                    "rejected": rejected,
+                    "accept_rate": round(rate, 6),
+                }
+            )
+        return out
+
+    def retrain_history(
+        self, *, project_id: uuid.UUID, limit: int = 20
+    ) -> list[dict]:
+        """Recent retrain runs for a project, oldest → newest.
+
+        Each row's ``metadata->'retrain'`` blob contains training
+        hyper-parameters and metrics; we surface the subset the
+        dashboard cares about (epochs, imgsz, metrics).
+        """
+        rows = self.session.execute(
+            RETRAIN_HISTORY_SQL, {"project_id": project_id, "limit": limit}
+        ).all()
+        out: list[dict] = []
+        for r in rows:
+            m = r._mapping
+            metadata = m["metadata"] or {}
+            retrain = metadata.get("retrain") or {}
+            out.append(
+                {
+                    "weight_id": m["weight_id"],
+                    "created_at": m["created_at"],
+                    "metrics": retrain.get("metrics") or {},
+                    "epochs": retrain.get("epochs"),
+                    "imgsz": retrain.get("imgsz"),
+                }
+            )
+        return out
+
+    def per_class_quality(
+        self, *, project_id: uuid.UUID, task_id: uuid.UUID
+    ) -> list[dict]:
+        """Per-class proposed/accepted/rejected counts + proxy precision.
+
+        ``proxy_precision = accepted / (accepted + rejected)``;
+        ``None`` when no annotations of either status exist.
+        """
+        rows = self.session.execute(
+            PER_CLASS_QUALITY_SQL,
+            {"project_id": project_id, "task_id": task_id},
+        ).all()
+        out: list[dict] = []
+        for r in rows:
+            m = r._mapping
+            proposed = int(m["proposed"] or 0)
+            accepted = int(m["accepted"] or 0)
+            rejected = int(m["rejected"] or 0)
+            reviewed = accepted + rejected
+            precision: float | None
+            if reviewed > 0:
+                precision = round(accepted / reviewed, 6)
+            else:
+                precision = None
+            out.append(
+                {
+                    "class_id": m["class_id"],
+                    "name": m["name"],
+                    "color": m["color"],
+                    "proposed": proposed,
+                    "accepted": accepted,
+                    "rejected": rejected,
+                    "proxy_precision": precision,
+                }
+            )
+        return out
 
     def time_on_task(self, *, task_id: uuid.UUID) -> list[dict]:
         """Per-annotator active seconds with a 5-minute idle threshold.
