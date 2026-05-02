@@ -119,10 +119,10 @@ export const DEFAULT_SETTINGS: EditorSettings = {
     descriptions: false,
   },
   labelPosition: "auto",
-  labelFontSize: 12,
+  labelFontSize: 14,
   showTagsOnFrame: true,
   polygonApproxPoints: 50,
-  controlPointsSize: 6,
+  controlPointsSize: 9,
 
   // Appearance panel defaults.
   outlinedBorders: false,
