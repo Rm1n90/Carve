@@ -11,23 +11,6 @@ Carve is a self-hosted, multi-user annotation suite for detection, segmentation,
 
 ---
 
-## Screenshots
-
-| | |
-|---|---|
-| ![Projects](docs/screenshots/v2-2-projects.png) | ![Editor](docs/screenshots/v2-6-editor.png) |
-| _Projects dashboard — search, sort, pin, filter_ | _Three-column annotation editor_ |
-| ![Editor bbox](docs/screenshots/v2-7-editor-bbox-saved.png) | ![Classes](docs/screenshots/v2-8-classes.png) |
-| _Bounding-box annotation with saved labels_ | _Class palette — pinned & recent classes_ |
-| ![Task assets](docs/screenshots/v2-5-task-assets.png) | ![SAM models](docs/screenshots/v2-10-models-sam.png) |
-| _Task view — asset grid with multi-select_ | _SAM model selector — choose size vs. VRAM_ |
-| ![API Keys](docs/screenshots/v2-9-settings-apikeys.png) | ![Cheat sheet](docs/screenshots/v2-12-cheatsheet.png) |
-| _API key management_ | _Keyboard shortcuts cheat sheet (`?`)_ |
-| ![Trash](docs/screenshots/v2-11-trash.png) | ![Login](docs/screenshots/v2-1-login.png) |
-| _Soft-delete trash with restore_ | _Sign in_ |
-
----
-
 ## Features
 
 ### Annotation tools
@@ -77,7 +60,7 @@ Carve is a self-hosted, multi-user annotation suite for detection, segmentation,
 - **Prev-revision compare overlay** — toggle a semi-transparent paint of the previous annotation revision on the canvas
 - **Bulk review guards** — concurrent mutation protection
 
-### Active learning & retraining
+### Active learning & retraining (BETA)
 
 - **One-click retrain** — "Retrain YOLO" from the task toolbar launches a fine-tune job on accepted annotations
 - **Retrain RQ job** — enqueued to the model worker; progress tracked in the datasets tab
