@@ -2271,14 +2271,29 @@ export function AnnotationCanvas({
         }
       }
       else if (tool === "sam") {
-        // Plan-17 — right-click on an existing annotation skips SAM's
-        // negative-point handling so the AnnotationContextMenu can
-        // show Convert / Refine / etc. Only right-clicks on EMPTY
-        // canvas are still treated as SAM negative-point clicks.
-        if (e.button === 2) {
+        // Plan-17 — clicks on existing annotations have higher priority
+        // than SAM's positive/negative point handling. Both buttons get
+        // the same hit-test:
+        //   - right-click on an annotation  → contextmenu opens
+        //   - left-click  on an annotation  → annotation gets selected
+        //   - clicks on EMPTY canvas        → unchanged SAM flow
+        // Without this, SAM Point mode silently swallowed every click on
+        // a previously-predicted polygon as a positive/negative SAM point
+        // even when the user just wanted to select that polygon to
+        // Refine / Convert / Lock it.
+        if (e.button === 0 || e.button === 2) {
           const hit = hitTest(p);
           if (hit) {
-            // Bail early — let the contextmenu event open the menu.
+            if (e.button === 0) {
+              if (e.shiftKey) {
+                useAnnotations.getState().toggleSelect(hit);
+              } else {
+                useAnnotations.getState().select(hit);
+              }
+            }
+            // Bail early — for right-click the contextmenu event will
+            // open the menu; for left-click we have already updated the
+            // selection above.
             return;
           }
         }

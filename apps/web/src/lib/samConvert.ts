@@ -9,8 +9,45 @@
 // reduce to "given an axis-aligned box on this asset, give me back a
 // SAM polygon", which `samApi.boxPrompt` already provides.
 import { samApi } from "@/api/sam";
+import { modelsApi } from "@/api/phase2";
 import { bboxOfGeometry } from "@/lib/geometryConvert";
 import type { Bbox, Geometry } from "@/state/annotations";
+
+/**
+ * Plan-17 — make sure a SAM predictor is loaded server-side before we
+ * try to encode + box-prompt. Idempotent and cheap when SAM is already
+ * ready; triggers a hot-swap to the active variant and polls the load
+ * status when it isn't.
+ *
+ * Throws if the load takes longer than ``timeoutMs`` or fails — the
+ * caller's catch surfaces this to the user as a toast.
+ */
+async function ensureSamReady(timeoutMs = 60_000): Promise<void> {
+  // Quick path — already loaded.
+  let status = await modelsApi.samStatus();
+  if (status.state === "ready") return;
+  // Need to kick a load. Use whatever variant /sam-active reports as
+  // the active one; this lets the user's last picked variant (e.g.
+  // SAM 3.1) win over the API's hardcoded ``sam2.1-tiny`` default.
+  if (status.state !== "loading") {
+    const active = await modelsApi.samActive();
+    try {
+      await modelsApi.samSetActive(active.active);
+    } catch {
+      /* 409 switch-in-progress is fine — we just poll below */
+    }
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    status = await modelsApi.samStatus();
+    if (status.state === "ready") return;
+    if (status.state === "error") {
+      throw new Error(status.error || "SAM load failed.");
+    }
+  }
+  throw new Error("SAM load timed out (>60s).");
+}
 
 export interface SamRefineParams {
   assetId: string;
@@ -38,8 +75,13 @@ export async function samBoxToPolygonPoints({
   frameId,
   box,
 }: SamRefineParams): Promise<[number, number][] | null> {
-  // Plan-17 — pre-warm. Failures here are non-fatal: a recent encode
-  // may already be cached and box-prompt will pick it up.
+  // Plan-17 — make sure SAM is loaded server-side. Without this the
+  // first Convert/Refine after a fresh page load 503s because no
+  // predictor is mounted yet. ``ensureSamReady`` is idempotent.
+  await ensureSamReady();
+  // Pre-warm the embedding cache. Failures here are non-fatal: a
+  // recent encode may already be cached and box-prompt will pick it
+  // up.
   try {
     await samApi.encode(assetId, frameId ?? null);
   } catch {

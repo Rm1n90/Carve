@@ -121,12 +121,41 @@ def _probe_model_service() -> bool:
 def sam_active(
     user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
 ) -> SamActiveOut:
+    """Return the variant that is *actually loaded* on the model service,
+    falling back to the API's in-memory override and then to settings
+    when the service is unreachable.
+
+    Plan-17 — previously this returned ``_active_sam_variant or
+    settings.sam_model``, which was wrong after API restarts: the
+    in-memory cache is wiped but the model service keeps its loaded
+    variant, so the editor would show the stale ``sam2.1-tiny`` fallback
+    while SAM 3.1 was actually mounted. Now we ask the model service.
+    """
     settings = get_settings()
-    active = _active_sam_variant or settings.sam_model
+    base = settings.model_base_url.rstrip("/")
+    reachable = False
+    model_variant: str | None = None
+    try:
+        with httpx.Client(timeout=1.5) as c:
+            r = c.get(f"{base}/sam/status")
+            if r.status_code == 200:
+                reachable = True
+                body = r.json() or {}
+                v = body.get("variant")
+                state = body.get("state")
+                # Only trust the model service's variant when the
+                # predictor is actually ready or in the middle of
+                # loading; otherwise the field can carry a stale value.
+                if isinstance(v, str) and v and state in {"ready", "loading"}:
+                    model_variant = _model_to_api(v)
+    except Exception:
+        # Fall through to the in-memory / settings fallback below.
+        pass
+    active = model_variant or _active_sam_variant or settings.sam_model
     return SamActiveOut(
         active=active,
         available=list(_AVAILABLE_SAM_VARIANTS),
-        reachable=_probe_model_service(),
+        reachable=reachable,
     )
 
 
