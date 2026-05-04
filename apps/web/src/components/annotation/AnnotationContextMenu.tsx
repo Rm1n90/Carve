@@ -23,6 +23,7 @@ import { applyVertexDelete, POLY_MIN_VERTICES } from "@/canvas/polygonEdit";
 import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
+import { setContextMenuOpen } from "@/state/contextMenuState";
 import {
   bboxOfGeometry,
   buildPolygon,
@@ -448,7 +449,16 @@ export function AnnotationContextMenu({
   }, [hostRef, hitTest, vertexHitTest, toImageXY]);
 
   useEffect(() => {
-    if (!state) return;
+    if (!state) {
+      setContextMenuOpen(false);
+      return;
+    }
+    // Plan-17 — publish the open state to the shared flag so the
+    // AnnotationCanvas pointerdown handler can suppress SAM
+    // positive/negative-point clicks both while the menu is open and
+    // for a brief window after dismiss (so the click that closes the
+    // menu does not also fire SAM behaviour underneath).
+    setContextMenuOpen(true);
     function dismiss(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         close();
@@ -462,6 +472,7 @@ export function AnnotationContextMenu({
     return () => {
       window.removeEventListener("mousedown", dismiss);
       window.removeEventListener("keydown", esc);
+      setContextMenuOpen(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
@@ -503,6 +514,15 @@ export function AnnotationContextMenu({
         role="menu"
         aria-label="Canvas context menu"
         data-testid="canvas-context-menu"
+        // Plan-17 — stop pointerdown / contextmenu from bubbling to the
+        // canvas host. Without this, clicking a menu item ALSO fires
+        // the canvas's pointerdown handler, which in SAM Point mode
+        // happily turns it into a positive-point click at the menu
+        // button's coordinates. Mouse events fall under the same
+        // bubble path so we belt-and-braces both.
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.stopPropagation()}
         className={cn(
           "fixed z-[1100] min-w-[220px]",
           "rounded-[var(--radius-md)]",
@@ -589,6 +609,13 @@ export function AnnotationContextMenu({
       role="menu"
       aria-label="Annotation context menu"
       data-testid="annotation-context-menu"
+      // Plan-17 — see "empty" branch above. Stops menu clicks from
+      // bubbling to the canvas pointerdown listener (which would
+      // otherwise turn a left-click on a menu item into a positive
+      // SAM-point click in Point mode, etc.).
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.stopPropagation()}
       className={cn(
         "fixed z-[1100] min-w-[220px]",
         "rounded-[var(--radius-md)]",

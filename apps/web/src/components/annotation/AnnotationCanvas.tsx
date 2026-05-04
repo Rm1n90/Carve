@@ -13,6 +13,7 @@ import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@
 import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
 import { useReviewCompare } from "@/state/reviewCompare";
+import { isContextMenuOpenOrJustClosed } from "@/state/contextMenuState";
 import { evaluateFilter, hasMeaningfulRules } from "@/lib/annotation-filter";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -2276,12 +2277,13 @@ export function AnnotationCanvas({
         // the same hit-test plus a selection-aware fallback so a
         // right-click anywhere ALSO bails when the user has already
         // selected something (the contextmenu event opens the Convert
-        // menu for that selection).
-        //   - hit on annotation       → select (LMB) / show menu (RMB)
-        //   - selection already set   → bail; lets RMB reach menu
-        //                                 reliably even when hit-test
-        //                                 misses thin polygon outlines
-        //   - empty canvas, no select → unchanged SAM flow
+        // menu for that selection). Additionally, clicks that overlap
+        // the just-dismissed context menu are suppressed entirely so
+        // the click that closes the menu never doubles as a positive
+        // SAM-point click underneath.
+        if (isContextMenuOpenOrJustClosed()) {
+          return;
+        }
         if (e.button === 0 || e.button === 2) {
           const hit = hitTest(p);
           const sel = useAnnotations.getState();
