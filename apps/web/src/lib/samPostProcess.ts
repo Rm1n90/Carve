@@ -14,6 +14,7 @@ import {
   buildPolygon,
 } from "@/lib/geometryConvert";
 import { samPolygonForGeometry } from "@/lib/samConvert";
+import { annotationsApi } from "@/api/annotations";
 
 export type PostProcessMode =
   /** Replace each polygon / mask geometry with its axis-aligned bbox. Pure client. */
@@ -174,4 +175,196 @@ export function newAnnotationIdsSince(
     out.push(id);
   }
   return out;
+}
+
+export interface BatchTaskPostProcessParams {
+  taskId: string;
+  /** Only annotations created at/after this ISO timestamp are eligible.
+   *  Used to scope the post-process to rows the just-finished batch run
+   *  produced (Auto-Annotate / Predict capture this when they fire). */
+  sinceIso: string;
+  /** Optional class-id allowlist — typically the classes the batch run
+   *  targeted, so older rows of the same kind aren't touched. */
+  classIds?: ReadonlySet<string>;
+  mode: PostProcessMode;
+  imageBoundsByAsset?: ReadonlyMap<string, { w: number; h: number }>;
+  onProgress?: (p: PostProcessProgress) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Plan-19 — batch post-process across an entire task.
+ *
+ * Used by Auto-Annotate (scope=all) and YOLO Predict (scope=task) to
+ * apply the same kind-conversion / refine pass that was previously
+ * single-asset-only.
+ *
+ * For ``to-bbox`` we never call SAM — bbox is the polygon's axis-aligned
+ * envelope, so the work batches into a single ``annotations:batch``
+ * server round-trip per chunk of rows.
+ *
+ * For ``to-polygon`` / ``refine`` SAM is required per-asset (the model
+ * encodes one image at a time). Rows are grouped by ``asset_id`` and
+ * processed asset-by-asset so the encoder warms once per group.
+ * Successful conversions persist via individual PATCH calls because
+ * SAM responses arrive interleaved.
+ */
+export async function runBatchTaskPostProcess(
+  params: BatchTaskPostProcessParams,
+): Promise<PostProcessResult> {
+  const {
+    taskId,
+    sinceIso,
+    classIds,
+    mode,
+    imageBoundsByAsset,
+    onProgress,
+    signal,
+  } = params;
+
+  // Fetch every annotation on the task, then narrow client-side. The
+  // batch run window is usually small enough that a server-side filter
+  // would save little — and the existing list endpoint is the only
+  // task-wide source of truth.
+  const all = await annotationsApi.listForTaskRaw(taskId);
+  const since = new Date(sinceIso).getTime();
+  const inputKinds: ReadonlySet<string> =
+    mode === "to-bbox"
+      ? new Set(["polygon", "mask_rle", "mask"])
+      : mode === "to-polygon"
+        ? new Set(["bbox"])
+        : new Set(["polygon", "mask_rle", "mask"]);
+  const candidates = all.filter((a) => {
+    if (!inputKinds.has(a.kind)) return false;
+    if (classIds && !classIds.has(a.class_id)) return false;
+    const t = new Date(a.created_at).getTime();
+    if (Number.isFinite(t) && t < since - 1000) return false;
+    return true;
+  });
+
+  const total = candidates.length;
+  let succeeded = 0;
+  let failed = 0;
+  let cancelled = false;
+  onProgress?.({ done: 0, total, failed: 0 });
+
+  if (total === 0) {
+    return { succeeded: 0, failed: 0, cancelled: false };
+  }
+
+  if (mode === "to-bbox") {
+    // Pure client conversion — chunk the patches so a 5000-row task
+    // doesn't post a single megabyte payload.
+    const CHUNK = 200;
+    for (let i = 0; i < candidates.length; i += CHUNK) {
+      if (signal?.aborted) {
+        cancelled = true;
+        break;
+      }
+      const slice = candidates.slice(i, i + CHUNK);
+      const updates: Array<{
+        id: string;
+        kind: "bbox";
+        geometry: { x: number; y: number; w: number; h: number };
+      }> = [];
+      for (const a of slice) {
+        const box = bboxOfGeometry(a.geometry as never);
+        if (box && box.w >= 1 && box.h >= 1) {
+          updates.push({ id: a.id, kind: "bbox", geometry: box });
+        } else {
+          failed++;
+        }
+      }
+      if (updates.length > 0) {
+        try {
+          await annotationsApi.batch(taskId, {
+            create: [],
+            update: updates,
+            delete: [],
+          });
+          succeeded += updates.length;
+        } catch {
+          failed += updates.length;
+        }
+      }
+      onProgress?.({ done: Math.min(i + slice.length, total), total, failed });
+    }
+    return { succeeded, failed, cancelled };
+  }
+
+  // SAM-required modes. Group by asset so the model encodes once per
+  // image; within a group iterate sequentially.
+  const byAsset = new Map<string, typeof candidates>();
+  for (const a of candidates) {
+    if (!a.asset_id) {
+      failed++;
+      continue;
+    }
+    const list = byAsset.get(a.asset_id) ?? [];
+    list.push(a);
+    byAsset.set(a.asset_id, list);
+  }
+
+  let processed = 0;
+  for (const [assetId, group] of byAsset) {
+    if (signal?.aborted) {
+      cancelled = true;
+      break;
+    }
+    const bounds = imageBoundsByAsset?.get(assetId);
+    const updates: Array<{
+      id: string;
+      kind: "polygon";
+      geometry: { points: [number, number][] };
+    }> = [];
+    for (const ann of group) {
+      if (signal?.aborted) {
+        cancelled = true;
+        break;
+      }
+      try {
+        const points = await samPolygonForGeometry({
+          assetId,
+          frameId: ann.frame_id,
+          geometry: ann.geometry as never,
+        });
+        if (!points || points.length < 3) {
+          failed++;
+        } else {
+          const clamped = bounds
+            ? points.map(
+                ([x, y]) =>
+                  [
+                    Math.max(0, Math.min(bounds.w, x)),
+                    Math.max(0, Math.min(bounds.h, y)),
+                  ] as [number, number],
+              )
+            : points;
+          const poly = buildPolygon(clamped);
+          if (poly) {
+            updates.push({ id: ann.id, kind: "polygon", geometry: poly });
+          } else {
+            failed++;
+          }
+        }
+      } catch {
+        failed++;
+      }
+      processed++;
+      onProgress?.({ done: processed, total, failed });
+    }
+    if (updates.length > 0) {
+      try {
+        await annotationsApi.batch(taskId, {
+          create: [],
+          update: updates,
+          delete: [],
+        });
+        succeeded += updates.length;
+      } catch {
+        failed += updates.length;
+      }
+    }
+  }
+  return { succeeded, failed, cancelled };
 }

@@ -7,6 +7,7 @@ import { samApi } from "@/api/sam";
 import type { ClassRow } from "@/api/classes";
 import {
   newAnnotationIdsSince,
+  runBatchTaskPostProcess,
   runSamPostProcess,
   snapshotAnnotationIds,
   type PostProcessMode,
@@ -86,6 +87,9 @@ export function AutoAnnotateDialog({
     failed: number;
   } | null>(null);
   const beforeRunIdsRef = useRef<Set<string> | null>(null);
+  // Plan-19 — captured at run-start so a batch (all-assets) post-process
+  // can scope itself to annotations the run produced.
+  const runStartIsoRef = useRef<string | null>(null);
 
   const eligibleClasses = useMemo(
     () => classes.filter((c) => (c.text_prompt ?? "").trim().length > 0),
@@ -103,8 +107,10 @@ export function AutoAnnotateDialog({
       // SAM auto-text produced (vs. pre-existing ones on the asset).
       if (samPostMode !== "off") {
         beforeRunIdsRef.current = snapshotAnnotationIds();
+        runStartIsoRef.current = new Date().toISOString();
       } else {
         beforeRunIdsRef.current = null;
+        runStartIsoRef.current = null;
       }
       // v3.8 Phase 3.5 — branch on scope. "this" is sync; "all" enqueues
       // an RQ batch and we return a pseudo-result the onSuccess can
@@ -272,9 +278,53 @@ export function AutoAnnotateDialog({
               }
               qc.invalidateQueries({ queryKey: ["annotations"] });
               onSuccess?.(created);
+              // Plan-19 — task-wide post-process. Only run when the user
+              // ticked "Convert polygons to bboxes after" AND the batch
+              // actually produced rows AND we have a run-start timestamp
+              // to scope by. The dialog stays mounted so the user sees
+              // the conversion progress before we close.
+              if (
+                samPostMode !== "off" &&
+                created > 0 &&
+                runStartIsoRef.current &&
+                taskId
+              ) {
+                const startIso = runStartIsoRef.current;
+                runStartIsoRef.current = null;
+                setSamPostProgress({ done: 0, total: created, failed: 0 });
+                void runBatchTaskPostProcess({
+                  taskId,
+                  sinceIso: startIso,
+                  classIds: selectedClassIds,
+                  mode: samPostMode as PostProcessMode,
+                  onProgress: setSamPostProgress,
+                })
+                  .then((res) => {
+                    if (res.succeeded > 0) {
+                      showToast(
+                        `Converted ${res.succeeded} polygon${res.succeeded === 1 ? "" : "s"} to bbox${res.failed > 0 ? ` (${res.failed} skipped)` : ""}.`,
+                        { variant: "success", duration: 4500 },
+                      );
+                    }
+                  })
+                  .catch(() => {
+                    showToast("Batch post-process failed.", {
+                      variant: "error",
+                    });
+                  })
+                  .finally(() => {
+                    setSamPostProgress(null);
+                    qc.invalidateQueries({ queryKey: ["annotations"] });
+                    qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
+                    setRunningJobId(null);
+                    setOpen(false);
+                  });
+                return;
+              }
               setRunningJobId(null);
               setOpen(false);
             }}
+            postProgress={samPostProgress}
           />
         ) : (
           <>
@@ -476,13 +526,12 @@ export function AutoAnnotateDialog({
               onChange={(e) =>
                 setSamPostMode(e.target.checked ? "to-bbox" : "off")
               }
-              disabled={scope === "all"}
               data-testid="auto-annotate-post-toggle"
             />
             <span className="flex-1">
               Convert polygons to bboxes after
               <span className="ml-1 font-mono text-[10px] text-[color:var(--text-tertiary)]">
-                {scope === "all" ? "(asset only)" : "instant"}
+                {scope === "all" ? "task-wide" : "instant"}
               </span>
             </span>
           </label>
@@ -548,6 +597,7 @@ function BatchProgressView({
   taskId,
   jobId,
   onDone,
+  postProgress,
 }: {
   taskId: string;
   jobId: string;
@@ -556,6 +606,7 @@ function BatchProgressView({
     total_annotations_created: number;
     failed: number;
   } | null) => void;
+  postProgress?: { done: number; total: number; failed: number } | null;
 }) {
   const [canceling, setCanceling] = useState(false);
   const POLL_INTERVAL_MS = 1200;
@@ -621,6 +672,30 @@ function BatchProgressView({
         <p className="text-[11.5px] text-[color:var(--warning,oklch(0.78_0.18_85))]">
           {failed} asset{failed === 1 ? "" : "s"} failed (kept the rest).
         </p>
+      )}
+      {postProgress && (
+        <div data-testid="auto-annotate-batch-post" className="grid gap-1">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-[color:var(--text-secondary)]">
+              Converting polygons to bboxes…
+            </span>
+            <span className="font-mono tabular-nums text-[color:var(--text-tertiary)]">
+              {postProgress.done}/{postProgress.total}
+              {postProgress.failed > 0 ? ` · ${postProgress.failed} skipped` : ""}
+            </span>
+          </div>
+          <div className="h-1.5 rounded-full bg-[var(--bg-sunken)] overflow-hidden">
+            <div
+              className="h-full bg-[var(--accent)] transition-[width] duration-150"
+              style={{
+                width:
+                  postProgress.total > 0
+                    ? `${Math.round((postProgress.done / postProgress.total) * 100)}%`
+                    : "0%",
+              }}
+            />
+          </div>
+        </div>
       )}
       <p className="text-[11px] text-[color:var(--text-tertiary)] italic">
         Annotations save per-asset, so cancelling keeps everything done so far.

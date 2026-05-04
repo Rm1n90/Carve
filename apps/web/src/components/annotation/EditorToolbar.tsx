@@ -63,6 +63,7 @@ import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
 import {
   newAnnotationIdsSince,
+  runBatchTaskPostProcess,
   runSamPostProcess,
   snapshotAnnotationIds,
   type PostProcessMode,
@@ -346,6 +347,15 @@ const YoloPredictButton = forwardRef<
   // only refines annotations the predict pass produced (not the
   // pre-existing ones on this asset). Cleared on completion.
   const beforePredictIdsRef = useRef<Set<string> | null>(null);
+  // Plan-19 — captured at run-start when a task-scope predict fires so
+  // the post-batch SAM pass can scope itself by created_at.
+  const batchRunStartIsoRef = useRef<string | null>(null);
+  // Plan-19 — task-wide post-process progress; rendered by the overlay.
+  const [batchPostProgress, setBatchPostProgress] = useState<{
+    done: number;
+    total: number;
+    failed: number;
+  } | null>(null);
   const [confidence, setConfidence] = useState<number>(() => loadStoredConfidence());
   // v3.7.5 — IOU (NMS) threshold dial. Same persistence shape as
   // confidence so the user's preferred value sticks across sessions.
@@ -790,6 +800,13 @@ const YoloPredictButton = forwardRef<
           variant: "danger",
         });
         if (!ok) return;
+      }
+      // Plan-19 — capture run-start so the post-batch SAM pass can
+      // scope itself to annotations the predict run produced.
+      if (samPost) {
+        batchRunStartIsoRef.current = new Date().toISOString();
+      } else {
+        batchRunStartIsoRef.current = null;
       }
       batchM.mutate(selected);
       return;
@@ -1247,7 +1264,7 @@ const YoloPredictButton = forwardRef<
             The checkbox is hidden for non-spatial weights (classify,
             pose) and for the batch scope ("All assets"). Single-asset
             only — for batch the user can marquee+right-click after. */}
-        {samPostLabel && scope === "asset" && (
+        {samPostLabel && (
           <div className="grid gap-1.5 px-2 pb-2">
             <label className="flex items-center gap-2 text-[12px] text-[color:var(--text-secondary)]">
               <input
@@ -1393,15 +1410,59 @@ const YoloPredictButton = forwardRef<
         <BatchPredictProgressOverlay
           taskId={taskId}
           jobId={batchJobId}
+          postProgress={batchPostProgress}
           onClose={(progress) => {
-            setBatchJobId(null);
-            // Always refetch — even on partial success the user has new
-            // annotations to see. We invalidate the same set the
-            // single-asset path's onAfter would (annotations + assets).
-            qc.invalidateQueries({ queryKey: ["annotations", taskId] });
-            qc.invalidateQueries({ queryKey: ["task-annotations", taskId] });
-            qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
-            onAfter?.();
+            // Plan-19 — task-wide SAM post-process for the batch path.
+            // Fires only when the user opted in via ``samPost`` AND the
+            // run produced rows AND we have a captured runStartIso to
+            // scope by.
+            const created = progress?.total_annotations_created ?? 0;
+            const startIso = batchRunStartIsoRef.current;
+            const wantsPost =
+              samPost && samPostLabel && created > 0 && startIso && taskId;
+            const closeAndToast = () => {
+              setBatchJobId(null);
+              qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+              qc.invalidateQueries({ queryKey: ["task-annotations", taskId] });
+              qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
+              onAfter?.();
+            };
+            if (wantsPost) {
+              const mode: PostProcessMode =
+                selectedWeight?.task_kind === "detect" ? "to-polygon" : "refine";
+              setBatchPostProgress({ done: 0, total: created, failed: 0 });
+              batchRunStartIsoRef.current = null;
+              void runBatchTaskPostProcess({
+                taskId,
+                sinceIso: startIso!,
+                mode,
+                onProgress: setBatchPostProgress,
+              })
+                .then((res) => {
+                  if (res.succeeded > 0) {
+                    showToast(
+                      `${mode === "to-polygon" ? "Converted" : "Refined"} ${res.succeeded} annotation${res.succeeded === 1 ? "" : "s"}${res.failed > 0 ? ` · ${res.failed} skipped` : ""}.`,
+                      { variant: "success", duration: 4500 },
+                    );
+                  } else if (res.failed > 0) {
+                    showToast(
+                      `Batch post-process: 0 succeeded, ${res.failed} skipped.`,
+                      { variant: "warning", duration: 4500 },
+                    );
+                  }
+                })
+                .catch(() => {
+                  showToast("Batch post-process failed.", {
+                    variant: "error",
+                  });
+                })
+                .finally(() => {
+                  setBatchPostProgress(null);
+                  closeAndToast();
+                });
+              return;
+            }
+            closeAndToast();
             if (progress) {
               const total = progress.total;
               const done = progress.done;
@@ -1477,10 +1538,12 @@ function BatchPredictProgressOverlay({
   taskId,
   jobId,
   onClose,
+  postProgress,
 }: {
   taskId: string;
   jobId: string;
   onClose: (final: BatchPredictProgress | null) => void;
+  postProgress?: { done: number; total: number; failed: number } | null;
 }) {
   const POLL_INTERVAL_MS = 1500;
   const statusQ = useQuery<BatchPredictProgress>({
@@ -1611,6 +1674,36 @@ function BatchPredictProgressOverlay({
             <div className="absolute inset-y-0 -left-1/3 w-1/3 bg-[var(--accent)] animate-[modelLoadingShimmer_1.4s_ease-in-out_infinite]" />
           )}
         </div>
+
+        {postProgress && (
+          <div
+            data-testid="batch-predict-post"
+            className="mt-3 grid gap-1.5"
+          >
+            <div className="flex items-center justify-between text-[11.5px]">
+              <span className="text-[color:var(--text-secondary)]">
+                Post-processing with SAM…
+              </span>
+              <span className="font-mono tabular-nums text-[color:var(--text-tertiary)]">
+                {postProgress.done}/{postProgress.total}
+                {postProgress.failed > 0
+                  ? ` · ${postProgress.failed} skipped`
+                  : ""}
+              </span>
+            </div>
+            <div className="relative h-1.5 overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+              <div
+                className="absolute inset-y-0 left-0 bg-[var(--accent)] transition-[width] duration-200"
+                style={{
+                  width:
+                    postProgress.total > 0
+                      ? `${Math.round((postProgress.done / postProgress.total) * 100)}%`
+                      : "0%",
+                }}
+              />
+            </div>
+          </div>
+        )}
 
         <p className="mt-3 text-[11.5px] text-[color:var(--text-tertiary)] leading-snug">
           The model is running auto-annotate over every asset in the

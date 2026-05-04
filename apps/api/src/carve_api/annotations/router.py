@@ -88,7 +88,27 @@ def list_annotations(
     rows = AnnotationService(db).list_for_task(
         task=task, frame_id=frame_id, status=status
     )
-    return [AnnotationOut.from_orm_annotation(a) for a in rows]
+    # Plan-19 — resolve frame.asset_id once per page so the client can
+    # group annotations by asset for batch post-processing without
+    # extra round trips. Skip the lookup when there are no rows or no
+    # frame_ids (e.g. legacy whole-video tags with frame_id=null).
+    asset_by_frame: dict[uuid.UUID, str] = {}
+    frame_ids = {a.frame_id for a in rows if a.frame_id is not None}
+    if frame_ids:
+        from carve_api.assets.models import Frame
+        frame_rows = db.execute(
+            select(Frame.id, Frame.asset_id).where(Frame.id.in_(frame_ids))
+        ).all()
+        asset_by_frame = {fid: str(aid) for fid, aid in frame_rows}
+    return [
+        AnnotationOut.from_orm_annotation(
+            a,
+            asset_id=(
+                asset_by_frame.get(a.frame_id) if a.frame_id is not None else None
+            ),
+        )
+        for a in rows
+    ]
 
 
 # Plan-18 — Bulk classify. Accepts a list of asset_ids on the same image

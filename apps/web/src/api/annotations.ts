@@ -11,6 +11,10 @@ interface AnnotationOut {
   id: string;
   task_id: string;
   frame_id: string | null;
+  /** Plan-19 — resolved server-side via frame.asset_id. Populated by
+   *  the list endpoint only; null on single-row responses. Used by
+   *  batch post-process to group annotations by asset. */
+  asset_id?: string | null;
   class_id: string;
   kind: AnnotationKind;
   geometry: Record<string, unknown>;
@@ -104,6 +108,16 @@ export function toDraft(server: AnnotationOut): AnnotationDraft {
   };
 }
 
+export interface AnnotationRaw {
+  id: string;
+  asset_id: string | null;
+  frame_id: string | null;
+  class_id: string;
+  kind: AnnotationKind;
+  geometry: Record<string, unknown>;
+  created_at: string;
+}
+
 export const annotationsApi = {
   listForTask: async (taskId: string, frameId?: string): Promise<AnnotationDraft[]> => {
     const url = frameId
@@ -111,6 +125,20 @@ export const annotationsApi = {
       : `/tasks/${taskId}/annotations`;
     const r = await api.get<AnnotationOut[]>(url);
     return r.data.map(toDraft);
+  },
+  /** Plan-19 — raw list for batch post-process flows that need
+   *  ``asset_id`` and ``created_at`` (the draft mapper drops them). */
+  listForTaskRaw: async (taskId: string): Promise<AnnotationRaw[]> => {
+    const r = await api.get<AnnotationOut[]>(`/tasks/${taskId}/annotations`);
+    return r.data.map((a) => ({
+      id: a.id,
+      asset_id: a.asset_id ?? null,
+      frame_id: a.frame_id,
+      class_id: a.class_id,
+      kind: a.kind,
+      geometry: a.geometry,
+      created_at: a.created_at,
+    }));
   },
   batch: async (taskId: string, payload: BatchPayload): Promise<BatchOut> =>
     (await api.post<BatchOut>(`/tasks/${taskId}/annotations:batch`, payload)).data,

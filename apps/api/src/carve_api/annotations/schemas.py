@@ -134,6 +134,12 @@ class AnnotationOut(BaseModel):
     id: str
     task_id: str
     frame_id: str | None
+    # Plan-19 — asset id resolved via ``frame.asset_id``. Populated only
+    # by the list endpoint (which joins frames once per page); single
+    # endpoints leave it null. The client uses this to group batch
+    # post-process work by asset so SAM can encode each image once
+    # rather than re-encoding per annotation.
+    asset_id: str | None = None
     class_id: str
     kind: AnnotationKind
     geometry: dict
@@ -149,10 +155,11 @@ class AnnotationOut(BaseModel):
     prev_geometry: dict | None = None
 
     @classmethod
-    def from_orm_annotation(cls, a):
+    def from_orm_annotation(cls, a, asset_id: str | None = None):
         return cls(
             id=str(a.id), task_id=str(a.task_id),
             frame_id=str(a.frame_id) if a.frame_id else None,
+            asset_id=asset_id,
             class_id=str(a.class_id), kind=a.kind, geometry=a.geometry,
             track_id=str(a.track_id) if a.track_id else None,
             z_order=int(getattr(a, "z_order", 0) or 0),
