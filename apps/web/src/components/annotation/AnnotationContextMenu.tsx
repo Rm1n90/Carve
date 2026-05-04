@@ -192,9 +192,24 @@ function ConvertItems({
   onAfterAction,
 }: ConvertItemsProps) {
   const [pending, setPending] = useState(false);
+  // Plan-19 — realtime progress for bulk SAM convert/refine. Updated
+  // each iteration of the loop so the disabled button can render
+  // "Refining 3/10…" instead of a static spinner the user has no way
+  // to interpret.
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
 
   const isPolygonal = geometry.kind === "polygon" || geometry.kind === "mask_rle";
   const isBbox = geometry.kind === "bbox";
+  // Plan-19 — surface the multi-target count in button labels so the
+  // user can see they're about to convert N annotations, not just one.
+  const selectedIds = useAnnotations((s) => s.selectedIds);
+  const targetCount =
+    selectedIds.length > 1 && selectedIds.includes(annId)
+      ? selectedIds.length
+      : 1;
+  const countSuffix = targetCount > 1 ? ` (${targetCount})` : "";
 
   // Plan-17 — bulk-aware ids. When the user has marquee-selected
   // multiple annotations and the right-clicked one is among them, the
@@ -245,6 +260,7 @@ function ConvertItems({
     if (pending) return;
     setPending(true);
     const ids = bulkIds();
+    setProgress({ done: 0, total: ids.length });
     let succeeded = 0;
     let failed = 0;
     let lastErr: unknown = null;
@@ -307,6 +323,9 @@ function ConvertItems({
           lastErr = err;
           failed++;
         }
+        setProgress((prev) =>
+          prev ? { done: prev.done + 1, total: prev.total } : prev,
+        );
       }
       if (succeeded > 0) {
         showToast(
@@ -337,6 +356,7 @@ function ConvertItems({
       });
     } finally {
       setPending(false);
+      setProgress(null);
     }
   }
 
@@ -366,7 +386,7 @@ function ConvertItems({
             className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)]"
           >
             <Maximize2 className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-            <span className="flex-1">Convert → BBox</span>
+            <span className="flex-1">Convert → BBox{countSuffix}</span>
             <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
               instant
             </span>
@@ -388,7 +408,11 @@ function ConvertItems({
           >
             <ZoomIn className="h-3.5 w-3.5 text-[color:var(--accent)]" />
             <span className="flex-1">
-              {pending ? "Refining with SAM…" : "Refine with SAM"}
+              {pending
+                ? progress
+                  ? `Refining ${progress.done}/${progress.total}…`
+                  : "Refining with SAM…"
+                : `Refine with SAM${countSuffix}`}
             </span>
             <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
               SAM
@@ -414,12 +438,34 @@ function ConvertItems({
         >
           <ZoomIn className="h-3.5 w-3.5 text-[color:var(--accent)]" />
           <span className="flex-1">
-            {pending ? "Converting with SAM…" : "Convert → Polygon (SAM)"}
+            {pending
+              ? progress
+                ? `Converting ${progress.done}/${progress.total}…`
+                : "Converting with SAM…"
+              : `Convert → Polygon (SAM)${countSuffix}`}
           </span>
           <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
             SAM
           </span>
         </button>
+      )}
+      {progress && progress.total > 1 && (
+        <div
+          data-testid="ctx-convert-progress"
+          className="mx-2 my-1.5 h-1 rounded-full bg-[var(--bg-sunken)] overflow-hidden"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={progress.total}
+          aria-valuenow={progress.done}
+          aria-label={`Bulk convert progress: ${progress.done} of ${progress.total}`}
+        >
+          <div
+            className="h-full bg-[var(--accent)] transition-[width] duration-150"
+            style={{
+              width: `${(progress.done / progress.total) * 100}%`,
+            }}
+          />
+        </div>
       )}
     </>
   );
@@ -474,7 +520,16 @@ export function AnnotationContextMenu({
       const annId = hitTest(me.clientX, me.clientY);
       if (annId) {
         me.preventDefault();
-        if (!me.shiftKey) {
+        // Plan-19 — preserve an existing multi-selection if the
+        // right-clicked annotation is already part of it, so bulk
+        // actions (Convert → Polygon / Refine with SAM, Delete) operate
+        // on the whole selection. Without this guard the legacy
+        // `select(annId)` call wiped the selection back to a single id
+        // and the user's "select all → right-click → bulk convert" flow
+        // silently degraded to converting just one annotation.
+        const sel = useAnnotations.getState().selectedIds;
+        const alreadyInSelection = sel.length > 1 && sel.includes(annId);
+        if (!me.shiftKey && !alreadyInSelection) {
           useAnnotations.getState().select(annId);
         }
         setState({

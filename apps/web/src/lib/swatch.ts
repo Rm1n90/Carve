@@ -30,46 +30,51 @@ export function swatchForIdx(idx: number): string {
 }
 
 /**
- * Extended hex palette — 30 perceptually-distinct hues across the wheel,
- * ordered to maximise visual separation between adjacent indices. Used by
- * class-create forms (which need `#RRGGBB` for `<input type="color">`)
- * and by smart-color assignment so 30 classes can be created without any
- * two sharing a color.
+ * Plan-19 — High-distinguishability hex palette.
  *
- * The first 12 entries match the original v3.2 palette so existing
- * `nextHexForIdx` callers stay deterministic for low indices.
+ * 30 colours chosen and ordered so adjacent indices land on different
+ * hue families AND different lightness bands, making class chips much
+ * easier to tell apart than the previous Tailwind-derived list (which
+ * had six near-identical reds, four near-identical greens, etc.).
+ *
+ * Source: a curated extension of the well-known Sasha Trubetskoy
+ * "22 distinguishable colours" set, plus 8 hand-picked deeper / lighter
+ * variants to reach 30 without bunching into the same hue zones.
+ *
+ * Existing classes stored in the database keep their hex values — this
+ * only changes what colour a *newly created* class lands on.
  */
 export const PALETTE_HEX: readonly string[] = [
-  "#EF4444",
-  "#F59E0B",
-  "#EAB308",
-  "#22C55E",
-  "#10B981",
-  "#06B6D4",
-  "#3B82F6",
-  "#6366F1",
-  "#8B5CF6",
-  "#EC4899",
-  "#F43F5E",
-  "#64748B",
-  "#DC2626",
-  "#D97706",
-  "#84CC16",
-  "#15803D",
-  "#0891B2",
-  "#1D4ED8",
-  "#7E22CE",
-  "#A21CAF",
-  "#BE185D",
-  "#0F766E",
-  "#9333EA",
-  "#CA8A04",
-  "#65A30D",
-  "#0EA5E9",
-  "#7C3AED",
-  "#DB2777",
-  "#059669",
-  "#475569",
+  "#E6194B", // red
+  "#3CB44B", // green
+  "#4363D8", // blue
+  "#F58231", // orange
+  "#911EB4", // purple
+  "#FFE119", // yellow
+  "#42D4F4", // cyan
+  "#F032E6", // magenta
+  "#BFEF45", // lime
+  "#FABED4", // pink
+  "#469990", // teal
+  "#DCBEFF", // lavender
+  "#9A6324", // brown
+  "#800000", // maroon
+  "#AAFFC3", // mint
+  "#808000", // olive
+  "#FFD8B1", // apricot
+  "#000075", // navy
+  "#A9A9A9", // grey
+  "#FF6F61", // coral
+  "#00B0FF", // sky
+  "#FFB300", // amber
+  "#C71585", // hot magenta
+  "#00E676", // bright green
+  "#6A1B9A", // deep purple
+  "#1B5E20", // dark green
+  "#1A237E", // indigo
+  "#5D4037", // dark brown
+  "#37474F", // blue grey
+  "#EF6C00", // burnt orange
 ] as const;
 
 /**

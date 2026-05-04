@@ -1168,6 +1168,55 @@ export function AnnotationCanvas({
             settings.controlPointsSize,
             outlineColor,
           );
+          // Plan-19 — polygon labels. Compute the polygon's axis-aligned
+          // bounding rect and reuse the bbox label flow so the chip lands
+          // in a sensible spot (above the polygon by default; user can
+          // override via Settings → labelPosition). For overlapping
+          // polygons the label still anchors to each polygon's own
+          // bounds — good enough most of the time and consistent with
+          // bbox behaviour. A future pass could de-collide labels.
+          if (visLabels && draft.geometry.points.length > 0) {
+            const className = classNames[draft.classId];
+            const labelText = composeLabelText(draft, className, settings.showLabelText);
+            if (labelText) {
+              if (!pixiText || !pixiContainer) {
+                try {
+                  const pixi = await import("pixi.js");
+                  pixiText = pixi.Text;
+                  pixiContainer = pixi.Container;
+                } catch {
+                  /* leave undefined; loop below skips */
+                }
+              }
+              if (pixiText && pixiContainer) {
+                let minX = Infinity;
+                let minY = Infinity;
+                let maxX = -Infinity;
+                let maxY = -Infinity;
+                for (const [px, py] of draft.geometry.points) {
+                  if (px < minX) minX = px;
+                  if (py < minY) minY = py;
+                  if (px > maxX) maxX = px;
+                  if (py > maxY) maxY = py;
+                }
+                renderLabel(
+                  app.shapeLayer as unknown as { addChild: (c: never) => unknown },
+                  labelMap,
+                  id,
+                  { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
+                  labelText,
+                  color,
+                  pixiText,
+                  pixiContainer,
+                  Graphics,
+                  settings.labelFontSize,
+                  settings.labelPosition,
+                  draft.status ?? "proposed",
+                );
+                seenLabels.add(id);
+              }
+            }
+          }
         } else if (draft.geometry.kind === "mask_rle") {
           // Render committed mask annotations as a tinted sprite.
           // The Graphics layer is unused for masks; ensure any prior
