@@ -23,6 +23,11 @@ import { applyVertexDelete, POLY_MIN_VERTICES } from "@/canvas/polygonEdit";
 import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
+import {
+  bboxOfGeometry,
+  buildPolygon,
+} from "@/lib/geometryConvert";
+import { samPolygonForGeometry } from "@/lib/samConvert";
 import type { ClassRow } from "@/api/classes";
 
 interface MenuItem {
@@ -75,6 +80,12 @@ interface Props {
   toImageXY?: (clientX: number, clientY: number) => { x: number; y: number };
   frameId?: string | null;
   imageBounds?: { w: number; h: number };
+  /**
+   * Plan-17 — current asset id, used by the "Convert ▸" submenu so SAM
+   * roundtrips know which image to operate on. Optional because the
+   * menu also handles non-asset contexts (e.g. tag annotations).
+   */
+  assetId?: string;
 }
 
 type MenuState =
@@ -144,6 +155,262 @@ function MenuButton({
  * - Custom Change-color removed; class color is the source of truth.
  * - Position is clamped to the viewport so menus near edges stay usable.
  */
+interface ConvertSubmenuProps {
+  annId: string;
+  assetId: string;
+  frameId?: string | null;
+  geometry: import("@/state/annotations").Geometry;
+  imageBounds?: { w: number; h: number };
+  onAfterAction: () => void;
+}
+
+/**
+ * Plan-17 — content-aware "Convert ▸" submenu. Items are pruned by the
+ * source geometry kind:
+ *   - bbox             → "To polygon (SAM)"
+ *   - polygon          → "To bbox" (instant), "Refine with SAM"
+ *   - mask_rle         → "To bbox" (instant), "Refine with SAM"
+ *
+ * The hover-open / 120ms-defer-close pattern matches the existing class
+ * submenu so users get consistent navigation.
+ */
+function ConvertSubmenu({
+  annId,
+  assetId,
+  frameId,
+  geometry,
+  imageBounds,
+  onAfterAction,
+}: ConvertSubmenuProps) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const closeTimerRef = useRef<number | null>(null);
+
+  function openMenu() {
+    if (closeTimerRef.current) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setOpen(true);
+  }
+  function scheduleClose() {
+    if (closeTimerRef.current)
+      window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = window.setTimeout(() => {
+      setOpen(false);
+      closeTimerRef.current = null;
+    }, 120);
+  }
+
+  const isPolygonal = geometry.kind === "polygon" || geometry.kind === "mask_rle";
+  const isBbox = geometry.kind === "bbox";
+
+  // Plan-17 — bulk-aware ids. When the user has marquee-selected
+  // multiple annotations and the right-clicked one is among them, the
+  // Convert action applies to every selection. Otherwise it operates
+  // on the single right-clicked annotation.
+  function bulkIds(): string[] {
+    const sel = useAnnotations.getState().selectedIds;
+    if (sel.length > 1 && sel.includes(annId)) return sel;
+    return [annId];
+  }
+
+  function commitToBbox() {
+    const ids = bulkIds();
+    let converted = 0;
+    let skipped = 0;
+    for (const id of ids) {
+      const cur = useAnnotations.getState().byId[id];
+      if (!cur) {
+        skipped++;
+        continue;
+      }
+      const box = bboxOfGeometry(cur.geometry);
+      if (!box || box.w < 1 || box.h < 1) {
+        skipped++;
+        continue;
+      }
+      useAnnotations.getState().update(id, {
+        geometry: box,
+        kind: "bbox",
+        dirty: true,
+      });
+      converted++;
+    }
+    if (converted > 0) {
+      showToast(
+        `Converted ${converted} ${converted === 1 ? "annotation" : "annotations"} to bbox${skipped > 0 ? ` (${skipped} skipped)` : ""}.`,
+        { variant: "success" },
+      );
+    } else {
+      showToast("No annotation could be converted to a bbox.", {
+        variant: "error",
+      });
+    }
+    onAfterAction();
+  }
+
+  async function refineOrPolygonize(label: string) {
+    if (pending) return;
+    setPending(true);
+    const ids = bulkIds();
+    let succeeded = 0;
+    let failed = 0;
+    try {
+      // Sequential to avoid hammering the model service with 30 box
+      // prompts at once when the user just marquee-selected a YOLO
+      // batch result. The batch overlay would be the right place for
+      // a true multi-asset progress bar; this is the same-asset path.
+      for (const id of ids) {
+        const cur = useAnnotations.getState().byId[id];
+        if (!cur) {
+          failed++;
+          continue;
+        }
+        try {
+          const points = await samPolygonForGeometry({
+            assetId,
+            frameId,
+            geometry: cur.geometry,
+          });
+          if (!points) {
+            failed++;
+            continue;
+          }
+          const clamped = imageBounds
+            ? points.map(
+                ([x, y]) =>
+                  [
+                    Math.max(0, Math.min(imageBounds.w, x)),
+                    Math.max(0, Math.min(imageBounds.h, y)),
+                  ] as [number, number],
+              )
+            : points;
+          const poly = buildPolygon(clamped);
+          if (!poly) {
+            failed++;
+            continue;
+          }
+          useAnnotations.getState().update(id, {
+            geometry: poly,
+            kind: "polygon",
+            dirty: true,
+          });
+          succeeded++;
+        } catch {
+          failed++;
+        }
+      }
+      if (succeeded > 0) {
+        showToast(
+          `${label}: ${succeeded} ${succeeded === 1 ? "annotation" : "annotations"}${failed > 0 ? `, ${failed} failed` : ""}.`,
+          { variant: "success" },
+        );
+      } else {
+        showToast(`${label} failed for all ${failed} annotations.`, {
+          variant: "error",
+        });
+      }
+      onAfterAction();
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail || "SAM request failed.";
+      showToast(`${label} failed — ${detail}`, { variant: "error" });
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div
+      className="relative"
+      onMouseEnter={openMenu}
+      onMouseLeave={scheduleClose}
+    >
+      <button
+        type="button"
+        data-testid="ctx-convert-trigger"
+        onFocus={openMenu}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={pending}
+        className={cn(
+          "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left",
+          "hover:bg-[var(--bg-hover)]",
+          pending && "opacity-60 cursor-wait",
+        )}
+      >
+        <Maximize2 className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+        <span className="flex-1">Convert</span>
+        <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Convert annotation submenu"
+          data-testid="ctx-convert-submenu"
+          onMouseEnter={openMenu}
+          onMouseLeave={scheduleClose}
+          className={cn(
+            "absolute top-0 left-full ml-1 min-w-[220px]",
+            "rounded-[var(--radius-md)] glass-surface-strong p-1",
+          )}
+        >
+          {isPolygonal && (
+            <>
+              <button
+                type="button"
+                data-testid="ctx-convert-to-bbox"
+                onClick={commitToBbox}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)]"
+              >
+                <Maximize2 className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                <span className="flex-1">→ BBox</span>
+                <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                  instant
+                </span>
+              </button>
+              <button
+                type="button"
+                data-testid="ctx-refine-with-sam"
+                disabled={pending}
+                onClick={() => void refineOrPolygonize("Refine with SAM")}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)] disabled:opacity-50"
+              >
+                <ZoomIn className="h-3.5 w-3.5 text-[color:var(--accent)]" />
+                <span className="flex-1">
+                  {pending ? "Refining…" : "Refine with SAM"}
+                </span>
+                <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                  SAM
+                </span>
+              </button>
+            </>
+          )}
+          {isBbox && (
+            <button
+              type="button"
+              data-testid="ctx-convert-to-polygon"
+              disabled={pending}
+              onClick={() => void refineOrPolygonize("Convert to polygon")}
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)] disabled:opacity-50"
+            >
+              <ZoomIn className="h-3.5 w-3.5 text-[color:var(--accent)]" />
+              <span className="flex-1">
+                {pending ? "Converting…" : "→ Polygon (SAM)"}
+              </span>
+              <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                SAM
+              </span>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AnnotationContextMenu({
   hostRef,
   hitTest,
@@ -152,6 +419,7 @@ export function AnnotationContextMenu({
   toImageXY,
   frameId = null,
   imageBounds,
+  assetId,
 }: Props) {
   const [state, setState] = useState<MenuState | null>(null);
   const [classMenuOpen, setClassMenuOpen] = useState(false);
@@ -532,6 +800,20 @@ export function AnnotationContextMenu({
           close();
         }}
       />
+
+      {/* Plan-17 — Convert ▸ submenu. Only mounted when we know which
+          asset we are operating on (SAM needs ``assetId``) and the
+          annotation has spatial extent (tags have nothing to convert). */}
+      {assetId && draft && draft.kind !== "tag" && (
+        <ConvertSubmenu
+          annId={annId}
+          assetId={assetId}
+          frameId={frameId}
+          geometry={draft.geometry}
+          imageBounds={imageBounds}
+          onAfterAction={close}
+        />
+      )}
 
       <div className="my-1 h-px bg-[var(--border-subtle)]" />
 

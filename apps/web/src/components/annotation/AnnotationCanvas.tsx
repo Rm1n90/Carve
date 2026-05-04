@@ -3253,6 +3253,7 @@ export function AnnotationCanvas({
         imageBounds={
           imageSize.w > 1 && imageSize.h > 1 ? imageSize : undefined
         }
+        assetId={assetId}
       />
       {/* v3.8 Phase 3.6 — Class Command Palette. Plan 14 Phase 8 Task 4
           productized this: ``/`` and ``Cmd-Shift-C`` open it in
