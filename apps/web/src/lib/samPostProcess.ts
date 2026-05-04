@@ -51,6 +51,10 @@ export interface PostProcessResult {
   succeeded: number;
   failed: number;
   cancelled: boolean;
+  /** Plan-19 — diagnostic breakdown of *why* rows were skipped. Populated
+   *  by ``runBatchTaskPostProcess``; the single-asset helper still
+   *  returns just the totals. */
+  skipReasons?: Record<string, number>;
 }
 
 /**
@@ -294,10 +298,15 @@ export async function runBatchTaskPostProcess(
 
   // SAM-required modes. Group by asset so the model encodes once per
   // image; within a group iterate sequentially.
+  const skipReasons: Record<string, number> = {};
+  const bumpReason = (reason: string) => {
+    skipReasons[reason] = (skipReasons[reason] ?? 0) + 1;
+  };
   const byAsset = new Map<string, typeof candidates>();
   for (const a of candidates) {
     if (!a.asset_id) {
       failed++;
+      bumpReason("no_asset_id");
       continue;
     }
     const list = byAsset.get(a.asset_id) ?? [];
@@ -328,8 +337,15 @@ export async function runBatchTaskPostProcess(
           frameId: ann.frame_id,
           geometry: ann.geometry as never,
         });
-        if (!points || points.length < 3) {
+        if (!points) {
+          // samPolygonForGeometry returns null when the bbox is < 1px
+          // OR the SAM decode response had no polygon. We can't tell
+          // the two apart from out here — bucket as "sam_no_polygon".
           failed++;
+          bumpReason("sam_no_polygon");
+        } else if (points.length < 3) {
+          failed++;
+          bumpReason("polygon_too_few_points");
         } else {
           const clamped = bounds
             ? points.map(
@@ -345,10 +361,12 @@ export async function runBatchTaskPostProcess(
             updates.push({ id: ann.id, kind: "polygon", geometry: poly });
           } else {
             failed++;
+            bumpReason("degenerate_after_clamp");
           }
         }
       } catch {
         failed++;
+        bumpReason("sam_call_failed");
       }
       processed++;
       onProgress?.({ done: processed, total, failed });
@@ -363,8 +381,20 @@ export async function runBatchTaskPostProcess(
         succeeded += updates.length;
       } catch {
         failed += updates.length;
+        skipReasons.persist_batch_failed =
+          (skipReasons.persist_batch_failed ?? 0) + updates.length;
       }
     }
   }
-  return { succeeded, failed, cancelled };
+  if (failed > 0) {
+    // Surface the breakdown in the console so power users can inspect
+    // why SAM didn't produce polygons for these rows.
+    // eslint-disable-next-line no-console
+    console.info(
+      "[runBatchTaskPostProcess] skipped breakdown:",
+      skipReasons,
+      `succeeded=${succeeded} failed=${failed}`,
+    );
+  }
+  return { succeeded, failed, cancelled, skipReasons };
 }

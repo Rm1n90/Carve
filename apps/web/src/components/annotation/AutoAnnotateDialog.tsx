@@ -302,8 +302,11 @@ export function AutoAnnotateDialog({
                   .then((res) => {
                     if (res.succeeded > 0) {
                       showToast(
-                        `Converted ${res.succeeded} polygon${res.succeeded === 1 ? "" : "s"} to bbox${res.failed > 0 ? ` (${res.failed} skipped)` : ""}.`,
-                        { variant: "success", duration: 4500 },
+                        `Converted ${res.succeeded} polygon${res.succeeded === 1 ? "" : "s"} to bbox${res.failed > 0 ? ` · ${res.failed} kept original (degenerate geometry)` : ""}.`,
+                        {
+                          variant: res.failed > 0 ? "warning" : "success",
+                          duration: 6000,
+                        },
                       );
                     }
                   })

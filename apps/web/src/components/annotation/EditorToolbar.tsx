@@ -91,6 +91,31 @@ const OVERRIDES_KEY_PREFIX = "carve.editor.overrides.";
 // `null` at the API boundary.
 const OVERRIDE_SKIP = "__skip__";
 
+// Plan-19 — humanise the skip-reason buckets emitted by
+// runBatchTaskPostProcess so toasts read "32 SAM no polygon" instead of
+// the raw key. Keys are stable; unknown keys fall back to the raw form.
+const SKIP_REASON_LABEL: Record<string, string> = {
+  sam_no_polygon: "SAM found no object",
+  polygon_too_few_points: "polygon too small",
+  degenerate_after_clamp: "outside image bounds",
+  sam_call_failed: "SAM error",
+  no_asset_id: "missing asset id",
+  persist_batch_failed: "save failed",
+};
+
+function describeSkipReasons(
+  reasons: Record<string, number> | undefined,
+): string {
+  if (!reasons) return "no detail";
+  const entries = Object.entries(reasons)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return "no detail";
+  return entries
+    .map(([k, n]) => `${n} ${SKIP_REASON_LABEL[k] ?? k}`)
+    .join(", ");
+}
+
 function lastWeightKey(projectId: string): string {
   return `${LAST_WEIGHT_KEY_PREFIX}${projectId}`;
 }
@@ -1440,15 +1465,21 @@ const YoloPredictButton = forwardRef<
                 onProgress: setBatchPostProgress,
               })
                 .then((res) => {
+                  const skippedTail = res.failed > 0
+                    ? ` · ${res.failed} kept original (${describeSkipReasons(res.skipReasons)})`
+                    : "";
                   if (res.succeeded > 0) {
                     showToast(
-                      `${mode === "to-polygon" ? "Converted" : "Refined"} ${res.succeeded} annotation${res.succeeded === 1 ? "" : "s"}${res.failed > 0 ? ` · ${res.failed} skipped` : ""}.`,
-                      { variant: "success", duration: 4500 },
+                      `${mode === "to-polygon" ? "Converted" : "Refined"} ${res.succeeded} annotation${res.succeeded === 1 ? "" : "s"}${skippedTail}.`,
+                      {
+                        variant: res.failed > 0 ? "warning" : "success",
+                        duration: 6000,
+                      },
                     );
                   } else if (res.failed > 0) {
                     showToast(
-                      `Batch post-process: 0 succeeded, ${res.failed} skipped.`,
-                      { variant: "warning", duration: 4500 },
+                      `0 refined, ${res.failed} kept original (${describeSkipReasons(res.skipReasons)}). YOLO boxes were not changed.`,
+                      { variant: "warning", duration: 6000 },
                     );
                   }
                 })
