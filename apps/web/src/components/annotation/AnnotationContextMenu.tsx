@@ -155,7 +155,7 @@ function MenuButton({
  * - Custom Change-color removed; class color is the source of truth.
  * - Position is clamped to the viewport so menus near edges stay usable.
  */
-interface ConvertSubmenuProps {
+interface ConvertItemsProps {
   annId: string;
   assetId: string;
   frameId?: string | null;
@@ -165,42 +165,24 @@ interface ConvertSubmenuProps {
 }
 
 /**
- * Plan-17 — content-aware "Convert ▸" submenu. Items are pruned by the
- * source geometry kind:
- *   - bbox             → "To polygon (SAM)"
- *   - polygon          → "To bbox" (instant), "Refine with SAM"
- *   - mask_rle         → "To bbox" (instant), "Refine with SAM"
+ * Plan-17 — flat inline Convert items. Earlier hover-submenu version
+ * shipped, but submenu positioning near the viewport edge made the
+ * items unreachable in some layouts. Flat inline buttons avoid the
+ * hover/timing/positioning class of bugs entirely; the items are
+ * pruned by the source geometry kind so the menu stays small.
  *
- * The hover-open / 120ms-defer-close pattern matches the existing class
- * submenu so users get consistent navigation.
+ *   - polygon / mask_rle: "→ BBox" (instant), "Refine with SAM"
+ *   - bbox             : "→ Polygon (SAM)"
  */
-function ConvertSubmenu({
+function ConvertItems({
   annId,
   assetId,
   frameId,
   geometry,
   imageBounds,
   onAfterAction,
-}: ConvertSubmenuProps) {
-  const [open, setOpen] = useState(false);
+}: ConvertItemsProps) {
   const [pending, setPending] = useState(false);
-  const closeTimerRef = useRef<number | null>(null);
-
-  function openMenu() {
-    if (closeTimerRef.current) {
-      window.clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-    setOpen(true);
-  }
-  function scheduleClose() {
-    if (closeTimerRef.current)
-      window.clearTimeout(closeTimerRef.current);
-    closeTimerRef.current = window.setTimeout(() => {
-      setOpen(false);
-      closeTimerRef.current = null;
-    }, 120);
-  }
 
   const isPolygonal = geometry.kind === "polygon" || geometry.kind === "mask_rle";
   const isBbox = geometry.kind === "bbox";
@@ -323,91 +305,68 @@ function ConvertSubmenu({
   }
 
   return (
-    <div
-      className="relative"
-      onMouseEnter={openMenu}
-      onMouseLeave={scheduleClose}
-    >
-      <button
-        type="button"
-        data-testid="ctx-convert-trigger"
-        onFocus={openMenu}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={pending}
-        className={cn(
-          "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left",
-          "hover:bg-[var(--bg-hover)]",
-          pending && "opacity-60 cursor-wait",
-        )}
-      >
-        <Maximize2 className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-        <span className="flex-1">Convert</span>
-        <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-      </button>
-      {open && (
-        <div
-          role="menu"
-          aria-label="Convert annotation submenu"
-          data-testid="ctx-convert-submenu"
-          onMouseEnter={openMenu}
-          onMouseLeave={scheduleClose}
-          className={cn(
-            "absolute top-0 left-full ml-1 min-w-[220px]",
-            "rounded-[var(--radius-md)] glass-surface-strong p-1",
-          )}
-        >
-          {isPolygonal && (
-            <>
-              <button
-                type="button"
-                data-testid="ctx-convert-to-bbox"
-                onClick={commitToBbox}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)]"
-              >
-                <Maximize2 className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-                <span className="flex-1">→ BBox</span>
-                <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
-                  instant
-                </span>
-              </button>
-              <button
-                type="button"
-                data-testid="ctx-refine-with-sam"
-                disabled={pending}
-                onClick={() => void refineOrPolygonize("Refine with SAM")}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)] disabled:opacity-50"
-              >
-                <ZoomIn className="h-3.5 w-3.5 text-[color:var(--accent)]" />
-                <span className="flex-1">
-                  {pending ? "Refining…" : "Refine with SAM"}
-                </span>
-                <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
-                  SAM
-                </span>
-              </button>
-            </>
-          )}
-          {isBbox && (
-            <button
-              type="button"
-              data-testid="ctx-convert-to-polygon"
-              disabled={pending}
-              onClick={() => void refineOrPolygonize("Convert to polygon")}
-              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)] disabled:opacity-50"
-            >
-              <ZoomIn className="h-3.5 w-3.5 text-[color:var(--accent)]" />
-              <span className="flex-1">
-                {pending ? "Converting…" : "→ Polygon (SAM)"}
-              </span>
-              <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
-                SAM
-              </span>
-            </button>
-          )}
-        </div>
+    <>
+      {isPolygonal && (
+        <>
+          <button
+            type="button"
+            data-testid="ctx-convert-to-bbox"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              commitToBbox();
+            }}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)]"
+          >
+            <Maximize2 className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+            <span className="flex-1">Convert → BBox</span>
+            <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
+              instant
+            </span>
+          </button>
+          <button
+            type="button"
+            data-testid="ctx-refine-with-sam"
+            disabled={pending}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void refineOrPolygonize("Refine with SAM");
+            }}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)] disabled:opacity-50"
+          >
+            <ZoomIn className="h-3.5 w-3.5 text-[color:var(--accent)]" />
+            <span className="flex-1">
+              {pending ? "Refining with SAM…" : "Refine with SAM"}
+            </span>
+            <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
+              SAM
+            </span>
+          </button>
+        </>
       )}
-    </div>
+      {isBbox && (
+        <button
+          type="button"
+          data-testid="ctx-convert-to-polygon"
+          disabled={pending}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void refineOrPolygonize("Convert to polygon");
+          }}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)] disabled:opacity-50"
+        >
+          <ZoomIn className="h-3.5 w-3.5 text-[color:var(--accent)]" />
+          <span className="flex-1">
+            {pending ? "Converting with SAM…" : "Convert → Polygon (SAM)"}
+          </span>
+          <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
+            SAM
+          </span>
+        </button>
+      )}
+    </>
   );
 }
 
@@ -801,18 +760,21 @@ export function AnnotationContextMenu({
         }}
       />
 
-      {/* Plan-17 — Convert ▸ submenu. Only mounted when we know which
-          asset we are operating on (SAM needs ``assetId``) and the
+      {/* Plan-17 — flat inline Convert items. Only mounted when we know
+          which asset we are operating on (SAM needs ``assetId``) and the
           annotation has spatial extent (tags have nothing to convert). */}
       {assetId && draft && draft.kind !== "tag" && (
-        <ConvertSubmenu
-          annId={annId}
-          assetId={assetId}
-          frameId={frameId}
-          geometry={draft.geometry}
-          imageBounds={imageBounds}
-          onAfterAction={close}
-        />
+        <>
+          <div className="my-1 h-px bg-[var(--border-subtle)]" />
+          <ConvertItems
+            annId={annId}
+            assetId={assetId}
+            frameId={frameId}
+            geometry={draft.geometry}
+            imageBounds={imageBounds}
+            onAfterAction={close}
+          />
+        </>
       )}
 
       <div className="my-1 h-px bg-[var(--border-subtle)]" />
