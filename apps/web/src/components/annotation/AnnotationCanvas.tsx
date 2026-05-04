@@ -2271,6 +2271,17 @@ export function AnnotationCanvas({
         }
       }
       else if (tool === "sam") {
+        // Plan-17 — right-click on an existing annotation skips SAM's
+        // negative-point handling so the AnnotationContextMenu can
+        // show Convert / Refine / etc. Only right-clicks on EMPTY
+        // canvas are still treated as SAM negative-point clicks.
+        if (e.button === 2) {
+          const hit = hitTest(p);
+          if (hit) {
+            // Bail early — let the contextmenu event open the menu.
+            return;
+          }
+        }
         e.preventDefault();
         const mode = useTool.getState().samMode;
         if (mode === "track") {
@@ -2744,7 +2755,23 @@ export function AnnotationCanvas({
     }
 
     function onContextMenu(e: MouseEvent) {
-      if (tool === "sam") e.preventDefault();
+      // Plan-17 — right-click semantics in SAM mode:
+      //   - on EMPTY canvas / SAM preview: SAM treats right-click as a
+      //     negative-point click, so suppress the browser context menu
+      //     so the SAM behavior wins.
+      //   - ON an existing annotation: the user almost always wants the
+      //     Convert/Lock/Duplicate menu, so let the contextmenu event
+      //     fire (which is what the AnnotationContextMenu hooks).
+      if (tool !== "sam") return;
+      const hit = hitTestClient(e.clientX, e.clientY);
+      if (hit) {
+        // Hit an annotation — let the context menu open. Do NOT
+        // preventDefault; the AnnotationContextMenu's window-level
+        // contextmenu listener will route this into menu state.
+        return;
+      }
+      // Empty canvas — preserve SAM negative-point behavior.
+      e.preventDefault();
     }
 
     function onKey(e: KeyboardEvent) {

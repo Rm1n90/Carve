@@ -21,6 +21,14 @@ export interface SamRefineParams {
 
 /**
  * Run a single SAM box-prompt and return the produced polygon vertices.
+ *
+ * The model service requires the active SAM variant to be loaded AND
+ * the image embedding to be cached on the server before box-prompt
+ * succeeds. We trigger ``samApi.encode`` first so callers never have
+ * to pre-warm SAM by clicking in the Point tool. Encode is cheap if
+ * the embedding is already cached server-side (idempotent by image
+ * hash).
+ *
  * Returns ``null`` when SAM did not produce a usable polygon (no
  * candidate or the active variant cannot polygonize) — the caller
  * keeps the original geometry instead of replacing it with garbage.
@@ -30,6 +38,14 @@ export async function samBoxToPolygonPoints({
   frameId,
   box,
 }: SamRefineParams): Promise<[number, number][] | null> {
+  // Plan-17 — pre-warm. Failures here are non-fatal: a recent encode
+  // may already be cached and box-prompt will pick it up.
+  try {
+    await samApi.encode(assetId, frameId ?? null);
+  } catch {
+    /* fall through and try box-prompt — if SAM truly cannot serve we
+     * surface the error from boxPrompt below */
+  }
   const results = await samApi.boxPrompt(
     assetId,
     [box],
