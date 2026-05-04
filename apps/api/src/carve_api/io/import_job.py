@@ -71,17 +71,35 @@ def update_progress(redis_client, job_id: str, *, done: int, warnings: list[str]
         pass
 
 
-def finalize_progress(redis_client, job_id: str, *, status: str) -> None:
+def finalize_progress(
+    redis_client,
+    job_id: str,
+    *,
+    status: str,
+    reason: str | None = None,
+) -> None:
+    """Plan-20.6 — record the terminal status AND a short ``reason``
+    code so the dialog can render a friendly explanation rather than
+    a bare 'Import failed'."""
     if redis_client is None:
         return
     try:
-        redis_client.hset(progress_key(job_id), "status", status)
+        mapping: dict[str, str] = {"status": status}
+        if reason:
+            mapping["reason"] = reason
+        redis_client.hset(progress_key(job_id), mapping=mapping)
     except Exception:
         pass
 
 
 def read_progress(redis_client, job_id: str) -> dict:
-    default = {"status": "pending", "done": 0, "total": 0, "warnings": []}
+    default = {
+        "status": "pending",
+        "done": 0,
+        "total": 0,
+        "warnings": [],
+        "reason": None,
+    }
     if redis_client is None:
         return default
     try:
@@ -104,6 +122,7 @@ def read_progress(redis_client, job_id: str) -> dict:
         "done": int(parsed.get("done", 0)),
         "total": int(parsed.get("total", 0)),
         "warnings": warnings,
+        "reason": parsed.get("reason") or None,
     }
 
 
@@ -210,7 +229,10 @@ def run_import_job(payload: ImportJobPayload) -> dict:
         task = session.get(Task, uuid.UUID(payload.task_id))
         if task is None:
             init_progress(redis_client, payload.job_id, 0)
-            finalize_progress(redis_client, payload.job_id, status="failed")
+            finalize_progress(
+                redis_client, payload.job_id,
+                status="failed", reason="task_not_found",
+            )
             return {"status": "failed", "reason": "task_not_found"}
 
         # Project classes for resolution
@@ -230,23 +252,39 @@ def run_import_job(payload: ImportJobPayload) -> dict:
             archive_bytes = storage.get_object(payload.minio_key).read()
         except Exception as exc:  # noqa: BLE001
             init_progress(redis_client, payload.job_id, 0)
-            finalize_progress(redis_client, payload.job_id, status="failed")
+            finalize_progress(
+                redis_client, payload.job_id,
+                status="failed", reason="download_failed",
+            )
             return {"status": "failed", "reason": f"download_failed: {exc!r}"}
 
         try:
             if payload.fmt == "yolo":
+                # Plan-20.5 — fall back to project class names when the
+                # uploaded archive doesn't carry a data.yaml. Same
+                # behaviour as the dryrun path so confirm reproduces
+                # the dryrun's resolution.
+                fallback = [c.name for c in classes]
                 parsed: ParsedArchive = parse_yolo_archive(
-                    archive_bytes, image_dimensions=dim_map,
+                    archive_bytes,
+                    image_dimensions=dim_map,
+                    fallback_class_names=fallback,
                 )
             elif payload.fmt == "coco":
                 parsed = parse_coco_bytes(archive_bytes)
             else:
                 init_progress(redis_client, payload.job_id, 0)
-                finalize_progress(redis_client, payload.job_id, status="failed")
+                finalize_progress(
+                    redis_client, payload.job_id,
+                    status="failed", reason=f"unsupported_format:{payload.fmt}",
+                )
                 return {"status": "failed", "reason": f"unsupported_format: {payload.fmt}"}
         except Exception as exc:  # noqa: BLE001
             init_progress(redis_client, payload.job_id, 0)
-            finalize_progress(redis_client, payload.job_id, status="failed")
+            finalize_progress(
+                redis_client, payload.job_id,
+                status="failed", reason="parse_failed",
+            )
             return {"status": "failed", "reason": f"parse_failed: {exc!r}"}
 
         init_progress(redis_client, payload.job_id, len(parsed.drafts))
@@ -270,5 +308,11 @@ def run_import_job(payload: ImportJobPayload) -> dict:
         pass
 
     final_status = "completed" if not warnings else "completed_with_warnings"
-    finalize_progress(redis_client, payload.job_id, status=final_status)
+    # Plan-20.6 — short reason payload the dialog can render verbatim:
+    # 'created=N skipped=M' is enough for the toast / status line.
+    summary_reason = f"created={created} skipped={len(warnings)}"
+    finalize_progress(
+        redis_client, payload.job_id,
+        status=final_status, reason=summary_reason,
+    )
     return {"status": final_status, "done": created, "warnings": warnings}

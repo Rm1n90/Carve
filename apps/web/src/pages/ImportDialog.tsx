@@ -10,7 +10,7 @@
 // On drop the dialog runs a server-side dryrun and shows what *would*
 // be imported and what would be skipped (and why). The user clicks
 // Continue to commit, or Cancel to abandon.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDropzone, type Accept } from "react-dropzone";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, FileArchive, Info, X } from "lucide-react";
@@ -23,7 +23,64 @@ import {
 } from "@/api/imports";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+
+// Plan-20.6 — map short server reason codes to a one-line, plain-
+// English message + suggested fix. Anything unrecognised falls
+// through to the raw code so power users can still see it.
+const ERROR_MESSAGES: Record<string, string> = {
+  no_files: "No file was attached.",
+  import_too_large: "Files are too large (the limit is 1 GB total).",
+  only_one_zip_supported: "Only one .zip file at a time.",
+  only_one_json_supported: "Only one .json file at a time.",
+  yolo_needs_zip_or_txt:
+    "YOLO needs at least one .txt label file (or a .zip).",
+  coco_needs_zip_or_json:
+    "COCO needs a .json file (or a .zip containing one).",
+  staged_import_not_found_or_expired:
+    "Your staged upload expired (more than 24 h ago). Please re-upload the files.",
+  staged_import_for_other_task:
+    "That staged upload belongs to a different task — please re-upload here.",
+  redis_unavailable:
+    "The job queue is offline right now. Try again in a moment.",
+  task_not_found: "This task no longer exists.",
+  download_failed:
+    "Couldn't read the staged file. Please re-upload and try again.",
+  parse_failed:
+    "We couldn't read your file as a valid YOLO/COCO archive. Make sure it's the format you selected.",
+};
+
+function friendlyMessage(reason: string | null | undefined): string {
+  if (!reason) return "Import failed.";
+  // Strip the inner detail after a colon so 'parse_failed: <stack>' still
+  // hits the lookup. Both 'parse_failed' and 'parse_failed: ...' map to
+  // the same friendly message.
+  const head = reason.split(":")[0].trim();
+  if (ERROR_MESSAGES[head]) return ERROR_MESSAGES[head];
+  if (reason.startsWith("unsupported_file_extension")) {
+    const f = reason.split(":").slice(1).join(":").trim();
+    return f
+      ? `Can't read this file type — ${f}. Use .txt / .yaml / .zip / .json.`
+      : "Unsupported file type.";
+  }
+  if (reason.startsWith("unsupported_format")) {
+    return "That export format isn't supported here.";
+  }
+  return reason;
+}
+
+interface SummaryCounts {
+  created: number;
+  skipped: number;
+}
+
+function parseSummaryReason(reason: string | null | undefined): SummaryCounts | null {
+  if (!reason) return null;
+  const m = reason.match(/created=(\d+)\s+skipped=(\d+)/);
+  if (!m) return null;
+  return { created: Number(m[1]), skipped: Number(m[2]) };
+}
 
 interface Props {
   taskId: string;
@@ -44,7 +101,7 @@ const COCO_ACCEPT: Accept = {
 function formatErrorDetail(err: unknown): string {
   const data = (err as { response?: { data?: { detail?: string; error?: string } } })
     ?.response?.data;
-  return data?.detail ?? data?.error ?? "import_failed";
+  return friendlyMessage(data?.detail ?? data?.error ?? "import_failed");
 }
 
 export function ImportDialog({ taskId }: Props) {
@@ -91,11 +148,36 @@ export function ImportDialog({ taskId }: Props) {
   });
 
   const status = progressQ.data?.status;
+  const reason = progressQ.data?.reason;
+  // Plan-20.6 — fire a single toast on the terminal status so the user
+  // gets a clear, persistent notification even if they've already
+  // looked away from the dialog. The ref guards against the polling
+  // query re-emitting the same terminal value across renders.
+  const terminalToastedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (status && status.startsWith("completed")) {
+    if (!status || !committedImportId) return;
+    if (terminalToastedRef.current === committedImportId) return;
+    if (status.startsWith("completed")) {
       qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+      const summary = parseSummaryReason(reason);
+      const msg = summary
+        ? summary.skipped > 0
+          ? `Imported ${summary.created.toLocaleString()} annotations · ${summary.skipped.toLocaleString()} skipped (see warnings).`
+          : `Imported ${summary.created.toLocaleString()} annotations.`
+        : "Import finished.";
+      showToast(msg, {
+        variant: status === "completed_with_warnings" ? "warning" : "success",
+        duration: 5000,
+      });
+      terminalToastedRef.current = committedImportId;
+    } else if (status === "failed") {
+      showToast(`Import failed — ${friendlyMessage(reason)}`, {
+        variant: "error",
+        duration: 6000,
+      });
+      terminalToastedRef.current = committedImportId;
     }
-  }, [status, qc, taskId]);
+  }, [status, reason, qc, taskId, committedImportId]);
 
   const accept = format === "yolo" ? YOLO_ACCEPT : COCO_ACCEPT;
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -381,21 +463,34 @@ function ImportProgressView({ progress, onClose }: ImportProgressViewProps) {
       : null;
   const isDone = progress.status.startsWith("completed");
   const isFailed = progress.status === "failed";
+  const summary = parseSummaryReason(progress.reason);
+  // Plan-20.6 — clear, plain-English headline for every terminal
+  // state so the user knows exactly what happened.
+  let headline = `Importing… ${progress.done.toLocaleString()} of ${progress.total.toLocaleString()}`;
+  if (isDone) {
+    if (summary && summary.skipped > 0) {
+      headline =
+        `Imported ${summary.created.toLocaleString()} annotations · ` +
+        `${summary.skipped.toLocaleString()} skipped (see warnings)`;
+    } else if (summary) {
+      headline = `Imported ${summary.created.toLocaleString()} annotations`;
+    } else {
+      headline = `Imported ${progress.done.toLocaleString()} annotations`;
+    }
+  } else if (isFailed) {
+    headline = `Import failed — ${friendlyMessage(progress.reason)}`;
+  }
   return (
     <div data-testid="import-progress" className="grid gap-2">
-      <div className="flex items-center gap-2 text-[13px] text-primary">
+      <div className="flex items-start gap-2 text-[13px] text-primary leading-snug">
         {isDone ? (
-          <CheckCircle2 className="h-4 w-4 text-[color:var(--success)]" />
+          <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0 text-[color:var(--success)]" />
         ) : isFailed ? (
-          <AlertTriangle className="h-4 w-4 text-[color:var(--danger)]" />
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-[color:var(--danger)]" />
         ) : (
-          <Info className="h-4 w-4 text-[color:var(--accent)]" />
+          <Info className="h-4 w-4 mt-0.5 shrink-0 text-[color:var(--accent)]" />
         )}
-        {isDone
-          ? `Imported ${progress.done.toLocaleString()} annotations`
-          : isFailed
-            ? "Import failed"
-            : `Importing… ${progress.done.toLocaleString()} of ${progress.total.toLocaleString()}`}
+        <span>{headline}</span>
       </div>
       <div className="h-1.5 rounded-full bg-[var(--bg-sunken)] overflow-hidden">
         <div

@@ -14,6 +14,10 @@ export interface ImportProgress {
   done: number;
   total: number;
   warnings: string[];
+  /** Plan-20.6 — short reason code on terminal status. On success
+   *  it's a 'created=N skipped=M' summary; on failure it's a stable
+   *  code the dialog maps to a friendly message. */
+  reason?: string | null;
 }
 
 export interface ImportReport {
