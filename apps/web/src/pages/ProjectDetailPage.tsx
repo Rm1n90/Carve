@@ -15,6 +15,7 @@ import {
   Clock,
   Copy,
   Database,
+  Download,
   Image as ImageIcon,
   ListChecks,
   MoreVertical,
@@ -22,6 +23,7 @@ import {
   Settings,
   Sparkles,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { projectsApi } from "@/api/projects";
 import { classesApi } from "@/api/classes";
@@ -42,6 +44,8 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { ClassesEditor } from "./ClassesEditor";
 import { NewTaskDialog } from "./NewTaskDialog";
 import { DatasetsPage } from "./DatasetsPage";
+import { AssetUploadDialog } from "./AssetUploadDialog";
+import { ExportDialog } from "./ExportDialog";
 // StatsPanel is dynamically imported so the recharts chunk lands in
 // its own bundle and is fetched only when the stats UI is rendered.
 const StatsPanel = lazy(() =>
@@ -980,6 +984,7 @@ function FilteredTasksList({
   hasAnyTasks,
   renderClassesChip,
   renderMenu,
+  renderActions,
 }: {
   projectId: string;
   tasks: Task[];
@@ -987,6 +992,7 @@ function FilteredTasksList({
   hasAnyTasks: boolean;
   renderClassesChip: (t: Task) => ReactNode;
   renderMenu: (t: Task) => ReactNode;
+  renderActions?: (t: Task) => ReactNode;
 }) {
   if (!isLoading && !hasAnyTasks) {
     return (
@@ -1035,6 +1041,7 @@ function FilteredTasksList({
           task={t}
           classesChip={renderClassesChip(t)}
           menuSlot={renderMenu(t)}
+          actionsSlot={renderActions ? renderActions(t) : undefined}
         />
       ))}
     </ul>
@@ -1085,6 +1092,11 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   const [retrainTarget, setRetrainTarget] = useState<Task | null>(null);
   // Plan-16 — task targeted by the edit-due-date dialog.
   const [dueDateTarget, setDueDateTarget] = useState<Task | null>(null);
+  // Plan-20.4 — per-task Upload / Export targets for the inline action
+  // buttons rendered on each task row. Each is set when the user clicks
+  // the row's icon and reset when the dialog closes.
+  const [uploadTaskTarget, setUploadTaskTarget] = useState<Task | null>(null);
+  const [exportTaskTarget, setExportTaskTarget] = useState<Task | null>(null);
 
   // Plan 14 Phase 8 Task 2 — Tasks-toolbar state. Search is filtered
   // case-insensitively against task name; status uses the existing
@@ -1460,6 +1472,42 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                 tasks={filteredTasks}
                 isLoading={tasksQ.isLoading}
                 hasAnyTasks={(tasksQ.data?.length ?? 0) > 0}
+                renderActions={(t) => (
+                  <>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setUploadTaskTarget(t);
+                      }}
+                      title={`Upload assets to ${t.name}`}
+                      data-testid={`task-row-upload-${t.id}`}
+                      className={cn(
+                        "grid h-7 w-7 place-items-center rounded-[var(--radius-sm)]",
+                        "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+                      )}
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setExportTaskTarget(t);
+                      }}
+                      title={`Export annotations from ${t.name}`}
+                      data-testid={`task-row-export-${t.id}`}
+                      className={cn(
+                        "grid h-7 w-7 place-items-center rounded-[var(--radius-sm)]",
+                        "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+                      )}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  </>
+                )}
                 renderClassesChip={(t) => (
                   <TaskClassesChip
                     projectId={projectId}
@@ -1718,6 +1766,48 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
               </button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Plan-20.4 — per-task Upload dialog launched from the task row's
+          inline action button. */}
+      <Dialog
+        open={uploadTaskTarget !== null}
+        onOpenChange={(o) => !o && setUploadTaskTarget(null)}
+      >
+        <DialogContent className="w-[min(92vw,560px)]">
+          <DialogHeader>
+            <DialogTitle>
+              Upload assets{uploadTaskTarget ? ` — ${uploadTaskTarget.name}` : ""}
+            </DialogTitle>
+          </DialogHeader>
+          {uploadTaskTarget && (
+            <AssetUploadDialog
+              projectId={projectId}
+              taskId={uploadTaskTarget.id}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Plan-20.4 — per-task Export dialog launched from the task row's
+          inline action button. */}
+      <Dialog
+        open={exportTaskTarget !== null}
+        onOpenChange={(o) => !o && setExportTaskTarget(null)}
+      >
+        <DialogContent className="w-[min(92vw,640px)]">
+          <DialogHeader>
+            <DialogTitle>
+              Export annotations{exportTaskTarget ? ` — ${exportTaskTarget.name}` : ""}
+            </DialogTitle>
+          </DialogHeader>
+          {exportTaskTarget && (
+            <ExportDialog
+              projectId={projectId}
+              taskId={exportTaskTarget.id}
+            />
+          )}
         </DialogContent>
       </Dialog>
 

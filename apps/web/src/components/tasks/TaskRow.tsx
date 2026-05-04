@@ -56,6 +56,10 @@ interface TaskRowProps {
   classesChip?: ReactNode;
   /** Right-side kebab menu (rendered by parent — owns confirm flows). */
   menuSlot?: ReactNode;
+  /** Plan-20.4 — inline action buttons (Upload / Export) rendered
+   *  horizontally on each row so the user can fire those flows
+   *  without entering the task. Parent owns the dialogs. */
+  actionsSlot?: ReactNode;
 }
 
 function formatPct(pct: number | null | undefined): string | null {
@@ -74,6 +78,7 @@ export function TaskRow({
   lastActivityAt,
   classesChip,
   menuSlot,
+  actionsSlot,
 }: TaskRowProps) {
   const annotated = formatPct(annotatedPct);
   const accepted = formatPct(acceptedPct);
@@ -193,6 +198,14 @@ export function TaskRow({
         <Badge variant="ghost">{task.kind}</Badge>
         <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)] transition-transform group-hover:translate-x-0.5" />
       </Link>
+      {actionsSlot && (
+        <div
+          className="flex items-center gap-1 pr-1"
+          data-testid={`task-row-actions-${task.id}`}
+        >
+          {actionsSlot}
+        </div>
+      )}
       {menuSlot}
     </li>
   );

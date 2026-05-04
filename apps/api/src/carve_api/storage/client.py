@@ -78,10 +78,34 @@ class MinioClient:
     def remove_object(self, key: str) -> None:
         self._s3.delete_object(Bucket=self.bucket, Key=key)
 
-    def presigned_get(self, key: str, expires_seconds: int = 600) -> str:
+    def presigned_get(
+        self,
+        key: str,
+        expires_seconds: int = 600,
+        download_filename: str | None = None,
+        content_type: str | None = None,
+    ) -> str:
+        """Plan-20.4 — when ``download_filename`` is set, the presigned
+        URL also rewrites the response headers
+        (``Content-Disposition: attachment; filename="…"`` and an
+        optional ``Content-Type``) so the browser saves the file with
+        the requested name instead of navigating to the URL or opening
+        it inline. This is the only reliable way to force download
+        behaviour for a cross-origin (MinIO) URL — the page-side
+        ``<a download>`` attribute is ignored across origins, so the
+        response disposition has to do the work."""
+        params: dict[str, object] = {"Bucket": self.bucket, "Key": key}
+        if download_filename:
+            # boto3 percent-encodes this value into the URL — pre-quote
+            # nothing here.
+            params["ResponseContentDisposition"] = (
+                f'attachment; filename="{download_filename}"'
+            )
+        if content_type:
+            params["ResponseContentType"] = content_type
         return self._s3_public.generate_presigned_url(
             "get_object",
-            Params={"Bucket": self.bucket, "Key": key},
+            Params=params,
             ExpiresIn=expires_seconds,
         )
 

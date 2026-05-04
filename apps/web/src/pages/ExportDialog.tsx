@@ -130,12 +130,23 @@ export function ExportDialog({ projectId, taskId }: Props) {
     if (status !== "completed" || !downloadUrl || !exportId) return;
     if (autoTriggeredRef.current === exportId) return;
     autoTriggeredRef.current = exportId;
+    // Plan-20.4 — the MinIO presigned URL now carries
+    // ``Content-Disposition: attachment`` (set server-side via
+    // ResponseContentDisposition), so the browser will save instead of
+    // navigating regardless of cross-origin status. We still use a
+    // synthetic anchor click — the ``download`` + ``target=_blank``
+    // combo is the most reliable cross-browser way to start a save
+    // without yanking the user off the export dialog.
     const a = document.createElement("a");
     a.href = downloadUrl;
-    a.rel = "noopener";
+    a.download = "";   // browser uses Content-Disposition's filename
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
     a.style.display = "none";
     document.body.appendChild(a);
-    a.click();
+    a.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, view: window }),
+    );
     a.remove();
   }, [status, downloadUrl, exportId]);
   const splitSum = splits.train + splits.val + splits.test;

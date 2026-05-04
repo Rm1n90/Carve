@@ -24,7 +24,7 @@ from carve_api.io.yolo_out import (
     write_data_yaml,
     write_yolo_label,
 )
-from carve_api.projects.models import Class, Task
+from carve_api.projects.models import Class, Project, Task
 
 # Plan-20.2 — when the RQ worker loads this module via the dataclass
 # pickle payload it imports the export models lazily, which means the
@@ -184,19 +184,26 @@ def _partition_assets_by_split(
     }
 
 
-def _archive_root_name(session, task) -> str:
-    """Plan-20.3 — build the archive's top-level folder name.
-
-    The folder is named after the task. If a previous export for the
-    same task has already completed, append ``_1`` / ``_2`` / ``_N`` so
-    unzipping multiple exports next to each other doesn't overwrite
-    earlier contents. Special characters are replaced with underscores
-    so the name is filesystem-safe everywhere.
-    """
+def _sanitize_for_path(raw: str) -> str:
+    """Plan-20.4 — squash special characters so a name is safe to use
+    as a filename, MinIO key segment, ZIP entry, or YAML scalar."""
     import re
 
-    raw = (getattr(task, "name", None) or "").strip()
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("_") or "export"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", (raw or "").strip()).strip("_")
+    return safe or "export"
+
+
+def _archive_root_name(session, task) -> str:
+    """Plan-20.4 — archive's top-level folder name (and the ZIP's
+    filename stem). Combines the task's project name with the task
+    name; appends ``_1`` / ``_2`` / ``_N`` when prior completed exports
+    exist for the same task so unzipping multiple exports next to each
+    other never overwrites earlier contents.
+    """
+    project = session.get(Project, task.project_id) if task.project_id else None
+    proj_safe = _sanitize_for_path(getattr(project, "name", None) or "")
+    task_safe = _sanitize_for_path(getattr(task, "name", None) or "")
+    base = f"{proj_safe}_{task_safe}".strip("_") or "export"
     from sqlalchemy import func, select
     n_prior = session.execute(
         select(func.count(Export.id)).where(
@@ -204,7 +211,7 @@ def _archive_root_name(session, task) -> str:
             Export.status == "completed",
         )
     ).scalar() or 0
-    return safe if n_prior == 0 else f"{safe}_{n_prior}"
+    return base if n_prior == 0 else f"{base}_{n_prior}"
 
 
 def _fetch_asset_bytes(storage, key: str) -> bytes | None:
@@ -796,7 +803,11 @@ def run_export_inline(
             root=root_name,
         )
 
-        minio_key = f"exports/{task.id}/{export.id}.zip"
+        # Plan-20.4 — embed the friendly root name in the MinIO key so
+        # the URL path tail also reads as the user-friendly filename;
+        # the export_id segment keeps multiple exports of the same
+        # ``root_name`` from colliding on the storage side.
+        minio_key = f"exports/{task.id}/{export.id}/{root_name}.zip"
         storage.ensure_bucket()
         storage.put_object(
             minio_key, io.BytesIO(archive_bytes), len(archive_bytes), "application/zip"

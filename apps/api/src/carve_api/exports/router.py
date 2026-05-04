@@ -150,7 +150,25 @@ def get_export_progress(
     if e.status == "completed" and e.minio_key:
         try:
             storage = MinioClient.from_settings()
-            download_url = storage.presigned_get(e.minio_key, expires_seconds=3600)
+            # Plan-20.4 — derive the friendly filename from the MinIO
+            # key tail. New keys are
+            #   ``exports/<task>/<export>/<root>.zip``
+            # so the basename is already the user-friendly name we wrote
+            # at build time. Legacy keys ``exports/<task>/<export>.zip``
+            # are detected because the basename starts with the export
+            # UUID; those fall through to a generic name.
+            from pathlib import PurePosixPath
+            tail = PurePosixPath(e.minio_key).name
+            if tail.endswith(".zip") and not tail.startswith(str(e.id)):
+                friendly = tail
+            else:
+                friendly = "export.zip"
+            download_url = storage.presigned_get(
+                e.minio_key,
+                expires_seconds=3600,
+                download_filename=friendly,
+                content_type="application/zip",
+            )
         except Exception:
             download_url = None
     return ExportProgressOut(
