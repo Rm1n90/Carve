@@ -130,8 +130,16 @@ function MenuButton({
       type="button"
       data-testid={testId}
       disabled={disabled}
-      onClick={() => {
+      // Plan-17 — stop pointerdown / mousedown at the button level
+      // (capture-phase) so the native event never reaches the canvas
+      // host. Belt-and-braces for the menu wrapper isolation.
+      onPointerDownCapture={(e) => e.stopPropagation()}
+      onMouseDownCapture={(e) => e.stopPropagation()}
+      onClick={(e) => {
         if (disabled) return;
+        e.stopPropagation();
+        // eslint-disable-next-line no-console
+        console.log("[MenuButton]", testId, "clicked");
         onClick();
       }}
       className={cn(
@@ -548,7 +556,9 @@ export function AnnotationContextMenu({
         // button's coordinates. Mouse events fall under the same
         // bubble path so we belt-and-braces both.
         onPointerDown={(e) => e.stopPropagation()}
+        onPointerDownCapture={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
+        onMouseDownCapture={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.stopPropagation()}
         className={cn(
           "fixed z-[1100] min-w-[220px]",
