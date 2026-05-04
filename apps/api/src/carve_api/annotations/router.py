@@ -125,6 +125,7 @@ def batch(
         for u in payload.update:
             a = svc.update(
                 task=task, annotation_id=uuid.UUID(u.id),
+                kind=u.kind,
                 geometry=u.geometry,
                 class_id=uuid.UUID(u.class_id) if u.class_id else None,
                 track_id=uuid.UUID(u.track_id) if u.track_id else None,

@@ -613,6 +613,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       .filter((d) => d.serverId !== null && d.dirty)
       .map((d) => ({
         id: d.serverId!,
+        // Plan-17 — ship the (possibly changed) kind so the server can
+        // accept Convert ▸ Polygon→BBox and BBox→Polygon transitions.
+        kind: d.kind,
         geometry: d.geometry as unknown as Record<string, unknown>,
         class_id: d.classId,
       }));

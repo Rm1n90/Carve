@@ -67,6 +67,11 @@ interface AnnotationIn {
 
 interface BatchUpdateIn {
   id: string;
+  // Plan-17 — kind may now change on update so the right-click
+  // "Convert" submenu can flip a polygon annotation into a bbox
+  // (and vice versa) without re-creation. The server validates
+  // geometry against the new kind when both are sent.
+  kind?: AnnotationKind;
   geometry?: Record<string, unknown>;
   class_id?: string;
   track_id?: string;

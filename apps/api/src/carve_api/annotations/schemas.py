@@ -171,6 +171,11 @@ class AnnotationOut(BaseModel):
 
 class BatchUpdate(BaseModel):
     id: str
+    # Plan-17 — kind may now change on update so the right-click "Convert"
+    # submenu can flip a polygon annotation into a bbox (and vice versa)
+    # without the user re-creating it. The service validates geometry
+    # against the new kind when both fields are sent.
+    kind: AnnotationKind | None = None
     geometry: dict[str, Any] | None = None
     class_id: str | None = None
     track_id: str | None = None

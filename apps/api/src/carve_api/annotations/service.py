@@ -105,6 +105,13 @@ class AnnotationService:
             a.reviewed_by_id = None
             a.reviewed_at = None
 
+        # Plan-17 — kind change support. The right-click "Convert"
+        # submenu can flip a polygon annotation into a bbox (and vice
+        # versa) by sending both ``kind`` and ``geometry``. We update
+        # ``a.kind`` first so the geometry validator runs against the
+        # NEW kind. ``kind`` may also be sent alone (rare, but allowed).
+        if patch.get("kind") is not None:
+            a.kind = patch["kind"]
         if patch.get("geometry") is not None:
             _validate_geometry(a.kind, patch["geometry"])
             a.geometry = patch["geometry"]
