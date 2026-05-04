@@ -2,10 +2,11 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from carve_api.annotations.models import Annotation
+from carve_api.annotations.models import Annotation, AnnotationKind
 from carve_api.annotations.schemas import (
     AnnotationIn, AnnotationOut, AnnotationPatch, AnnotationStatus, BatchIn, BatchOut,
 )
@@ -88,6 +89,99 @@ def list_annotations(
         task=task, frame_id=frame_id, status=status
     )
     return [AnnotationOut.from_orm_annotation(a) for a in rows]
+
+
+# Plan-18 — Bulk classify. Accepts a list of asset_ids on the same image
+# task and a class_id; idempotently creates one ``kind=tag`` annotation
+# per asset's primary frame. Already-tagged (frame, class) pairs are
+# counted as ``skipped``. Video tasks and missing assets are reported as
+# ``failed``. All writes happen in a single transaction.
+class BulkTagIn(BaseModel):
+    asset_ids: list[str] = Field(min_length=1, max_length=1000)
+    class_id: str
+
+
+class BulkTagOut(BaseModel):
+    tagged: int
+    skipped: int
+    failed: int
+
+
+@router.post("/{task_id}/assets:bulk-tag", response_model=BulkTagOut)
+def bulk_tag_assets(
+    task_id: uuid.UUID,
+    payload: BulkTagIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BulkTagOut:
+    from carve_api.assets.models import Asset, AssetKind
+    from carve_api.assets.service import AssetService
+
+    try:
+        task = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    if task.kind != TaskKind.image:
+        raise HTTPException(
+            status_code=422, detail="bulk_tag_only_supported_on_image_tasks",
+        )
+
+    try:
+        class_uuid = uuid.UUID(payload.class_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid_class_id") from exc
+
+    try:
+        asset_uuids = [uuid.UUID(a) for a in payload.asset_ids]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid_asset_id") from exc
+
+    asset_svc = AssetService(db)
+    ann_svc = AnnotationService(db)
+    tagged = 0
+    skipped = 0
+    failed = 0
+
+    for asset_id in asset_uuids:
+        asset = db.get(Asset, asset_id)
+        if (
+            asset is None
+            or asset.task_id != task.id
+            or asset.kind != AssetKind.image
+        ):
+            failed += 1
+            continue
+        frame_id = asset_svc.primary_frame_id_for(asset)
+        if frame_id is None:
+            failed += 1
+            continue
+        existing = db.execute(
+            select(Annotation.id).where(
+                Annotation.task_id == task.id,
+                Annotation.frame_id == uuid.UUID(frame_id),
+                Annotation.class_id == class_uuid,
+                Annotation.kind == AnnotationKind.tag,
+            ).limit(1)
+        ).scalar_one_or_none()
+        if existing is not None:
+            skipped += 1
+            continue
+        try:
+            ann_svc.create(
+                task=task, actor_id=user.id,
+                frame_id=uuid.UUID(frame_id),
+                class_id=class_uuid,
+                kind=AnnotationKind.tag,
+                geometry={"kind": "tag"},
+                track_id=None,
+            )
+            tagged += 1
+        except AppError as exc:
+            raise _http(exc) from exc
+
+    db.commit()
+    return BulkTagOut(tagged=tagged, skipped=skipped, failed=failed)
 
 
 @router.post("/{task_id}/annotations:batch", response_model=BatchOut)

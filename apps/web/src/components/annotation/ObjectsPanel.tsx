@@ -19,6 +19,13 @@ const KIND_ICON = {
   tag: Tag,
 } as const;
 
+const KIND_LABEL: Record<string, string> = {
+  bbox: "Box",
+  polygon: "Polygon",
+  mask: "Mask",
+  tag: "Frame tag",
+};
+
 interface ObjectsPanelProps {
   frameId: string | null;
   /**
@@ -204,10 +211,21 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
                   : "bg-transparent border-transparent text-secondary hover:bg-[var(--bg-surface)] hover:text-primary",
               )}
             >
-              <span aria-label={`${a.kind} icon`} className="text-tertiary shrink-0">
+              <span
+                aria-label={`${KIND_LABEL[a.kind] ?? a.kind} icon`}
+                className={cn(
+                  "shrink-0",
+                  a.kind === "tag"
+                    ? "text-[color:var(--accent)]"
+                    : "text-tertiary",
+                )}
+                style={a.kind === "tag" && cur ? { color: cur.color } : undefined}
+              >
                 <Icon className="h-3.5 w-3.5" />
               </span>
-              <span className="text-[12px] tracking-tight shrink-0">{a.kind}</span>
+              <span className="text-[12px] tracking-tight shrink-0">
+                {KIND_LABEL[a.kind] ?? a.kind}
+              </span>
               <ClassPickerPopover
                 annId={a.tempId}
                 current={cur}

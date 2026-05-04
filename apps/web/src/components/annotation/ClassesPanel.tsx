@@ -36,6 +36,7 @@ import { Kbd } from "@/components/ui/Kbd";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 import { PALETTE_HEX, nextHexForIdx } from "@/lib/swatch";
+import { ClassificationStrip } from "./ClassificationStrip";
 
 interface Props {
   classes: ClassRow[];
@@ -917,6 +918,8 @@ export function ClassesPanel({
           </DropdownMenu.Root>
         </div>
       </div>
+
+      <ClassificationStrip classes={classes} frameId={currentFrameId ?? null} />
 
       <ul
         className="flex-1 min-h-0 overflow-y-auto py-1"

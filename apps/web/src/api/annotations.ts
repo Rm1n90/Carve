@@ -144,4 +144,15 @@ export const annotationsApi = {
     const r = await api.post<BatchReviewOut>(`/annotations/batch:review`, body);
     return r.data;
   },
+  /** Plan-18 — apply a class tag to many image assets at once. */
+  bulkTagAssets: async (
+    taskId: string,
+    body: { asset_ids: string[]; class_id: string },
+  ): Promise<{ tagged: number; skipped: number; failed: number }> => {
+    const r = await api.post<{ tagged: number; skipped: number; failed: number }>(
+      `/tasks/${taskId}/assets:bulk-tag`,
+      body,
+    );
+    return r.data;
+  },
 };
