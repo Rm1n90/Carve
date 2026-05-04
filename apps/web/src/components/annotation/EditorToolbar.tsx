@@ -337,9 +337,6 @@ const YoloPredictButton = forwardRef<
   // can override the mode in the popover. Progress is reported
   // inline below the predict actions.
   const [samPost, setSamPost] = useState(false);
-  const [samPostModeOverride, setSamPostModeOverride] = useState<
-    "auto" | "to-polygon" | "refine" | "to-bbox"
-  >("auto");
   const [samPostProgress, setSamPostProgress] = useState<{
     done: number;
     total: number;
@@ -616,19 +613,17 @@ const YoloPredictButton = forwardRef<
             setOpen(false);
             return;
           }
-          // Auto-pick a mode from the selected weight's task_kind when
-          // the user left the override on "auto". Detect→to-polygon,
-          // Segment→refine; classify/pose fall back to refine which is
-          // a no-op when geometry is non-spatial.
+          // Plan-17 Phase 2 — mode is auto-derived from the selected
+          // weight's task_kind:
+          //   detect  → to-polygon  (BBox  → SAM polygon)
+          //   segment → refine      (Poly  → SAM-refined polygon)
+          // The 4-button override segmented control was removed in
+          // favour of this strict per-weight mapping after user
+          // feedback that the override was confusing more than it
+          // was helping.
           const picked = weights.find((w) => w.id === weightId);
-          let mode: PostProcessMode;
-          if (samPostModeOverride !== "auto") {
-            mode = samPostModeOverride;
-          } else if (picked?.task_kind === "detect") {
-            mode = "to-polygon";
-          } else {
-            mode = "refine";
-          }
+          const mode: PostProcessMode =
+            picked?.task_kind === "detect" ? "to-polygon" : "refine";
           setSamPostProgress({ done: 0, total: newIds.length, failed: 0 });
           void runSamPostProcess({
             assetId,
@@ -640,7 +635,7 @@ const YoloPredictButton = forwardRef<
             .then((result) => {
               if (result.succeeded > 0) {
                 showToast(
-                  `SAM ${mode === "to-bbox" ? "→ bbox" : mode === "to-polygon" ? "→ polygon" : "refine"}: ${result.succeeded}/${newIds.length}${result.failed > 0 ? ` (${result.failed} failed)` : ""}.`,
+                  `SAM ${mode === "to-polygon" ? "→ polygon" : "refine"}: ${result.succeeded}/${newIds.length}${result.failed > 0 ? ` (${result.failed} failed)` : ""}.`,
                   { variant: "success" },
                 );
               } else if (result.failed > 0) {
@@ -901,6 +896,17 @@ const YoloPredictButton = forwardRef<
   );
 
   const weights = wq.data ?? [];
+  // Plan-17 Phase 2 — the selected weight at render time so the
+  // post-process label can match its task_kind.
+  const selectedWeight = selected
+    ? weights.find((w) => w.id === selected) ?? null
+    : null;
+  const samPostLabel =
+    selectedWeight?.task_kind === "detect"
+      ? "Convert BBox to Polygon (SAM)"
+      : selectedWeight?.task_kind === "segment"
+        ? "Refine with SAM after Predict"
+        : null;
   // v3.7 Phase 2 Issue 1 — single-asset scope still needs an open
   // asset, but the batch ("All assets in task") scope only needs a
   // project context. Don't grey out the trigger when ``scope === "task"``
@@ -1234,100 +1240,69 @@ const YoloPredictButton = forwardRef<
           />
           Overwrite existing annotations
         </label>
-        {/* Plan-17 Phase 2 — opt-in SAM post-processing. Auto-derives
-            the mode from the selected weight's task_kind; the user can
-            override via the segmented control below. Single-asset
-            scope only — for batch, use marquee + right-click after. */}
-        <div className="grid gap-1.5 px-2 pb-2">
-          <label className="flex items-center gap-2 text-[12px] text-[color:var(--text-secondary)]">
-            <input
-              type="checkbox"
-              checked={samPost}
-              onChange={(e) => setSamPost(e.target.checked)}
-              data-testid="yolo-sam-post-toggle"
-              disabled={scope === "task"}
-              className="h-3 w-3 accent-[var(--accent)]"
-            />
-            <span className="flex-1">
-              Refine with SAM after predict
-              <span className="ml-1 font-mono text-[10px] text-[color:var(--text-tertiary)]">
-                {scope === "task" ? "(asset only)" : "optional"}
+        {/* Plan-17 Phase 2 — opt-in SAM post-processing. Label is
+            picked from the selected weight's task_kind:
+              detect  → "Convert BBox to Polygon (SAM)"
+              segment → "Refine with SAM after Predict"
+            The checkbox is hidden for non-spatial weights (classify,
+            pose) and for the batch scope ("All assets"). Single-asset
+            only — for batch the user can marquee+right-click after. */}
+        {samPostLabel && scope === "asset" && (
+          <div className="grid gap-1.5 px-2 pb-2">
+            <label className="flex items-center gap-2 text-[12px] text-[color:var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={samPost}
+                onChange={(e) => setSamPost(e.target.checked)}
+                data-testid="yolo-sam-post-toggle"
+                className="h-3 w-3 accent-[var(--accent)]"
+              />
+              <span className="flex-1">
+                {samPostLabel}
+                <span className="ml-1 font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                  optional
+                </span>
               </span>
-            </span>
-          </label>
-          {samPost && (
-            <div
-              data-testid="yolo-sam-post-mode"
-              role="radiogroup"
-              aria-label="SAM post-process mode"
-              className="grid grid-cols-4 gap-1 ml-5"
-            >
-              {(
-                [
-                  ["auto", "Auto"],
-                  ["to-polygon", "→ Poly"],
-                  ["refine", "Refine"],
-                  ["to-bbox", "→ BBox"],
-                ] as const
-              ).map(([value, label]) => {
-                const active = samPostModeOverride === value;
-                return (
-                  <button
-                    key={value}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    onClick={() => setSamPostModeOverride(value)}
-                    data-testid={`yolo-sam-post-mode-${value}`}
-                    className={cn(
-                      "h-7 px-1.5 inline-flex items-center justify-center rounded-[var(--radius-xs)] border text-[10.5px] tracking-tight",
-                      active
-                        ? "border-[var(--accent)] bg-[var(--accent-bg)] text-[color:var(--accent)]"
-                        : "border-[var(--glass-border)] bg-transparent text-[color:var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[color:var(--text-primary)]",
-                    )}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {samPost && (
-            <p className="ml-5 text-[10.5px] text-[color:var(--text-tertiary)]">
-              Auto picks per weight: detect → polygon, segment → refine.
-              SAM auto-loads if not already mounted.
-            </p>
-          )}
-          {samPostProgress && (
-            <div
-              data-testid="yolo-sam-post-progress"
-              className="ml-5 mt-1 grid gap-1"
-            >
-              <div className="flex items-center justify-between text-[10.5px]">
-                <span className="text-[color:var(--text-secondary)]">
-                  Refining with SAM…
-                </span>
-                <span className="font-mono tabular-nums text-[color:var(--text-tertiary)]">
-                  {samPostProgress.done}/{samPostProgress.total}
-                  {samPostProgress.failed > 0
-                    ? ` · ${samPostProgress.failed} failed`
-                    : ""}
-                </span>
+            </label>
+            {samPost && (
+              <p className="ml-5 text-[10.5px] text-[color:var(--text-tertiary)]">
+                Runs after predict on each new annotation. SAM auto-loads
+                if not already mounted.
+              </p>
+            )}
+            {samPostProgress && (
+              <div
+                data-testid="yolo-sam-post-progress"
+                className="ml-5 mt-1 grid gap-1"
+              >
+                <div className="flex items-center justify-between text-[10.5px]">
+                  <span className="text-[color:var(--text-secondary)]">
+                    {selectedWeight?.task_kind === "detect"
+                      ? "Converting with SAM…"
+                      : "Refining with SAM…"}
+                  </span>
+                  <span className="font-mono tabular-nums text-[color:var(--text-tertiary)]">
+                    {samPostProgress.done}/{samPostProgress.total}
+                    {samPostProgress.failed > 0
+                      ? ` · ${samPostProgress.failed} failed`
+                      : ""}
+                  </span>
+                </div>
+                <div className="relative h-1 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+                  <div
+                    className="absolute inset-y-0 left-0 bg-[var(--accent)] transition-[width] duration-200"
+                    style={{
+                      width:
+                        samPostProgress.total > 0
+                          ? `${Math.round((samPostProgress.done / samPostProgress.total) * 100)}%`
+                          : "0%",
+                    }}
+                  />
+                </div>
               </div>
-              <div className="relative h-1 overflow-hidden rounded-full bg-[var(--bg-hover)]">
-                <div
-                  className="absolute inset-y-0 left-0 bg-[var(--accent)] transition-[width] duration-200"
-                  style={{
-                    width:
-                      samPostProgress.total > 0
-                        ? `${Math.round((samPostProgress.done / samPostProgress.total) * 100)}%`
-                        : "0%",
-                  }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
         {/* v3.7.2 — pre-flight warning banner when zero classes are
             mapped. Mirrors the user's data-loss scenario (yolov8n COCO
             classes vs. a 3-class custom project) and prevents the
