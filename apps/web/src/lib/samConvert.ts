@@ -77,17 +77,15 @@ export async function samBoxToPolygonPoints({
 }: SamRefineParams): Promise<[number, number][] | null> {
   // Plan-17 — make sure SAM is loaded server-side. Without this the
   // first Convert/Refine after a fresh page load 503s because no
-  // predictor is mounted yet. ``ensureSamReady`` is idempotent.
+  // predictor is mounted yet. Independent of the editor's active
+  // tool / SAM mode (point/box/track) — we never need the user to
+  // click into the Smart tool first.
   await ensureSamReady();
-  // Pre-warm the embedding cache. Failures here are non-fatal: a
-  // recent encode may already be cached and box-prompt will pick it
-  // up.
-  try {
-    await samApi.encode(assetId, frameId ?? null);
-  } catch {
-    /* fall through and try box-prompt — if SAM truly cannot serve we
-     * surface the error from boxPrompt below */
-  }
+  // Pre-warm the embedding cache. Idempotent server-side (cached
+  // by image hash). Failures here would also block box-prompt, so
+  // we re-raise instead of silently continuing — without the
+  // embedding the box-prompt would 409 with a confusing error.
+  await samApi.encode(assetId, frameId ?? null);
   const results = await samApi.boxPrompt(
     assetId,
     [box],
