@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ChevronDown, Eye, Plus } from "lucide-react";
+import { Eye, Plus } from "lucide-react";
 import {
   viewsApi,
   type SavedView,
@@ -68,16 +68,16 @@ export function SavedViewsMenu({
           <button
             type="button"
             data-testid="saved-views-trigger"
+            aria-label="Saved views"
+            title="Saved views — switch between named filter+sort combinations for this task"
             className={cn(
-              "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full",
-              "glass-chip text-[12px] tracking-tight",
-              "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]",
+              "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
+              "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
               "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+              "transition-colors",
             )}
           >
-            <Eye className="h-3.5 w-3.5" />
-            Views
-            <ChevronDown className="h-3 w-3 text-[color:var(--text-tertiary)]" />
+            <Eye className="h-[16px] w-[16px]" />
           </button>
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>

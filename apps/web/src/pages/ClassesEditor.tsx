@@ -121,38 +121,40 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
         <h2 className="text-[14px] font-medium tracking-tight text-[color:var(--text-primary)]">
           Classes
         </h2>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
           <button
             type="button"
             data-testid="classes-editor-bulk-paste"
             onClick={() => setBulkPasteOpen(true)}
+            aria-label="Paste classes — bulk import from list, JSON, or YAML"
+            title="Paste classes — bulk import from list, JSON, or YAML"
             className={cn(
-              "inline-flex items-center gap-1 h-7 px-2.5",
+              "grid h-7 w-7 place-items-center",
               "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-              "text-[11.5px] tracking-tight text-[color:var(--text-secondary)]",
+              "text-[color:var(--text-secondary)]",
               "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
               "transition-colors",
             )}
           >
-            <ClipboardPaste className="h-3 w-3" />
-            Paste classes…
+            <ClipboardPaste className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
             data-testid="classes-editor-copy-from-project"
             onClick={() => setCopyDialogOpen(true)}
+            aria-label="Copy classes from another project"
+            title="Copy classes from another project"
             className={cn(
-              "inline-flex items-center gap-1 h-7 px-2.5",
+              "grid h-7 w-7 place-items-center",
               "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-              "text-[11.5px] tracking-tight text-[color:var(--text-secondary)]",
+              "text-[color:var(--text-secondary)]",
               "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
               "transition-colors",
             )}
           >
-            <Copy className="h-3 w-3" />
-            Copy from project…
+            <Copy className="h-3.5 w-3.5" />
           </button>
-          <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
+          <span className="ml-1 font-mono text-[10.5px] text-[color:var(--text-tertiary)] whitespace-nowrap">
             {q.data?.length ?? 0} defined
           </span>
         </div>

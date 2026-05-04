@@ -1,9 +1,23 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Plus, FolderPlus, Search } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import {
+  AlertTriangle,
+  Bell,
+  Calendar,
+  FolderPlus,
+  Plus,
+  Search,
+} from "lucide-react";
 import { projectsApi, type Project } from "@/api/projects";
+import { tasksApi, type Task } from "@/api/tasks";
 import { ProjectCard } from "@/components/projects/ProjectCard";
 import {
   ProjectsToolbar,
@@ -229,6 +243,9 @@ export function ProjectsPage() {
         </div>
       </header>
 
+      {/* ---- Workspace deadlines — notification card across all projects ---- */}
+      <WorkspaceDeadlines projects={projects} />
+
       {/* ---- Inline create form ---- */}
       {showForm && (
         <form
@@ -435,6 +452,198 @@ function ProjectsList({
           );
         })}
       </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Plan-16 — Workspace-wide deadlines notification card. Surfaces every
+// upcoming/overdue task across all projects so the user sees expiring work
+// from the very first page. Severity is colour-coded: overdue/today red,
+// ≤3 days orange, ≤7 days yellow.
+// ---------------------------------------------------------------------------
+type WorkspaceDueSeverity = "overdue" | "today" | "soon" | "watch" | "ok";
+
+function workspaceDueSeverity(deltaMs: number): WorkspaceDueSeverity {
+  const DAY = 24 * 60 * 60 * 1000;
+  if (deltaMs < 0) return "overdue";
+  if (deltaMs < DAY) return "today";
+  if (deltaMs <= 3 * DAY) return "soon";
+  if (deltaMs <= 7 * DAY) return "watch";
+  return "ok";
+}
+
+function workspaceSeverityClasses(s: WorkspaceDueSeverity): {
+  row: string;
+  pill: string;
+  icon: string;
+} {
+  switch (s) {
+    case "overdue":
+      return {
+        row: "bg-[color-mix(in_oklch,var(--danger)_14%,transparent)] hover:bg-[color-mix(in_oklch,var(--danger)_22%,transparent)] text-[color:var(--danger)]",
+        pill: "bg-[var(--danger)] text-white",
+        icon: "text-[color:var(--danger)]",
+      };
+    case "today":
+      return {
+        row: "bg-[color-mix(in_oklch,var(--danger)_8%,transparent)] hover:bg-[color-mix(in_oklch,var(--danger)_14%,transparent)] text-[color:var(--danger)]",
+        pill: "bg-[var(--danger)] text-white",
+        icon: "text-[color:var(--danger)]",
+      };
+    case "soon":
+      return {
+        row: "bg-[color-mix(in_oklch,#F59E0B_10%,transparent)] hover:bg-[color-mix(in_oklch,#F59E0B_18%,transparent)] text-[color:var(--text-primary)]",
+        pill: "bg-[#F59E0B] text-black",
+        icon: "text-[#F59E0B]",
+      };
+    case "watch":
+      return {
+        row: "hover:bg-[var(--bg-hover)] text-[color:var(--text-primary)]",
+        pill: "bg-[#EAB308] text-black",
+        icon: "text-[#EAB308]",
+      };
+    default:
+      return {
+        row: "hover:bg-[var(--bg-hover)] text-[color:var(--text-primary)]",
+        pill: "bg-[var(--bg-subtle)] text-[color:var(--text-secondary)]",
+        icon: "text-[color:var(--text-tertiary)]",
+      };
+  }
+}
+
+interface WorkspaceDeadlineEntry {
+  task: Task;
+  projectId: string;
+  projectName: string;
+  deltaMs: number;
+}
+
+function WorkspaceDeadlines({ projects }: { projects: Project[] }) {
+  // Fetch tasks per project in parallel. We cap the project fan-out at 24
+  // to keep the request volume sane on huge workspaces; the user can
+  // still drill into a project to see its tasks.
+  const targets = projects.slice(0, 24);
+  const queries = useQueries({
+    queries: targets.map((p) => ({
+      queryKey: ["tasks", p.id, "with-archived"] as const,
+      queryFn: () => tasksApi.listForProject(p.id, { includeArchived: true }),
+      staleTime: 60_000,
+    })),
+  });
+
+  const now = Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+  const entries: WorkspaceDeadlineEntry[] = [];
+  queries.forEach((q, i) => {
+    const project = targets[i];
+    if (!q.data || !project) return;
+    for (const t of q.data) {
+      if (!t.due_date || t.archived_at != null) continue;
+      const due = Date.parse(t.due_date);
+      if (!Number.isFinite(due)) continue;
+      entries.push({
+        task: t,
+        projectId: project.id,
+        projectName: project.name,
+        deltaMs: due - now,
+      });
+    }
+  });
+  entries.sort((a, b) => a.deltaMs - b.deltaMs);
+  const top = entries.slice(0, 6);
+
+  if (top.length === 0) return null;
+
+  const overdueCount = top.filter((e) => e.deltaMs < 0).length;
+
+  return (
+    <section
+      data-testid="workspace-deadlines"
+      aria-label="Upcoming task deadlines across all projects"
+      className={cn(
+        "rounded-[var(--radius-md)] border p-3 transition-colors",
+        overdueCount > 0
+          ? "border-[var(--danger)] bg-[color-mix(in_oklch,var(--danger)_6%,var(--bg-elev))]"
+          : "border-[var(--border-subtle)] bg-[var(--bg-elev)]",
+      )}
+    >
+      <header className="flex items-center justify-between mb-2">
+        <h3 className="text-[12px] font-medium tracking-tight text-[color:var(--text-primary)] inline-flex items-center gap-1.5">
+          {overdueCount > 0 ? (
+            <AlertTriangle className="h-3.5 w-3.5 text-[color:var(--danger)] animate-pulse" />
+          ) : (
+            <Bell className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+          )}
+          Deadlines
+          {overdueCount > 0 && (
+            <span
+              data-testid="workspace-deadlines-overdue-badge"
+              className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-[var(--danger)] text-white font-mono text-[10px] tabular-nums font-semibold"
+            >
+              {overdueCount}
+            </span>
+          )}
+        </h3>
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
+          {entries.length > top.length
+            ? `${top.length} of ${entries.length}`
+            : `Next ${top.length}`}
+        </span>
+      </header>
+      <ul className="grid gap-0.5">
+        {top.map(({ task, projectId, projectName, deltaMs }) => {
+          const sev = workspaceDueSeverity(deltaMs);
+          const cls = workspaceSeverityClasses(sev);
+          const days = Math.round(deltaMs / DAY);
+          const label =
+            sev === "overdue"
+              ? `${Math.abs(days)}d overdue`
+              : sev === "today"
+                ? "due today"
+                : days === 1
+                  ? "due tomorrow"
+                  : `due in ${days}d`;
+          const Icon =
+            sev === "overdue" || sev === "today" ? AlertTriangle : Calendar;
+          return (
+            <li key={`${projectId}-${task.id}`}>
+              <Link
+                to="/projects/$projectId/tasks/$taskId"
+                params={{ projectId, taskId: task.id }}
+                data-testid={`workspace-deadline-row-${task.id}`}
+                data-severity={sev}
+                className={cn(
+                  "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
+                  "text-[12.5px] transition-colors",
+                  cls.row,
+                )}
+              >
+                <Icon className={cn("h-3.5 w-3.5 shrink-0", cls.icon)} />
+                <span
+                  className={cn(
+                    "flex-1 min-w-0 truncate",
+                    sev === "overdue" || sev === "today" ? "font-medium" : "",
+                  )}
+                >
+                  {task.name}
+                  <span className="ml-2 font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                    {projectName}
+                  </span>
+                </span>
+                <span
+                  className={cn(
+                    "font-mono text-[10px] tabular-nums uppercase tracking-[0.06em] px-1.5 py-0.5 rounded-full font-semibold",
+                    cls.pill,
+                  )}
+                >
+                  {label}
+                </span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }

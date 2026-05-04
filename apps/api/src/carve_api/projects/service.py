@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -572,7 +572,17 @@ class ClassService:
         return c
 
     def delete(self, *, project: Project, class_id: uuid.UUID) -> None:
+        # Plan-16 — cascade-delete annotations referencing this class.
+        # The annotations.class_id FK is `RESTRICT`, so without this step
+        # the class delete fails whenever any annotation still uses it.
+        # User-visible behaviour: deleting a class also discards every
+        # annotation that referenced it.
+        from carve_api.annotations.models import Annotation
+
         c = self.get(project=project, class_id=class_id)
+        self.session.execute(
+            sa_delete(Annotation).where(Annotation.class_id == class_id)
+        )
         self.session.delete(c)
         self.session.flush()
 

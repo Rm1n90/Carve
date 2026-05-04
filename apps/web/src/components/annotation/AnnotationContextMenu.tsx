@@ -22,6 +22,7 @@ import { useAnnotations } from "@/state/annotations";
 import { applyVertexDelete, POLY_MIN_VERTICES } from "@/canvas/polygonEdit";
 import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/lib/cn";
+import { showToast } from "@/lib/toast";
 import type { ClassRow } from "@/api/classes";
 
 interface MenuItem {
@@ -458,7 +459,7 @@ export function AnnotationContextMenu({
       <MenuButton
         testId="ctx-lock"
         icon={
-          isLocked ? (
+          isLocked /* keep current branch unchanged */ ? (
             <Unlock className="h-3.5 w-3.5" />
           ) : (
             <Lock className="h-3.5 w-3.5" />
@@ -468,6 +469,9 @@ export function AnnotationContextMenu({
         hotkey="L"
         onClick={() => {
           useAnnotations.getState().toggleLock(annId);
+          showToast(isLocked ? "Annotation unlocked." : "Annotation locked.", {
+            variant: "success",
+          });
           close();
         }}
       />
@@ -497,6 +501,7 @@ export function AnnotationContextMenu({
         hotkey="⌘D"
         onClick={() => {
           useAnnotations.getState().duplicate(annId, 16, 16, imageBounds);
+          showToast("Duplicated annotation.", { variant: "success" });
           close();
         }}
       />
@@ -507,6 +512,7 @@ export function AnnotationContextMenu({
         hotkey="⌘C"
         onClick={() => {
           useAnnotations.getState().copyToClipboard(annId);
+          showToast("Copied annotation.", { variant: "success" });
           close();
         }}
       />
@@ -535,16 +541,27 @@ export function AnnotationContextMenu({
         label="Reveal in panel"
         onClick={() => {
           useAnnotations.getState().select(annId);
-          const row = document.querySelector<HTMLElement>(
-            `[data-testid="object-row-${annId}"]`,
-          );
-          if (row) {
-            row.scrollIntoView({ behavior: "smooth", block: "nearest" });
-            row.classList.add("ring-2", "ring-[color:var(--accent)]");
-            setTimeout(() => {
-              row.classList.remove("ring-2", "ring-[color:var(--accent)]");
-            }, 1500);
-          }
+          // Defer the DOM scroll so the panel can re-render with the new
+          // selection before we try to find its row. Without this the
+          // querySelector frequently misses the row on first invocation
+          // because the Objects panel hasn't repainted yet — which is
+          // exactly the "Reveal not working" symptom.
+          requestAnimationFrame(() => {
+            const row = document.querySelector<HTMLElement>(
+              `[data-testid="object-row-${annId}"]`,
+            );
+            if (row) {
+              row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+              row.classList.add("ring-2", "ring-[color:var(--accent)]");
+              setTimeout(() => {
+                row.classList.remove("ring-2", "ring-[color:var(--accent)]");
+              }, 1500);
+            } else {
+              showToast("Selected — scroll the right panel to find it.", {
+                variant: "success",
+              });
+            }
+          });
           close();
         }}
       />
