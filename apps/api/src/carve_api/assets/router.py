@@ -133,9 +133,15 @@ def list_assets(
         min_size=min_size,
         max_size=max_size,
     )
+    tag_map = svc.tag_class_ids_for([a.id for a in items])
     return AssetListPage(
         items=[
-            AssetOut.from_orm_asset(a, thumbnail_url=svc.thumbnail_url_for(a)) for a in items
+            AssetOut.from_orm_asset(
+                a,
+                thumbnail_url=svc.thumbnail_url_for(a),
+                tag_class_ids=tag_map.get(str(a.id), []),
+            )
+            for a in items
         ],
         total=total,
         limit=limit,

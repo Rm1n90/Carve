@@ -705,6 +705,10 @@ export function ClassesPanel({
   const activeClassId = useTool((s) => s.activeClassId);
   const setActiveClassId = useTool((s) => s.setActiveClassId);
   const hoveredAnnotationId = useTool((s) => s.hoveredAnnotationId);
+  // Plan-18 follow-up — only surface the Classify chip strip when the
+  // user is in the Tag tool (T). Avoids cluttering the panel during
+  // bbox/polygon/mask work; the T shortcut is the natural way in/out.
+  const activeTool = useTool((s) => s.active);
   const byId = useAnnotations((s) => s.byId);
   const selectedIds = useAnnotations((s) => s.selectedIds);
   const hiddenClassIds = useAnnotations((s) => s.hiddenClassIds);
@@ -919,7 +923,9 @@ export function ClassesPanel({
         </div>
       </div>
 
-      <ClassificationStrip classes={classes} frameId={currentFrameId ?? null} />
+      {activeTool === "tag" && (
+        <ClassificationStrip classes={classes} frameId={currentFrameId ?? null} />
+      )}
 
       <ul
         className="flex-1 min-h-0 overflow-y-auto py-1"

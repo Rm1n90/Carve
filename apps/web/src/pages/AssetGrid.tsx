@@ -41,7 +41,8 @@ interface AssetTileProps {
   taskId: string;
   selected: boolean;
   selectMode: boolean;
-  onToggleSelect: (id: string) => void;
+  onSelect: (id: string, shiftKey: boolean) => void;
+  classColorById: Map<string, ClassRow>;
 }
 
 function AssetTile({
@@ -50,14 +51,20 @@ function AssetTile({
   taskId,
   selected,
   selectMode,
-  onToggleSelect,
+  onSelect,
+  classColorById,
 }: AssetTileProps) {
   const interceptNav = (e: React.MouseEvent) => {
     if (!selectMode) return;
     e.preventDefault();
     e.stopPropagation();
-    onToggleSelect(asset.id);
+    onSelect(asset.id, e.shiftKey);
   };
+  const tagClasses = (asset.tag_class_ids ?? [])
+    .map((id) => classColorById.get(id))
+    .filter((c): c is ClassRow => Boolean(c));
+  const visibleDots = tagClasses.slice(0, 4);
+  const overflow = tagClasses.length - visibleDots.length;
   return (
     <div className="group relative">
       <button
@@ -68,7 +75,7 @@ function AssetTile({
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          onToggleSelect(asset.id);
+          onSelect(asset.id, e.shiftKey);
         }}
         className={cn(
           "absolute top-2 left-2 z-10 grid h-6 w-6 place-items-center",
@@ -80,6 +87,31 @@ function AssetTile({
       >
         <Check className="h-3.5 w-3.5" strokeWidth={3} />
       </button>
+      {tagClasses.length > 0 && (
+        <div
+          data-testid={`asset-tile-tags-${asset.id}`}
+          className={cn(
+            "absolute top-2 right-2 z-10 flex items-center gap-1",
+            "px-1.5 py-1 rounded-full",
+            "bg-[oklch(0.06_0.012_240_/_0.78)] backdrop-blur-md",
+          )}
+          title={tagClasses.map((c) => c.name).join(", ")}
+        >
+          {visibleDots.map((c) => (
+            <span
+              key={c.id}
+              aria-hidden
+              className="h-2 w-2 rounded-full ring-1 ring-[oklch(1_0_0_/_0.25)]"
+              style={{ background: c.color }}
+            />
+          ))}
+          {overflow > 0 && (
+            <span className="text-[9px] font-mono text-secondary leading-none">
+              +{overflow}
+            </span>
+          )}
+        </div>
+      )}
       <Link
       to="/projects/$projectId/tasks/$taskId/assets/$assetId"
       params={{ projectId, taskId, assetId: asset.id }}
@@ -208,23 +240,12 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
   // Plan-18 — multi-select & bulk classify. Selection lives only in
   // memory; navigation, filter changes, and tab switches reset it.
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [anchorId, setAnchorId] = useState<string | null>(null);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkResult, setBulkResult] = useState<
     { tagged: number; skipped: number; failed: number; className: string } | null
   >(null);
   const queryClient = useQueryClient();
-  const toggleSelect = (id: string) => {
-    // Starting a new selection wave clears any lingering result toast so
-    // the new floating bar doesn't stack on top of the old toast at the
-    // same screen position.
-    setBulkResult(null);
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
   const selectMode = selected.size > 0;
 
   const countQ = useQuery({
@@ -294,14 +315,84 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
   // is looking at a different slice of the task.
   useEffect(() => {
     setSelected(new Set());
+    setAnchorId(null);
   }, [status, debouncedSearch, taskId]);
 
+  // Always-on classes query: needed for the per-tile color dots and the
+  // bulk classify dialog. 60s staleTime keeps refetches rare.
   const classesQ = useQuery({
     queryKey: ["project-classes", projectId],
     queryFn: () => classesApi.listForProject(projectId),
-    enabled: bulkOpen,
     staleTime: 60_000,
   });
+
+  const classColorById = useMemo(() => {
+    const m = new Map<string, ClassRow>();
+    for (const c of classesQ.data ?? []) m.set(c.id, c);
+    return m;
+  }, [classesQ.data]);
+
+  // Plan-18 follow-up — single click toggles, shift+click extends from
+  // the last anchor to the clicked tile. Range select uses the *visible*
+  // order from the assets array.
+  const handleSelect = (id: string, shiftKey: boolean) => {
+    setBulkResult(null);
+    if (shiftKey && anchorId) {
+      const ids = assets.map((a) => a.id);
+      const a = ids.indexOf(anchorId);
+      const b = ids.indexOf(id);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (let i = lo; i <= hi; i++) next.add(ids[i]);
+          return next;
+        });
+        return;
+      }
+    }
+    setAnchorId(id);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allVisibleSelected =
+    assets.length > 0 && selected.size >= assets.length;
+  const selectAllVisible = () => {
+    setBulkResult(null);
+    setSelected(new Set(assets.map((a) => a.id)));
+    setAnchorId(assets[0]?.id ?? null);
+  };
+  const clearSelection = () => {
+    setSelected(new Set());
+    setAnchorId(null);
+  };
+
+  // Cmd/Ctrl+A → select all visible. Esc → clear.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)
+      ) {
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        selectAllVisible();
+      } else if (e.key === "Escape" && selected.size > 0) {
+        clearSelection();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assets, selected.size]);
 
   const bulkTagMut = useMutation({
     mutationFn: (input: { class_id: string; className: string }) =>
@@ -315,6 +406,7 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
       setBulkResult(res);
       setBulkOpen(false);
       setSelected(new Set());
+      setAnchorId(null);
       queryClient.invalidateQueries({ queryKey: ["task-assets-count", taskId] });
       queryClient.invalidateQueries({ queryKey: ["task-assets", taskId] });
     },
@@ -365,20 +457,70 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
         </div>
       </div>
 
-      <p
-        className="font-mono-data text-[11px] tracking-[0.12em] uppercase text-tertiary"
-        data-testid="asset-count-summary"
-      >
-        {countQ.data
-          ? formatCount(countQ.data.total, countQ.data.annotated)
-          : "…"}
-        {total !== (countQ.data?.total ?? -1) && total > 0 && (
-          <span className="ml-2 text-secondary">
-            · showing {Math.min(total, assets.length).toLocaleString()} of{" "}
-            {total.toLocaleString()}
-          </span>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p
+          className="font-mono-data text-[11px] tracking-[0.12em] uppercase text-tertiary"
+          data-testid="asset-count-summary"
+        >
+          {countQ.data
+            ? formatCount(countQ.data.total, countQ.data.annotated)
+            : "…"}
+          {total !== (countQ.data?.total ?? -1) && total > 0 && (
+            <span className="ml-2 text-secondary">
+              · showing {Math.min(total, assets.length).toLocaleString()} of{" "}
+              {total.toLocaleString()}
+            </span>
+          )}
+        </p>
+        {assets.length > 0 && (
+          <div
+            className="flex items-center gap-2"
+            data-testid="asset-select-toolbar"
+          >
+            {selected.size > 0 && (
+              <span className="font-mono-data text-[11px] text-secondary">
+                {selected.size} selected
+              </span>
+            )}
+            <button
+              type="button"
+              data-testid="asset-select-all"
+              onClick={allVisibleSelected ? clearSelection : selectAllVisible}
+              className={cn(
+                "px-3 py-1 rounded-full text-[11.5px] font-medium",
+                "border transition-colors duration-150",
+                allVisibleSelected
+                  ? "border-[var(--accent)] text-[color:var(--accent)] hover:bg-[var(--accent-bg)]"
+                  : "border-[var(--border-strong)] text-secondary hover:text-primary hover:border-[var(--border-accent)]",
+              )}
+              title={
+                allVisibleSelected
+                  ? "Deselect all (Esc)"
+                  : "Select all visible (Cmd/Ctrl+A)"
+              }
+            >
+              {allVisibleSelected
+                ? "Deselect all"
+                : `Select all ${assets.length}`}
+            </button>
+            {selected.size > 0 && !allVisibleSelected && (
+              <button
+                type="button"
+                data-testid="asset-clear-selection"
+                onClick={clearSelection}
+                className={cn(
+                  "px-3 py-1 rounded-full text-[11.5px]",
+                  "border border-[var(--border-subtle)] text-tertiary",
+                  "hover:text-primary hover:border-[var(--border-strong)]",
+                )}
+                title="Clear (Esc)"
+              >
+                Clear
+              </button>
+            )}
+          </div>
         )}
-      </p>
+      </div>
 
       {isError && (
         <p className="text-[color:var(--danger)] text-[13px]">
@@ -422,7 +564,8 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
                 taskId={taskId}
                 selected={selected.has(a.id)}
                 selectMode={selectMode}
-                onToggleSelect={toggleSelect}
+                onSelect={handleSelect}
+                classColorById={classColorById}
               />
             ))}
           </div>

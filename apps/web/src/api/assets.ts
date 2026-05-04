@@ -17,6 +17,9 @@ export interface Asset {
   original_name: string;
   created_at: string;
   thumbnail_url: string | null;
+  /** Plan-18 — class ids of tag annotations on this asset. The grid
+   *  renders these as small color dots on each thumbnail. */
+  tag_class_ids?: string[];
 }
 
 export interface AssetWithUrl {

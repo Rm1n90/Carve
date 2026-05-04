@@ -148,6 +148,39 @@ class AssetService:
         )
         return int(self.session.execute(stmt).scalar() or 0)
 
+    def tag_class_ids_for(
+        self, asset_ids: list[uuid.UUID]
+    ) -> dict[str, list[str]]:
+        """Plan-18 — return ``{asset_id: [class_id, …]}`` for tag annotations
+        across the given asset ids in a single query.
+
+        The grid uses this to render small color dots per tile so the user
+        can tell at a glance which images are classified as what. Class
+        ids are deduplicated per asset.
+        """
+        if not asset_ids:
+            return {}
+        from carve_api.annotations.models import AnnotationKind
+        rows = self.session.execute(
+            select(Frame.asset_id, Annotation.class_id)
+            .join(Annotation, Annotation.frame_id == Frame.id)
+            .where(
+                Frame.asset_id.in_(asset_ids),
+                Annotation.kind == AnnotationKind.tag,
+            )
+        ).all()
+        out: dict[str, list[str]] = {}
+        seen: dict[str, set[str]] = {}
+        for asset_id, class_id in rows:
+            sid = str(asset_id)
+            cid = str(class_id)
+            seen_set = seen.setdefault(sid, set())
+            if cid in seen_set:
+                continue
+            seen_set.add(cid)
+            out.setdefault(sid, []).append(cid)
+        return out
+
     def primary_frame_id_for(self, asset: Asset) -> str | None:
         """Return the asset's single Frame.id for image assets, else None.
 

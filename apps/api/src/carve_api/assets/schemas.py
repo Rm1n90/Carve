@@ -17,14 +17,25 @@ class AssetOut(BaseModel):
     original_name: str
     created_at: datetime
     thumbnail_url: str | None = None
+    # Plan-18 — class ids of tag annotations on this asset. Empty when
+    # none. The grid renders these as small color dots on each thumbnail
+    # so the user can see how each image is classified without opening
+    # the editor.
+    tag_class_ids: list[str] = []
 
     @classmethod
-    def from_orm_asset(cls, a, thumbnail_url: str | None = None):
+    def from_orm_asset(
+        cls,
+        a,
+        thumbnail_url: str | None = None,
+        tag_class_ids: list[str] | None = None,
+    ):
         return cls(
             id=str(a.id), task_id=str(a.task_id), kind=a.kind, xxh3_128=a.xxh3_128,
             mime=a.mime, size_bytes=a.size_bytes, width=a.width, height=a.height,
             frames=a.frames, original_name=a.original_name, created_at=a.created_at,
             thumbnail_url=thumbnail_url,
+            tag_class_ids=tag_class_ids or [],
         )
 
 
