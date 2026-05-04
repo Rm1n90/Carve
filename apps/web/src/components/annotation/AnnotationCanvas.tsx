@@ -2123,6 +2123,30 @@ export function AnnotationCanvas({
         // hit-testing below uses the locked-aware ``hitTest()`` so a
         // normal click doesn't re-target a locked annotation either.
         const lockedIds = useAnnotations.getState().lockedIds;
+        // Plan-17 — only LEFT clicks initiate translate / resize /
+        // vertex drags in cursor (Drag) mode. Right-click on a
+        // selected bbox used to seed a translate drag with the OLD
+        // geometry as ``original`` — a subsequent pointermove (from
+        // even a 1px jitter while clicking a context-menu item) would
+        // then overwrite the just-converted polygon back to the
+        // translated bbox. Right-click reaches the contextmenu
+        // listener cleanly; it has no business starting a drag.
+        if (e.button !== 0) {
+          // Fall through to the selection / contextmenu path below.
+          // Reuse the existing select-or-marquee logic by skipping all
+          // drag-init branches.
+          const hit = hitTest(p);
+          if (hit) {
+            // Right-click on annotation: select so the contextmenu
+            // listener can open the menu pointed at this annotation.
+            if (e.shiftKey) {
+              useAnnotations.getState().toggleSelect(hit);
+            } else {
+              useAnnotations.getState().select(hit);
+            }
+          }
+          return;
+        }
         // 1. If we have a selected bbox, did we click one of its handles?
         const sel = getSelectedBbox();
         if (sel && !lockedIds.has(sel.id)) {
