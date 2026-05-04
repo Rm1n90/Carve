@@ -214,6 +214,10 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
   >(null);
   const queryClient = useQueryClient();
   const toggleSelect = (id: string) => {
+    // Starting a new selection wave clears any lingering result toast so
+    // the new floating bar doesn't stack on top of the old toast at the
+    // same screen position.
+    setBulkResult(null);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -442,8 +446,8 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
           className={cn(
             "fixed bottom-6 left-1/2 z-30 -translate-x-1/2",
             "flex items-center gap-3 px-4 py-2.5",
-            "rounded-full border border-[var(--border-strong)] bg-[var(--bg-elevated)]",
-            "shadow-[0_8px_32px_oklch(0_0_0_/_0.32)] backdrop-blur-md",
+            "rounded-full border border-[var(--border-strong)] bg-[var(--bg-elev)]",
+            "shadow-[0_8px_32px_oklch(0_0_0_/_0.32)]",
           )}
         >
           <span className="font-mono-data text-[12px] tracking-tight text-secondary">
@@ -520,16 +524,20 @@ function BulkClassifyDialog({
   return (
     <div
       role="dialog"
+      aria-modal="true"
       aria-label="Bulk classify"
       data-testid="bulk-classify-dialog"
-      className="fixed inset-0 z-40 grid place-items-center bg-[oklch(0_0_0_/_0.55)]"
+      className={cn(
+        "fixed inset-0 z-50 grid place-items-center",
+        "bg-[oklch(0.04_0.008_240_/_0.78)] backdrop-blur-sm",
+      )}
       onClick={onCancel}
     >
       <div
         className={cn(
           "w-[min(520px,calc(100vw-32px))] max-h-[70vh] grid gap-3 p-5",
-          "rounded-[var(--radius-lg)] border border-[var(--border-strong)] bg-[var(--bg-elevated)]",
-          "shadow-[0_24px_64px_oklch(0_0_0_/_0.45)]",
+          "rounded-[var(--radius-lg)] border border-[var(--border-strong)] bg-[var(--bg-elev)]",
+          "shadow-[0_24px_64px_oklch(0_0_0_/_0.55)]",
         )}
         onClick={(e) => e.stopPropagation()}
       >
@@ -619,7 +627,7 @@ function BulkResultToast({ result, onDismiss }: BulkResultToastProps) {
       className={cn(
         "fixed bottom-6 left-1/2 z-30 -translate-x-1/2",
         "flex items-center gap-3 px-4 py-2.5",
-        "rounded-full border border-[var(--border-accent)] bg-[var(--bg-elevated)]",
+        "rounded-full border border-[var(--border-accent)] bg-[var(--bg-elev)]",
         "shadow-[0_8px_32px_oklch(0_0_0_/_0.32)]",
       )}
     >
