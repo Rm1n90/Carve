@@ -27,6 +27,18 @@ class ExportIn(BaseModel):
     class_remap: dict[str, dict[str, Any] | None] = Field(default_factory=dict)
     splits: ExportSplits = Field(default_factory=ExportSplits)
     include_images: bool = True
+    # Plan-20.1 — how mixed-kind annotations are written into YOLO label
+    # files. Ignored for COCO (which handles all kinds natively).
+    #   - "detection":    polygons / masks are collapsed to their tight
+    #                     bbox so every line is the standard 5-token YOLO
+    #                     detection format. Trainable with task=detect.
+    #   - "segmentation": (default) bboxes are promoted to 4-vertex
+    #                     polygons so every line is a YOLO-seg polygon
+    #                     line. Trainable with task=segment.
+    #   - "tags_only":    no geometric labels are written; only the
+    #                     image-level tag sidecar. Trainable as a
+    #                     classification task.
+    yolo_mode: Literal["detection", "segmentation", "tags_only"] = "segmentation"
 
 
 class ExportOut(BaseModel):

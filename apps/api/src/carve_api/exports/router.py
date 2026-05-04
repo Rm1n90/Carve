@@ -88,6 +88,7 @@ def enqueue_export(
         class_remap=payload.class_remap,
         include_images=payload.include_images,
         splits={"train": payload.splits.train, "val": payload.splits.val, "test": payload.splits.test},
+        yolo_mode=payload.yolo_mode,
     )
     try:
         from rq import Queue
@@ -99,6 +100,38 @@ def enqueue_export(
         pass
 
     return {"export_id": str(e.id)}
+
+
+# Plan-20.1 — kind composition for the export dialog. Returns a tally of
+# annotations on this task by ``kind`` so the YOLO format chooser can
+# show the user a warning when the task has ≥2 distinct kinds and pick
+# the right plain-language preview line for each option.
+@router.get("/{task_id}/annotation-kinds")
+def annotation_kinds(
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    from sqlalchemy import func, select
+    from carve_api.annotations.models import Annotation
+
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    rows = db.execute(
+        select(Annotation.kind, func.count(Annotation.id))
+        .where(Annotation.task_id == task_id)
+        .group_by(Annotation.kind)
+    ).all()
+    out: dict[str, int] = {"bbox": 0, "polygon": 0, "mask": 0, "tag": 0}
+    for kind, count in rows:
+        # ``kind`` arrives as the AnnotationKind enum; ``.value`` gives
+        # the lowercase string the client expects.
+        key = getattr(kind, "value", str(kind))
+        if key in out:
+            out[key] = int(count)
+    return out
 
 
 @router.get("/{task_id}/exports/{export_id}", response_model=ExportProgressOut)

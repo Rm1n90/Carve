@@ -128,6 +128,10 @@ class ExportJobPayload:
     class_remap: dict
     include_images: bool
     splits: dict[str, float]
+    # Plan-20.1 — YOLO write mode. See ExportIn.yolo_mode docstring for
+    # semantics. Ignored when ``fmt == "coco"``. Defaulted so older
+    # callers keep their previous (segmentation) behaviour.
+    yolo_mode: str = "segmentation"
 
 
 def _partition_assets_by_split(
@@ -157,6 +161,89 @@ def _partition_assets_by_split(
     }
 
 
+def _convert_for_yolo_mode(
+    annotations: list[Annotation], mode: str
+) -> list[Any]:
+    """Plan-20.1 — return a list of ``_AnnView`` objects with ``kind`` and
+    ``geometry`` adapted to the chosen YOLO write mode.
+
+    For ``segmentation`` mode every spatial annotation must be a polygon
+    so the resulting label file has uniform polygon-shaped lines. Bboxes
+    are promoted to a 4-vertex polygon; masks and polygons stay as-is
+    (the writer already handles each).
+
+    For ``detection`` mode every spatial annotation must be a bbox.
+    Polygons are collapsed to their axis-aligned bbox; masks are left to
+    the writer (which already decodes RLE → bbox).
+
+    For ``tags_only`` mode the geometric annotations are dropped — the
+    archive layer skips the labels/ tree entirely; we just return the
+    original list so ``extract_image_tags`` still sees the tag rows.
+    """
+    from types import SimpleNamespace
+
+    from carve_api.annotations.models import AnnotationKind
+
+    if mode == "tags_only":
+        return list(annotations)
+
+    out: list[Any] = []
+    for ann in annotations:
+        if ann.kind == AnnotationKind.tag:
+            # Tags ride to the sidecar regardless of mode.
+            out.append(ann)
+            continue
+        if mode == "detection":
+            if ann.kind == AnnotationKind.polygon:
+                pts = ann.geometry.get("points") or []
+                if not pts:
+                    continue
+                xs = [float(p[0]) for p in pts]
+                ys = [float(p[1]) for p in pts]
+                x = min(xs)
+                y = min(ys)
+                w = max(xs) - x
+                h = max(ys) - y
+                if w <= 0 or h <= 0:
+                    continue
+                out.append(SimpleNamespace(
+                    kind=AnnotationKind.bbox,
+                    class_id=ann.class_id,
+                    geometry={"x": x, "y": y, "w": w, "h": h},
+                ))
+            else:
+                # bbox / mask flow through unchanged — writer already
+                # emits a 5-token detection line for each.
+                out.append(ann)
+        elif mode == "segmentation":
+            if ann.kind == AnnotationKind.bbox:
+                g = ann.geometry
+                x = float(g["x"])
+                y = float(g["y"])
+                w = float(g["w"])
+                h = float(g["h"])
+                # Clockwise from top-left, 4 vertices.
+                points = [
+                    [x, y],
+                    [x + w, y],
+                    [x + w, y + h],
+                    [x, y + h],
+                ]
+                out.append(SimpleNamespace(
+                    kind=AnnotationKind.polygon,
+                    class_id=ann.class_id,
+                    geometry={"points": points},
+                ))
+            else:
+                # polygon / mask flow through. Mask still becomes a
+                # bbox line (YOLO has no mask format) — documented in
+                # the README.
+                out.append(ann)
+        else:
+            out.append(ann)
+    return out
+
+
 def _yolo_archive(
     *,
     task: Task,
@@ -167,6 +254,7 @@ def _yolo_archive(
     storage,
     splits: dict[str, float] | None = None,
     classes_manifest: list[dict[str, Any]] | None = None,
+    yolo_mode: str = "segmentation",
 ) -> bytes:
     """Build a YOLO archive in memory. Returns the zip bytes.
 
@@ -187,15 +275,22 @@ def _yolo_archive(
                     # Skip assets without known dimensions (videos with no probe yet).
                     continue
                 anns = annotations_by_asset_id.get(asset.id, [])
-                lines, _ = write_yolo_label(
-                    anns, remap=class_remap,
-                    image_w=int(asset.width), image_h=int(asset.height),
-                )
                 stem = Path(asset.original_name).stem
-                zf.writestr(
-                    f"labels/{split_name}/{stem}.txt",
-                    ("\n".join(lines) + "\n") if lines else "",
-                )
+                # Plan-20.1 — apply the chosen YOLO mode to the spatial
+                # annotations so the resulting label files have uniform
+                # line shapes (detection or segmentation) trainers can
+                # actually parse. Tags are still extracted from the
+                # original list because the conversion preserves them.
+                converted = _convert_for_yolo_mode(anns, yolo_mode)
+                if yolo_mode != "tags_only":
+                    lines, _ = write_yolo_label(
+                        converted, remap=class_remap,
+                        image_w=int(asset.width), image_h=int(asset.height),
+                    )
+                    zf.writestr(
+                        f"labels/{split_name}/{stem}.txt",
+                        ("\n".join(lines) + "\n") if lines else "",
+                    )
                 # Plan-20 — image-level tags go to a parallel ``tags/`` tree
                 # (one densified class id per line) so the YOLO label files
                 # stay strictly geometric and parseable by trainers.
@@ -241,15 +336,50 @@ def _yolo_archive(
                 "classes.json",
                 json.dumps(classes_manifest, indent=2),
             )
-        zf.writestr("README.md", _yolo_readme())
+        zf.writestr("README.md", _yolo_readme(yolo_mode))
     return buf.getvalue()
 
 
-def _yolo_readme() -> str:
+def _yolo_readme(mode: str = "segmentation") -> str:
     """Plan-20 — self-describing layout + per-kind handling notes for the
-    YOLO export. Written as ``README.md`` inside every YOLO archive."""
+    YOLO export. Written as ``README.md`` inside every YOLO archive.
+
+    The ``mode`` parameter (``detection`` / ``segmentation`` / ``tags_only``)
+    selects which conversion paragraph appears so the user sees what
+    actually happened in their archive.
+    """
+    if mode == "detection":
+        mode_note = (
+            "## YOLO mode: **detection**\n\n"
+            "Every line in `labels/<split>/<stem>.txt` is the standard YOLO\n"
+            "5-token detection format `<id> cx cy w h` (normalised). Polygons\n"
+            "and masks were collapsed to their tight axis-aligned bounding\n"
+            "box at export time — segmentation detail is intentionally\n"
+            "discarded so the file works with `yolo task=detect` training.\n"
+            "Tags ride the sidecar (see below).\n\n"
+        )
+    elif mode == "tags_only":
+        mode_note = (
+            "## YOLO mode: **tags only**\n\n"
+            "No geometric label files were written — only the image-level\n"
+            "tag sidecar `tags/<split>/<stem>.txt`. Use this archive for\n"
+            "image-classification training, where each image is labelled\n"
+            "by which classes are present. The `data.yaml` `nc` and `names`\n"
+            "still describe the project's classes for the tag ids.\n\n"
+        )
+    else:
+        mode_note = (
+            "## YOLO mode: **segmentation**\n\n"
+            "Every line in `labels/<split>/<stem>.txt` is a YOLO-seg polygon\n"
+            "line `<id> x1 y1 x2 y2 ... xn yn` (normalised). Bboxes were\n"
+            "promoted to a 4-vertex axis-aligned polygon so the file has\n"
+            "uniform shape and is consumable by `yolo task=segment`. Masks\n"
+            "are still written as their tight bounding box (YOLO has no\n"
+            "mask format). Tags ride the sidecar (see below).\n\n"
+        )
     return (
         "# Carve YOLO export\n\n"
+        + mode_note +
         "## Layout\n"
         "```\n"
         "data.yaml             # YOLO dataset descriptor (path / nc / names)\n"
@@ -426,6 +556,7 @@ def _build_archive(
     storage,
     splits: dict[str, float] | None = None,
     classes_manifest: list[dict[str, Any]] | None = None,
+    yolo_mode: str = "segmentation",
 ) -> bytes:
     if fmt == "yolo":
         return _yolo_archive(
@@ -437,6 +568,7 @@ def _build_archive(
             storage=storage,
             splits=splits,
             classes_manifest=classes_manifest,
+            yolo_mode=yolo_mode,
         )
     if fmt == "coco":
         # COCO uses a single coco.json — split partitioning is YOLO-only here.
@@ -527,6 +659,7 @@ def run_export_inline(
             storage=storage,
             splits=payload.splits,
             classes_manifest=classes_manifest,
+            yolo_mode=getattr(payload, "yolo_mode", "segmentation"),
         )
 
         minio_key = f"exports/{task.id}/{export.id}.zip"

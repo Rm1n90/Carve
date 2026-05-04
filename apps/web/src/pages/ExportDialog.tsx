@@ -6,11 +6,13 @@ import { type ClassRow } from "@/api/classes";
 import { tasksApi } from "@/api/tasks";
 import {
   exportsApi,
+  type AnnotationKindCounts,
   type ClassRemap,
   type ExportFormat,
   type ExportProgress,
   type ExportRequest,
   type ExportSplits,
+  type YoloMode,
 } from "@/api/exports";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
@@ -61,12 +63,26 @@ export function ExportDialog({ projectId, taskId }: Props) {
     queryKey: ["task-classes", projectId, taskId],
     queryFn: () => tasksApi.getClasses(projectId, taskId),
   });
+  // Plan-20.1 — fetch the per-kind annotation tally so the YOLO chooser
+  // can detect mixed-kind tasks and show a tailored warning.
+  const kindsQ = useQuery<AnnotationKindCounts>({
+    queryKey: ["task-annotation-kinds", taskId],
+    queryFn: () => exportsApi.kinds(taskId),
+    staleTime: 30_000,
+  });
+  const counts = kindsQ.data ?? { bbox: 0, polygon: 0, mask: 0, tag: 0 };
+  const presentKinds: ("bbox" | "polygon" | "mask" | "tag")[] = (
+    ["bbox", "polygon", "mask", "tag"] as const
+  ).filter((k) => counts[k] > 0);
+  const isMixed = presentKinds.length >= 2;
+  const totalAnnotations = counts.bbox + counts.polygon + counts.mask + counts.tag;
   const classesQ = {
     data: taskClassesQ.data?.classes as ClassRow[] | undefined,
     isLoading: taskClassesQ.isLoading,
   };
 
   const [format, setFormat] = useState<ExportFormat>("yolo");
+  const [yoloMode, setYoloMode] = useState<YoloMode>("segmentation");
   const [splits, setSplits] = useState<ExportSplits>(DEFAULT_SPLITS);
   // v3.0 D12 — "single set" hides train/val/test inputs and ships
   // {train: 1, val: 0, test: 0}.
@@ -132,6 +148,8 @@ export function ExportDialog({ projectId, taskId }: Props) {
       // export.
       splits: mode === "single" ? SINGLE_SET_SPLITS : splits,
       include_images: true,
+      // Plan-20.1 — only relevant for YOLO; the server ignores it for COCO.
+      ...(format === "yolo" ? { yolo_mode: yoloMode } : {}),
     };
     create.mutate(body);
   };
@@ -236,6 +254,33 @@ export function ExportDialog({ projectId, taskId }: Props) {
             {!sumValid && " — should be 1.0"}
           </span>
         </div>
+      )}
+
+      {/* Plan-20.1 — YOLO format chooser. Only shown when the user picked
+          YOLO and the task has at least one annotation. The chooser is
+          mandatory when ≥2 kinds are present (the warning explains why);
+          it's still shown for single-kind tasks so the user understands
+          which YOLO flavour they are getting. */}
+      {format === "yolo" && totalAnnotations > 0 && (
+        <YoloFormatChooser
+          mode={yoloMode}
+          onChange={setYoloMode}
+          counts={counts}
+          isMixed={isMixed}
+          presentKinds={presentKinds}
+        />
+      )}
+
+      {/* COCO needs no chooser — the format handles every kind natively. */}
+      {format === "coco" && totalAnnotations > 0 && (
+        <p
+          data-testid="export-coco-info"
+          className="text-[12px] text-secondary leading-snug rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3 py-2"
+        >
+          COCO handles every annotation kind natively — boxes and polygons
+          land in <code>coco.json</code>, image-level tags ride in a
+          separate <code>image_tags.json</code> sidecar.
+        </p>
       )}
 
       {classesQ.isLoading && (
@@ -375,5 +420,149 @@ export function ExportDialog({ projectId, taskId }: Props) {
         </p>
       )}
     </section>
+  );
+}
+
+interface YoloFormatChooserProps {
+  mode: YoloMode;
+  onChange: (m: YoloMode) => void;
+  counts: AnnotationKindCounts;
+  isMixed: boolean;
+  presentKinds: ("bbox" | "polygon" | "mask" | "tag")[];
+}
+
+const KIND_LABEL: Record<"bbox" | "polygon" | "mask" | "tag", string> = {
+  bbox: "boxes",
+  polygon: "polygons",
+  mask: "masks",
+  tag: "tags",
+};
+
+function YoloFormatChooser({
+  mode,
+  onChange,
+  counts,
+  isMixed,
+  presentKinds,
+}: YoloFormatChooserProps) {
+  const totalSpatial = counts.bbox + counts.polygon + counts.mask;
+  const detectionPreview =
+    counts.polygon > 0 || counts.mask > 0
+      ? `${counts.bbox + counts.polygon + counts.mask} lines as <id> cx cy w h. Polygons (${counts.polygon}) and masks (${counts.mask}) are flattened to their bounding box — segmentation detail is lost.`
+      : `${counts.bbox} bbox lines as <id> cx cy w h. No conversion needed.`;
+  const segmentationPreview =
+    counts.bbox > 0
+      ? `${totalSpatial} polygon lines (variable length). Boxes (${counts.bbox}) are turned into 4-vertex rectangles so every line is the same shape.`
+      : `${counts.polygon + counts.mask} polygon lines (variable length). No conversion needed.`;
+  const tagsOnlyPreview =
+    counts.tag > 0
+      ? `${counts.tag} class id${counts.tag === 1 ? "" : "s"} written to tags/<split>/<stem>.txt. Boxes, polygons, and masks are skipped.`
+      : "Nothing to write — this task has no tag annotations.";
+
+  return (
+    <div
+      data-testid="yolo-format-chooser"
+      className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-3"
+    >
+      {isMixed && (
+        <div
+          role="alert"
+          data-testid="yolo-mixed-warning"
+          className="grid gap-1 rounded-[var(--radius-sm)] border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-3 py-2"
+        >
+          <p className="text-[12.5px] font-medium tracking-tight text-[color:var(--text-primary)]">
+            This task has more than one annotation kind.
+          </p>
+          <p className="text-[11.5px] text-[color:var(--text-secondary)] leading-snug">
+            {presentKinds.map((k) => `${counts[k]} ${KIND_LABEL[k]}`).join(", ")}.
+            YOLO label files can't carry every kind in the same line shape, so
+            pick how you want them written below. Each option's preview tells
+            you exactly what the resulting files will look like.
+          </p>
+        </div>
+      )}
+
+      <p className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
+        YOLO label format
+      </p>
+
+      <YoloModeOption
+        value="detection"
+        active={mode === "detection"}
+        onChange={onChange}
+        title="Detection (boxes only)"
+        subtitle="Compatible with `yolo task=detect`"
+        preview={detectionPreview}
+      />
+      <YoloModeOption
+        value="segmentation"
+        active={mode === "segmentation"}
+        onChange={onChange}
+        title="Segmentation (polygons)"
+        subtitle="Compatible with `yolo task=segment`"
+        preview={segmentationPreview}
+      />
+      <YoloModeOption
+        value="tags_only"
+        active={mode === "tags_only"}
+        onChange={onChange}
+        title="Tags only (image classification)"
+        subtitle="No geometric labels — image-level class tags only"
+        preview={tagsOnlyPreview}
+        disabled={counts.tag === 0}
+      />
+    </div>
+  );
+}
+
+interface YoloModeOptionProps {
+  value: YoloMode;
+  active: boolean;
+  onChange: (m: YoloMode) => void;
+  title: string;
+  subtitle: string;
+  preview: string;
+  disabled?: boolean;
+}
+
+function YoloModeOption({
+  value,
+  active,
+  onChange,
+  title,
+  subtitle,
+  preview,
+  disabled,
+}: YoloModeOptionProps) {
+  return (
+    <label
+      className={`grid gap-1 cursor-pointer rounded-[var(--radius-sm)] border px-3 py-2 transition-colors ${
+        active
+          ? "border-[color:var(--accent)] bg-[color:var(--accent-bg)]"
+          : "border-[var(--border-subtle)] hover:border-[var(--border-strong)] bg-[var(--bg-surface)]"
+      } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+    >
+      <div className="flex items-baseline gap-2">
+        <input
+          type="radio"
+          name="yolo-mode"
+          value={value}
+          checked={active}
+          disabled={disabled}
+          onChange={() => onChange(value)}
+          data-testid={`yolo-mode-${value}`}
+          className="h-3.5 w-3.5 accent-[var(--accent)]"
+        />
+        <span className="text-[13px] font-medium tracking-tight text-[color:var(--text-primary)]">
+          {title}
+        </span>
+        <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)]">
+          {subtitle}
+        </span>
+      </div>
+      <p className="ml-5 text-[11.5px] leading-snug text-[color:var(--text-secondary)]">
+        Result: {preview}
+      </p>
+    </label>
   );
 }
