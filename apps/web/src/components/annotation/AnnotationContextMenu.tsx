@@ -239,14 +239,17 @@ function ConvertItems({
     const ids = bulkIds();
     let succeeded = 0;
     let failed = 0;
+    let lastErr: unknown = null;
+    // Plan-17 — defensive: clear any in-progress canvas drag state so a
+    // stale dragRef from a click-into-the-menu sequence cannot
+    // overwrite the converted geometry on a subsequent pointermove.
+    window.dispatchEvent(new CustomEvent("carve:cancel-drag"));
     try {
-      // Sequential to avoid hammering the model service with 30 box
-      // prompts at once when the user just marquee-selected a YOLO
-      // batch result. The batch overlay would be the right place for
-      // a true multi-asset progress bar; this is the same-asset path.
       for (const id of ids) {
         const cur = useAnnotations.getState().byId[id];
         if (!cur) {
+          // eslint-disable-next-line no-console
+          console.warn("[Convert] no draft for id", id);
           failed++;
           continue;
         }
@@ -257,6 +260,8 @@ function ConvertItems({
             geometry: cur.geometry,
           });
           if (!points) {
+            // eslint-disable-next-line no-console
+            console.warn("[Convert] SAM returned no polygon for", id);
             failed++;
             continue;
           }
@@ -271,6 +276,12 @@ function ConvertItems({
             : points;
           const poly = buildPolygon(clamped);
           if (!poly) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[Convert] SAM polygon was degenerate after clamp",
+              id,
+              points.length,
+            );
             failed++;
             continue;
           }
@@ -279,8 +290,13 @@ function ConvertItems({
             kind: "polygon",
             dirty: true,
           });
+          // eslint-disable-next-line no-console
+          console.log("[Convert] succeeded", id, "vertices=", poly.points.length);
           succeeded++;
-        } catch {
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error("[Convert] error for id", id, err);
+          lastErr = err;
           failed++;
         }
       }
@@ -290,16 +306,27 @@ function ConvertItems({
           { variant: "success" },
         );
       } else {
-        showToast(`${label} failed for all ${failed} annotations.`, {
-          variant: "error",
-        });
+        const detail =
+          (lastErr as { response?: { data?: { detail?: string } } })?.response
+            ?.data?.detail ||
+          (lastErr as { message?: string })?.message ||
+          "no polygon returned";
+        showToast(
+          `${label} failed for all ${failed} annotations — ${detail}.`,
+          { variant: "error", duration: 5000 },
+        );
       }
       onAfterAction();
     } catch (err) {
       const detail =
         (err as { response?: { data?: { detail?: string } } })?.response?.data
-          ?.detail || "SAM request failed.";
-      showToast(`${label} failed — ${detail}`, { variant: "error" });
+          ?.detail ||
+        (err as { message?: string })?.message ||
+        "SAM request failed.";
+      showToast(`${label} failed — ${detail}`, {
+        variant: "error",
+        duration: 5000,
+      });
     } finally {
       setPending(false);
     }

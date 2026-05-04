@@ -941,6 +941,18 @@ export function AnnotationCanvas({
       setPaletteInitialQuery("");
       setPaletteOpen(true);
     }
+    function onCancelDrag() {
+      // Plan-17 — clear any in-progress drag / marquee state. Used by
+      // the AnnotationContextMenu before running a Convert / Refine
+      // action so a stale dragRef from the right-click pointerdown
+      // sequence cannot overwrite the converted geometry on a
+      // subsequent pointermove.
+      dragRef.current = null;
+      marqueeDraftRef.current = null;
+      samBoxDraftRef.current = null;
+      samTrackBoxDraftRef.current = null;
+      setDragCursor(null);
+    }
     window.addEventListener("carve:zoom-in", onZoomIn);
     window.addEventListener("carve:zoom-out", onZoomOut);
     window.addEventListener("carve:fit-to-screen", onFit);
@@ -950,12 +962,14 @@ export function AnnotationCanvas({
       "carve:open-class-palette",
       onOpenPalette as EventListener,
     );
+    window.addEventListener("carve:cancel-drag", onCancelDrag);
     return () => {
       window.removeEventListener("carve:zoom-in", onZoomIn);
       window.removeEventListener("carve:zoom-out", onZoomOut);
       window.removeEventListener("carve:fit-to-screen", onFit);
       window.removeEventListener("carve:zoom-actual", onActual);
       window.removeEventListener("carve:zoom-to", onZoomTo as EventListener);
+      window.removeEventListener("carve:cancel-drag", onCancelDrag);
       window.removeEventListener(
         "carve:open-class-palette",
         onOpenPalette as EventListener,
