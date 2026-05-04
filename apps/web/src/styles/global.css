@@ -35,13 +35,26 @@
   --text-tertiary: oklch(0.55 0.012 240);
   --text-disabled: oklch(0.40 0.010 240);
 
-  /* ---- Brand accent — cyan (Ultralytics-like, NOT indigo) ---- */
-  --accent: oklch(0.78 0.14 220);
-  --accent-hover: oklch(0.84 0.15 220);
-  --accent-active: oklch(0.70 0.16 220);
-  --accent-fg: oklch(0.10 0.014 240);  /* dark text on cyan */
-  --accent-bg: oklch(0.78 0.14 220 / 0.10);
-  --accent-bg-hover: oklch(0.78 0.14 220 / 0.18);
+  /* ---- Brand accent — PlayStation family per DESIGN.md.
+         #0070cc resting blue, #1eaedb cyan reserved for hover/focus,
+         #1883fd brighter link-hover variant. Hex literals are kept
+         alongside the OKLCH equivalents so designers reading the
+         tokens can map them straight back to DESIGN.md. ---- */
+  --accent: oklch(0.56 0.17 255);          /* #0070CC PlayStation Blue */
+  --accent-hover: oklch(0.74 0.13 220);    /* #1EAEDB PlayStation Cyan */
+  --accent-active: oklch(0.50 0.18 255);   /* #0068BD darker variant */
+  --accent-fg: #ffffff;
+  --accent-bg: oklch(0.56 0.17 255 / 0.10);
+  --accent-bg-hover: oklch(0.74 0.13 220 / 0.18);
+
+  /* DESIGN.md Section 9 — Quick Color Reference, exposed as named
+     tokens so component code can use them directly. */
+  --ps-blue: #0070cc;
+  --ps-cyan: #1eaedb;
+  --ps-link-hover: #1883fd;
+  --ps-link-rest-dark: #53b1ff;
+  --ps-commerce-orange: #d53b00;
+  --ps-commerce-orange-active: #aa2f00;
 
   /* ---- Action / "go" — green pill, only for primary CTAs (Save/Build) ---- */
   --success: oklch(0.72 0.18 145);
@@ -164,7 +177,9 @@
   --text-tertiary: #6B7280;
   --text-disabled: #9CA3AF;
 
-  --accent: oklch(0.62 0.18 220);
+  --accent: oklch(0.56 0.17 255);          /* #0070CC PlayStation Blue */
+  --accent-hover: oklch(0.74 0.13 220);    /* #1EAEDB PlayStation Cyan */
+  --accent-active: oklch(0.50 0.18 255);   /* #0068BD darker variant */
   --accent-hover: oklch(0.55 0.20 220);
   --accent-active: oklch(0.50 0.22 220);
   --accent-fg: #FFFFFF;
@@ -714,4 +729,68 @@ select:not([data-radix-select-trigger]):not([data-no-default-style]) option {
     linear-gradient(-45deg, oklch(0.88 0 0) 25%, transparent 25%),
     linear-gradient(45deg, transparent 75%, oklch(0.88 0 0) 75%),
     linear-gradient(-45deg, transparent 75%, oklch(0.88 0 0) 75%);
+}
+
+/* ============================================================
+   DESIGN.md — PlayStation interaction signature.
+   `.ps-pill` is the primary CTA pill; on hover it does the full
+   move from DESIGN.md §4: cyan fill swap, 2px white border,
+   2px blue outer ring, and a 1.05× lift (we damp the literal
+   1.2× from DESIGN.md down to 1.05× here so the move stays
+   appropriate for in-app dense toolbars; product surfaces can
+   override with `.ps-pill--bold` for the full 1.2× at hero
+   scale).
+   ============================================================ */
+.ps-pill {
+  background: var(--ps-blue);
+  color: #ffffff;
+  border: none;
+  border-radius: 999px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  outline: none;
+  transition:
+    background 180ms ease,
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease;
+}
+.ps-pill:hover {
+  background: var(--ps-cyan);
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 2px var(--ps-blue);
+  transform: scale(1.05);
+}
+.ps-pill:focus-visible {
+  outline: none;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 2px var(--ps-blue);
+}
+.ps-pill:active {
+  opacity: 0.6;
+}
+.ps-pill--bold:hover {
+  transform: scale(1.2);
+}
+
+.ps-pill--commerce {
+  background: var(--ps-commerce-orange);
+  font-weight: 700;
+  letter-spacing: 0.45px;
+}
+.ps-pill--commerce:active {
+  background: var(--ps-commerce-orange-active);
+  opacity: 0.6;
+}
+
+/* DESIGN.md §3 — quiet-authority display headline. Use `.ps-display`
+   on hero h1/h2 when you want the SST 300 voice. Falls back to the
+   project's existing display font; weight 300 is preserved. */
+.ps-display {
+  font-family: var(--font-display);
+  font-weight: 300;
+  letter-spacing: -0.1px;
+  line-height: 1.25;
 }

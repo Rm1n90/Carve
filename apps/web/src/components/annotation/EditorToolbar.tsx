@@ -214,6 +214,13 @@ interface EditorToolbarProps {
    * stored ``text_prompt`` per class.
    */
   classes?: import("@/api/classes").ClassRow[];
+  /**
+   * Optional slot rendered before the Settings button in the right
+   * cluster. Used by the editor page to inline the saved-views menu
+   * next to the gear so it stops occupying its own row above the
+   * canvas (Phase 9 follow-up — reclaim canvas space).
+   */
+  rightSlot?: ReactNode;
 }
 
 function ToolButton({
@@ -2038,6 +2045,7 @@ export function EditorToolbar({
   isVideo = false,
   onAfterYoloPredict,
   classes: classesProp,
+  rightSlot,
 }: EditorToolbarProps) {
   const active = useTool((s) => s.active);
   const setActive = useTool((s) => s.setActive);
@@ -2332,6 +2340,7 @@ export function EditorToolbar({
               <Info className="h-[16px] w-[16px]" />
             </button>
           </Tooltip>
+          {rightSlot}
           <Tooltip content="Editor settings">
             <button
               type="button"

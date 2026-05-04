@@ -922,18 +922,17 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
               qc.invalidateQueries({ queryKey: ["annotations", taskId] });
             }}
             classes={classesQ.data ?? []}
+            rightSlot={
+              <SavedViewsMenu
+                taskId={taskId}
+                currentQuery={appliedQuery}
+                activeViewId={activeViewId}
+                onSelect={applySavedView}
+              />
+            }
           />
 
           <SamUnavailableBanner />
-
-          <div className="flex items-center justify-end gap-2 px-3 pt-2">
-            <SavedViewsMenu
-              taskId={taskId}
-              currentQuery={appliedQuery}
-              activeViewId={activeViewId}
-              onSelect={applySavedView}
-            />
-          </div>
 
           <ThumbnailStripGate
             taskId={taskId}

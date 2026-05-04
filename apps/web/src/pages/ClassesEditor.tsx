@@ -1,7 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Trash2, Plus } from "lucide-react";
+import { Copy, Trash2, Plus, ClipboardPaste } from "lucide-react";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { projectsApi, type Project } from "@/api/projects";
 import { Button } from "@/components/ui/Button";
@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/Dialog";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
-import { PALETTE_HEX, nextHexForIdx } from "@/lib/swatch";
+import { PALETTE_HEX, nextUnusedColor } from "@/lib/swatch";
 
 export function ClassesEditor({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
@@ -79,14 +79,18 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
   const [copyDialogOpen, setCopyDialogOpen] = useState(false);
 
   const classCount = q.data?.length ?? 0;
+  const usedColors = (q.data ?? []).map((c) => c.color);
   const [name, setName] = useState("");
-  const [color, setColor] = useState<string>(() => nextHexForIdx(classCount));
+  const [color, setColor] = useState<string>(() => nextUnusedColor(usedColors));
   const nextIdx = (q.data ?? []).reduce((m, c) => Math.max(m, c.idx + 1), 0);
+  const [bulkPasteOpen, setBulkPasteOpen] = useState(false);
 
-  // Track the next-up palette slot so successive adds get distinct colors.
+  // Track the next-up palette slot so successive adds get distinct colors
+  // that don't collide with any color already taken in this project.
   // Runs only when the count changes (after fetch / create / delete).
   useEffect(() => {
-    setColor(nextHexForIdx(classCount));
+    setColor(nextUnusedColor(usedColors));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classCount]);
 
   async function onSubmit(e: FormEvent) {
@@ -104,7 +108,7 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
     try {
       await create.mutateAsync({ idx: nextIdx, name, color });
       setName("");
-      setColor(nextHexForIdx(classCount + 1));
+      setColor(nextUnusedColor([...usedColors, color]));
     } catch {
       // React-Query keeps the rejected error on `create.error`; the form
       // stays open with the user's input intact so they can retry.
@@ -118,6 +122,21 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
           Classes
         </h2>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="classes-editor-bulk-paste"
+            onClick={() => setBulkPasteOpen(true)}
+            className={cn(
+              "inline-flex items-center gap-1 h-7 px-2.5",
+              "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+              "text-[11.5px] tracking-tight text-[color:var(--text-secondary)]",
+              "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+              "transition-colors",
+            )}
+          >
+            <ClipboardPaste className="h-3 w-3" />
+            Paste classes…
+          </button>
           <button
             type="button"
             data-testid="classes-editor-copy-from-project"
@@ -148,6 +167,32 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
           });
         }}
         pending={importFrom.isPending}
+      />
+      <BulkPasteClassesDialog
+        open={bulkPasteOpen}
+        onOpenChange={setBulkPasteOpen}
+        existingNames={(q.data ?? []).map((c) => c.name.toLowerCase())}
+        existingColors={usedColors}
+        startIdx={nextIdx}
+        onSubmit={async (entries) => {
+          // Sequentially create — server-side enforces idx+name uniqueness;
+          // sequential keeps idx allocation deterministic.
+          let created = 0;
+          let skipped = 0;
+          for (const e of entries) {
+            try {
+              await create.mutateAsync({ idx: e.idx, name: e.name, color: e.color });
+              created++;
+            } catch {
+              skipped++;
+            }
+          }
+          showToast(
+            `Imported ${created} ${created === 1 ? "class" : "classes"}${skipped > 0 ? ` (${skipped} skipped)` : ""}`,
+            { variant: created > 0 ? "success" : "error" },
+          );
+          setBulkPasteOpen(false);
+        }}
       />
 
       {/* Bounded shell: header (sticky) / scrollable list / footer (sticky add form).
@@ -492,5 +537,187 @@ function ClassPromptInput({
         )}
       />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bulk paste classes — accepts plain list / JSON array / YAML list and auto-
+// assigns unique colors. Names are deduped against the existing project's
+// classes (case-insensitive). Idx allocation continues from the project's
+// current max.
+// ---------------------------------------------------------------------------
+interface BulkPasteEntry {
+  idx: number;
+  name: string;
+  color: string;
+}
+
+interface BulkPasteClassesDialogProps {
+  open: boolean;
+  onOpenChange: (next: boolean) => void;
+  existingNames: readonly string[];
+  existingColors: readonly string[];
+  startIdx: number;
+  onSubmit: (entries: BulkPasteEntry[]) => void | Promise<void>;
+}
+
+function parsePastedClasses(input: string): string[] {
+  const trimmed = input.trim();
+  if (!trimmed) return [];
+  // 1. JSON array of strings or `{name: ...}` objects.
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((entry) => {
+            if (typeof entry === "string") return entry;
+            if (entry && typeof entry === "object" && "name" in entry) {
+              const n = (entry as { name?: unknown }).name;
+              return typeof n === "string" ? n : "";
+            }
+            return "";
+          })
+          .filter((s) => s.trim().length > 0);
+      }
+    } catch {
+      /* fall through to line / yaml parser */
+    }
+  }
+  // 2. YAML-style list (- name) or newline / comma split.
+  return trimmed
+    .split(/\r?\n|,/)
+    .map((line) => line.replace(/^[\s-]+/, "").replace(/^["']|["']$/g, "").trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+}
+
+function BulkPasteClassesDialog({
+  open,
+  onOpenChange,
+  existingNames,
+  existingColors,
+  startIdx,
+  onSubmit,
+}: BulkPasteClassesDialogProps) {
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setText("");
+      setSubmitting(false);
+    }
+  }, [open]);
+
+  const parsed = parsePastedClasses(text);
+  const existingSet = new Set(existingNames.map((n) => n.toLowerCase()));
+  const seen = new Set<string>();
+  const fresh: string[] = [];
+  const duplicates: string[] = [];
+  for (const raw of parsed) {
+    const key = raw.toLowerCase();
+    if (existingSet.has(key) || seen.has(key)) {
+      duplicates.push(raw);
+    } else {
+      seen.add(key);
+      fresh.push(raw);
+    }
+  }
+
+  // Pre-compute color assignments for preview.
+  const used: string[] = [...existingColors];
+  const entries: BulkPasteEntry[] = fresh.map((name, i) => {
+    const color = nextUnusedColor(used);
+    used.push(color);
+    return { idx: startIdx + i, name, color };
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(92vw,560px)]">
+        <DialogHeader>
+          <DialogTitle>Paste classes</DialogTitle>
+          <DialogDescription>
+            One class per line, comma-separated, JSON array, or YAML list.
+            Colors are auto-assigned so no two classes share a color.
+          </DialogDescription>
+        </DialogHeader>
+        <textarea
+          autoFocus
+          rows={8}
+          placeholder={'car\nperson\nbike\n\n— or —\n\n["car", "person", "bike"]\n\n— or —\n\n- car\n- person\n- bike'}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          data-testid="bulk-paste-classes-input"
+          className={cn(
+            "w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)]",
+            "px-3 py-2 text-[13px] font-mono leading-relaxed",
+            "text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
+            "focus:outline-none focus:border-[var(--accent)]",
+          )}
+        />
+        {entries.length > 0 && (
+          <div className="grid gap-1 max-h-[180px] overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-2">
+            <span className="text-[10.5px] uppercase tracking-[0.08em] text-[color:var(--text-tertiary)]">
+              Preview ({entries.length} new
+              {duplicates.length > 0 ? `, ${duplicates.length} duplicate skipped` : ""})
+            </span>
+            {entries.slice(0, 50).map((e) => (
+              <div
+                key={`${e.idx}-${e.name}`}
+                className="flex items-center gap-2 text-[12px] tracking-tight text-[color:var(--text-secondary)]"
+              >
+                <span
+                  className="h-3 w-3 rounded-full border border-[var(--border-strong)]"
+                  style={{ background: e.color }}
+                />
+                <span className="font-mono text-[10px] text-[color:var(--text-tertiary)] w-6">
+                  #{e.idx}
+                </span>
+                <span className="flex-1 truncate text-[color:var(--text-primary)]">
+                  {e.name}
+                </span>
+                <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                  {e.color}
+                </span>
+              </div>
+            ))}
+            {entries.length > 50 && (
+              <span className="text-[11px] italic text-[color:var(--text-tertiary)] mt-1">
+                …and {entries.length - 50} more
+              </span>
+            )}
+          </div>
+        )}
+        {parsed.length === 0 && text.trim().length > 0 && (
+          <p className="text-[12px] text-[color:var(--danger)]">
+            Couldn't find any class names in that input.
+          </p>
+        )}
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            disabled={submitting}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={entries.length === 0 || submitting}
+            loading={submitting}
+            onClick={async () => {
+              setSubmitting(true);
+              await onSubmit(entries);
+            }}
+            data-testid="bulk-paste-classes-submit"
+          >
+            {submitting
+              ? "Importing…"
+              : `Import ${entries.length} ${entries.length === 1 ? "class" : "classes"}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -2869,6 +2869,33 @@ export function AnnotationCanvas({
         }
       }
 
+      // Plan-16 — Delete/Backspace reliably removes the selected
+      // annotations directly at the canvas level so it never gets
+      // dropped by tool-specific or page-level routing. Skips the SAM
+      // tool (which uses Backspace to pop the last click) and ignores
+      // when nothing is selected.
+      if (
+        (e.key === "Delete" || e.key === "Backspace") &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        tool !== "sam"
+      ) {
+        const state = useAnnotations.getState();
+        const ids =
+          state.selectedIds.length > 0
+            ? state.selectedIds
+            : state.selectedId
+              ? [state.selectedId]
+              : [];
+        if (ids.length > 0) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          for (const id of ids) state.remove(id);
+          return;
+        }
+      }
+
       if (tool === "cursor") {
         // ArrowKey nudge — only when the cursor tool has a bbox selected
         // AND the user has no modifier (asset prev/next is non-modifier

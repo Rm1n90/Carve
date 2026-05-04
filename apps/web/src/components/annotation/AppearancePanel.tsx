@@ -30,11 +30,11 @@ function SliderRow({
   testId: string;
 }) {
   return (
-    <div className="grid gap-1">
-      <div className="flex items-center justify-between text-[11px] text-[color:var(--text-secondary)]">
+    <div className="grid gap-0.5">
+      <div className="flex items-center justify-between text-[10.5px] text-[color:var(--text-secondary)]">
         <span>{label}</span>
         <span
-          className="font-mono text-[10.5px] text-[color:var(--text-tertiary)] tabular-nums"
+          className="font-mono text-[10px] text-[color:var(--text-tertiary)] tabular-nums"
           data-testid={`${testId}-value`}
         >
           {value}
@@ -49,7 +49,7 @@ function SliderRow({
         onChange={(e) => onChange(Number(e.target.value))}
         aria-label={label}
         data-testid={testId}
-        className="w-full accent-[var(--accent)]"
+        className="h-3 w-full accent-[var(--accent)]"
       />
     </div>
   );
@@ -138,7 +138,7 @@ function CheckboxRow({
     <label
       data-testid={`${testId}-row`}
       className={cn(
-        "flex items-center gap-2 text-[12px] tracking-tight",
+        "flex items-center gap-1.5 text-[10.5px] tracking-tight",
         disabled
           ? "text-[color:var(--text-tertiary)] cursor-not-allowed opacity-70"
           : "text-[color:var(--text-secondary)] cursor-pointer hover:text-[color:var(--text-primary)]",
@@ -150,7 +150,7 @@ function CheckboxRow({
         disabled={disabled}
         onChange={(e) => onChange?.(e.target.checked)}
         data-testid={testId}
-        className="h-3.5 w-3.5 accent-[var(--accent)]"
+        className="h-3 w-3 accent-[var(--accent)]"
       />
       <span className="flex-1">{label}</span>
       {trailing}
@@ -198,33 +198,33 @@ export function AppearancePanel() {
         onClick={() => setOpen((v) => !v)}
         data-testid="appearance-panel-toggle"
         className={cn(
-          "w-full flex items-baseline gap-2 px-2.5 py-2.5",
+          "w-full flex items-center gap-1.5 px-2 py-1.5",
           "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] transition-colors",
         )}
       >
         {open ? (
-          <ChevronDown className="h-3.5 w-3.5 self-center" />
+          <ChevronDown className="h-3 w-3" />
         ) : (
-          <ChevronRight className="h-3.5 w-3.5 self-center" />
+          <ChevronRight className="h-3 w-3" />
         )}
-        <span className="flex-1 text-left font-editorial text-[18px] leading-none">
+        <span className="flex-1 text-left text-[11px] uppercase tracking-[0.08em] font-medium leading-none">
           Appearance
         </span>
       </button>
       {open && (
         <div
           id="appearance-panel-content"
-          className="px-2.5 pb-3 grid gap-3"
+          className="px-2 pb-2 grid gap-1.5"
         >
           {/* Color by — segmented control */}
-          <div className="grid gap-1">
-            <span className="text-[11px] text-[color:var(--text-secondary)]">
+          <div className="grid gap-0.5">
+            <span className="text-[10.5px] text-[color:var(--text-secondary)]">
               Color by
             </span>
             <div
               role="radiogroup"
               aria-label="Color by"
-              className="grid grid-cols-3 gap-1"
+              className="grid grid-cols-3 gap-0.5"
             >
               {COLOR_BY_OPTIONS.map((opt) => {
                 const active = settings.colorBy === opt.value;
@@ -238,7 +238,7 @@ export function AppearancePanel() {
                     data-testid={`appearance-colorBy-${opt.value}`}
                     data-active={active ? "true" : undefined}
                     className={cn(
-                      "h-7 px-1.5 inline-flex items-center justify-center rounded-[var(--radius-sm)] border text-[11.5px]",
+                      "h-6 px-1 inline-flex items-center justify-center rounded-[var(--radius-sm)] border text-[10.5px]",
                       active
                         ? "border-[var(--accent)] bg-[var(--accent-bg)] text-[color:var(--accent)]"
                         : "border-[var(--glass-border)] bg-transparent text-[color:var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[color:var(--text-primary)]",

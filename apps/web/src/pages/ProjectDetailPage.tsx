@@ -9,6 +9,8 @@ import {
   Archive,
   ArchiveRestore,
   BarChart3,
+  Bell,
+  CalendarClock,
   Calendar,
   Clock,
   Copy,
@@ -94,6 +96,56 @@ function StatTile({
 // to their due_date (overdue first) so the user can spot expiring work
 // without scanning the full list.
 // ---------------------------------------------------------------------------
+type DueSeverity = "overdue" | "today" | "soon" | "watch" | "ok";
+
+function dueSeverity(deltaMs: number): DueSeverity {
+  const DAY = 24 * 60 * 60 * 1000;
+  if (deltaMs < 0) return "overdue";
+  if (deltaMs < DAY) return "today";
+  if (deltaMs <= 3 * DAY) return "soon";
+  if (deltaMs <= 7 * DAY) return "watch";
+  return "ok";
+}
+
+function severityClasses(s: DueSeverity): {
+  row: string;
+  pill: string;
+  icon: string;
+} {
+  switch (s) {
+    case "overdue":
+      return {
+        row: "bg-[color-mix(in_oklch,var(--danger)_14%,transparent)] hover:bg-[color-mix(in_oklch,var(--danger)_22%,transparent)] text-[color:var(--danger)]",
+        pill: "bg-[var(--danger)] text-white",
+        icon: "text-[color:var(--danger)]",
+      };
+    case "today":
+      return {
+        row: "bg-[color-mix(in_oklch,var(--danger)_8%,transparent)] hover:bg-[color-mix(in_oklch,var(--danger)_14%,transparent)] text-[color:var(--danger)]",
+        pill: "bg-[var(--danger)] text-white",
+        icon: "text-[color:var(--danger)]",
+      };
+    case "soon":
+      return {
+        row: "bg-[color-mix(in_oklch,#F59E0B_10%,transparent)] hover:bg-[color-mix(in_oklch,#F59E0B_18%,transparent)] text-[color:var(--text-primary)]",
+        pill: "bg-[#F59E0B] text-black",
+        icon: "text-[#F59E0B]",
+      };
+    case "watch":
+      return {
+        row: "hover:bg-[var(--bg-hover)] text-[color:var(--text-primary)]",
+        pill: "bg-[#EAB308] text-black",
+        icon: "text-[#EAB308]",
+      };
+    default:
+      return {
+        row: "hover:bg-[var(--bg-hover)] text-[color:var(--text-primary)]",
+        pill: "bg-[var(--bg-subtle)] text-[color:var(--text-secondary)]",
+        icon: "text-[color:var(--text-tertiary)]",
+      };
+  }
+}
+
 function UpcomingDueStrip({
   projectId,
   tasks,
@@ -111,59 +163,84 @@ function UpcomingDueStrip({
       return { task: t, deltaMs: ms };
     })
     .sort((a, b) => a.deltaMs - b.deltaMs)
-    .slice(0, 3);
+    .slice(0, 5);
 
   if (ranked.length === 0) return null;
+
+  const overdueCount = ranked.filter((r) => r.deltaMs < 0).length;
 
   return (
     <section
       data-testid="project-upcoming-due"
-      className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] p-3"
+      aria-label="Upcoming task deadlines"
+      className={cn(
+        "rounded-[var(--radius-md)] border p-3 transition-colors",
+        overdueCount > 0
+          ? "border-[var(--danger)] bg-[color-mix(in_oklch,var(--danger)_6%,var(--bg-elev))]"
+          : "border-[var(--border-subtle)] bg-[var(--bg-elev)]",
+      )}
     >
       <header className="flex items-center justify-between mb-2">
         <h3 className="text-[12px] font-medium tracking-tight text-[color:var(--text-primary)] inline-flex items-center gap-1.5">
-          <Clock className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-          Upcoming deadlines
+          {overdueCount > 0 ? (
+            <AlertTriangle className="h-3.5 w-3.5 text-[color:var(--danger)] animate-pulse" />
+          ) : (
+            <Bell className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+          )}
+          Deadlines
+          {overdueCount > 0 && (
+            <span
+              data-testid="upcoming-due-overdue-badge"
+              className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-[var(--danger)] text-white font-mono text-[10px] tabular-nums font-semibold"
+            >
+              {overdueCount}
+            </span>
+          )}
         </h3>
         <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
           Next {ranked.length}
         </span>
       </header>
-      <ul className="grid gap-1">
+      <ul className="grid gap-0.5">
         {ranked.map(({ task, deltaMs }) => {
-          const overdue = deltaMs < 0;
+          const sev = dueSeverity(deltaMs);
+          const cls = severityClasses(sev);
           const days = Math.round(deltaMs / DAY);
-          const label = overdue
-            ? `${Math.abs(days)}d overdue`
-            : days === 0
-              ? "due today"
-              : days === 1
-                ? "due tomorrow"
-                : `due in ${days}d`;
+          const label =
+            sev === "overdue"
+              ? `${Math.abs(days)}d overdue`
+              : sev === "today"
+                ? "due today"
+                : days === 1
+                  ? "due tomorrow"
+                  : `due in ${days}d`;
+          const Icon = sev === "overdue" || sev === "today" ? AlertTriangle : Calendar;
           return (
             <li key={task.id}>
               <Link
                 to="/projects/$projectId/tasks/$taskId"
                 params={{ projectId, taskId: task.id }}
                 data-testid={`upcoming-due-row-${task.id}`}
+                data-severity={sev}
                 className={cn(
                   "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
-                  "text-[12.5px] hover:bg-[var(--bg-hover)] transition-colors",
-                  overdue ? "text-[color:var(--danger)]" : "text-[color:var(--text-primary)]",
+                  "text-[12.5px] transition-colors",
+                  cls.row,
                 )}
               >
-                {overdue ? (
-                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                ) : (
-                  <Calendar className="h-3.5 w-3.5 shrink-0 text-[color:var(--text-tertiary)]" />
-                )}
-                <span className="flex-1 truncate">{task.name}</span>
+                <Icon className={cn("h-3.5 w-3.5 shrink-0", cls.icon)} />
                 <span
                   className={cn(
-                    "font-mono text-[10.5px] tabular-nums",
-                    overdue
-                      ? "text-[color:var(--danger)] font-medium"
-                      : "text-[color:var(--text-tertiary)]",
+                    "flex-1 truncate",
+                    sev === "overdue" || sev === "today" ? "font-medium" : "",
+                  )}
+                >
+                  {task.name}
+                </span>
+                <span
+                  className={cn(
+                    "font-mono text-[10px] tabular-nums uppercase tracking-[0.06em] px-1.5 py-0.5 rounded-full font-semibold",
+                    cls.pill,
                   )}
                 >
                   {label}
@@ -228,21 +305,30 @@ function ProjectStatsStrip({ stats }: { stats: ProjectStats }) {
       </div>
 
       {by_class.length > 0 && (
-        <ul
-          data-testid="project-stats-by-class"
-          className="flex flex-nowrap gap-1.5 overflow-x-auto scrollbar-thin"
-        >
-          {by_class.slice(0, 8).map((c) => (
-            <li key={c.class_id} className="shrink-0">
-              <Badge variant="ghost">
-                <span className="truncate max-w-[120px]">{c.name}</span>
-                <span className="font-mono text-[10px] tabular-nums text-[color:var(--text-tertiary)]">
-                  {c.count}
-                </span>
-              </Badge>
-            </li>
-          ))}
-        </ul>
+        <div className="grid gap-1">
+          <ul
+            data-testid="project-stats-by-class"
+            className="flex flex-nowrap gap-1.5 overflow-x-auto scrollbar-thin pb-1"
+          >
+            {[...by_class]
+              .sort((a, b) => b.count - a.count)
+              .map((c) => (
+                <li key={c.class_id} className="shrink-0">
+                  <Badge variant="ghost">
+                    <span className="truncate max-w-[120px]">{c.name}</span>
+                    <span className="font-mono text-[10px] tabular-nums text-[color:var(--text-tertiary)]">
+                      {c.count}
+                    </span>
+                  </Badge>
+                </li>
+              ))}
+          </ul>
+          {by_class.length > 12 && (
+            <span className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
+              {by_class.length} classes — scroll horizontally
+            </span>
+          )}
+        </div>
       )}
 
       {tasks.length > 0 && (
@@ -402,6 +488,7 @@ function TaskRowMenu({
   pending,
   onDuplicate,
   onEditClasses,
+  onEditDueDate,
   onRetrain,
   onArchive,
   onDelete,
@@ -410,6 +497,8 @@ function TaskRowMenu({
   pending: boolean;
   onDuplicate: () => void;
   onEditClasses: () => void;
+  // Plan-16 — modify the task's due date inline.
+  onEditDueDate?: () => void;
   // v3.4+ Phase 5 Task 6 -- Retrain YOLO on this task. Opens RetrainDialog.
   onRetrain?: () => void;
   // Plan-15 Track G -- archive (true) / unarchive (false). Caller drives
@@ -471,6 +560,22 @@ function TaskRowMenu({
             <Tag className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
             <span className="flex-1">Edit classes…</span>
           </DropdownMenu.Item>
+          {onEditDueDate && (
+            <DropdownMenu.Item
+              data-testid={`project-detail-task-edit-due-${task.id}`}
+              onSelect={() => onEditDueDate()}
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
+                "cursor-pointer outline-none text-[color:var(--text-primary)]",
+                "data-[highlighted]:bg-[var(--bg-hover)]",
+              )}
+            >
+              <CalendarClock className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+              <span className="flex-1">
+                {task.due_date ? "Change due date…" : "Set due date…"}
+              </span>
+            </DropdownMenu.Item>
+          )}
           {onRetrain && (
             <DropdownMenu.Item
               data-testid={`project-detail-task-retrain-${task.id}`}
@@ -952,6 +1057,8 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   // v3.4+ Phase 5 Task 6 — task targeted by the retrain dialog. Null
   // closes the dialog. The dialog drives its own job-id polling.
   const [retrainTarget, setRetrainTarget] = useState<Task | null>(null);
+  // Plan-16 — task targeted by the edit-due-date dialog.
+  const [dueDateTarget, setDueDateTarget] = useState<Task | null>(null);
 
   // Plan 14 Phase 8 Task 2 — Tasks-toolbar state. Search is filtered
   // case-insensitively against task name; status uses the existing
@@ -1103,6 +1210,19 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     },
     onError: () => {
       showToast("Failed to update task.", { variant: "error" });
+    },
+  });
+
+  // Plan-16 — patch a task's due_date. `null` clears it.
+  const setTaskDueDate = useMutation({
+    mutationFn: ({ taskId, dueDate }: { taskId: string; dueDate: string | null }) =>
+      tasksApi.update(projectId, taskId, { due_date: dueDate }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tasks", projectId] });
+      showToast("Due date updated.", { variant: "success" });
+    },
+    onError: () => {
+      showToast("Failed to update due date.", { variant: "error" });
     },
   });
 
@@ -1329,6 +1449,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                       setDuplicateDraft(`${t.name} (copy)`);
                     }}
                     onEditClasses={() => setClassesTarget(t)}
+                    onEditDueDate={() => setDueDateTarget(t)}
                     onRetrain={() => setRetrainTarget(t)}
                     onArchive={(archive) =>
                       setTaskArchived.mutate({ taskId: t.id, archived: archive })
@@ -1594,6 +1715,132 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
           });
         }}
       />
+
+      {/* Plan-16 — edit a task's due date. */}
+      <EditDueDateDialog
+        task={dueDateTarget}
+        pending={setTaskDueDate.isPending}
+        onClose={() => setDueDateTarget(null)}
+        onSave={(iso) => {
+          if (!dueDateTarget) return;
+          setTaskDueDate.mutate(
+            { taskId: dueDateTarget.id, dueDate: iso },
+            { onSettled: () => setDueDateTarget(null) },
+          );
+        }}
+      />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Plan-16 — Edit due date dialog. Renders when a task is selected for due-
+// date modification; "Clear" sets due_date to null. The form keeps a local
+// YYYY-MM-DD string so the native <input type="date"> works without timezone
+// surprises; on save it round-trips back to UTC midnight ISO.
+// ---------------------------------------------------------------------------
+interface EditDueDateDialogProps {
+  task: Task | null;
+  pending: boolean;
+  onClose: () => void;
+  onSave: (iso: string | null) => void;
+}
+
+function isoToDateInput(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  // YYYY-MM-DD in UTC so we don't shift days due to local TZ.
+  return d.toISOString().slice(0, 10);
+}
+
+function dateInputToIso(value: string): string {
+  return `${value}T00:00:00Z`;
+}
+
+function EditDueDateDialog({ task, pending, onClose, onSave }: EditDueDateDialogProps) {
+  const open = task != null;
+  const [value, setValue] = useState(() => isoToDateInput(task?.due_date));
+
+  useEffect(() => {
+    if (open) setValue(isoToDateInput(task?.due_date));
+  }, [open, task?.id, task?.due_date]);
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="w-[min(92vw,420px)]">
+        <DialogHeader>
+          <DialogTitle>
+            {task?.due_date ? "Change due date" : "Set due date"}
+          </DialogTitle>
+        </DialogHeader>
+        {task && (
+          <p className="text-[12.5px] text-[color:var(--text-secondary)] truncate">
+            <span className="text-[color:var(--text-tertiary)]">Task:</span>{" "}
+            <span className="font-medium text-[color:var(--text-primary)]">
+              {task.name}
+            </span>
+          </p>
+        )}
+        <label className="grid gap-1.5">
+          <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
+            Due date
+          </span>
+          <input
+            type="date"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            data-testid="edit-due-date-input"
+            className={cn(
+              "h-9 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+              "bg-[var(--bg-elev)] text-[13px] text-[color:var(--text-primary)]",
+              "focus:outline-none focus:border-[var(--accent)]",
+            )}
+          />
+        </label>
+        <DialogFooter>
+          {task?.due_date && (
+            <button
+              type="button"
+              data-testid="edit-due-date-clear"
+              onClick={() => onSave(null)}
+              disabled={pending}
+              className={cn(
+                "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px]",
+                "text-[color:var(--danger)] hover:bg-[var(--danger-bg)]",
+                "disabled:opacity-50",
+              )}
+            >
+              Clear
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={pending}
+            className={cn(
+              "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px]",
+              "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+              "disabled:opacity-50",
+            )}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-testid="edit-due-date-save"
+            disabled={!value || pending}
+            onClick={() => onSave(dateInputToIso(value))}
+            className={cn(
+              "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium",
+              "bg-[var(--accent)] text-white hover:opacity-90",
+              "disabled:opacity-50",
+            )}
+          >
+            {pending ? "Saving…" : "Save"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

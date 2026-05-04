@@ -1,11 +1,12 @@
 // Armin Mehri — mehri.armin@gmail.com
 /**
- * Deterministic class swatch palette — 12 perceptually-spaced OKLCH hues.
+ * Deterministic class swatch palette — perceptually-spaced OKLCH hues.
  * Used as a fallback when a class has no explicit color, and to keep the
  * UI palette consistent across surfaces.
  *
  * Consumed by:
  *   - apps/web/src/components/annotation/ClassesPanel.tsx
+ *   - apps/web/src/components/annotation/AppearancePanel.tsx
  *   - apps/web/src/pages/ClassesEditor.tsx
  */
 export const SWATCH_VARS: readonly string[] = [
@@ -29,33 +30,110 @@ export function swatchForIdx(idx: number): string {
 }
 
 /**
- * Fixed hex palette used by class-create forms. The OKLCH `var(--swatch-*)`
- * tokens cannot round-trip through an `<input type="color">` (which expects
- * `#RRGGBB`), so we keep this hex palette in sync with the swatch order.
+ * Extended hex palette — 30 perceptually-distinct hues across the wheel,
+ * ordered to maximise visual separation between adjacent indices. Used by
+ * class-create forms (which need `#RRGGBB` for `<input type="color">`)
+ * and by smart-color assignment so 30 classes can be created without any
+ * two sharing a color.
  *
- * 12 perceptually-distinct hues mirroring the order of the OKLCH set.
+ * The first 12 entries match the original v3.2 palette so existing
+ * `nextHexForIdx` callers stay deterministic for low indices.
  */
 export const PALETTE_HEX: readonly string[] = [
-  "#EF4444", // red
-  "#F59E0B", // amber
-  "#EAB308", // yellow
-  "#22C55E", // green
-  "#10B981", // emerald
-  "#06B6D4", // cyan
-  "#3B82F6", // blue
-  "#6366F1", // indigo
-  "#8B5CF6", // violet
-  "#EC4899", // pink
-  "#F43F5E", // rose
-  "#64748B", // slate
+  "#EF4444",
+  "#F59E0B",
+  "#EAB308",
+  "#22C55E",
+  "#10B981",
+  "#06B6D4",
+  "#3B82F6",
+  "#6366F1",
+  "#8B5CF6",
+  "#EC4899",
+  "#F43F5E",
+  "#64748B",
+  "#DC2626",
+  "#D97706",
+  "#84CC16",
+  "#15803D",
+  "#0891B2",
+  "#1D4ED8",
+  "#7E22CE",
+  "#A21CAF",
+  "#BE185D",
+  "#0F766E",
+  "#9333EA",
+  "#CA8A04",
+  "#65A30D",
+  "#0EA5E9",
+  "#7C3AED",
+  "#DB2777",
+  "#059669",
+  "#475569",
 ] as const;
 
 /**
  * Deterministic next hex color for a new class. Used when a user opens an
  * "add class" form so successive classes get visibly different colors instead
- * of all defaulting to the same purple. See /tmp/v21-audit.md bug F.
+ * of all defaulting to the same purple.
  */
 export function nextHexForIdx(idx: number): string {
   const i = ((idx % PALETTE_HEX.length) + PALETTE_HEX.length) % PALETTE_HEX.length;
   return PALETTE_HEX[i];
+}
+
+/**
+ * Procedurally generate a hex color from an index using golden-ratio hue
+ * stepping in HSL space. Used as a fallback when the curated PALETTE_HEX
+ * is exhausted (>30 classes).
+ */
+export function hslHexForIdx(idx: number): string {
+  const golden = 0.61803398875;
+  const hue = ((idx * golden) % 1) * 360;
+  const sat = 65;
+  const light = 50 + ((idx * 7) % 20) - 10;
+  return hslToHex(hue, sat, light);
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const sn = s / 100;
+  const ln = l / 100;
+  const c = (1 - Math.abs(2 * ln - 1)) * sn;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = ln - c / 2;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const toHex = (v: number) =>
+    Math.round((v + m) * 255)
+      .toString(16)
+      .padStart(2, "0")
+      .toUpperCase();
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+/**
+ * Return the next unused color given the already-used colors in a project.
+ * Walks PALETTE_HEX in order; if all 30 curated colors are taken, falls
+ * through to procedural HSL hashing so the next class still gets a
+ * deterministic, distinct hue. Case-insensitive comparison.
+ */
+export function nextUnusedColor(usedColors: readonly string[]): string {
+  const used = new Set(
+    usedColors.map((c) => (c ?? "").toLowerCase()).filter(Boolean),
+  );
+  for (const c of PALETTE_HEX) {
+    if (!used.has(c.toLowerCase())) return c;
+  }
+  for (let attempt = 0; attempt < 256; attempt++) {
+    const candidate = hslHexForIdx(usedColors.length + attempt);
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+  return hslHexForIdx(usedColors.length + Math.floor(Math.random() * 1000));
 }

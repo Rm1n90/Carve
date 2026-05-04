@@ -120,14 +120,56 @@ function ClassFrequencyCard({ taskId }: { taskId: string }) {
     queryKey: ["stats", "class-frequency", taskId],
     queryFn: () => statsApi.classFrequency(taskId),
   });
+  // Default to top-20 bucket mode when there are many classes; user can
+  // toggle to "all" for the full distribution. The bar chart scales
+  // dynamically: 22px per row with a hard cap so the canvas doesn't blow
+  // up at 90+ classes.
+  const [showAll, setShowAll] = useState(false);
   const total = useMemo(
     () => (q.data ?? []).reduce((acc, r) => acc + r.count, 0),
     [q.data],
   );
+  const sorted = useMemo(
+    () => [...(q.data ?? [])].sort((a, b) => b.count - a.count),
+    [q.data],
+  );
+  const TOP_N = 20;
+  const isLarge = sorted.length > TOP_N;
+  const visible = isLarge && !showAll ? sorted.slice(0, TOP_N) : sorted;
+  const otherCount =
+    isLarge && !showAll
+      ? sorted.slice(TOP_N).reduce((acc, r) => acc + r.count, 0)
+      : 0;
+  const chartHeight = Math.min(
+    480,
+    Math.max(140, visible.length * 22 + (otherCount > 0 ? 22 : 0) + 8),
+  );
+  const chartData =
+    otherCount > 0
+      ? [
+          ...visible,
+          {
+            class_id: "__other",
+            class_name: `+${sorted.length - TOP_N} others`,
+            class_color: "#94A3B8",
+            count: otherCount,
+          },
+        ]
+      : visible;
   return (
     <div className={cardClass} data-testid="stats-card-class-frequency">
       <h3 className={headingClass}>
         <BarChart3 className="h-3.5 w-3.5" /> Class frequency
+        {isLarge && (
+          <button
+            type="button"
+            onClick={() => setShowAll((v) => !v)}
+            data-testid="class-frequency-toggle-all"
+            className="ml-auto rounded-[var(--radius-xs)] px-1.5 py-0.5 text-[10px] tracking-tight text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+          >
+            {showAll ? `Top ${TOP_N}` : `All ${sorted.length}`}
+          </button>
+        )}
       </h3>
       {q.isLoading && <p className={placeholderClass}>Loading…</p>}
       {q.isError && <p className={errorClass}>Failed to load.</p>}
@@ -140,37 +182,48 @@ function ClassFrequencyCard({ taskId }: { taskId: string }) {
       )}
       {q.data && total > 0 && (
         <>
-          <ResponsiveContainer width="100%" height={140}>
-            <BarChart
-              data={q.data}
-              layout="vertical"
-              margin={{ left: 0, right: 8, top: 0, bottom: 0 }}
-            >
-              <XAxis type="number" hide />
-              <YAxis
-                type="category"
-                dataKey="class_name"
-                width={70}
-                tick={{ fontSize: 10.5 }}
-              />
-              <Tooltip />
-              <Bar dataKey="count">
-                {q.data.map((row) => (
-                  <Cell key={row.class_id} fill={row.class_color} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-          <ul className="m-0 pl-4 text-[11.5px] list-disc leading-tight">
-            {q.data.map((r) => {
-              const pct = total > 0 ? Math.round((r.count / total) * 100) : 0;
-              return (
-                <li key={r.class_id} style={{ color: r.class_color }}>
-                  {r.class_name}: {r.count} ({pct}%)
-                </li>
-              );
-            })}
-          </ul>
+          <div
+            className="w-full overflow-y-auto scrollbar-thin"
+            style={{ maxHeight: 480 }}
+          >
+            <ResponsiveContainer width="100%" height={chartHeight}>
+              <BarChart
+                data={chartData}
+                layout="vertical"
+                margin={{ left: 0, right: 8, top: 0, bottom: 0 }}
+              >
+                <XAxis type="number" hide />
+                <YAxis
+                  type="category"
+                  dataKey="class_name"
+                  width={70}
+                  tick={{ fontSize: 10.5 }}
+                  interval={0}
+                />
+                <Tooltip />
+                <Bar dataKey="count">
+                  {chartData.map((row) => (
+                    <Cell key={row.class_id} fill={row.class_color} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div
+            className="max-h-[160px] overflow-y-auto scrollbar-thin"
+            data-testid="class-frequency-list"
+          >
+            <ul className="m-0 pl-4 text-[11.5px] list-disc leading-tight">
+              {sorted.map((r) => {
+                const pct = total > 0 ? Math.round((r.count / total) * 100) : 0;
+                return (
+                  <li key={r.class_id} style={{ color: r.class_color }}>
+                    {r.class_name}: {r.count} ({pct}%)
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         </>
       )}
     </div>
