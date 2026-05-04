@@ -31,20 +31,22 @@ export function ClassificationStrip({
   classes,
   frameId,
 }: ClassificationStripProps) {
-  // Subscribe to a derived map {classId → existing tag tempId} for the
-  // current frame. The selector returns a fresh object on every store
-  // change; React's shallow equality check would re-render the entire
-  // strip every time, which is fine for ≤50 classes (the chips are
-  // cheap). For 100+ classes consider memoising upstream.
-  const tagsByClass = useAnnotations((s) => {
+  // Read the stable ``byId`` reference and derive the {classId → tempId}
+  // map via ``useMemo``. Returning a fresh object straight from the
+  // selector breaks React's ``getSnapshot should be cached`` invariant
+  // (surfaces as React #185 / "Maximum update depth exceeded") because
+  // ``useSyncExternalStore`` calls the selector multiple times per
+  // render and compares results with ``Object.is``.
+  const byId = useAnnotations((s) => s.byId);
+  const tagsByClass = useMemo(() => {
     const map: Record<string, string> = {};
-    for (const ann of Object.values(s.byId)) {
+    for (const ann of Object.values(byId)) {
       if (ann.kind === "tag" && ann.frameId === frameId) {
         map[ann.classId] = ann.tempId;
       }
     }
     return map;
-  });
+  }, [byId, frameId]);
 
   const sorted = useMemo(
     () => [...classes].sort((a, b) => a.idx - b.idx),
