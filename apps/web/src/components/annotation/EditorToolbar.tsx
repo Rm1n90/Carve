@@ -61,6 +61,12 @@ import {
 } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
+import {
+  newAnnotationIdsSince,
+  runSamPostProcess,
+  snapshotAnnotationIds,
+  type PostProcessMode,
+} from "@/lib/samPostProcess";
 import { cn } from "@/lib/cn";
 import { useOptionalConfirm } from "@/components/ui/ConfirmDialog";
 
@@ -325,6 +331,24 @@ const YoloPredictButton = forwardRef<
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
+  // Plan-17 Phase 2 — SAM post-processing. ``samPost`` toggles the
+  // pass on/off; mode is auto-derived from the selected weight's
+  // task_kind ('detect' → to-polygon, 'segment' → refine). The user
+  // can override the mode in the popover. Progress is reported
+  // inline below the predict actions.
+  const [samPost, setSamPost] = useState(false);
+  const [samPostModeOverride, setSamPostModeOverride] = useState<
+    "auto" | "to-polygon" | "refine" | "to-bbox"
+  >("auto");
+  const [samPostProgress, setSamPostProgress] = useState<{
+    done: number;
+    total: number;
+    failed: number;
+  } | null>(null);
+  // Set on click and inspected in onSuccess so the post-process loop
+  // only refines annotations the predict pass produced (not the
+  // pre-existing ones on this asset). Cleared on completion.
+  const beforePredictIdsRef = useRef<Set<string> | null>(null);
   const [confidence, setConfidence] = useState<number>(() => loadStoredConfidence());
   // v3.7.5 — IOU (NMS) threshold dial. Same persistence shape as
   // confidence so the user's preferred value sticks across sessions.
@@ -575,8 +599,71 @@ const YoloPredictButton = forwardRef<
       if (taskId && Object.keys(overrides).length > 0) {
         saveOverrides(weightId, taskId, overrides);
       }
-      setOpen(false);
       onAfter?.();
+      // Plan-17 Phase 2 — opt-in SAM post-processing pass. Runs ONLY
+      // when the user ticked the box and there's a snapshot to diff
+      // against. Sequential so the GPU mutex doesn't queue dozens of
+      // requests; progress is reported into ``samPostProgress`` for
+      // the inline bar in the popover.
+      const beforeIds = beforePredictIdsRef.current;
+      beforePredictIdsRef.current = null;
+      if (samPost && beforeIds && assetId) {
+        // Wait briefly for the parent's annotations refetch (kicked
+        // off by ``onAfter``) to settle into the Zustand store.
+        setTimeout(() => {
+          const newIds = newAnnotationIdsSince(beforeIds);
+          if (newIds.length === 0) {
+            setOpen(false);
+            return;
+          }
+          // Auto-pick a mode from the selected weight's task_kind when
+          // the user left the override on "auto". Detect→to-polygon,
+          // Segment→refine; classify/pose fall back to refine which is
+          // a no-op when geometry is non-spatial.
+          const picked = weights.find((w) => w.id === weightId);
+          let mode: PostProcessMode;
+          if (samPostModeOverride !== "auto") {
+            mode = samPostModeOverride;
+          } else if (picked?.task_kind === "detect") {
+            mode = "to-polygon";
+          } else {
+            mode = "refine";
+          }
+          setSamPostProgress({ done: 0, total: newIds.length, failed: 0 });
+          void runSamPostProcess({
+            assetId,
+            frameId: null,
+            annotationIds: newIds,
+            mode,
+            onProgress: setSamPostProgress,
+          })
+            .then((result) => {
+              if (result.succeeded > 0) {
+                showToast(
+                  `SAM ${mode === "to-bbox" ? "→ bbox" : mode === "to-polygon" ? "→ polygon" : "refine"}: ${result.succeeded}/${newIds.length}${result.failed > 0 ? ` (${result.failed} failed)` : ""}.`,
+                  { variant: "success" },
+                );
+              } else if (result.failed > 0) {
+                showToast(
+                  `SAM post-process failed for all ${result.failed} annotations.`,
+                  { variant: "error" },
+                );
+              }
+              setSamPostProgress(null);
+              setOpen(false);
+            })
+            .catch((err: unknown) => {
+              const detail =
+                (err as { message?: string })?.message ||
+                "SAM post-process failed.";
+              showToast(detail, { variant: "error", duration: 5000 });
+              setSamPostProgress(null);
+              setOpen(false);
+            });
+        }, 600);
+      } else {
+        setOpen(false);
+      }
     },
     onError: (err: unknown) => {
       const errObj = err as {
@@ -716,6 +803,13 @@ const YoloPredictButton = forwardRef<
       showToast("No asset open.", { variant: "error" });
       return;
     }
+    if (samPost) {
+      // Plan-17 Phase 2 — snapshot the current ids so onSuccess can
+      // diff and find only the predict-produced ones for refinement.
+      beforePredictIdsRef.current = snapshotAnnotationIds();
+    } else {
+      beforePredictIdsRef.current = null;
+    }
     m.mutate(selected);
   }
 
@@ -773,6 +867,11 @@ const YoloPredictButton = forwardRef<
     if (scope === "task") {
       batchM.mutate(selected);
     } else {
+      if (samPost) {
+        beforePredictIdsRef.current = snapshotAnnotationIds();
+      } else {
+        beforePredictIdsRef.current = null;
+      }
       m.mutate(selected);
     }
   }, [
@@ -786,6 +885,7 @@ const YoloPredictButton = forwardRef<
     scope,
     batchM,
     m,
+    samPost,
   ]);
 
   // v3.7 Phase 2 Issue 2 — expose ``quickPredict`` + ``openPopover`` to
@@ -1134,6 +1234,100 @@ const YoloPredictButton = forwardRef<
           />
           Overwrite existing annotations
         </label>
+        {/* Plan-17 Phase 2 — opt-in SAM post-processing. Auto-derives
+            the mode from the selected weight's task_kind; the user can
+            override via the segmented control below. Single-asset
+            scope only — for batch, use marquee + right-click after. */}
+        <div className="grid gap-1.5 px-2 pb-2">
+          <label className="flex items-center gap-2 text-[12px] text-[color:var(--text-secondary)]">
+            <input
+              type="checkbox"
+              checked={samPost}
+              onChange={(e) => setSamPost(e.target.checked)}
+              data-testid="yolo-sam-post-toggle"
+              disabled={scope === "task"}
+              className="h-3 w-3 accent-[var(--accent)]"
+            />
+            <span className="flex-1">
+              Refine with SAM after predict
+              <span className="ml-1 font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                {scope === "task" ? "(asset only)" : "optional"}
+              </span>
+            </span>
+          </label>
+          {samPost && (
+            <div
+              data-testid="yolo-sam-post-mode"
+              role="radiogroup"
+              aria-label="SAM post-process mode"
+              className="grid grid-cols-4 gap-1 ml-5"
+            >
+              {(
+                [
+                  ["auto", "Auto"],
+                  ["to-polygon", "→ Poly"],
+                  ["refine", "Refine"],
+                  ["to-bbox", "→ BBox"],
+                ] as const
+              ).map(([value, label]) => {
+                const active = samPostModeOverride === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setSamPostModeOverride(value)}
+                    data-testid={`yolo-sam-post-mode-${value}`}
+                    className={cn(
+                      "h-7 px-1.5 inline-flex items-center justify-center rounded-[var(--radius-xs)] border text-[10.5px] tracking-tight",
+                      active
+                        ? "border-[var(--accent)] bg-[var(--accent-bg)] text-[color:var(--accent)]"
+                        : "border-[var(--glass-border)] bg-transparent text-[color:var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[color:var(--text-primary)]",
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {samPost && (
+            <p className="ml-5 text-[10.5px] text-[color:var(--text-tertiary)]">
+              Auto picks per weight: detect → polygon, segment → refine.
+              SAM auto-loads if not already mounted.
+            </p>
+          )}
+          {samPostProgress && (
+            <div
+              data-testid="yolo-sam-post-progress"
+              className="ml-5 mt-1 grid gap-1"
+            >
+              <div className="flex items-center justify-between text-[10.5px]">
+                <span className="text-[color:var(--text-secondary)]">
+                  Refining with SAM…
+                </span>
+                <span className="font-mono tabular-nums text-[color:var(--text-tertiary)]">
+                  {samPostProgress.done}/{samPostProgress.total}
+                  {samPostProgress.failed > 0
+                    ? ` · ${samPostProgress.failed} failed`
+                    : ""}
+                </span>
+              </div>
+              <div className="relative h-1 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+                <div
+                  className="absolute inset-y-0 left-0 bg-[var(--accent)] transition-[width] duration-200"
+                  style={{
+                    width:
+                      samPostProgress.total > 0
+                        ? `${Math.round((samPostProgress.done / samPostProgress.total) * 100)}%`
+                        : "0%",
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
         {/* v3.7.2 — pre-flight warning banner when zero classes are
             mapped. Mirrors the user's data-loss scenario (yolov8n COCO
             classes vs. a 3-class custom project) and prevents the

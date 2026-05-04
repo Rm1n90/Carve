@@ -1,10 +1,16 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Sparkles, X } from "lucide-react";
 
 import { samApi } from "@/api/sam";
 import type { ClassRow } from "@/api/classes";
+import {
+  newAnnotationIdsSince,
+  runSamPostProcess,
+  snapshotAnnotationIds,
+  type PostProcessMode,
+} from "@/lib/samPostProcess";
 import {
   Dialog,
   DialogContent,
@@ -67,6 +73,19 @@ export function AutoAnnotateDialog({
   // v3.8 Phase 3.5 — track an in-flight RQ batch so the dialog can
   // render a live progress overlay with Cancel.
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
+  // Plan-17 Phase 2 — opt-in post-processing for the SAM-text auto-
+  // annotate output. SAM's auto-text produces polygons; the user can
+  // optionally convert them to bboxes (instant, no SAM call) once
+  // the run finishes. ``samPostMode === "off"`` skips the pass.
+  const [samPostMode, setSamPostMode] = useState<"off" | "to-bbox">(
+    "off",
+  );
+  const [samPostProgress, setSamPostProgress] = useState<{
+    done: number;
+    total: number;
+    failed: number;
+  } | null>(null);
+  const beforeRunIdsRef = useRef<Set<string> | null>(null);
 
   const eligibleClasses = useMemo(
     () => classes.filter((c) => (c.text_prompt ?? "").trim().length > 0),
@@ -79,6 +98,14 @@ export function AutoAnnotateDialog({
 
   const run = useMutation({
     mutationFn: async () => {
+      // Plan-17 Phase 2 — capture snapshot of annotation IDs before
+      // the run kicks off so onSuccess can diff and find rows that
+      // SAM auto-text produced (vs. pre-existing ones on the asset).
+      if (samPostMode !== "off") {
+        beforeRunIdsRef.current = snapshotAnnotationIds();
+      } else {
+        beforeRunIdsRef.current = null;
+      }
       // v3.8 Phase 3.5 — branch on scope. "this" is sync; "all" enqueues
       // an RQ batch and we return a pseudo-result the onSuccess can
       // recognise by the presence of a `job_id` field.
@@ -117,7 +144,46 @@ export function AutoAnnotateDialog({
         { variant: result.annotations_created > 0 ? "success" : "warning" },
       );
       onSuccess?.(result.annotations_created);
-      setOpen(false);
+      // Plan-17 Phase 2 — opt-in post-processing pass over the rows
+      // SAM auto-text just produced. Currently the only mode wired
+      // for this dialog is "to-bbox" (instant, pure-client). Mode
+      // "off" closes the dialog immediately as before.
+      const beforeIds = beforeRunIdsRef.current;
+      beforeRunIdsRef.current = null;
+      if (samPostMode !== "off" && beforeIds && assetId && result.annotations_created > 0) {
+        setTimeout(() => {
+          const newIds = newAnnotationIdsSince(beforeIds);
+          if (newIds.length === 0) {
+            setOpen(false);
+            return;
+          }
+          setSamPostProgress({ done: 0, total: newIds.length, failed: 0 });
+          void runSamPostProcess({
+            assetId,
+            frameId: null,
+            annotationIds: newIds,
+            mode: samPostMode as PostProcessMode,
+            onProgress: setSamPostProgress,
+          })
+            .then((postResult) => {
+              if (postResult.succeeded > 0) {
+                showToast(
+                  `Converted ${postResult.succeeded} polygon${postResult.succeeded === 1 ? "" : "s"} to bbox${postResult.failed > 0 ? ` (${postResult.failed} skipped)` : ""}.`,
+                  { variant: "success" },
+                );
+              }
+              setSamPostProgress(null);
+              setOpen(false);
+            })
+            .catch(() => {
+              showToast("Post-process failed.", { variant: "error" });
+              setSamPostProgress(null);
+              setOpen(false);
+            });
+        }, 600);
+      } else {
+        setOpen(false);
+      }
     },
     onError: (err: unknown) => {
       const detail =
@@ -396,6 +462,60 @@ export function AutoAnnotateDialog({
           />
           Replace existing annotations for selected classes
         </label>
+
+        {/* Plan-17 Phase 2 — opt-in post-processing. SAM auto-text
+            produces polygons; this lets the user immediately convert
+            them to bboxes after the run, with realtime progress.
+            Disabled for "all assets in task" scope (single-asset
+            post-processing only — for batch use marquee+right-click). */}
+        <div className="grid gap-1.5 mb-3">
+          <label className="flex items-center gap-2 text-[12.5px] text-[color:var(--text-primary)] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={samPostMode !== "off"}
+              onChange={(e) =>
+                setSamPostMode(e.target.checked ? "to-bbox" : "off")
+              }
+              disabled={scope === "all"}
+              data-testid="auto-annotate-post-toggle"
+            />
+            <span className="flex-1">
+              Convert polygons to bboxes after
+              <span className="ml-1 font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                {scope === "all" ? "(asset only)" : "instant"}
+              </span>
+            </span>
+          </label>
+          {samPostProgress && (
+            <div
+              data-testid="auto-annotate-post-progress"
+              className="ml-5 grid gap-1"
+            >
+              <div className="flex items-center justify-between text-[10.5px]">
+                <span className="text-[color:var(--text-secondary)]">
+                  Converting…
+                </span>
+                <span className="font-mono tabular-nums text-[color:var(--text-tertiary)]">
+                  {samPostProgress.done}/{samPostProgress.total}
+                  {samPostProgress.failed > 0
+                    ? ` · ${samPostProgress.failed} skipped`
+                    : ""}
+                </span>
+              </div>
+              <div className="relative h-1 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+                <div
+                  className="absolute inset-y-0 left-0 bg-[var(--accent)] transition-[width] duration-200"
+                  style={{
+                    width:
+                      samPostProgress.total > 0
+                        ? `${Math.round((samPostProgress.done / samPostProgress.total) * 100)}%`
+                        : "0%",
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
 
         <DialogFooter>
           <Button variant="ghost" size="md" onClick={() => setOpen(false)}>
