@@ -340,6 +340,13 @@ function ConvertItems({
     }
   }
 
+  // Plan-17 — these match the MenuButton click pathway exactly
+  // (button-level onPointerDownCapture + onMouseDownCapture stopPropagation,
+  // explicit "[MenuButton] <id> clicked" log) so they never silently
+  // drop a click. The earlier raw-button form was missing the capture
+  // handlers and clicks weren't reaching React for some users on some
+  // annotations.
+  const stopCapture = (e: React.SyntheticEvent) => e.stopPropagation();
   return (
     <>
       {isPolygonal && (
@@ -347,9 +354,13 @@ function ConvertItems({
           <button
             type="button"
             data-testid="ctx-convert-to-bbox"
+            onPointerDownCapture={stopCapture}
+            onMouseDownCapture={stopCapture}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
+              // eslint-disable-next-line no-console
+              console.log("[MenuButton] ctx-convert-to-bbox clicked");
               commitToBbox();
             }}
             className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)]"
@@ -364,9 +375,13 @@ function ConvertItems({
             type="button"
             data-testid="ctx-refine-with-sam"
             disabled={pending}
+            onPointerDownCapture={stopCapture}
+            onMouseDownCapture={stopCapture}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
+              // eslint-disable-next-line no-console
+              console.log("[MenuButton] ctx-refine-with-sam clicked");
               void refineOrPolygonize("Refine with SAM");
             }}
             className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)] disabled:opacity-50"
@@ -386,9 +401,13 @@ function ConvertItems({
           type="button"
           data-testid="ctx-convert-to-polygon"
           disabled={pending}
+          onPointerDownCapture={stopCapture}
+          onMouseDownCapture={stopCapture}
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
+            // eslint-disable-next-line no-console
+            console.log("[MenuButton] ctx-convert-to-polygon clicked");
             void refineOrPolygonize("Convert to polygon");
           }}
           className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)] disabled:opacity-50"

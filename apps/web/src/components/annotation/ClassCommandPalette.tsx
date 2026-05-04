@@ -92,6 +92,24 @@ export function ClassCommandPalette({
     [recentByProject, projectId],
   );
 
+  // Plan-17 — global Escape handler so the palette closes even when
+  // focus didn't land on the search input (e.g. autofocus failed
+  // because the element wasn't yet in the DOM, or the user clicked
+  // somewhere that took focus away). The input-level Escape is kept
+  // for explicit input-focus dismissal.
+  useEffect(() => {
+    if (!open) return;
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        onOpenChange(false);
+      }
+    }
+    window.addEventListener("keydown", onEsc, true);
+    return () => window.removeEventListener("keydown", onEsc, true);
+  }, [open, onOpenChange]);
+
   // Reset on open. We intentionally re-read ``initialQuery`` so the
   // canvas type-to-filter flow can seed the palette with the first
   // typed letter.
@@ -99,14 +117,20 @@ export function ClassCommandPalette({
     if (!open) return;
     setQuery(initialQuery);
     setHighlight(0);
-    // Default tab = first non-empty: Pinned > Recent > All.
+    // Default tab = first non-empty WHOSE IDs RESOLVE to a class in the
+    // current project. Pinned/recent IDs may include rows from prior
+    // projects that no longer exist, in which case the palette would
+    // open showing an empty Pinned/Recent tab. Fall through to All.
+    const idLookup = new Map(classes.map((c) => [c.id, c]));
+    const hasValidPinned = pinnedIds.some((id) => idLookup.has(id));
+    const hasValidRecent = recentIds.some((id) => idLookup.has(id));
     const next: PaletteTab =
-      pinnedIds.length > 0 ? "pinned" : recentIds.length > 0 ? "recent" : "all";
+      hasValidPinned ? "pinned" : hasValidRecent ? "recent" : "all";
     setTab(next);
     const t = window.setTimeout(() => inputRef.current?.focus(), 0);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initialQuery]);
+  }, [open, initialQuery, classes]);
 
   const byId = useMemo(() => {
     const m = new Map<string, ClassRow>();
