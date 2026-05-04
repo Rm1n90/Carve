@@ -556,9 +556,7 @@ export function AnnotationContextMenu({
         // button's coordinates. Mouse events fall under the same
         // bubble path so we belt-and-braces both.
         onPointerDown={(e) => e.stopPropagation()}
-        onPointerDownCapture={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
-        onMouseDownCapture={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.stopPropagation()}
         className={cn(
           "fixed z-[1100] min-w-[220px]",
