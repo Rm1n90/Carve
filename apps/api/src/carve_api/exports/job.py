@@ -188,10 +188,10 @@ def _archive_root_name(session, task) -> str:
     """Plan-20.3 — build the archive's top-level folder name.
 
     The folder is named after the task. If a previous export for the
-    same task has already completed, append ``_test1`` / ``_test2`` /
-    ``_testN`` so unzipping multiple exports next to each other doesn't
-    overwrite earlier contents. Special characters are replaced with
-    underscores so the name is filesystem-safe everywhere.
+    same task has already completed, append ``_1`` / ``_2`` / ``_N`` so
+    unzipping multiple exports next to each other doesn't overwrite
+    earlier contents. Special characters are replaced with underscores
+    so the name is filesystem-safe everywhere.
     """
     import re
 
@@ -204,7 +204,7 @@ def _archive_root_name(session, task) -> str:
             Export.status == "completed",
         )
     ).scalar() or 0
-    return safe if n_prior == 0 else f"{safe}_test{n_prior}"
+    return safe if n_prior == 0 else f"{safe}_{n_prior}"
 
 
 def _fetch_asset_bytes(storage, key: str) -> bytes | None:
