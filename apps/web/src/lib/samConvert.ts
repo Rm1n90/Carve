@@ -59,16 +59,17 @@ export interface SamRefineParams {
 /**
  * Run a single SAM box-prompt and return the produced polygon vertices.
  *
- * The model service requires the active SAM variant to be loaded AND
- * the image embedding to be cached on the server before box-prompt
- * succeeds. We trigger ``samApi.encode`` first so callers never have
- * to pre-warm SAM by clicking in the Point tool. Encode is cheap if
- * the embedding is already cached server-side (idempotent by image
- * hash).
+ * Uses the regular ``/sam/decode`` endpoint with an xyxy box parameter
+ * (and empty point/label arrays) instead of the SAM 3-only
+ * ``/sam/box-prompt`` route — the decode path works on every SAM
+ * variant the project ships (sam2.1-tiny / small / base+ / large,
+ * sam3, sam3.1) so Convert/Refine succeed regardless of which model
+ * the user has loaded.
  *
- * Returns ``null`` when SAM did not produce a usable polygon (no
- * candidate or the active variant cannot polygonize) — the caller
- * keeps the original geometry instead of replacing it with garbage.
+ * Returns ``null`` when SAM did not produce a usable polygon (e.g.
+ * the box is too small to segment, no candidate above noise, or the
+ * variant returns an empty polygon list) — the caller keeps the
+ * original geometry instead of replacing it with garbage.
  */
 export async function samBoxToPolygonPoints({
   assetId,
@@ -81,22 +82,22 @@ export async function samBoxToPolygonPoints({
   // tool / SAM mode (point/box/track) — we never need the user to
   // click into the Smart tool first.
   await ensureSamReady();
-  // Pre-warm the embedding cache. Idempotent server-side (cached
-  // by image hash). Failures here would also block box-prompt, so
-  // we re-raise instead of silently continuing — without the
-  // embedding the box-prompt would 409 with a confusing error.
-  await samApi.encode(assetId, frameId ?? null);
-  const results = await samApi.boxPrompt(
+  // Encode caches the image embedding server-side and returns the
+  // image_hash that decode references. Idempotent by image hash so
+  // a recent encode is a near-free server hit.
+  const enc = await samApi.encode(assetId, frameId ?? null);
+  const result = await samApi.decode(
     assetId,
-    [box],
-    [1],
+    enc.image_hash,
+    [],
+    [],
     undefined,
-    frameId ?? null,
+    box,
   );
-  if (!results || results.length === 0) return null;
-  const best = results.reduce((a, b) => (b.score > a.score ? b : a));
-  if (!best.polygon || best.polygon.length < 3) return null;
-  return best.polygon.map(([x, y]) => [x, y] as [number, number]);
+  if (!result || !result.polygon || result.polygon.length < 3) {
+    return null;
+  }
+  return result.polygon.map(([x, y]) => [x, y] as [number, number]);
 }
 
 /**
