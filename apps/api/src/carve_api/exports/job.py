@@ -7,11 +7,13 @@ import logging
 import uuid
 import zipfile
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 from sqlalchemy import select
+from sqlalchemy.orm import configure_mappers
 
 from carve_api.annotations.models import Annotation
 from carve_api.assets.models import Asset, AssetKind
@@ -23,6 +25,27 @@ from carve_api.io.yolo_out import (
     write_yolo_label,
 )
 from carve_api.projects.models import Class, Task
+
+# Plan-20.2 — when the RQ worker loads this module via the dataclass
+# pickle payload it imports the export models lazily, which means the
+# ``users`` table referenced by ``exports.created_by`` isn't registered
+# yet when SQLAlchemy first compiles the Export mapper. The first time
+# the worker tried to flush the Export row's status update, it raised
+# ``NoReferencedTableError: Foreign key 'exports.created_by' could not
+# find table 'users'`` — the archive was built and uploaded but the DB
+# row stayed at status='pending' forever. Force-importing the model
+# modules (and calling ``configure_mappers``) at module import time
+# makes the FK graph resolvable up-front so flushes succeed.
+from carve_api.auth.models import User  # noqa: F401  -- mapper registry
+from carve_api.exports.models import Export  # noqa: F401  -- mapper registry
+from carve_api.assets.models import Frame  # noqa: F401  -- mapper registry
+
+configure_mappers()
+# Number of MinIO workers used for parallel asset downloads inside the
+# archive build. ZIP writes still happen on the main thread because
+# ``zipfile`` is not thread-safe; the wins come from overlapping the
+# network roundtrips.
+_DOWNLOAD_WORKERS = 8
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +184,16 @@ def _partition_assets_by_split(
     }
 
 
+def _fetch_asset_bytes(storage, key: str) -> bytes | None:
+    """Plan-20.2 — single-asset MinIO read used by the parallel
+    download pool. Returns ``None`` on miss/error so the caller can
+    skip the entry without poisoning the whole archive build."""
+    try:
+        return storage.get_object(key).read()
+    except Exception:
+        return None
+
+
 def _convert_for_yolo_mode(
     annotations: list[Annotation], mode: str
 ) -> list[Any]:
@@ -268,6 +301,26 @@ def _yolo_archive(
     buf = io.BytesIO()
     targets: list[RemapTarget] = []
     seen_target_ids: set[int] = set()
+    # Plan-20.2 — kick off MinIO downloads for every image in parallel
+    # before we walk the splits. zipfile is not thread-safe so we still
+    # write entries serially on the main thread; what's parallel is the
+    # network roundtrip, which dominates total time on tasks with
+    # hundreds of images.
+    download_futures: dict[uuid.UUID, Any] = {}
+    if include_images:
+        pool = ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS)
+        for asset in assets:
+            if asset.width is None or asset.height is None:
+                continue
+            if asset.kind != AssetKind.image:
+                continue
+            ext = (
+                Path(asset.original_name).suffix.lstrip(".")
+                or "bin"
+            )
+            key = f"assets/{asset.xxh3_128}/original.{ext}"
+            download_futures[asset.id] = pool.submit(_fetch_asset_bytes, storage, key)
+        pool.shutdown(wait=False)
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for split_name, split_assets in partitioned.items():
             for asset in split_assets:
@@ -301,15 +354,11 @@ def _yolo_archive(
                         "\n".join(str(t) for t in tag_ids) + "\n",
                     )
                 if include_images and asset.kind == AssetKind.image:
-                    ext = (
-                        Path(asset.original_name).suffix.lstrip(".")
-                        or "bin"
-                    )
-                    try:
-                        body = storage.get_object(
-                            f"assets/{asset.xxh3_128}/original.{ext}",
-                        ).read()
-                    except Exception:
+                    fut = download_futures.get(asset.id)
+                    if fut is None:
+                        continue
+                    body = fut.result()
+                    if body is None:
                         continue
                     zf.writestr(f"images/{split_name}/{asset.original_name}", body)
         # Build the targets list across the WHOLE remap so data.yaml has all classes
@@ -472,15 +521,25 @@ def _coco_archive(
                 json.dumps(image_tags, indent=2),
             )
         if include_images:
+            # Plan-20.2 — parallel MinIO downloads, serial ZIP writes.
+            fetch_keys: list[tuple[Asset, str]] = []
             for asset in assets:
                 if asset.kind != AssetKind.image:
                     continue
                 ext = Path(asset.original_name).suffix.lstrip(".") or "bin"
-                try:
-                    body = storage.get_object(f"assets/{asset.xxh3_128}/original.{ext}").read()
-                except Exception:
-                    continue
-                zf.writestr(f"images/{asset.original_name}", body)
+                fetch_keys.append(
+                    (asset, f"assets/{asset.xxh3_128}/original.{ext}"),
+                )
+            with ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS) as pool:
+                futures = [
+                    (asset, pool.submit(_fetch_asset_bytes, storage, key))
+                    for asset, key in fetch_keys
+                ]
+                for asset, fut in futures:
+                    body = fut.result()
+                    if body is None:
+                        continue
+                    zf.writestr(f"images/{asset.original_name}", body)
         if classes_manifest is not None:
             zf.writestr(
                 "classes.json",
@@ -745,11 +804,21 @@ def run_export_inline(
         # paths, secrets in messages, stack-frame hints) never leak via the
         # GET endpoint.
         logger.exception("export job failed for export_id=%s", payload.export_id)
+        # Plan-20.2 — DON'T reuse ``svc`` / ``session`` here. The outer
+        # ``with SessionLocal.begin()`` context wraps a transaction that
+        # is now in a dirty/poisoned state, so any further write on the
+        # same session raises 'Can't operate on closed transaction…'.
+        # Open a brand-new session purely to record the failure.
         try:
-            svc.mark_failed(
-                export_id=uuid.UUID(payload.export_id),
-                error="archive_build_failed",
-            )
+            from carve_api.db import get_session_factory
+            from carve_api.exports.service import ExportService
+
+            FactoryLocal = get_session_factory()
+            with FactoryLocal.begin() as fail_session:
+                ExportService(fail_session).mark_failed(
+                    export_id=uuid.UUID(payload.export_id),
+                    error="archive_build_failed",
+                )
         except Exception:
             logger.exception(
                 "failed to mark export as failed export_id=%s", payload.export_id,
