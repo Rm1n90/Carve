@@ -64,22 +64,43 @@ WHERE a.task_id = :task_id AND a.kind = 'bbox'
 
 
 # Project-level totals: tasks/assets/annotations counts for a single project.
+# Plan-16 — exclude soft-deleted (`deleted_at IS NOT NULL`) and archived
+# (`archived_at IS NOT NULL`) tasks so the rollup matches what the user
+# actually sees in the active task list.
 PROJECT_TOTALS_SQL = text("""
 SELECT
-  (SELECT COUNT(*) FROM tasks t WHERE t.project_id = :project_id) AS tasks,
+  (SELECT COUNT(*) FROM tasks t
+     WHERE t.project_id = :project_id
+       AND t.deleted_at IS NULL
+       AND t.archived_at IS NULL) AS tasks,
   (SELECT COUNT(*) FROM assets s
      JOIN tasks t ON t.id = s.task_id
-     WHERE t.project_id = :project_id) AS assets,
+     WHERE t.project_id = :project_id
+       AND t.deleted_at IS NULL
+       AND t.archived_at IS NULL) AS assets,
   (SELECT COUNT(*) FROM annotations a
      JOIN tasks t ON t.id = a.task_id
-     WHERE t.project_id = :project_id) AS annotations
+     WHERE t.project_id = :project_id
+       AND t.deleted_at IS NULL
+       AND t.archived_at IS NULL) AS annotations
 """)
 
 
 # Top-5 classes by annotation count for a project.
 # LEFT JOIN keeps zero-count classes eligible when the project has < 5 annotated classes.
+# Plan-16 — annotations from soft-deleted / archived tasks are excluded so
+# the by-class chips reflect only active work.
 PROJECT_BY_CLASS_SQL = text("""
-SELECT c.id::text AS class_id, c.name AS name, COUNT(a.id) AS count
+SELECT c.id::text AS class_id, c.name AS name,
+       COUNT(a.id) FILTER (
+         WHERE a.id IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM tasks t
+             WHERE t.id = a.task_id
+               AND t.deleted_at IS NULL
+               AND t.archived_at IS NULL
+           )
+       ) AS count
 FROM classes c
 LEFT JOIN annotations a ON a.class_id = c.id
 WHERE c.project_id = :project_id
@@ -90,6 +111,8 @@ LIMIT 5
 
 
 # Per-task progress: labeled_frames / total_frames, NULL-safe via NULLIF + COALESCE.
+# Plan-16 — soft-deleted and archived tasks are excluded so the chart only
+# shows tasks the user can actually see in the active list.
 PROJECT_TASK_PROGRESS_SQL = text("""
 SELECT
   t.id::text AS task_id,
@@ -104,6 +127,8 @@ SELECT
   , 0.0) AS progress_pct
 FROM tasks t
 WHERE t.project_id = :project_id
+  AND t.deleted_at IS NULL
+  AND t.archived_at IS NULL
 ORDER BY t.created_at ASC
 """)
 

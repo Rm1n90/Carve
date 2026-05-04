@@ -332,41 +332,67 @@ function ProjectStatsStrip({ stats }: { stats: ProjectStats }) {
       )}
 
       {tasks.length > 0 && (
-        <ul className="grid gap-1.5">
-          {tasks.map((t) => {
-            const pct = Math.round(
-              Math.min(Math.max(t.progress_pct, 0), 1) * 100,
-            );
-            const widthPct = `${pct}%`;
-            return (
-              <li
-                key={t.task_id}
-                className="grid grid-cols-[1fr_60px] items-center gap-3 text-[12.5px]"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span
-                    className="min-w-[80px] max-w-[200px] text-[color:var(--text-secondary)] tracking-tight truncate"
-                    title={t.name}
-                  >
-                    {t.name}
-                  </span>
-                  <div className="relative h-1 flex-1 overflow-hidden rounded-full bg-[var(--bg-hover)]">
-                    <div
-                      data-testid={`project-stats-task-bar-${t.task_id}`}
-                      className="absolute inset-y-0 left-0 bg-[var(--accent)]"
-                      style={{ width: widthPct }}
-                    />
-                  </div>
-                </div>
-                <span className="text-right font-mono text-[10.5px] text-[color:var(--text-tertiary)] tabular-nums">
-                  {widthPct}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
+        <ProjectTaskProgressList tasks={tasks} />
       )}
     </section>
+  );
+}
+
+// Plan-16 — capped, scrollable per-task progress list. Sorts by progress
+// desc so the most-complete tasks surface first; renders the first 10
+// inline and scrolls the remainder when the project has many tasks so
+// the strip never blows up vertically.
+function ProjectTaskProgressList({
+  tasks,
+}: {
+  tasks: ProjectStats["tasks"];
+}) {
+  const sorted = [...tasks].sort(
+    (a, b) => (b.progress_pct ?? 0) - (a.progress_pct ?? 0),
+  );
+  const isLarge = sorted.length > 10;
+  return (
+    <div
+      className={cn(
+        "grid",
+        isLarge ? "max-h-[260px] overflow-y-auto scrollbar-thin pr-1" : "",
+      )}
+      data-testid="project-stats-task-progress-list"
+    >
+      <ul className="grid gap-1.5">
+        {sorted.map((t) => {
+          const pct = Math.round(
+            Math.min(Math.max(t.progress_pct, 0), 1) * 100,
+          );
+          const widthPct = `${pct}%`;
+          return (
+            <li
+              key={t.task_id}
+              className="grid grid-cols-[1fr_60px] items-center gap-3 text-[12.5px]"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <span
+                  className="min-w-[80px] max-w-[200px] text-[color:var(--text-secondary)] tracking-tight truncate"
+                  title={t.name}
+                >
+                  {t.name}
+                </span>
+                <div className="relative h-1 flex-1 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+                  <div
+                    data-testid={`project-stats-task-bar-${t.task_id}`}
+                    className="absolute inset-y-0 left-0 bg-[var(--accent)]"
+                    style={{ width: widthPct }}
+                  />
+                </div>
+              </div>
+              <span className="text-right font-mono text-[10.5px] text-[color:var(--text-tertiary)] tabular-nums">
+                {widthPct}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -1204,6 +1230,9 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
         : tasksApi.unarchive(projectId, taskId),
     onSuccess: (_t, vars) => {
       qc.invalidateQueries({ queryKey: ["tasks", projectId] });
+      // Plan-16 — archived tasks are excluded from stats; refresh now so
+      // the chart and percentages re-render against the active subset.
+      qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
       showToast(vars.archived ? "Task archived." : "Task restored.", {
         variant: "success",
       });
@@ -1219,6 +1248,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
       tasksApi.update(projectId, taskId, { due_date: dueDate }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tasks", projectId] });
+      qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
       showToast("Due date updated.", { variant: "success" });
     },
     onError: () => {

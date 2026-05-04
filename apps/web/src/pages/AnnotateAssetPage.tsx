@@ -576,6 +576,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       }
       useAnnotations.getState().clearPendingDeletes();
       qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+      // Plan-16 — refresh project-level stats so the per-task progress
+      // bars and totals reflect the latest annotation count whenever
+      // the user navigates back from the editor. Without this the
+      // ProjectStatsStrip can sit stale at the previous percentages
+      // for the React Query default staleTime (30s).
+      qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
     },
     onError: () => {
       // v2.9 P1-15 — surface save failures via the toast bus in addition
