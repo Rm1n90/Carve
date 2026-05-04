@@ -15,8 +15,13 @@ from sqlalchemy import select
 
 from carve_api.annotations.models import Annotation
 from carve_api.assets.models import Asset, AssetKind
-from carve_api.io.coco_out import build_coco
-from carve_api.io.yolo_out import RemapTarget, write_data_yaml, write_yolo_label
+from carve_api.io.coco_out import build_coco, extract_image_tags_for_coco
+from carve_api.io.yolo_out import (
+    RemapTarget,
+    extract_image_tags,
+    write_data_yaml,
+    write_yolo_label,
+)
 from carve_api.projects.models import Class, Task
 
 logger = logging.getLogger(__name__)
@@ -191,6 +196,15 @@ def _yolo_archive(
                     f"labels/{split_name}/{stem}.txt",
                     ("\n".join(lines) + "\n") if lines else "",
                 )
+                # Plan-20 — image-level tags go to a parallel ``tags/`` tree
+                # (one densified class id per line) so the YOLO label files
+                # stay strictly geometric and parseable by trainers.
+                tag_ids = extract_image_tags(anns, remap=class_remap)
+                if tag_ids:
+                    zf.writestr(
+                        f"tags/{split_name}/{stem}.txt",
+                        "\n".join(str(t) for t in tag_ids) + "\n",
+                    )
                 if include_images and asset.kind == AssetKind.image:
                     ext = (
                         Path(asset.original_name).suffix.lstrip(".")
@@ -227,7 +241,53 @@ def _yolo_archive(
                 "classes.json",
                 json.dumps(classes_manifest, indent=2),
             )
+        zf.writestr("README.md", _yolo_readme())
     return buf.getvalue()
+
+
+def _yolo_readme() -> str:
+    """Plan-20 — self-describing layout + per-kind handling notes for the
+    YOLO export. Written as ``README.md`` inside every YOLO archive."""
+    return (
+        "# Carve YOLO export\n\n"
+        "## Layout\n"
+        "```\n"
+        "data.yaml             # YOLO dataset descriptor (path / nc / names)\n"
+        "classes.json          # full project class manifest (id, idx, name, color, export_idx)\n"
+        "images/{train,val,test}/<original_filename>\n"
+        "labels/{train,val,test}/<original_stem>.txt\n"
+        "tags/{train,val,test}/<original_stem>.txt   # only when image-level tags exist\n"
+        "README.md             # this file\n"
+        "```\n\n"
+        "## Per-annotation-kind handling\n\n"
+        "**bbox** — emitted as the standard YOLO detection line, all values\n"
+        "normalised 0..1 against image dimensions:\n"
+        "```\n"
+        "<class_id> <cx> <cy> <w> <h>\n"
+        "```\n\n"
+        "**polygon** — emitted as a YOLO-seg polygon line (variable length,\n"
+        "all coords normalised 0..1):\n"
+        "```\n"
+        "<class_id> <x1> <y1> <x2> <y2> ... <xn> <yn>\n"
+        "```\n"
+        "Detection-only trainers will read the first 4 floats as `cx cy w h`\n"
+        "if the polygon happens to start with bbox-shaped numbers, so prefer\n"
+        "the COCO export when you need pure segmentation. Ultralytics' YOLO-seg\n"
+        "trainer consumes mixed bbox+polygon files natively.\n\n"
+        "**mask (RLE)** — YOLO has no mask format. Each mask is decoded to its\n"
+        "tight axis-aligned bounding box and written as a normal bbox line.\n"
+        "This is lossy. If you need pixel-perfect masks, export as COCO.\n\n"
+        "**tag (image-level label)** — written to `tags/<split>/<stem>.txt`,\n"
+        "one densified class id per line. Tag rows are NOT mixed into the\n"
+        "geometric label files because a 1-token line breaks every YOLO\n"
+        "parser. An image with multiple tags will have several lines in this\n"
+        "file; an image with no tags has no file under `tags/`.\n\n"
+        "## Class ids\n"
+        "Class ids in `data.yaml` and label files are densified to `0..N-1`\n"
+        "based on the per-export class remap order. The original project\n"
+        "`idx` and the dense `export_idx` are both available in\n"
+        "`classes.json`.\n"
+    )
 
 
 def _coco_archive(
@@ -268,6 +328,19 @@ def _coco_archive(
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("coco.json", json.dumps(coco, indent=2))
+        # Plan-20 — image-level tags go to a separate sidecar (COCO has
+        # no canonical image-level label field). Only written when at
+        # least one tag annotation matched the export remap.
+        image_tags = extract_image_tags_for_coco(
+            images=images,
+            annotations_by_image_id=annotations_by_image_id,
+            remap=class_remap,
+        )
+        if image_tags:
+            zf.writestr(
+                "image_tags.json",
+                json.dumps(image_tags, indent=2),
+            )
         if include_images:
             for asset in assets:
                 if asset.kind != AssetKind.image:
@@ -283,7 +356,63 @@ def _coco_archive(
                 "classes.json",
                 json.dumps(classes_manifest, indent=2),
             )
+        zf.writestr("README.md", _coco_readme())
     return buf.getvalue()
+
+
+def _coco_readme() -> str:
+    """Plan-20 — self-describing layout + per-kind handling notes for the
+    COCO export. Written as ``README.md`` inside every COCO archive."""
+    return (
+        "# Carve COCO export\n\n"
+        "## Layout\n"
+        "```\n"
+        "coco.json          # standard COCO with images / annotations / categories\n"
+        "image_tags.json    # only when image-level tags exist (see below)\n"
+        "classes.json       # full project class manifest (id, idx, name, color, export_idx)\n"
+        "images/<original_filename>\n"
+        "README.md          # this file\n"
+        "```\n\n"
+        "## Per-annotation-kind handling\n\n"
+        "**bbox** — emitted into `coco.json#/annotations` as:\n"
+        "```\n"
+        '{ "bbox": [x, y, w, h], "area": w*h, "iscrowd": 0 }\n'
+        "```\n"
+        "(no `segmentation` field).\n\n"
+        "**polygon** — emitted with a single contour:\n"
+        "```\n"
+        '{ "segmentation": [[x1, y1, x2, y2, ..., xn, yn]],\n'
+        '  "bbox": <axis-aligned polygon bbox>,\n'
+        '  "area": bbox.w * bbox.h,\n'
+        '  "iscrowd": 0 }\n'
+        "```\n\n"
+        "**mask (RLE)** — emitted as COCO-uncompressed RLE. The bbox is the\n"
+        "mask's *tight* bounding box and the area is the mask's foreground\n"
+        "pixel count (not `W*H`):\n"
+        "```\n"
+        '{ "segmentation": { "size": [h, w], "counts": "..." },\n'
+        '  "bbox": <tight mask bbox>,\n'
+        '  "area": <foreground pixels>,\n'
+        '  "iscrowd": 0 }\n'
+        "```\n"
+        "Empty masks (no foreground pixels) are dropped — a `[0,0,0,0]` row\n"
+        "would silently corrupt downstream IoU/area filters.\n\n"
+        "**tag (image-level label)** — NOT written into `coco.json`. COCO has\n"
+        "no canonical image-level multi-label classification field, so tags\n"
+        "are written to `image_tags.json`:\n"
+        "```\n"
+        "[ { \"image_id\": 1,\n"
+        "    \"file_name\": \"IMG_001.jpg\",\n"
+        "    \"tags\": [ {\"category_id\": 0, \"name\": \"person\"} ] } ]\n"
+        "```\n"
+        "An image with multiple tags has multiple entries in its `tags` list.\n"
+        "An image with no tags is absent from `image_tags.json` (the file\n"
+        "itself is omitted when no tags exist anywhere).\n\n"
+        "## Class ids\n"
+        "Category ids in `coco.json` are densified to `0..N-1` based on the\n"
+        "per-export class remap order. The original project `idx` and the\n"
+        "dense `export_idx` are both available in `classes.json`.\n"
+    )
 
 
 def _build_archive(
@@ -390,7 +519,11 @@ def run_export_inline(
             annotations_by_asset_id=anns_by_asset,
             fmt=payload.fmt,
             class_remap=densified_remap,
-            include_images=payload.include_images,
+            # Plan-20 — every export ZIP must carry images alongside the
+            # annotation files. We accept the legacy ``include_images``
+            # flag in the payload for API compatibility but always coerce
+            # it to True at the build boundary.
+            include_images=True,
             storage=storage,
             splits=payload.splits,
             classes_manifest=classes_manifest,

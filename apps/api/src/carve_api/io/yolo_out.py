@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from carve_api.annotations.models import Annotation, AnnotationKind
+from carve_api.io.rle import rle_to_bbox
 
 
 @dataclass
@@ -39,6 +40,27 @@ def write_yolo_label(
 ) -> tuple[list[str], list[str]]:
     """Build the YOLO label-file lines + warnings for a single image.
 
+    Per-kind handling (Plan-20):
+
+    * ``bbox``    — emitted as the standard YOLO detection line
+                    ``idx cx cy w h`` (all values normalised 0..1).
+    * ``polygon`` — emitted as a YOLO-seg polygon line
+                    ``idx x1 y1 x2 y2 …`` (all normalised). Trainers that
+                    only do detection will treat the first 4 floats as
+                    ``cx cy w h``; ultralytics' segmentation trainers
+                    consume the full polygon. Mixing the two kinds in
+                    the same file is supported by ultralytics.
+    * ``mask``    — decoded to its tight axis-aligned bounding box and
+                    emitted as a YOLO bbox line. The full segmentation
+                    mask cannot be expressed in the YOLO label format;
+                    callers that need pixel-perfect masks should use
+                    the COCO export. A warning is appended noting the
+                    lossy conversion.
+    * ``tag``     — NOT written into the label file. The export job
+                    pulls these via ``extract_image_tags`` and writes
+                    them to a sidecar so YOLO trainers don't choke on
+                    tag-only lines (which carry no coordinates).
+
     Returns ``(lines, warnings)``.
     """
     if image_w <= 0 or image_h <= 0:
@@ -46,7 +68,6 @@ def write_yolo_label(
     targets = _normalise_remap(remap)
     lines: list[str] = []
     warnings: list[str] = []
-    tags_seen = False  # only emit the first tag per image
     for ann in annotations:
         target = targets.get(str(ann.class_id))
         if target is None:
@@ -66,18 +87,49 @@ def write_yolo_label(
             )
             lines.append(f"{idx} {pts}")
         elif ann.kind == AnnotationKind.mask:
-            warnings.append(
-                f"yolo writer skipped mask (use polygon export); class_id={ann.class_id}"
-            )
-        elif ann.kind == AnnotationKind.tag:
-            if tags_seen:
+            box = rle_to_bbox(str(g["counts"]), tuple(g["size"]))
+            if box is None:
                 warnings.append(
-                    f"yolo writer kept only first tag per image; extra tag class_id={ann.class_id}"
+                    f"yolo writer dropped empty mask; class_id={ann.class_id}"
                 )
                 continue
-            tags_seen = True
-            lines.append(f"{idx}")
+            x, y, mw, mh = box
+            cx = (x + mw / 2.0) / image_w
+            cy = (y + mh / 2.0) / image_h
+            nw = mw / image_w
+            nh = mh / image_h
+            lines.append(f"{idx} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
+            warnings.append(
+                f"yolo writer converted mask to its bounding box (lossy); class_id={ann.class_id}"
+            )
+        elif ann.kind == AnnotationKind.tag:
+            # Tags are written to a separate sidecar — see
+            # ``extract_image_tags`` and the export job.
+            continue
     return lines, warnings
+
+
+def extract_image_tags(
+    annotations: Iterable[Annotation],
+    remap: dict,
+) -> list[int]:
+    """Plan-20 — return the densified class ids of every ``kind=tag``
+    annotation on an image, in input order.
+
+    YOLO has no native image-level tag concept; the export job writes
+    these into a separate ``tags/{split}/{stem}.txt`` file (one int per
+    line) so the YOLO label files stay strictly geometric and parseable.
+    """
+    targets = _normalise_remap(remap)
+    out: list[int] = []
+    for ann in annotations:
+        if ann.kind != AnnotationKind.tag:
+            continue
+        target = targets.get(str(ann.class_id))
+        if target is None:
+            continue
+        out.append(int(target.export_id))
+    return out
 
 
 def write_data_yaml(

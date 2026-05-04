@@ -73,7 +73,9 @@ export function ExportDialog({ projectId, taskId }: Props) {
   // v3.1 Bug 4 — single-set is now the default. Users opt into the
   // 80/10/10 train/val/test flow explicitly.
   const [mode, setMode] = useState<SplitMode>("single");
-  const [includeImages, setIncludeImages] = useState<boolean>(true);
+  // Plan-20 — every ZIP now ships images + annotations together. The
+  // toggle was removed; we keep the wire field at ``true`` for API
+  // compat, but the server also coerces it.
   const [remap, setRemap] = useState<RemapState>({});
   const [exportId, setExportId] = useState<string | null>(null);
   // v3.0 B10 — class density: filter the remap table on long class lists.
@@ -129,7 +131,7 @@ export function ExportDialog({ projectId, taskId }: Props) {
       // payload. Backend accepts {train: 1, val: 0, test: 0} as a no-split
       // export.
       splits: mode === "single" ? SINGLE_SET_SPLITS : splits,
-      include_images: includeImages,
+      include_images: true,
     };
     create.mutate(body);
   };
@@ -160,16 +162,10 @@ export function ExportDialog({ projectId, taskId }: Props) {
             </Select.Content>
           </Select>
         </div>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={includeImages}
-            onChange={(e) => setIncludeImages(e.target.checked)}
-            aria-label="include-images"
-            className="h-4 w-4 accent-[var(--accent)]"
-          />
-          Include images
-        </label>
+        <span className="text-tertiary text-[12px] italic">
+          Images are always bundled into the ZIP alongside the
+          annotations.
+        </span>
       </div>
 
       {/* v3.0 D12 — top-level mode toggle: ship a single set, or split into
