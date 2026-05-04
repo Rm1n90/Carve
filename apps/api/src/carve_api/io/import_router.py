@@ -59,7 +59,7 @@ def _http(err: AppError) -> HTTPException:
 router = APIRouter(prefix="/tasks", tags=["import"])
 
 
-_MAX_BYTES = 1024 * 1024 * 1024  # 1 GiB total upload
+_MAX_BYTES = 10 * 1024 * 1024 * 1024  # 10 GiB total upload
 _STAGING_KEY_PREFIX = "imp:staging:"
 _STAGING_TTL_SECONDS = 24 * 3600
 

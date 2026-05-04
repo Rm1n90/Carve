@@ -31,7 +31,7 @@ import { cn } from "@/lib/cn";
 // through to the raw code so power users can still see it.
 const ERROR_MESSAGES: Record<string, string> = {
   no_files: "No file was attached.",
-  import_too_large: "Files are too large (the limit is 1 GB total).",
+  import_too_large: "Files are too large (the limit is 10 GB total).",
   only_one_zip_supported: "Only one .zip file at a time.",
   only_one_json_supported: "Only one .json file at a time.",
   yolo_needs_zip_or_txt:
