@@ -158,12 +158,17 @@ def parse_yolo_archive(
     archive_bytes: bytes,
     *,
     image_dimensions: dict[str, tuple[int, int]] | None = None,
+    fallback_class_names: list[str] | None = None,
 ) -> ParsedArchive:
     """Parse a YOLO ZIP archive.
 
-    The archive must contain a ``data.yaml`` (or any ``.yaml``) at the root
-    with a ``names:`` entry, plus per-image ``.txt`` label files (anywhere
-    inside the archive — typically under ``labels/``).
+    The archive must contain per-image ``.txt`` label files (anywhere
+    inside the archive — typically under ``labels/`` or
+    ``training_data/``). If a ``data.yaml`` (or any ``.yaml``) is
+    present with a ``names:`` entry it is used for class names;
+    otherwise ``fallback_class_names`` is used (Plan-20.5 — usually
+    the project's classes ordered by ``idx``, so a loose-``.txt``
+    upload still resolves indices to names).
 
     ``image_dimensions`` maps the image basename (matching the .txt basename)
     to ``(width, height)``. Drafts default to ``image_w=image_h=0`` if the
@@ -199,9 +204,14 @@ def parse_yolo_archive(
             elif name_lower.endswith(".txt"):
                 label_members.append(member)
 
-        if not yaml_text:
-            out.warnings.append("no data.yaml found in archive; class names will be empty")
-        out.class_names = _parse_yaml_names(yaml_text) if yaml_text else []
+        if yaml_text:
+            out.class_names = _parse_yaml_names(yaml_text)
+        if not out.class_names and fallback_class_names:
+            out.class_names = list(fallback_class_names)
+        if not out.class_names:
+            out.warnings.append(
+                "no data.yaml or class-name fallback provided; class indices will fail to resolve",
+            )
 
         for member in label_members:
             total_uncompressed += member.file_size
