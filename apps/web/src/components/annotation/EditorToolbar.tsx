@@ -1282,9 +1282,10 @@ const YoloPredictButton = forwardRef<
               </span>
             </label>
             {samPost && (
-              <p className="ml-5 text-[10.5px] text-[color:var(--text-tertiary)]">
-                Runs after predict on each new annotation. SAM auto-loads
-                if not already mounted.
+              <p className="ml-5 text-[10.5px] text-[color:var(--text-tertiary)] leading-snug">
+                {selectedWeight?.task_kind === "detect"
+                  ? "After predict, SAM converts every new bounding box into a polygon (one SAM call per annotation, so progress is counted in annotations — not assets). The SAM model loads on demand if it isn't already running."
+                  : "After predict, SAM tightens every new polygon to the object's edge (one SAM call per annotation, so progress is counted in annotations — not assets). The SAM model loads on demand if it isn't already running."}
               </p>
             )}
             {samPostProgress && (
@@ -1682,10 +1683,14 @@ function BatchPredictProgressOverlay({
           >
             <div className="flex items-center justify-between text-[11.5px]">
               <span className="text-[color:var(--text-secondary)]">
-                Post-processing with SAM…
+                Refining with SAM — {postProgress.done.toLocaleString()} of{" "}
+                {postProgress.total.toLocaleString()} annotation
+                {postProgress.total === 1 ? "" : "s"}
               </span>
               <span className="font-mono tabular-nums text-[color:var(--text-tertiary)]">
-                {postProgress.done}/{postProgress.total}
+                {postProgress.total > 0
+                  ? `${Math.round((postProgress.done / postProgress.total) * 100)}%`
+                  : ""}
                 {postProgress.failed > 0
                   ? ` · ${postProgress.failed} skipped`
                   : ""}
@@ -1702,6 +1707,10 @@ function BatchPredictProgressOverlay({
                 }}
               />
             </div>
+            <p className="text-[10.5px] text-[color:var(--text-tertiary)] leading-snug">
+              YOLO produced multiple boxes per image, so this counts every
+              new annotation — not assets.
+            </p>
           </div>
         )}
 

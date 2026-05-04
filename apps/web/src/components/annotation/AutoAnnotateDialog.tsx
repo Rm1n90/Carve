@@ -677,10 +677,14 @@ function BatchProgressView({
         <div data-testid="auto-annotate-batch-post" className="grid gap-1">
           <div className="flex items-center justify-between text-[11px]">
             <span className="text-[color:var(--text-secondary)]">
-              Converting polygons to bboxes…
+              Converting polygons to bboxes — {postProgress.done.toLocaleString()}{" "}
+              of {postProgress.total.toLocaleString()} annotation
+              {postProgress.total === 1 ? "" : "s"}
             </span>
             <span className="font-mono tabular-nums text-[color:var(--text-tertiary)]">
-              {postProgress.done}/{postProgress.total}
+              {postProgress.total > 0
+                ? `${Math.round((postProgress.done / postProgress.total) * 100)}%`
+                : ""}
               {postProgress.failed > 0 ? ` · ${postProgress.failed} skipped` : ""}
             </span>
           </div>
@@ -695,6 +699,10 @@ function BatchProgressView({
               }}
             />
           </div>
+          <p className="text-[10.5px] text-[color:var(--text-tertiary)] leading-snug">
+            One annotation per detected object — totals the new rows the
+            run produced across all assets.
+          </p>
         </div>
       )}
       <p className="text-[11px] text-[color:var(--text-tertiary)] italic">
