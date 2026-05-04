@@ -1,5 +1,5 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Download, FileDown } from "lucide-react";
 import { type ClassRow } from "@/api/classes";
@@ -120,6 +120,24 @@ export function ExportDialog({ projectId, taskId }: Props) {
 
   const status = progressQ.data?.status;
   const inFlight = status === "pending" || status === "running" || create.isPending;
+  const downloadUrl = progressQ.data?.download_url ?? null;
+  // Plan-20.3 — auto-trigger the browser download as soon as the export
+  // completes. The user pressed Export to get a ZIP; making them click
+  // a second "Download" link is friction. The link below stays as a
+  // re-download fallback if anything blocks the auto-click.
+  const autoTriggeredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (status !== "completed" || !downloadUrl || !exportId) return;
+    if (autoTriggeredRef.current === exportId) return;
+    autoTriggeredRef.current = exportId;
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.rel = "noopener";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, [status, downloadUrl, exportId]);
   const splitSum = splits.train + splits.val + splits.test;
   const sumValid = Math.abs(splitSum - 1.0) <= 0.001;
 
