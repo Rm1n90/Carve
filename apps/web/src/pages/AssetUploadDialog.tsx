@@ -1,12 +1,40 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useState } from "react";
-import { useDropzone } from "react-dropzone";
+import { useDropzone, type FileRejection } from "react-dropzone";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Upload, FileImage } from "lucide-react";
 import { assetsApi } from "@/api/assets";
 import { FrameExtractDialog } from "@/components/annotation/FrameExtractDialog";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+
+// Plan-20.7 — accept by extension. The previous MIME-keyed
+// react-dropzone config silently rejected any ZIP whose MIME wasn't
+// exactly ``application/zip`` (Windows often reports
+// ``application/x-zip-compressed``, some browsers report empty), and
+// the rejected files never reached ``onDrop``. The dialog then ran an
+// empty loop and showed "Uploaded 0 files" before vanishing.
+const ALLOWED_UPLOAD_EXTENSIONS = [
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".mp4",
+  ".webm",
+  ".mov",
+  ".zip",
+];
+
+function validateExtension(file: File) {
+  const lower = file.name.toLowerCase();
+  if (ALLOWED_UPLOAD_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+    return null;
+  }
+  return {
+    code: "ext-not-allowed",
+    message: `Unsupported file type — accepted: ${ALLOWED_UPLOAD_EXTENSIONS.join(", ")}`,
+  };
+}
 
 interface Props {
   projectId: string;
@@ -130,16 +158,30 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
   });
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    accept: {
-      "image/png": [".png"],
-      "image/jpeg": [".jpg", ".jpeg"],
-      "image/webp": [".webp"],
-      "video/mp4": [".mp4"],
-      "video/webm": [".webm"],
-      "video/quicktime": [".mov"],
-      "application/zip": [".zip"],
+    // Plan-20.7 — extension-based validation instead of MIME keys so
+    // ZIPs with non-standard MIME types (Windows
+    // 'application/x-zip-compressed', empty MIME from drag-n-drop)
+    // still pass the filter. The fallback file-picker accept attr is
+    // a hint to the OS dialog only.
+    validator: validateExtension,
+    onDrop: (files) => {
+      if (files.length === 0) return;
+      upload.mutate(files);
     },
-    onDrop: (files) => upload.mutate(files),
+    onDropRejected: (rejections: FileRejection[]) => {
+      const rows = rejections.map((r) => ({
+        name: r.file.name,
+        error:
+          r.errors[0]?.message ?? "Unsupported file (couldn't determine why)",
+      }));
+      setErrors((prev) => [...prev, ...rows]);
+      showToast(
+        rejections.length === 1
+          ? `Couldn't accept "${rejections[0].file.name}" — ${rows[0].error}`
+          : `${rejections.length} files were rejected — see the dialog for details.`,
+        { variant: "error", duration: 6000 },
+      );
+    },
   });
 
   return (

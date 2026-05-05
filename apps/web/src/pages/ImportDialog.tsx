@@ -11,7 +11,7 @@
 // be imported and what would be skipped (and why). The user clicks
 // Continue to commit, or Cancel to abandon.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useDropzone, type Accept } from "react-dropzone";
+import { useDropzone, type FileRejection } from "react-dropzone";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, FileArchive, Info, X } from "lucide-react";
 import {
@@ -86,17 +86,25 @@ interface Props {
   taskId: string;
 }
 
-const YOLO_ACCEPT: Accept = {
-  "application/zip": [".zip"],
-  "text/plain": [".txt"],
-  "application/x-yaml": [".yaml", ".yml"],
-  "text/yaml": [".yaml", ".yml"],
-};
+// Plan-20.7 — extension-based validation so files with non-standard
+// MIME types (Windows ZIPs reporting 'application/x-zip-compressed',
+// .yaml files dragged from some apps with empty MIME, etc.) still pass.
+// The previous MIME-keyed accept silently rejected them and the user
+// saw "Uploaded 0 files" before the dialog vanished.
+const YOLO_EXTS = [".zip", ".txt", ".yaml", ".yml"];
+const COCO_EXTS = [".zip", ".json"];
 
-const COCO_ACCEPT: Accept = {
-  "application/zip": [".zip"],
-  "application/json": [".json"],
-};
+function validateForFormat(format: ImportFormat) {
+  const allowed = format === "yolo" ? YOLO_EXTS : COCO_EXTS;
+  return (file: File) => {
+    const lower = file.name.toLowerCase();
+    if (allowed.some((ext) => lower.endsWith(ext))) return null;
+    return {
+      code: "ext-not-allowed",
+      message: `Unsupported file type — accepted for ${format.toUpperCase()}: ${allowed.join(", ")}`,
+    };
+  };
+}
 
 function formatErrorDetail(err: unknown): string {
   const data = (err as { response?: { data?: { detail?: string; error?: string } } })
@@ -179,12 +187,23 @@ export function ImportDialog({ taskId }: Props) {
     }
   }, [status, reason, qc, taskId, committedImportId]);
 
-  const accept = format === "yolo" ? YOLO_ACCEPT : COCO_ACCEPT;
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    accept,
+    validator: validateForFormat(format),
     multiple: format === "yolo",
     onDrop: (files) => {
-      if (files.length > 0) dryrun.mutate(files);
+      if (files.length === 0) return;
+      dryrun.mutate(files);
+    },
+    onDropRejected: (rejections: FileRejection[]) => {
+      const head = rejections[0];
+      const detail =
+        head?.errors[0]?.message ?? "Couldn't determine the rejection reason.";
+      const msg =
+        rejections.length === 1
+          ? `Couldn't accept "${head.file.name}" — ${detail}`
+          : `${rejections.length} files were rejected — ${detail}`;
+      setError(msg);
+      showToast(msg, { variant: "error", duration: 6000 });
     },
   });
 
