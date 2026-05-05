@@ -828,6 +828,20 @@ select:not([data-radix-select-trigger]):not([data-no-default-style]) option {
   line-height: 1.25;
 }
 
+/* DESIGN.md §1 / §2 — atmospheric section gradient. Page-level hero
+   zones reach for this so the page rhythm starts to alternate between
+   dark hero panels and lighter content panels. Theme-aware: on dark
+   the wash anchors at #121314 fading to #000000 (the §2 declared
+   dark-section gradient); on light it goes #ffffff → #f5f7fa for an
+   almost-imperceptible lift. */
+.section-hero {
+  background: var(--gradient-section-dark);
+}
+
+[data-theme="light"] .section-hero {
+  background: var(--gradient-section-light);
+}
+
 /* DESIGN.md §3 — "No ALL-CAPS labels or kickers." The repository
    used to ship a Tailwind ``uppercase`` modifier on dozens of
    small-mono kickers (stats cards, settings overview, project hero

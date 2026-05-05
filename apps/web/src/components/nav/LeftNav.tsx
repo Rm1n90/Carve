@@ -122,7 +122,7 @@ function NavItem({ label, to, params, active, icon, testId }: NavItemProps) {
     <span
       className={cn(
         "relative flex items-center gap-2 pl-5 pr-2 py-1.5 mx-1 rounded-[var(--radius-sm)]",
-        "text-[13px] tracking-tight transition-colors duration-150",
+        "text-[13px] tracking-tight transition-colors duration-[180ms] ease-out",
         active
           ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
           : "text-[color:var(--text-secondary)] hover:bg-[var(--accent-bg)]/60 hover:text-[color:var(--text-primary)]",
@@ -230,7 +230,7 @@ function ProjectNavItem({
       <div
         className={cn(
           "relative flex items-center gap-1 pr-2 py-1.5 mx-1 rounded-[var(--radius-sm)]",
-          "text-[13px] tracking-tight transition-colors duration-150",
+          "text-[13px] tracking-tight transition-colors duration-[180ms] ease-out",
           projectActive
             ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
             : "text-[color:var(--text-secondary)] hover:bg-[var(--accent-bg)]/60 hover:text-[color:var(--text-primary)]",
@@ -300,7 +300,7 @@ function ProjectNavItem({
                     <span
                       className={cn(
                         "relative flex items-center gap-2 pl-8 pr-2 py-1.5 mx-1 rounded-[var(--radius-sm)]",
-                        "text-[12.5px] tracking-tight transition-colors duration-150",
+                        "text-[12.5px] tracking-tight transition-colors duration-[180ms] ease-out",
                         taskActive
                           ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
                           : "text-[color:var(--text-secondary)] hover:bg-[var(--accent-bg)]/60 hover:text-[color:var(--text-primary)]",
@@ -587,8 +587,10 @@ export function LeftNav() {
                 align="start"
                 sideOffset={6}
                 className={cn(
-                  "min-w-[180px] rounded-[var(--radius-md)]",
-                  "glass-surface-strong p-1 z-50",
+                  // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
+                  "min-w-[180px] rounded-[var(--radius-6)] p-1 z-50",
+                  "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                  "shadow-[var(--shadow-card)]",
                 )}
               >
                 {/* v2.9 P1-19 — dedupe: Profile + Settings both routed to

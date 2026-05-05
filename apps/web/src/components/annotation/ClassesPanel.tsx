@@ -437,7 +437,12 @@ function ClassRowItem({
                   align="end"
                   sideOffset={4}
                   onClick={(e) => e.stopPropagation()}
-                  className="z-[1000] min-w-[200px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+                  // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
+                  className={cn(
+                    "z-[1000] min-w-[200px] rounded-[var(--radius-6)] p-1",
+                    "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                    "shadow-[var(--shadow-card)]",
+                  )}
                 >
                   {onClearOnFrame && (
                     <DropdownMenu.Item
@@ -678,7 +683,7 @@ function AddClassInline({
         <button
           type="button"
           onClick={onCancel}
-          className="h-7 px-2.5 rounded-[var(--radius-sm)] text-[12px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+          className="h-7 px-2.5 rounded-[var(--radius-6)] text-[12px] text-[color:var(--text-secondary)] transition-colors duration-[180ms] ease-out hover:bg-[var(--bg-hover)]"
         >
           Cancel
         </button>
@@ -687,10 +692,17 @@ function AddClassInline({
           disabled={!name.trim()}
           onClick={() => name.trim() && safeCreate(name.trim(), color)}
           className={cn(
-            "h-7 px-2.5 rounded-[var(--radius-sm)] text-[12px] font-medium",
+            // DESIGN.md §4 — primary CTA carries the full PS hover
+            // signature.
+            "h-7 px-2.5 rounded-[var(--radius-pill)] text-[12px] font-medium",
             "bg-[var(--accent)] text-[color:var(--accent-fg)]",
+            "border border-[var(--accent)]",
+            "transition-all duration-[180ms] ease-out",
+            "enabled:hover:bg-[var(--accent-hover)] enabled:hover:border-white",
+            "enabled:hover:shadow-[0_0_0_2px_var(--accent)] enabled:hover:scale-[1.05]",
+            "active:opacity-60 active:scale-100",
             "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
-            "enabled:hover:bg-[var(--accent-hover)]",
+            "disabled:border-[var(--border-subtle)]",
           )}
         >
           Add
@@ -912,7 +924,12 @@ export function ClassesPanel({
               <DropdownMenu.Content
                 align="end"
                 sideOffset={6}
-                className="z-[1000] min-w-[180px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+                // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
+                className={cn(
+                  "z-[1000] min-w-[180px] rounded-[var(--radius-6)] p-1",
+                  "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                  "shadow-[var(--shadow-card)]",
+                )}
               >
                 {(["idx", "name-asc", "name-desc", "count-asc", "count-desc"] as SortMode[]).map(
                   (key) => {

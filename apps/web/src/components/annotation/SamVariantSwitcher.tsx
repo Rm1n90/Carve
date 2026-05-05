@@ -252,7 +252,7 @@ export function SamVariantSwitcher({
               Active variant
             </p>
             <p
-              className="text-[18px] font-medium tracking-tight"
+              className="text-[18px] font-light tracking-tight"
               data-testid="sam-active-variant-label"
             >
               {samQ.isLoading

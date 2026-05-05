@@ -769,7 +769,8 @@ function ProjectStatsTabs({ projectId }: { projectId: string }) {
             aria-pressed={tab === t.value}
             onClick={() => setTab(t.value)}
             className={cn(
-              "px-3 py-1 rounded-full text-[12px] tracking-tight transition-colors",
+              "px-3 py-1 rounded-full text-[12px] tracking-tight",
+              "transition-colors duration-[180ms] ease-out",
               tab === t.value
                 ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
                 : "bg-[var(--bg-subtle)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",

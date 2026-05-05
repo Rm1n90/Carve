@@ -85,9 +85,11 @@ export function SavedViewsMenu({
             data-testid="saved-views-menu"
             align="end"
             sideOffset={6}
+            // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
             className={cn(
-              "min-w-[220px] rounded-[var(--radius-md)]",
-              "glass-surface-strong p-1 z-50",
+              "min-w-[220px] rounded-[var(--radius-6)] p-1 z-50",
+              "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+              "shadow-[var(--shadow-card)]",
             )}
           >
             {items.length === 0 && (
@@ -139,10 +141,13 @@ export function SavedViewsMenu({
           <DialogPrimitive.Content
             data-testid="saved-views-save-dialog"
             style={{ transform: "translate(-50%, -50%)" }}
+            // DESIGN.md §1 / §6 — solid surface (no glass on transient
+            // modal content). Keeps 10px radius for the small dialog.
             className={cn(
               "fixed left-1/2 top-1/2 z-[901]",
-              "w-[min(92vw,420px)] rounded-[var(--radius-lg)]",
-              "glass-surface-strong p-5 outline-none",
+              "w-[min(92vw,420px)] rounded-[var(--radius-lg)] p-5 outline-none",
+              "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+              "shadow-[var(--shadow-card)]",
             )}
           >
             <DialogPrimitive.Title className="text-[15px] font-medium tracking-tight">

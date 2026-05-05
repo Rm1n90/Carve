@@ -103,9 +103,14 @@ export function GlobalSearchBar() {
             data-testid="global-search-dialog"
             style={{ transform: "translate(-50%, -50%)" }}
             className={cn(
+              // DESIGN.md §1 / §6 — solid surface (no glass on transient
+              // command palette overlays). Keeps the larger 10px radius
+              // appropriate for a 640px-wide modal.
               "fixed left-1/2 top-1/3 z-[901]",
               "w-[min(92vw,640px)] max-h-[70vh] overflow-hidden",
-              "rounded-[var(--radius-lg)] glass-surface-strong p-3 outline-none",
+              "rounded-[var(--radius-lg)] p-3 outline-none",
+              "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+              "shadow-[var(--shadow-card)]",
             )}
           >
             <DialogPrimitive.Title className="sr-only">

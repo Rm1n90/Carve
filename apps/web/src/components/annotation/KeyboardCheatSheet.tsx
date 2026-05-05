@@ -182,7 +182,7 @@ export function KeyboardCheatSheet({
             >
               {SHORTCUTS.map((g) => (
                 <div key={g.title} className="grid gap-2">
-                  <p className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)] font-medium">
+                  <p className="text-[10.5px] tracking-tight text-[color:var(--text-tertiary)] font-medium">
                     {g.title}
                   </p>
                   <ul className="grid gap-1.5">

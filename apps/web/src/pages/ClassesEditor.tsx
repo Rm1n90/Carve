@@ -130,10 +130,10 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
             title="Paste classes — bulk import from list, JSON, or YAML"
             className={cn(
               "grid h-7 w-7 place-items-center",
-              "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+              "rounded-[var(--radius-6)] border border-[var(--border-subtle)]",
               "text-[color:var(--text-secondary)]",
               "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-              "transition-colors",
+              "transition-colors duration-[180ms] ease-out",
             )}
           >
             <ClipboardPaste className="h-3.5 w-3.5" />
@@ -146,10 +146,10 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
             title="Copy classes from another project"
             className={cn(
               "grid h-7 w-7 place-items-center",
-              "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+              "rounded-[var(--radius-6)] border border-[var(--border-subtle)]",
               "text-[color:var(--text-secondary)]",
               "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-              "transition-colors",
+              "transition-colors duration-[180ms] ease-out",
             )}
           >
             <Copy className="h-3.5 w-3.5" />
@@ -667,7 +667,7 @@ function BulkPasteClassesDialog({
         />
         {entries.length > 0 && (
           <div className="grid gap-1 max-h-[180px] overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-2">
-            <span className="text-[10.5px] uppercase tracking-[0.08em] text-[color:var(--text-tertiary)]">
+            <span className="text-[10.5px] tracking-tight text-[color:var(--text-tertiary)]">
               Preview ({entries.length} new
               {duplicates.length > 0 ? `, ${duplicates.length} duplicate skipped` : ""})
             </span>

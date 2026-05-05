@@ -106,7 +106,7 @@ export function SettingsProfilePage() {
     <SettingsLayout>
       <Card variant="surface" radius="lg" className="p-6 grid gap-5">
         <div>
-          <h2 className="text-[16px] font-medium tracking-tight">Profile</h2>
+          <h2 className="text-[16px] font-semibold tracking-tight">Profile</h2>
           <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
             Your sign-in identity. Email cannot be changed yet.
           </p>
@@ -177,7 +177,7 @@ function ChangePasswordCard() {
   return (
     <Card variant="surface" radius="lg" className="p-6 grid gap-3">
       <div>
-        <h2 className="text-[16px] font-medium tracking-tight">Change password</h2>
+        <h2 className="text-[16px] font-semibold tracking-tight">Change password</h2>
         <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
           Rotate your sign-in password. You'll stay signed in on this session.
         </p>
@@ -269,7 +269,7 @@ export function SettingsApiKeysPage() {
       <Card variant="surface" radius="lg" className="p-6 grid gap-5">
         <div className="flex items-baseline justify-between gap-4">
           <div>
-            <h2 className="text-[16px] font-medium tracking-tight">API keys</h2>
+            <h2 className="text-[16px] font-semibold tracking-tight">API keys</h2>
             <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
               Personal access tokens for automation and CI integrations. Use the
               prefix <span className="font-mono text-[12px]">ck_</span> as the
@@ -508,7 +508,7 @@ export function SettingsMembersPage() {
       <Card variant="surface" radius="lg" className="p-6 grid gap-4">
         <div className="flex items-baseline justify-between gap-4">
           <div>
-            <h2 className="text-[16px] font-medium tracking-tight">Members</h2>
+            <h2 className="text-[16px] font-semibold tracking-tight">Members</h2>
             <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
               Everyone with access to this workspace.
             </p>
@@ -592,7 +592,7 @@ function ProjectMembersSection() {
   return (
     <Card variant="surface" radius="lg" className="p-6 grid gap-4">
       <div>
-        <h2 className="text-[16px] font-medium tracking-tight">
+        <h2 className="text-[16px] font-semibold tracking-tight">
           Per-project members
         </h2>
         <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
@@ -1007,7 +1007,12 @@ function MemberRow({
             <DropdownMenu.Content
               align="end"
               sideOffset={4}
-              className="z-[1000] min-w-[200px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+              // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
+              className={cn(
+                "z-[1000] min-w-[200px] rounded-[var(--radius-6)] p-1",
+                "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                "shadow-[var(--shadow-card)]",
+              )}
             >
               <DropdownMenu.Item
                 data-testid={`member-menu-delete-${m.id}`}
@@ -1103,7 +1108,7 @@ export function SettingsWorkspacePage() {
     <SettingsLayout>
       <Card variant="surface" radius="lg" className="p-6 grid gap-5">
         <div>
-          <h2 className="text-[16px] font-medium tracking-tight">Workspace</h2>
+          <h2 className="text-[16px] font-semibold tracking-tight">Workspace</h2>
           <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
             One workspace per install. Admins can rename it and add a
             description that surfaces in member-facing UI.

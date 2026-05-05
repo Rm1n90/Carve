@@ -149,7 +149,7 @@ function CompareDialog({ open, onOpenChange, projectId, a, b }: CompareDialogPro
             type="button"
             onClick={() => onOpenChange(false)}
             data-testid="dataset-compare-close"
-            className="h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+            className="h-8 px-3 rounded-[var(--radius-6)] text-[12.5px] text-[color:var(--text-secondary)] transition-colors duration-[180ms] ease-out hover:bg-[var(--bg-hover)]"
           >
             Close
           </button>
@@ -402,9 +402,18 @@ export function DatasetsPage({ projectId }: DatasetsPageProps) {
           disabled={!canCompare}
           onClick={() => setCompareOpen(true)}
           className={cn(
-            "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium",
+            // DESIGN.md §4 — primary CTA carries the full PS hover signature
+            // (cyan fill + 2px white border + 2px PS-blue ring + 1.05× lift,
+            // 180ms ease).
+            "h-8 px-3 rounded-[var(--radius-pill)] text-[12.5px] font-medium",
             "bg-[var(--accent)] text-[color:var(--accent-fg)]",
-            "hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed",
+            "border border-[var(--accent)]",
+            "transition-all duration-[180ms] ease-out",
+            "hover:bg-[var(--accent-hover)] hover:border-white",
+            "hover:shadow-[0_0_0_2px_var(--accent)] hover:scale-[1.05]",
+            "active:opacity-60 active:scale-100",
+            "disabled:opacity-50 disabled:cursor-not-allowed",
+            "disabled:hover:scale-100 disabled:hover:border-[var(--accent)] disabled:hover:bg-[var(--accent)] disabled:hover:shadow-none",
           )}
         >
           Compare
@@ -496,8 +505,9 @@ export function DatasetsPage({ projectId }: DatasetsPageProps) {
                     }}
                     disabled={rollback.isPending}
                     className={cn(
-                      "h-7 px-2.5 rounded-[var(--radius-sm)] text-[11.5px]",
+                      "h-7 px-2.5 rounded-[var(--radius-6)] text-[11.5px]",
                       "border border-[var(--border-subtle)] text-[color:var(--text-secondary)]",
+                      "transition-colors duration-[180ms] ease-out",
                       "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
                       "disabled:opacity-50 disabled:cursor-not-allowed",
                     )}

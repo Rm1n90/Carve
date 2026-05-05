@@ -229,7 +229,7 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
 
   return (
     <section className="grid gap-3">
-      <h2 className="text-[18px] font-medium tracking-tight text-primary">Upload assets</h2>
+      <h2 className="text-[18px] font-light tracking-tight text-primary">Upload assets</h2>
       <div
         {...getRootProps()}
         className={cn(

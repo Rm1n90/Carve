@@ -571,7 +571,12 @@ function TaskRowMenu({
           align="end"
           sideOffset={4}
           onClick={(e) => e.stopPropagation()}
-          className="z-[1000] min-w-[180px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+          // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
+          className={cn(
+            "z-[1000] min-w-[180px] rounded-[var(--radius-6)] p-1",
+            "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+            "shadow-[var(--shadow-card)]",
+          )}
         >
           <DropdownMenu.Item
             data-testid={`project-detail-task-duplicate-${task.id}`}

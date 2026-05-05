@@ -644,9 +644,11 @@ export function AnnotationContextMenu({
         onMouseDown={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.stopPropagation()}
         className={cn(
+          // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
           "fixed z-[1100] min-w-[220px]",
-          "rounded-[var(--radius-md)]",
-          "glass-surface-strong p-1",
+          "rounded-[var(--radius-6)] p-1",
+          "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+          "shadow-[var(--shadow-card)]",
         )}
         style={menuStyle}
       >
@@ -737,9 +739,11 @@ export function AnnotationContextMenu({
       onMouseDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.stopPropagation()}
       className={cn(
+        // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
         "fixed z-[1100] min-w-[220px]",
-        "rounded-[var(--radius-md)]",
-        "glass-surface-strong p-1",
+        "rounded-[var(--radius-6)] p-1",
+        "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+        "shadow-[var(--shadow-card)]",
       )}
       style={menuStyle}
     >
@@ -786,10 +790,12 @@ export function AnnotationContextMenu({
               onMouseEnter={openClassSubmenu}
               onMouseLeave={scheduleSubmenuClose}
               className={cn(
+                // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
                 "absolute top-0 min-w-[180px] max-h-[260px] overflow-y-auto",
                 submenuLeft ? "left-full ml-1" : "right-full mr-1",
-                "rounded-[var(--radius-md)]",
-                "glass-surface-strong p-1",
+                "rounded-[var(--radius-6)] p-1",
+                "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                "shadow-[var(--shadow-card)]",
               )}
             >
               {classes.map((c) => {

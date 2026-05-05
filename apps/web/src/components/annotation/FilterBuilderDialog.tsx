@@ -514,7 +514,12 @@ export function FilterBuilderDialog({
                   <DropdownMenu.Content
                     align="start"
                     sideOffset={4}
-                    className="z-[902] min-w-[260px] max-w-[400px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+                    // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
+                    className={cn(
+                      "z-[902] min-w-[260px] max-w-[400px] rounded-[var(--radius-6)] p-1",
+                      "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                      "shadow-[var(--shadow-card)]",
+                    )}
                   >
                     {recent.map((preset, i) => (
                       <DropdownMenu.Item

@@ -204,7 +204,8 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
                 }
               }}
               className={cn(
-                "group flex items-center gap-2 rounded-[var(--radius-sm)] border px-2 py-1.5 cursor-pointer transition-colors",
+                "group flex items-center gap-2 rounded-[var(--radius-sm)] border px-2 py-1.5 cursor-pointer",
+                "transition-colors duration-[180ms] ease-out",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
                 isSelected
                   ? "bg-[var(--accent-bg)] border-[var(--border-accent)] text-primary"

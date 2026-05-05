@@ -276,7 +276,10 @@ function ToolButton({
       aria-pressed={active}
       title={`${label} — ${hotkey}`}
       className={cn(
-        "grid h-8 w-8 place-items-center rounded-[var(--radius-md)] transition-all duration-150",
+        // DESIGN.md §1 — toolbar tier uses 180ms ease (the
+        // "power-on" timing) for every interactive transition.
+        "grid h-8 w-8 place-items-center rounded-[var(--radius-6)]",
+        "transition-all duration-[180ms] ease-out",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
         active
           ? "glass-active-ring"
@@ -966,10 +969,18 @@ const YoloPredictButton = forwardRef<
           title="Predict with YOLO weight"
           disabled={disabled || isPredicting}
           className={cn(
-            "inline-flex h-8 items-center gap-1.5 px-3 rounded-full",
+            // DESIGN.md §4 — primary CTA carries the full PS hover signature.
+            // Predict button sits next to Save in the toolbar so it gets the
+            // same treatment, with a green resting fill.
+            "inline-flex h-8 items-center gap-1.5 px-3 rounded-[var(--radius-pill)]",
             "bg-[var(--success)] text-white text-[12.5px] font-medium tracking-tight",
-            "hover:bg-[var(--success-hover)] transition-colors",
+            "border border-[var(--success)]",
+            "transition-all duration-[180ms] ease-out",
+            "hover:bg-[var(--success-hover)] hover:border-white",
+            "hover:shadow-[0_0_0_2px_var(--success)] hover:scale-[1.05]",
+            "active:opacity-60 active:scale-100",
             "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
+            "disabled:border-[var(--border-subtle)] disabled:hover:scale-100 disabled:hover:bg-[var(--bg-subtle)] disabled:hover:shadow-none disabled:hover:border-[var(--border-subtle)]",
           )}
         >
           {isPredicting ? (
@@ -1396,7 +1407,7 @@ const YoloPredictButton = forwardRef<
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="h-7 px-2.5 rounded-[var(--radius-sm)] text-[12px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+            className="h-7 px-2.5 rounded-[var(--radius-6)] text-[12px] text-[color:var(--text-secondary)] transition-colors duration-[180ms] ease-out hover:bg-[var(--bg-hover)]"
           >
             Cancel
           </button>
@@ -1413,10 +1424,17 @@ const YoloPredictButton = forwardRef<
                 : undefined
             }
             className={cn(
-              "inline-flex items-center gap-1.5 h-7 px-3 rounded-full",
+              // DESIGN.md §4 — primary CTA carries the full PS hover
+              // signature.
+              "inline-flex items-center gap-1.5 h-7 px-3 rounded-[var(--radius-pill)]",
               "bg-[var(--success)] text-white text-[12px] font-medium",
+              "border border-[var(--success)]",
+              "transition-all duration-[180ms] ease-out",
+              "enabled:hover:bg-[var(--success-hover)] enabled:hover:border-white",
+              "enabled:hover:shadow-[0_0_0_2px_var(--success)] enabled:hover:scale-[1.05]",
+              "active:opacity-60 active:scale-100",
               "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
-              "enabled:hover:bg-[var(--success-hover)]",
+              "disabled:border-[var(--border-subtle)]",
             )}
           >
             {isPredicting ? (
@@ -1796,7 +1814,8 @@ function VisibilityDropdown() {
           aria-label="Visibility menu"
           title="Visibility"
           className={cn(
-            "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors",
+            "grid h-8 w-8 place-items-center rounded-[var(--radius-6)]",
+            "transition-colors duration-[180ms] ease-out",
             allOn
               ? "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
               : "bg-[var(--bg-hover)] text-[color:var(--text-tertiary)]",
@@ -1809,7 +1828,12 @@ function VisibilityDropdown() {
         <DropdownMenu.Content
           align="end"
           sideOffset={6}
-          className="z-[1000] min-w-[220px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+          // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
+          className={cn(
+            "z-[1000] min-w-[220px] rounded-[var(--radius-6)] p-1",
+            "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+            "shadow-[var(--shadow-card)]",
+          )}
         >
           {items.map((i) => (
             <DropdownMenu.CheckboxItem
@@ -1936,8 +1960,8 @@ function MaskBrushEraserToggle() {
       data-active={eraser ? "true" : "false"}
       title={eraser ? "Eraser on (click to disable)" : "Eraser off (click to enable)"}
       className={cn(
-        "inline-flex items-center justify-center h-8 w-8 rounded-[var(--radius-sm)]",
-        "transition-colors",
+        "inline-flex items-center justify-center h-8 w-8 rounded-[var(--radius-6)]",
+        "transition-colors duration-[180ms] ease-out",
         eraser
           ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
           : "bg-[var(--bg-subtle)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
@@ -2025,7 +2049,8 @@ function SamModePicker({ isVideo }: { isVideo: boolean }) {
             data-active={isActive ? "true" : undefined}
             data-disabled={disabled ? "true" : undefined}
             className={cn(
-              "h-6 px-2 rounded-[var(--radius-xs)] text-[11.5px] font-medium tracking-tight transition-colors",
+              "h-6 px-2 rounded-[var(--radius-xs)] text-[11.5px] font-medium tracking-tight",
+              "transition-colors duration-[180ms] ease-out",
               isActive
                 ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
                 : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
@@ -2074,7 +2099,8 @@ function AutoApplyToggle() {
         aria-pressed={auto}
         onClick={() => setAuto(!auto)}
         className={cn(
-          "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors border",
+          "grid h-8 w-8 place-items-center rounded-[var(--radius-6)] border",
+          "transition-colors duration-[180ms] ease-out",
           auto
             ? "bg-[var(--success-bg)] border-[var(--success)] text-[var(--success)]"
             : "border-transparent text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
@@ -2231,7 +2257,7 @@ function ZoomControls({
           onClick={onZoomOut}
           aria-label="Zoom out"
           data-testid="zoom-out"
-          className="grid h-8 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
+          className="grid h-8 w-7 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors duration-[180ms] ease-out"
         >
           <Minus className="h-3.5 w-3.5" />
         </button>
@@ -2243,7 +2269,7 @@ function ZoomControls({
           onClick={onZoomIn}
           aria-label="Zoom in"
           data-testid="zoom-in"
-          className="grid h-8 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
+          className="grid h-8 w-7 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors duration-[180ms] ease-out"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
@@ -2292,7 +2318,8 @@ function UndoRedoControls({ onUndo, onRedo }: { onUndo?: () => void; onRedo?: ()
           data-testid="undo-button"
           aria-label="Undo"
           className={cn(
-            "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors",
+            "grid h-8 w-8 place-items-center rounded-[var(--radius-6)]",
+            "transition-colors duration-[180ms] ease-out",
             "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
             "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent",
           )}
@@ -2315,7 +2342,8 @@ function UndoRedoControls({ onUndo, onRedo }: { onUndo?: () => void; onRedo?: ()
           data-testid="redo-button"
           aria-label="Redo"
           className={cn(
-            "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors",
+            "grid h-8 w-8 place-items-center rounded-[var(--radius-6)]",
+            "transition-colors duration-[180ms] ease-out",
             "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
             "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent",
           )}
@@ -2544,7 +2572,7 @@ export function EditorToolbar({
               type="button"
               onClick={onFitToScreen}
               aria-label="Fit to screen"
-              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors duration-[180ms] ease-out"
             >
               <Maximize className="h-[18px] w-[18px]" />
             </button>
@@ -2603,7 +2631,8 @@ export function EditorToolbar({
             aria-pressed={filterActive}
             data-testid="filter-trigger"
             className={cn(
-              "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] transition-colors",
+              "grid h-8 w-8 place-items-center rounded-[var(--radius-6)]",
+              "transition-colors duration-[180ms] ease-out",
               filterActive
                 ? "text-[color:var(--accent)] bg-[var(--accent-bg)] hover:bg-[var(--bg-hover)]"
                 : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
@@ -2628,7 +2657,7 @@ export function EditorToolbar({
               }
               aria-label="Keyboard shortcuts"
               data-testid="editor-cheatsheet-trigger"
-              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors duration-[180ms] ease-out"
             >
               <Keyboard className="h-[16px] w-[16px]" />
             </button>
@@ -2641,7 +2670,7 @@ export function EditorToolbar({
               }
               aria-label="Task info"
               data-testid="editor-info-trigger"
-              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors duration-[180ms] ease-out"
             >
               <Info className="h-[16px] w-[16px]" />
             </button>
@@ -2653,7 +2682,7 @@ export function EditorToolbar({
               onClick={() => setSettingsOpen(true)}
               aria-label="Editor settings"
               data-testid="editor-settings-trigger"
-              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors duration-[180ms] ease-out"
             >
               <Settings className="h-[16px] w-[16px]" />
             </button>
@@ -2676,7 +2705,7 @@ export function EditorToolbar({
               type="button"
               data-testid="editor-toolbar-overflow-trigger"
               aria-label="More toolbar actions"
-              className="grid h-8 w-8 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors"
+              className="grid h-8 w-8 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)] transition-colors duration-[180ms] ease-out"
             >
               <MoreHorizontal className="h-[18px] w-[18px]" />
             </button>
@@ -2686,7 +2715,12 @@ export function EditorToolbar({
               align="end"
               sideOffset={6}
               data-testid="editor-toolbar-overflow-content"
-              className="z-[1000] min-w-[220px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+              // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
+              className={cn(
+                "z-[1000] min-w-[220px] rounded-[var(--radius-6)] p-1",
+                "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                "shadow-[var(--shadow-card)]",
+              )}
             >
               <DropdownMenu.Item
                 data-testid="overflow-fit-to-screen"
@@ -2785,10 +2819,17 @@ export function EditorToolbar({
           aria-label="Save now"
           aria-disabled={dirtyCount === 0 && !isSaving && !hasError}
           className={cn(
-            "ml-1 inline-flex h-8 items-center gap-1.5 px-3 rounded-full",
+            // DESIGN.md §4 — Save is the primary commit CTA in the editor.
+            // Carry the full PS hover signature with a green resting fill.
+            "ml-1 inline-flex h-8 items-center gap-1.5 px-3 rounded-[var(--radius-pill)]",
             "bg-[var(--success)] text-[color:var(--success-fg)] text-[12.5px] font-medium tracking-tight",
-            "hover:bg-[var(--success-hover)] transition-colors",
+            "border border-[var(--success)]",
+            "transition-all duration-[180ms] ease-out",
+            "hover:bg-[var(--success-hover)] hover:border-white",
+            "hover:shadow-[0_0_0_2px_var(--success)] hover:scale-[1.05]",
+            "active:opacity-60 active:scale-100",
             "aria-[disabled=true]:bg-[var(--bg-subtle)] aria-[disabled=true]:text-[color:var(--text-tertiary)] aria-[disabled=true]:opacity-60",
+            "aria-[disabled=true]:border-[var(--border-subtle)] aria-[disabled=true]:hover:scale-100 aria-[disabled=true]:hover:shadow-none aria-[disabled=true]:hover:border-[var(--border-subtle)]",
             "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
           )}
         >

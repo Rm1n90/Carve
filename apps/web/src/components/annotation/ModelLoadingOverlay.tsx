@@ -156,7 +156,7 @@ function ModelLoadingOverlayInner({
           <h2
             id="sam-loading-title"
             data-testid="model-loading-title"
-            className="text-[16px] font-medium tracking-tight text-[color:var(--text-primary)] flex items-center gap-2"
+            className="text-[16px] font-semibold tracking-tight text-[color:var(--text-primary)] flex items-center gap-2"
           >
             <Loader2 className="h-4 w-4 animate-spin text-[color:var(--accent)]" />
             {title}
