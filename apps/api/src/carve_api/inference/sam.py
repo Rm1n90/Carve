@@ -113,7 +113,11 @@ def sam_decode_with_hash(
 
 
 def sam_text_prompt_for_asset(
-    asset: Asset, text: str, frame_id: uuid.UUID | None = None
+    asset: Asset,
+    text: str,
+    frame_id: uuid.UUID | None = None,
+    *,
+    use_vlm_fo1: bool = False,
 ) -> list[dict]:
     """SAM 3 text-prompt entry point.
 
@@ -125,11 +129,15 @@ def sam_text_prompt_for_asset(
 
     v3.8 Phase 4-video step F4 — ``frame_id`` selects a per-frame JPEG
     for video assets.
+
+    v3.21+ — ``use_vlm_fo1`` opts into the VLM-FO1 precision filter
+    on the model service side. Default False preserves byte-for-byte
+    behavior for existing callers.
     """
     body = fetch_asset_bytes(asset, frame_id=frame_id)
     b64 = base64.b64encode(body).decode("ascii")
     try:
-        return sam_text_prompt(b64, text)
+        return sam_text_prompt(b64, text, use_vlm_fo1=use_vlm_fo1)
     except ModelServiceError as exc:
         if exc.status_code == 409:
             raise Sam3NotEnabled(f"text-prompt: {exc.body!r}") from exc

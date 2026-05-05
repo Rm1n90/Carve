@@ -56,6 +56,7 @@ def auto_text_for_asset(
     find_all: bool,
     overwrite: bool,
     actor_id: uuid.UUID | None,
+    use_vlm_fo1: bool = False,
 ) -> dict:
     """Run SAM 3 text-prompt for each selected class and persist results.
 
@@ -99,7 +100,10 @@ def auto_text_for_asset(
 
     for cls in eligible:
         prompt = (cls.text_prompt or "").strip()
-        results = sam_text_prompt_for_asset(asset, prompt)
+        # v3.21+ — Auto mode coverage: every class iteration honors the
+        # use_vlm_fo1 flag so the toggle behaves consistently across
+        # single-asset and batch surfaces.
+        results = sam_text_prompt_for_asset(asset, prompt, use_vlm_fo1=use_vlm_fo1)
 
         # Score filter.
         kept = [r for r in results if float(r.get("score", 0.0)) >= threshold]

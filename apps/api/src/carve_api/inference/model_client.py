@@ -203,7 +203,9 @@ def sam_decode(
         return r.json()
 
 
-def sam_text_prompt(image_b64: str, text: str) -> list[dict]:
+def sam_text_prompt(
+    image_b64: str, text: str, *, use_vlm_fo1: bool = False,
+) -> list[dict]:
     """POST /sam/text-prompt — SAM 3 only.
 
     Returns a list of candidate masks for the supplied text concept.
@@ -211,9 +213,16 @@ def sam_text_prompt(image_b64: str, text: str) -> list[dict]:
     SAM model is not SAM 3 (we re-raise as a 409 ModelServiceError so the
     proxy maps it to a UI-friendly response). 503 means the predictor
     factory hasn't been registered yet.
+
+    v3.21+ — ``use_vlm_fo1`` opts into the VLM-FO1 precision filter. The
+    flag is forwarded to the model service only when True so older
+    deployments that pre-date the kwarg keep working unchanged.
     """
+    body: dict = {"image_b64": image_b64, "text": text}
+    if use_vlm_fo1:
+        body["use_vlm_fo1"] = True
     with _wrap_unreachable("sam_text_prompt"), _client() as c:
-        r = c.post("/sam/text-prompt", json={"image_b64": image_b64, "text": text})
+        r = c.post("/sam/text-prompt", json=body)
         if r.status_code >= 400:
             raise ModelServiceError(r.status_code, _safe_json(r))
         return r.json()

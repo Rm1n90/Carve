@@ -262,6 +262,10 @@ class AutoTextBatchPayload:
     threshold: float
     find_all: bool
     overwrite: bool
+    # v3.21+ — VLM-FO1 precision filter opt-in for the entire batch.
+    # Default False ensures payloads pickled before this field exists
+    # still deserialize (dataclass default kicks in).
+    use_vlm_fo1: bool = False
 
 
 def build_auto_text_payload(
@@ -272,6 +276,7 @@ def build_auto_text_payload(
     threshold: float,
     find_all: bool,
     overwrite: bool,
+    use_vlm_fo1: bool = False,
 ) -> AutoTextBatchPayload:
     return AutoTextBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -281,6 +286,7 @@ def build_auto_text_payload(
         threshold=float(threshold),
         find_all=bool(find_all),
         overwrite=bool(overwrite),
+        use_vlm_fo1=bool(use_vlm_fo1),
     )
 
 
@@ -369,6 +375,7 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
                     find_all=payload.find_all,
                     overwrite=payload.overwrite,
                     actor_id=actor_uuid,
+                    use_vlm_fo1=getattr(payload, "use_vlm_fo1", False),
                 )
                 session.commit()
                 total_created += int(result.get("annotations_created", 0))

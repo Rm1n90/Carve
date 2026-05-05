@@ -101,6 +101,9 @@ class SamStatusOut(BaseModel):
     loaded_at: str | None = None
     error: str | None = None
     job_id: str | None = None
+    # v3.21+ — proxied from the model service's /sam/status. Tells the
+    # editor whether the per-user VLM-FO1 toggle should be visible.
+    vlm_fo1_available: bool = False
 
 
 def _probe_model_service() -> bool:
@@ -271,4 +274,5 @@ def sam_status_endpoint(
         loaded_at=body.get("loaded_at"),
         error=body.get("error"),
         job_id=body.get("job_id"),
+        vlm_fo1_available=bool(body.get("vlm_fo1_available", False)),
     )

@@ -365,6 +365,10 @@ class SamAutoTextBatchIn(BaseModel):
     threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     find_all: bool = Field(default=True)
     overwrite: bool = Field(default=False)
+    # v3.21+ — VLM-FO1 precision filter opt-in for the multi-asset Auto
+    # mode batch. Persists into AutoTextBatchPayload so each per-asset
+    # iteration in the worker honors the same toggle.
+    use_vlm_fo1: bool = Field(default=False)
 
 
 @task_inference_router.post("/{task_id}/sam/auto-text-batch")
@@ -407,6 +411,7 @@ def enqueue_sam_auto_text_batch(
         threshold=payload.threshold,
         find_all=payload.find_all,
         overwrite=payload.overwrite,
+        use_vlm_fo1=payload.use_vlm_fo1,
     )
     try:
         from rq import Queue
@@ -493,6 +498,10 @@ class SamTextIn(BaseModel):
 
     text: str = Field(..., min_length=1, max_length=200)
     frame_id: uuid.UUID | None = None
+    # v3.21+ — opt-in VLM-FO1 precision filter (server-side gating via
+    # /sam/status.vlm_fo1_available; default False preserves existing
+    # behaviour).
+    use_vlm_fo1: bool = False
 
 
 class SamBoxIn(BaseModel):
@@ -520,6 +529,9 @@ class SamAutoTextIn(BaseModel):
     threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     find_all: bool = Field(default=True)
     overwrite: bool = Field(default=False)
+    # v3.21+ — VLM-FO1 precision filter opt-in for the Auto-mode dialog.
+    # The flag fans out to every class iteration inside auto_text_for_asset.
+    use_vlm_fo1: bool = Field(default=False)
 
 
 class SamAutoTextOut(BaseModel):
@@ -578,6 +590,7 @@ def sam_auto_text_endpoint(
             find_all=payload.find_all,
             overwrite=payload.overwrite,
             actor_id=user.id,
+            use_vlm_fo1=payload.use_vlm_fo1,
         )
     except AutoTextNoEligibleClasses as exc:
         raise _http(exc) from exc
@@ -656,7 +669,10 @@ def sam_text_prompt_endpoint(
         raise _http(exc) from exc
     try:
         return sam_text_prompt_for_asset(
-            asset, payload.text, frame_id=payload.frame_id
+            asset,
+            payload.text,
+            frame_id=payload.frame_id,
+            use_vlm_fo1=payload.use_vlm_fo1,
         )
     except AppError as exc:
         raise _http(exc) from exc
