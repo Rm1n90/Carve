@@ -79,6 +79,17 @@ class Task(Base):
     archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    # Plan-21 — task completion tracking. ``completed_at`` is set when
+    # the user marks the task as fully annotated; ``completed_by`` is the
+    # acting user. Both clear in tandem when the task is re-opened.
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    completed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class Class(Base):

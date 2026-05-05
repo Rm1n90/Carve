@@ -3,14 +3,18 @@ import { Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
   Calendar,
+  Check,
+  CheckSquare,
   ChevronRight,
   Clock,
   Image as ImageIcon,
+  RotateCcw,
   Video,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import type { Task } from "@/api/tasks";
 import { Badge } from "@/components/ui/Badge";
+import { IconButton } from "@/components/ui/IconButton";
 import { cn } from "@/lib/cn";
 import { formatRelative } from "@/lib/relativeTime";
 
@@ -60,6 +64,12 @@ interface TaskRowProps {
    *  horizontally on each row so the user can fire those flows
    *  without entering the task. Parent owns the dialogs. */
   actionsSlot?: ReactNode;
+  /** Plan-21 — fire when the user toggles the row's complete state
+   *  via the hover-revealed icon button. Parent owns the mutation. */
+  onToggleComplete?: (next: boolean) => void;
+  /** Plan-21 — true while the toggle PATCH is in flight (disables
+   *  the button so double-clicks don't fire two requests). */
+  toggleCompletePending?: boolean;
 }
 
 function formatPct(pct: number | null | undefined): string | null {
@@ -79,6 +89,8 @@ export function TaskRow({
   classesChip,
   menuSlot,
   actionsSlot,
+  onToggleComplete,
+  toggleCompletePending = false,
 }: TaskRowProps) {
   const annotated = formatPct(annotatedPct);
   const accepted = formatPct(acceptedPct);
@@ -91,10 +103,22 @@ export function TaskRow({
   const isOverdue =
     !Number.isNaN(dueMs) && dueMs < Date.now() && task.archived_at == null;
 
+  // Plan-21 — completed rows render a green pill and dim slightly so the
+  // active work in the list reads first. Editing is still allowed (the
+  // editor itself never dims), so this is just a visual hint.
+  const isCompleted = task.completed_at != null;
+
+  const handleToggleComplete = (e: MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onToggleComplete?.(!isCompleted);
+  };
+
   return (
     <li
       data-testid={`task-row-${task.id}`}
       data-overdue={isOverdue ? "true" : undefined}
+      data-completed={isCompleted ? "true" : undefined}
       className={cn(
         "flex items-stretch border-b border-[var(--border-subtle)] last:border-b-0 transition-colors group",
         isOverdue
@@ -106,7 +130,12 @@ export function TaskRow({
         to="/projects/$projectId/tasks/$taskId"
         params={{ projectId, taskId: task.id }}
         data-testid={`project-detail-task-row-${task.id}`}
-        className="flex flex-1 items-center gap-3 px-3 py-2 min-w-0"
+        className={cn(
+          "flex flex-1 items-center gap-3 px-3 py-2 min-w-0",
+          // Plan-21 — dim the row body when completed; the pill itself
+          // stays at full opacity for legibility.
+          isCompleted && "opacity-70",
+        )}
       >
         <span className="grid h-6 w-6 place-items-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)]">
           {task.kind === "video" ? (
@@ -195,14 +224,63 @@ export function TaskRow({
           </span>
         )}
         {classesChip}
+        {isCompleted && (
+          <span
+            data-testid={`task-row-completed-pill-${task.id}`}
+            // Plan-21 — green completion pill. Uses --success tokens.
+            // Sits at full opacity even when the row is dimmed so the
+            // status reads as the dominant signal.
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full px-2 h-5",
+              "text-[11px] font-medium tracking-tight opacity-100",
+              "bg-[var(--success-bg)] text-[color:var(--success)]",
+              "border border-[color-mix(in_oklch,var(--success)_50%,transparent)]",
+            )}
+            title={`Completed ${task.completed_at ?? ""}`}
+          >
+            <Check aria-hidden className="h-3 w-3" />
+            Completed
+          </span>
+        )}
         <Badge variant="ghost">{task.kind}</Badge>
         <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)] transition-transform group-hover:translate-x-0.5" />
       </Link>
-      {actionsSlot && (
+      {(actionsSlot || onToggleComplete) && (
         <div
           className="flex items-center gap-1 pr-1"
           data-testid={`task-row-actions-${task.id}`}
         >
+          {onToggleComplete && (
+            <IconButton
+              type="button"
+              variant="ghost"
+              size="sm"
+              data-testid={`task-row-toggle-complete-${task.id}`}
+              aria-label={
+                isCompleted ? "Mark task in progress" : "Mark task complete"
+              }
+              title={
+                isCompleted ? "Mark in progress" : "Mark complete"
+              }
+              onClick={handleToggleComplete}
+              disabled={toggleCompletePending}
+              className={cn(
+                // Plan-21 — hover-only reveal on the row. When the task
+                // is already completed, keep the button visible so the
+                // user has a clear way to flip it back.
+                isCompleted
+                  ? "opacity-100 text-[color:var(--success)]"
+                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                "transition-opacity",
+              )}
+            >
+              {isCompleted ? (
+                <RotateCcw className="h-3.5 w-3.5" />
+              ) : (
+                <CheckSquare className="h-3.5 w-3.5" />
+              )}
+            </IconButton>
+          )}
           {actionsSlot}
         </div>
       )}

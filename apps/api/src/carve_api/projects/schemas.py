@@ -96,6 +96,10 @@ class TaskPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     due_date: datetime | None = None
     archived: bool | None = None
+    # Plan-21 — task completion toggle. ``True`` stamps ``completed_at``
+    # + ``completed_by``; ``False`` clears both. ``None`` (default) means
+    # "leave the completion state alone".
+    completed: bool | None = None
 
 
 class TaskOut(BaseModel):
@@ -106,6 +110,9 @@ class TaskOut(BaseModel):
     created_at: datetime
     due_date: datetime | None = None
     archived_at: datetime | None = None
+    # Plan-21 — task completion fields. Both null means in-progress.
+    completed_at: datetime | None = None
+    completed_by: UUID | None = None
 
     @classmethod
     def from_orm_task(cls, t) -> "TaskOut":
@@ -117,7 +124,23 @@ class TaskOut(BaseModel):
             created_at=t.created_at,
             due_date=getattr(t, "due_date", None),
             archived_at=getattr(t, "archived_at", None),
+            completed_at=getattr(t, "completed_at", None),
+            completed_by=getattr(t, "completed_by", None),
         )
+
+
+class TaskCompletionStatus(BaseModel):
+    """Plan-21 — completion-status payload for the editor's smart banner.
+
+    ``annotated_assets`` counts assets that have at least one annotation
+    in this task (frame-level dedup is intentionally skipped: an asset
+    is "annotated" the moment it has any annotation row). ``percent`` is
+    a 0..1 float so the UI can show progress at-a-glance.
+    """
+
+    total_assets: int
+    annotated_assets: int
+    percent: float
 
 
 class ClassIn(BaseModel):

@@ -778,6 +778,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     () => (taskListQ.data ?? []).find((t) => t.id === taskId) ?? null,
     [taskListQ.data, taskId],
   );
+
   const breadcrumbSegments = useMemo(() => {
     const segments: import("@/components/nav/Breadcrumbs").BreadcrumbSegment[] = [
       { label: "Workspace", to: "/projects", testId: "editor-bc-workspace" },

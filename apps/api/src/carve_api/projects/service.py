@@ -304,11 +304,16 @@ class TaskService:
         due_date: datetime | None = None,
         clear_due_date: bool = False,
         archived: bool | None = None,
+        completed: bool | None = None,
+        completed_by: uuid.UUID | None = None,
     ) -> Task:
         """Patch a task. ``clear_due_date`` distinguishes "leave alone"
         from "explicitly set to NULL" so the router can translate a
         payload ``due_date=null`` (key present) into the latter.
         ``archived=True`` sets ``archived_at`` to now; ``False`` clears.
+        Plan-21 — ``completed=True`` stamps ``completed_at`` plus
+        ``completed_by`` (supplied by the router from the current user);
+        ``False`` clears both. ``None`` leaves the completion state alone.
         """
         t = self.get(project=project, task_id=task_id, include_deleted=False)
         if name is not None:
@@ -321,6 +326,12 @@ class TaskService:
             t.archived_at = datetime.now(timezone.utc)
         elif archived is False:
             t.archived_at = None
+        if completed is True and t.completed_at is None:
+            t.completed_at = datetime.now(timezone.utc)
+            t.completed_by = completed_by
+        elif completed is False:
+            t.completed_at = None
+            t.completed_by = None
         self.session.flush()
         return t
 

@@ -2,8 +2,11 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from carve_api.annotations.models import Annotation
+from carve_api.assets.models import Asset, Frame
 from carve_api.audit import service as audit_service
 from carve_api.audit.actions import TASK_DELETED
 from carve_api.auth.models import User
@@ -22,6 +25,7 @@ from carve_api.projects.schemas import (
     ProjectPatch,
     TaskClassesIn,
     TaskClassesOut,
+    TaskCompletionStatus,
     TaskIn,
     TaskOut,
     TaskPatch,
@@ -220,6 +224,11 @@ def patch_task(
     """Plan-15 Track G — patch a task. Supports rename, schedule, and
     archive/unarchive. ``payload.due_date`` of ``null`` clears the
     schedule when the field is present in the request body.
+
+    Plan-21 — also accepts ``completed`` (bool). ``True`` stamps
+    ``completed_at`` to ``now()`` and ``completed_by`` to the actor;
+    ``False`` clears both. Completion is independent of archive — a
+    task can be completed AND archived at the same time.
     """
     try:
         project = require_project_role(db, user, project_id, _MUTATING_ROLES)
@@ -234,11 +243,61 @@ def patch_task(
             due_date=payload.due_date,
             clear_due_date=clear_due_date,
             archived=payload.archived,
+            completed=payload.completed,
+            completed_by=user.id,
         )
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
     return TaskOut.from_orm_task(task)
+
+
+@router.get(
+    "/{project_id}/tasks/{task_id}/completion-status",
+    response_model=TaskCompletionStatus,
+)
+def task_completion_status(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TaskCompletionStatus:
+    """Plan-21 — return how many of a task's assets have at least one
+    annotation. Powers the editor's smart "Mark complete" suggestion
+    banner: when ``annotated_assets == total_assets`` (and > 0) the task
+    is annotation-complete and worth flipping the marker on.
+
+    Frame-level dedup is intentionally skipped: an asset is counted as
+    "annotated" the moment any annotation row exists for it in this
+    task. ``percent`` is a 0..1 float (0 when ``total_assets`` is 0).
+    """
+    try:
+        # Read access is enough — gate on ProjectService.get which
+        # honours membership for non-admin users.
+        project = ProjectService(db).get(actor=user, project_id=project_id)
+        task = TaskService(db).get(project=project, task_id=task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    total_assets = db.execute(
+        select(func.count(Asset.id)).where(Asset.task_id == task.id)
+    ).scalar_one()
+
+    annotated_assets = db.execute(
+        select(func.count(func.distinct(Frame.asset_id)))
+        .select_from(Annotation)
+        .join(Frame, Frame.id == Annotation.frame_id)
+        .where(Annotation.task_id == task.id)
+    ).scalar_one()
+
+    total = int(total_assets or 0)
+    annotated = int(annotated_assets or 0)
+    percent = (annotated / total) if total > 0 else 0.0
+    return TaskCompletionStatus(
+        total_assets=total,
+        annotated_assets=annotated,
+        percent=percent,
+    )
 
 
 @router.delete(

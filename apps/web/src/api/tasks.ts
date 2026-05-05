@@ -13,6 +13,9 @@ export interface Task {
   // Plan-15 Track G — optional schedule + archive marker (ISO 8601).
   due_date?: string | null;
   archived_at?: string | null;
+  // Plan-21 — task completion. Both null means "in progress".
+  completed_at?: string | null;
+  completed_by?: string | null;
 }
 
 export interface TaskIn {
@@ -26,6 +29,22 @@ export interface TaskPatch {
   // ``null`` clears the schedule. Omit the key to leave unchanged.
   due_date?: string | null;
   archived?: boolean;
+  // Plan-21 — completion toggle. ``true`` stamps completion fields,
+  // ``false`` clears them. Omit to leave the completion state alone.
+  completed?: boolean;
+}
+
+/**
+ * Plan-21 — payload returned by ``GET .../tasks/{id}/completion-status``.
+ * Drives the editor's "Task ready for completion" smart-suggestion
+ * banner: render only when ``annotated_assets > 0 &&
+ * annotated_assets === total_assets`` and the task is not yet completed.
+ */
+export interface TaskCompletionStatusResponse {
+  total_assets: number;
+  annotated_assets: number;
+  /** 0..1 fraction of assets with at least one annotation. */
+  percent: number;
 }
 
 export interface ListTasksOptions {
@@ -79,6 +98,31 @@ export const tasksApi = {
       await api.patch<Task>(`/projects/${projectId}/tasks/${taskId}`, {
         archived: false,
       })
+    ).data,
+  // Plan-21 — toggle a task between "completed" and "in progress".
+  // Wrap the existing PATCH; the backend stamps/clears
+  // ``completed_at`` and ``completed_by`` based on the boolean.
+  markComplete: async (
+    projectId: string,
+    taskId: string,
+    completed: boolean,
+  ): Promise<Task> =>
+    (
+      await api.patch<Task>(`/projects/${projectId}/tasks/${taskId}`, {
+        completed,
+      })
+    ).data,
+  // Plan-21 — fetch how many of a task's assets have at least one
+  // annotation. Used by the editor's smart-suggestion banner. The
+  // response shape mirrors the Pydantic ``TaskCompletionStatus``.
+  completionStatus: async (
+    projectId: string,
+    taskId: string,
+  ): Promise<TaskCompletionStatusResponse> =>
+    (
+      await api.get<TaskCompletionStatusResponse>(
+        `/projects/${projectId}/tasks/${taskId}/completion-status`,
+      )
     ).data,
   delete: async (projectId: string, taskId: string): Promise<void> => {
     await api.delete(`/projects/${projectId}/tasks/${taskId}`);

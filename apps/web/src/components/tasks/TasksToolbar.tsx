@@ -7,7 +7,11 @@ import { Input, Select } from "@/components/ui";
  * Plan 14 Phase 8 Task 2 — sticky toolbar for the project detail's
  * Tasks tab. Owns search, status, sort, and "New task" controls.
  */
-export type TaskStatusFilter = "all" | "active" | "archived";
+// Plan-21 — `"completed"` chip joins the existing trio. ``"active"``
+// keeps its prior meaning of "not archived" but also implicitly excludes
+// completed tasks (the page filter handles that). ``"completed"`` is a
+// dedicated tab so users can audit finished work.
+export type TaskStatusFilter = "all" | "active" | "completed" | "archived";
 export type TaskSort = "updated-desc" | "name-asc";
 
 interface Props {
@@ -20,10 +24,13 @@ interface Props {
   onNewTask: () => void;
 }
 
+// Plan-21 — chip order matches a natural workflow read: All → Active →
+// Completed → Archived. The default selection on the page is "Active".
 const STATUS_CHIPS: { value: TaskStatusFilter; label: string }[] = [
-  { value: "active", label: "Active" },
-  { value: "archived", label: "Archived" },
   { value: "all", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "completed", label: "Completed" },
+  { value: "archived", label: "Archived" },
 ];
 
 const SORT_OPTIONS: { value: TaskSort; label: string }[] = [

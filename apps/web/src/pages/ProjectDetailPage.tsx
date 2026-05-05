@@ -960,6 +960,7 @@ function FilteredTasksList({
   renderClassesChip,
   renderMenu,
   renderActions,
+  getToggleComplete,
 }: {
   projectId: string;
   tasks: Task[];
@@ -968,6 +969,13 @@ function FilteredTasksList({
   renderClassesChip: (t: Task) => ReactNode;
   renderMenu: (t: Task) => ReactNode;
   renderActions?: (t: Task) => ReactNode;
+  // Plan-21 — per-row completion toggle. Returns the click handler
+  // and a `pending` flag so the IconButton can disable itself while
+  // the PATCH is in flight. Optional so existing call sites keep
+  // working until they wire it up.
+  getToggleComplete?: (
+    t: Task,
+  ) => { onToggle: (next: boolean) => void; pending: boolean };
 }) {
   if (!isLoading && !hasAnyTasks) {
     return (
@@ -1009,16 +1017,21 @@ function FilteredTasksList({
 
   return (
     <ul className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] overflow-hidden">
-      {tasks.map((t) => (
-        <TaskRow
-          key={t.id}
-          projectId={projectId}
-          task={t}
-          classesChip={renderClassesChip(t)}
-          menuSlot={renderMenu(t)}
-          actionsSlot={renderActions ? renderActions(t) : undefined}
-        />
-      ))}
+      {tasks.map((t) => {
+        const toggle = getToggleComplete?.(t);
+        return (
+          <TaskRow
+            key={t.id}
+            projectId={projectId}
+            task={t}
+            classesChip={renderClassesChip(t)}
+            menuSlot={renderMenu(t)}
+            actionsSlot={renderActions ? renderActions(t) : undefined}
+            onToggleComplete={toggle?.onToggle}
+            toggleCompletePending={toggle?.pending}
+          />
+        );
+      })}
     </ul>
   );
 }
@@ -1083,7 +1096,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   // to "all" for non-active filters until backend support lands).
   const [tasksQuery, setTasksQuery] = useState("");
   const [tasksStatus, setTasksStatus] =
-    useState<TaskStatusFilter>("active");
+    useState<TaskStatusFilter>("all");
   const [tasksSort, setTasksSort] = useState<TaskSort>("updated-desc");
   // Surface the new-task creator from the toolbar; the existing
   // ``NewTaskDialog`` controls its own open state via internal state,
@@ -1116,6 +1129,8 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
 
   // Plan-15 Track G — honor the archived/active filter using the new
   // ``archived_at`` column.
+  // Plan-21 — adds the "completed" chip and a secondary sort that pushes
+  // completed tasks below active ones inside any view.
   const filteredTasks = useMemo(() => {
     const all = tasksQ.data ?? [];
     const q = tasksQuery.trim().toLowerCase();
@@ -1125,11 +1140,21 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     }
     if (tasksStatus === "archived") {
       result = result.filter((t) => t.archived_at != null);
+    } else if (tasksStatus === "completed") {
+      result = result.filter((t) => t.completed_at != null);
     } else if (tasksStatus === "active") {
-      result = result.filter((t) => t.archived_at == null);
+      // Active = NOT completed AND NOT archived.
+      result = result.filter(
+        (t) => t.archived_at == null && t.completed_at == null,
+      );
     }
     const next = [...result];
     next.sort((a, b) => {
+      // Plan-21 — completed tasks always sort below active ones within
+      // the same view, regardless of the secondary sort selection.
+      const aDone = a.completed_at != null ? 1 : 0;
+      const bDone = b.completed_at != null ? 1 : 0;
+      if (aDone !== bDone) return aDone - bDone;
       if (tasksSort === "name-asc") {
         return a.name.localeCompare(b.name);
       }
@@ -1140,6 +1165,41 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     });
     return next;
   }, [tasksQ.data, tasksQuery, tasksStatus, tasksSort]);
+
+  // Plan-21 — completion summary for the project header strip.
+  const completionSummary = useMemo(() => {
+    const all = tasksQ.data ?? [];
+    const total = all.length;
+    const completed = all.filter((t) => t.completed_at != null).length;
+    const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+    return { total, completed, percent };
+  }, [tasksQ.data]);
+
+  // Plan-21 — mark a task complete / in progress. Same toast pattern as
+  // archive/unarchive; invalidates the tasks list so the row re-renders
+  // with the green pill.
+  const markComplete = useMutation({
+    mutationFn: ({
+      taskId,
+      completed,
+    }: {
+      taskId: string;
+      completed: boolean;
+    }) => tasksApi.markComplete(projectId, taskId, completed),
+    onSuccess: (_t, vars) => {
+      qc.invalidateQueries({ queryKey: ["tasks", projectId] });
+      qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
+      showToast(
+        vars.completed
+          ? "Task marked complete."
+          : "Task marked in progress.",
+        { variant: "success" },
+      );
+    },
+    onError: () => {
+      showToast("Failed to update task completion.", { variant: "error" });
+    },
+  });
   const projectWeightsQ = useQuery({
     queryKey: ["project-weights", projectId],
     queryFn: () => weightsApi.listForProject(projectId),
@@ -1328,6 +1388,47 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
         </Link>
       </header>
 
+      {/* Plan-21 — completion progress strip. Renders only once tasks
+          have loaded so we don't flash 0/0 on first paint. The accent
+          fill width animates over 600ms so newly-completed tasks read
+          as a real signal, not a hard snap. */}
+      {completionSummary.total > 0 && (
+        <div
+          data-testid="project-detail-completion-strip"
+          className="grid gap-1.5"
+        >
+          <div className="flex items-baseline justify-between gap-2 text-[11.5px] text-[color:var(--text-tertiary)]">
+            <span>
+              <span className="font-mono tabular-nums text-[color:var(--text-secondary)]">
+                {completionSummary.completed}
+              </span>{" "}
+              /{" "}
+              <span className="font-mono tabular-nums">
+                {completionSummary.total}
+              </span>{" "}
+              tasks completed
+            </span>
+            <span className="font-mono tabular-nums">
+              {completionSummary.percent}%
+            </span>
+          </div>
+          <div
+            className="h-1 rounded-full bg-[var(--bg-subtle)] overflow-hidden"
+            role="progressbar"
+            aria-valuenow={completionSummary.percent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Project task completion"
+          >
+            <div
+              data-testid="project-detail-completion-bar"
+              className="h-full bg-[var(--success)] transition-[width] duration-[600ms] ease-out"
+              style={{ width: `${completionSummary.percent}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       <Tabs defaultValue="overview" data-testid="project-detail-tabs" variant="underline">
         <Tabs.List
           aria-label="Project sections"
@@ -1447,6 +1548,13 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                 tasks={filteredTasks}
                 isLoading={tasksQ.isLoading}
                 hasAnyTasks={(tasksQ.data?.length ?? 0) > 0}
+                getToggleComplete={(t) => ({
+                  onToggle: (next) =>
+                    markComplete.mutate({ taskId: t.id, completed: next }),
+                  pending:
+                    markComplete.isPending &&
+                    markComplete.variables?.taskId === t.id,
+                })}
                 renderActions={(t) => (
                   <>
                     <button
