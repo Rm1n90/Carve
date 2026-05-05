@@ -586,6 +586,34 @@ class ClassService:
         self.session.delete(c)
         self.session.flush()
 
+        # Plan-20.15 — re-densify the remaining classes' ``idx`` values
+        # to a contiguous 0..N-1 sequence. Without this, deleting a
+        # middle class leaves a hole in the index space (e.g. 0,1,3,4)
+        # which (a) confuses the user — the third class still has idx=3
+        # but is rendered second; and (b) means newly added classes get
+        # sparse idx values, drifting further from what the export
+        # produces (export already densifies). Annotations reference
+        # ``class_id`` (UUID), not idx, so reindexing only changes the
+        # display ordering — no data is moved or rewritten.
+        #
+        # ``UNIQUE(project_id, idx)`` forbids two classes sharing an
+        # idx mid-update, so we use a two-phase approach: stage new
+        # values into a guaranteed-empty negative-offset region, flush,
+        # then apply the final 0..N-1 values.
+        remaining = list(
+            self.session.execute(
+                select(Class)
+                .where(Class.project_id == project.id)
+                .order_by(Class.idx)
+            ).scalars()
+        )
+        for parked_offset, cls in enumerate(remaining, start=1):
+            cls.idx = -parked_offset
+        self.session.flush()
+        for new_idx, cls in enumerate(remaining):
+            cls.idx = new_idx
+        self.session.flush()
+
     def import_from_project(
         self, *, source: Project, dest: Project
     ) -> tuple[int, int]:

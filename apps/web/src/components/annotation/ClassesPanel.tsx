@@ -470,6 +470,7 @@ function ClassRowItem({
                     <DropdownMenu.Item
                       data-testid={`class-menu-delete-${cls.id}`}
                       onSelect={async () => {
+                        const annotationsForThisClass = count;
                         const ok = await confirm({
                           title: "Delete class?",
                           description: (
@@ -478,7 +479,20 @@ function ClassRowItem({
                               <span className="font-medium text-[color:var(--text-primary)]">
                                 {cls.name}
                               </span>
-                              ? Annotations referencing it will become unclassified.
+                              ?
+                              {annotationsForThisClass > 0 && (
+                                <>
+                                  {" "}This will also{" "}
+                                  <span className="font-medium text-[color:var(--danger)]">
+                                    permanently delete {annotationsForThisClass}{" "}
+                                    annotation
+                                    {annotationsForThisClass === 1 ? "" : "s"}
+                                  </span>{" "}
+                                  that use it.
+                                </>
+                              )}{" "}
+                              The remaining classes will be renumbered so their
+                              order stays contiguous. This action is irreversible.
                             </>
                           ),
                           variant: "danger",
