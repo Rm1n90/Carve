@@ -391,63 +391,60 @@
    render the 1px specular highlight that catches simulated light at
    the top edge — Apple's signature liquid sheen.
    ============================================================ */
+/* DESIGN.md §1 — "There is no 'glassmorphism' moment on the site"
+   except the Filter Mist sticky-bar tint. The .glass-surface* utility
+   class names are kept for backward compatibility with the dozens of
+   callsites that already reference them, but their definition is now
+   the DESIGN.md solid-surface treatment: bg-elev background, hairline
+   border, and a calibrated drop from the §6 shadow scale. Removing the
+   blur is the change that actually makes the rest of the design system
+   land — DESIGN.md is built around solid surface alternation, not
+   translucency. */
 .glass-surface {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  box-shadow: var(--glass-shadow);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-feather);
 }
 
 .glass-surface-strong {
-  background: var(--glass-bg-strong);
-  border: 1px solid var(--glass-border-strong);
-  backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
-  box-shadow: var(--glass-shadow-lifted);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card);
 }
 
 .glass-surface-subtle {
-  background: var(--glass-bg-subtle);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(calc(var(--glass-blur) * 0.6)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 0.6)) saturate(var(--glass-saturate));
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
 }
 
-/* Specular highlight — a 1px gradient top-edge that catches light. */
+/* DESIGN.md §1 — the specular highlight only made sense over the
+   translucent glass surface. Now that surfaces are solid, the
+   highlight would read as an out-of-place glossy stripe, so we
+   neutralise it. The class name is kept so callsites continue to
+   compile; surfaces that genuinely want a specular catch (rare —
+   only when a card overlaps photography) can opt back in by setting
+   ``data-specular="on"`` on the element. */
 .glass-specular::before {
+  content: none;
+}
+
+.glass-specular[data-specular="on"]::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background: linear-gradient(
-    180deg,
-    var(--glass-highlight) 0%,
-    transparent 30%
-  );
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.10) 0%, transparent 30%);
   mix-blend-mode: screen;
   opacity: 0.6;
 }
 
-/* Tooltip-tuned glass — same liquid surface, but a tighter shadow so the
-   tooltip reads as "close to the cursor" rather than "lifted modal". */
+/* DESIGN.md §1 — tooltips are solid; tile-tier shadow so they read
+   close to the cursor rather than as a lifted modal. */
 .glass-tooltip {
-  background: var(--glass-bg-strong);
-  border: 1px solid var(--glass-border-strong);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  box-shadow:
-    0 1px 0 oklch(0.98 0 0 / 0.06) inset,
-    0 0 0 0.5px oklch(0.98 0 0 / 0.10) inset,
-    0 4px 16px oklch(0 0 0 / 0.40);
-}
-
-[data-theme="light"] .glass-tooltip {
-  box-shadow:
-    0 1px 0 oklch(1 0 0 / 0.85) inset,
-    0 0 0 0.5px oklch(0.20 0 0 / 0.05) inset,
-    0 4px 16px oklch(0 0 0 / 0.10);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-tile);
 }
 
 /* Glass chip — small interactive pill (theme toggle, status badge, etc.).
