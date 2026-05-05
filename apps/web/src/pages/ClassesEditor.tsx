@@ -262,7 +262,14 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
                             <span className="font-medium text-[color:var(--text-primary)]">
                               {c.name}
                             </span>
-                            ? Annotations referencing it will become unclassified.
+                            ? Every annotation that uses it across the
+                            entire project will be{" "}
+                            <span className="font-medium text-[color:var(--danger)]">
+                              permanently deleted
+                            </span>
+                            . The remaining classes will be renumbered so
+                            their order stays contiguous. This action is
+                            irreversible.
                           </>
                         ),
                         variant: "danger",
