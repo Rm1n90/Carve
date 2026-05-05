@@ -2360,18 +2360,26 @@ export function AnnotationCanvas({
       }
       else if (tool === "sam") {
         // Plan-17 — clicks on existing annotations have higher priority
-        // than SAM's positive/negative point handling. Both buttons get
-        // the same hit-test plus a selection-aware fallback so a
-        // right-click anywhere ALSO bails when the user has already
-        // selected something (the contextmenu event opens the Convert
-        // menu for that selection). Additionally, clicks that overlap
-        // the just-dismissed context menu are suppressed entirely so
-        // the click that closes the menu never doubles as a positive
-        // SAM-point click underneath.
+        // than SAM's positive/negative point handling, EXCEPT in
+        // ``point`` mode where right-click is unambiguously a negative
+        // sample (Plan-20.13 fix — the previous early returns swallowed
+        // right-clicks landing over an existing annotation, or any
+        // right-click while the canvas had a selection, so the user's
+        // negative point never reached SamTool.addClick and the SAM
+        // mask wouldn't shrink).
         if (isContextMenuOpenOrJustClosed()) {
           return;
         }
-        if (e.button === 0 || e.button === 2) {
+        const samModeForGuards = useTool.getState().samMode;
+        const isPointMode = samModeForGuards === "point";
+        // Skip the hit-test / has-selection short-circuits in point
+        // mode — every click in point mode is a SAM-point click. Box
+        // and Track modes still get the selection-prioritised
+        // behaviour because their pointerdown means "start a SAM
+        // box/track" and accidentally consuming a right-click on an
+        // existing annotation would lose the user's chance to
+        // right-click into the context menu.
+        if (!isPointMode && (e.button === 0 || e.button === 2)) {
           const hit = hitTest(p);
           const sel = useAnnotations.getState();
           const hasSelection =
