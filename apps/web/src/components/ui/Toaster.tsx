@@ -12,14 +12,17 @@ const VARIANT_ICON: Record<ToastVariant, typeof Info> = {
   error: XCircle,
 };
 
+// DESIGN.md §1 — solid surface; the left-edge accent stripe carries the
+// semantic colour. Toasts are transient lifted UI, so they get the
+// card-tier shadow rather than the dramatic hero shadow.
 const VARIANT_CLASSES: Record<ToastVariant, string> = {
-  info: "glass-surface-strong border-l-[var(--border-strong)] text-[color:var(--text-primary)]",
+  info: "bg-[var(--bg-elev)] border border-[var(--border-subtle)] border-l-4 border-l-[var(--accent)] text-[color:var(--text-primary)]",
   success:
-    "glass-surface-strong border-l-[var(--success,#16a34a)] text-[color:var(--text-primary)]",
+    "bg-[var(--bg-elev)] border border-[var(--border-subtle)] border-l-4 border-l-[var(--success)] text-[color:var(--text-primary)]",
   warning:
-    "glass-surface-strong border-l-[var(--warning,#f59e0b)] text-[color:var(--text-primary)]",
+    "bg-[var(--bg-elev)] border border-[var(--border-subtle)] border-l-4 border-l-[var(--warning)] text-[color:var(--text-primary)]",
   error:
-    "glass-surface-strong border-l-[var(--danger,#dc2626)] text-[color:var(--text-primary)]",
+    "bg-[var(--bg-elev)] border border-[var(--border-subtle)] border-l-4 border-l-[var(--danger)] text-[color:var(--text-primary)]",
 };
 
 const VARIANT_ICON_COLOR: Record<ToastVariant, string> = {
@@ -62,7 +65,9 @@ export function Toaster() {
             }}
             data-testid={`toast-${t.variant}`}
             className={cn(
-              "rounded-[var(--radius-md)] border-l-4 shadow-[var(--shadow-elev-2)]",
+              // DESIGN.md §5 / §6 — compact 6px radius, card-tier shadow.
+              // Variant classes own the left-edge accent stripe.
+              "rounded-[var(--radius-6)] shadow-[var(--shadow-card)]",
               "px-4 py-3 grid grid-cols-[auto_1fr_auto] gap-3 items-center",
               "min-w-[260px] max-w-[420px]",
               VARIANT_CLASSES[t.variant],

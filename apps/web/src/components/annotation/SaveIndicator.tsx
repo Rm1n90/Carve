@@ -70,7 +70,7 @@ export function SaveIndicator({ isSaving, hasError, dirtyCount, onRetry }: SaveI
           "text-[11.5px] font-medium tracking-tight",
         )}
       >
-        <span className="h-1.5 w-1.5 rounded-full bg-[#D97706] animate-pulse" />
+        <span className="h-1.5 w-1.5 rounded-full bg-[var(--warning)] animate-pulse" />
         Unsaved changes
       </span>
     );

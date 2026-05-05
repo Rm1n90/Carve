@@ -91,6 +91,41 @@
   --radius-lg: 10px;
   --radius-xl: 14px;
 
+  /* ---- DESIGN.md §5 — full PlayStation 11-radius scale.
+         The named tokens above stay for legacy callsites; the numeric
+         tokens below are the canonical scale primitives should reach
+         for going forward. Each radius maps to a specific hierarchy
+         tier: 3 = inputs, 12 = media, 19 = feature card, 24 = hero,
+         999 = pill. ---- */
+  --radius-2: 2px;
+  --radius-3: 3px;
+  --radius-6: 6px;
+  --radius-12: 12px;
+  --radius-13: 13px;
+  --radius-19: 19px;
+  --radius-20: 20px;
+  --radius-24: 24px;
+  --radius-36: 36px;
+  --radius-48: 48px;
+  --radius-pill: 999px;
+
+  /* ---- DESIGN.md §6 — 4-tier shadow scale. Opacity is the only
+         dimension that varies; spread/offset are constant. The
+         feather/tile/card tiers are the everyday elevation language;
+         the hero tier is reserved for cards that genuinely float over
+         photography. There is deliberately nothing between 0.16 and
+         0.8 — DESIGN.md §6 specifies elevation is "whispered or
+         shouted, never muttered". ---- */
+  --shadow-feather: 0 5px 9px 0 rgba(0, 0, 0, 0.06);
+  --shadow-tile: 0 5px 9px 0 rgba(0, 0, 0, 0.08);
+  --shadow-card: 0 5px 9px 0 rgba(0, 0, 0, 0.16);
+  --shadow-hero: 0 5px 9px 0 rgba(0, 0, 0, 0.8);
+
+  /* DESIGN.md §2 — the two declared section gradients. Use only as
+     section backgrounds; never inside components. */
+  --gradient-section-light: linear-gradient(180deg, #ffffff 0%, #f5f7fa 100%);
+  --gradient-section-dark: linear-gradient(180deg, #121314 0%, #000000 100%);
+
   /* ---- Shadows — proper depth in dark ---- */
   --shadow-1:
     0 1px 0 rgba(255, 255, 255, 0.04) inset,
@@ -356,63 +391,60 @@
    render the 1px specular highlight that catches simulated light at
    the top edge — Apple's signature liquid sheen.
    ============================================================ */
+/* DESIGN.md §1 — "There is no 'glassmorphism' moment on the site"
+   except the Filter Mist sticky-bar tint. The .glass-surface* utility
+   class names are kept for backward compatibility with the dozens of
+   callsites that already reference them, but their definition is now
+   the DESIGN.md solid-surface treatment: bg-elev background, hairline
+   border, and a calibrated drop from the §6 shadow scale. Removing the
+   blur is the change that actually makes the rest of the design system
+   land — DESIGN.md is built around solid surface alternation, not
+   translucency. */
 .glass-surface {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  box-shadow: var(--glass-shadow);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-feather);
 }
 
 .glass-surface-strong {
-  background: var(--glass-bg-strong);
-  border: 1px solid var(--glass-border-strong);
-  backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
-  box-shadow: var(--glass-shadow-lifted);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card);
 }
 
 .glass-surface-subtle {
-  background: var(--glass-bg-subtle);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(calc(var(--glass-blur) * 0.6)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 0.6)) saturate(var(--glass-saturate));
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
 }
 
-/* Specular highlight — a 1px gradient top-edge that catches light. */
+/* DESIGN.md §1 — the specular highlight only made sense over the
+   translucent glass surface. Now that surfaces are solid, the
+   highlight would read as an out-of-place glossy stripe, so we
+   neutralise it. The class name is kept so callsites continue to
+   compile; surfaces that genuinely want a specular catch (rare —
+   only when a card overlaps photography) can opt back in by setting
+   ``data-specular="on"`` on the element. */
 .glass-specular::before {
+  content: none;
+}
+
+.glass-specular[data-specular="on"]::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background: linear-gradient(
-    180deg,
-    var(--glass-highlight) 0%,
-    transparent 30%
-  );
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.10) 0%, transparent 30%);
   mix-blend-mode: screen;
   opacity: 0.6;
 }
 
-/* Tooltip-tuned glass — same liquid surface, but a tighter shadow so the
-   tooltip reads as "close to the cursor" rather than "lifted modal". */
+/* DESIGN.md §1 — tooltips are solid; tile-tier shadow so they read
+   close to the cursor rather than as a lifted modal. */
 .glass-tooltip {
-  background: var(--glass-bg-strong);
-  border: 1px solid var(--glass-border-strong);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  box-shadow:
-    0 1px 0 oklch(0.98 0 0 / 0.06) inset,
-    0 0 0 0.5px oklch(0.98 0 0 / 0.10) inset,
-    0 4px 16px oklch(0 0 0 / 0.40);
-}
-
-[data-theme="light"] .glass-tooltip {
-  box-shadow:
-    0 1px 0 oklch(1 0 0 / 0.85) inset,
-    0 0 0 0.5px oklch(0.20 0 0 / 0.05) inset,
-    0 4px 16px oklch(0 0 0 / 0.10);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-tile);
 }
 
 /* Glass chip — small interactive pill (theme toggle, status badge, etc.).
@@ -453,14 +485,15 @@
     0 0 14px oklch(0.62 0.18 220 / 0.18);
 }
 
-/* Editorial display utility for Fraunces moments —
-   dialog titles, page headers, hero numbers. Non-italic, distinctive serif. */
+/* DESIGN.md §3 — "No serif anywhere. The entire system is sans."
+   The class name is kept so existing callsites continue to compile,
+   but the rule now resolves to the sans display family at weight 300
+   (the PlayStation "quiet authority" voice for headlines 22px+). */
 .font-editorial {
-  font-family: "Fraunces Variable", "Fraunces", "Times New Roman", serif;
+  font-family: var(--font-display);
   font-style: normal;
-  font-weight: 500;
-  font-variation-settings: "opsz" 100, "SOFT" 0;
-  letter-spacing: -0.015em;
+  font-weight: 300;
+  letter-spacing: -0.01em;
 }
 
 /* Tabular numerals utility — keeps stat tile numbers aligned across rows. */
@@ -793,4 +826,32 @@ select:not([data-radix-select-trigger]):not([data-no-default-style]) option {
   font-weight: 300;
   letter-spacing: -0.1px;
   line-height: 1.25;
+}
+
+/* DESIGN.md §1 / §2 — atmospheric section gradient. Page-level hero
+   zones reach for this so the page rhythm starts to alternate between
+   dark hero panels and lighter content panels. Theme-aware: on dark
+   the wash anchors at #121314 fading to #000000 (the §2 declared
+   dark-section gradient); on light it goes #ffffff → #f5f7fa for an
+   almost-imperceptible lift. */
+.section-hero {
+  background: var(--gradient-section-dark);
+}
+
+[data-theme="light"] .section-hero {
+  background: var(--gradient-section-light);
+}
+
+/* DESIGN.md §3 — "No ALL-CAPS labels or kickers." The repository
+   used to ship a Tailwind ``uppercase`` modifier on dozens of
+   small-mono kickers (stats cards, settings overview, project hero
+   eyebrows, etc.). Rather than hand-edit every callsite, this rule
+   neutralises the uppercase transform on the canonical kicker
+   pattern, which is reliably .font-mono in this codebase. The few
+   uppercase usages that *aren't* kickers (data-table column headers
+   in DatasetsPage and ClassesEditor) use sans-serif, so they are
+   not caught by this rule. */
+.font-mono.uppercase {
+  text-transform: none;
+  letter-spacing: 0.04em;
 }

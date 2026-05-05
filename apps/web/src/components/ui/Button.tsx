@@ -8,7 +8,10 @@ const buttonStyles = cva(
   [
     "inline-flex items-center justify-center gap-2",
     "font-medium tracking-tight whitespace-nowrap select-none",
-    "transition-colors duration-150",
+    // DESIGN.md §1 — signature interaction is a 180ms ease across
+    // background, transform, border, and shadow. We keep transition-all
+    // here so the hover ring + scale animate together with the color swap.
+    "transition-all duration-[180ms] ease-out",
     "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
     "disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none",
     "border",
@@ -16,11 +19,16 @@ const buttonStyles = cva(
   {
     variants: {
       variant: {
-        // Default primary action — cyan accent with dark text for contrast.
+        // DESIGN.md §4 — primary CTA carries the full PlayStation hover
+        // signature: cyan fill swap, 2px white border, 2px blue outer
+        // ring, and a 1.05× lift (damped from DESIGN.md's 1.2× because
+        // these buttons live in dense in-app toolbars; hero/marketing
+        // surfaces use .ps-pill--bold to opt back into the literal 1.2×).
         primary: [
           "bg-[var(--accent)] text-[color:var(--accent-fg)] border-[var(--accent)]",
-          "hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]",
-          "active:bg-[var(--accent-active)]",
+          "hover:bg-[var(--accent-hover)] hover:border-white",
+          "hover:shadow-[0_0_0_2px_var(--accent)] hover:scale-[1.05]",
+          "active:opacity-60 active:scale-100",
         ],
         // Quiet button — transparent surface + subtle border.
         secondary: [

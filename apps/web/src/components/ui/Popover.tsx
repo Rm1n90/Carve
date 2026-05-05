@@ -29,8 +29,13 @@ export const PopoverContent = forwardRef<HTMLDivElement, PopoverContentProps>(
           side={side}
           sideOffset={sideOffset}
           className={cn(
-            "z-[1000] min-w-[200px] rounded-[var(--radius-md)]",
-            "glass-surface-strong p-1.5",
+            // DESIGN.md §1 / §6 — solid surface, compact 6px radius,
+            // standard card-tier shadow. No glass on transient
+            // popovers (glass is reserved for the Filter Mist sticky
+            // bar only).
+            "z-[1000] min-w-[200px] rounded-[var(--radius-6)]",
+            "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+            "shadow-[var(--shadow-card)] p-1.5",
             "text-[color:var(--text-primary)]",
             "outline-none",
             className,

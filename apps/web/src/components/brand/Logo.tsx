@@ -52,13 +52,18 @@ export function Logo({
     </svg>
   );
 
+  // DESIGN.md §3 — "No serif anywhere. The entire system is sans."
+  // The wordmark used to load Fraunces italic; we now use the display
+  // sans at weight 300 (the "quiet authority" voice from §3) and keep
+  // the italic + tightened tracking on the v-glyph as the wordmark's
+  // personality cue.
   const wordmark = (
     <span
       aria-hidden
       style={{
-        fontFamily: "Fraunces, 'Instrument Serif', serif",
+        fontFamily: "var(--font-display)",
         fontStyle: "italic",
-        fontWeight: 500,
+        fontWeight: 300,
         fontSize: `${wordmarkFontSize}px`,
         lineHeight: 1,
         letterSpacing: "-0.01em",

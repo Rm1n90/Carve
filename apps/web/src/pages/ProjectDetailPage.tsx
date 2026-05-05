@@ -132,16 +132,21 @@ function severityClasses(s: DueSeverity): {
         icon: "text-[color:var(--danger)]",
       };
     case "soon":
+      // DESIGN.md §2 — Warning Amber resolves to --warning so both
+      // themes pull from the declared palette instead of hardcoded
+      // #F59E0B.
       return {
-        row: "bg-[color-mix(in_oklch,#F59E0B_10%,transparent)] hover:bg-[color-mix(in_oklch,#F59E0B_18%,transparent)] text-[color:var(--text-primary)]",
-        pill: "bg-[#F59E0B] text-black",
-        icon: "text-[#F59E0B]",
+        row: "bg-[color-mix(in_oklch,var(--warning)_10%,transparent)] hover:bg-[color-mix(in_oklch,var(--warning)_18%,transparent)] text-[color:var(--text-primary)]",
+        pill: "bg-[var(--warning)] text-black",
+        icon: "text-[color:var(--warning)]",
       };
     case "watch":
+      // Less urgent than "soon" — same warning hue at 70% mix so it
+      // reads as a quieter cousin without introducing a second amber.
       return {
         row: "hover:bg-[var(--bg-hover)] text-[color:var(--text-primary)]",
-        pill: "bg-[#EAB308] text-black",
-        icon: "text-[#EAB308]",
+        pill: "bg-[color-mix(in_oklch,var(--warning)_70%,transparent)] text-black",
+        icon: "text-[color:var(--warning)]",
       };
     default:
       return {
@@ -566,7 +571,12 @@ function TaskRowMenu({
           align="end"
           sideOffset={4}
           onClick={(e) => e.stopPropagation()}
-          className="z-[1000] min-w-[180px] rounded-[var(--radius-md)] glass-surface-strong p-1"
+          // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
+          className={cn(
+            "z-[1000] min-w-[180px] rounded-[var(--radius-6)] p-1",
+            "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+            "shadow-[var(--shadow-card)]",
+          )}
         >
           <DropdownMenu.Item
             data-testid={`project-detail-task-duplicate-${task.id}`}

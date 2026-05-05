@@ -315,7 +315,8 @@ export function ReviewPanel({
             aria-pressed={filter === f.value}
             onClick={() => setFilter(f.value)}
             className={cn(
-              "px-2.5 py-1 rounded-full text-[11.5px] tracking-tight transition-colors",
+              "px-2.5 py-1 rounded-full text-[11.5px] tracking-tight",
+              "transition-colors duration-[180ms] ease-out",
               filter === f.value
                 ? "bg-[var(--accent)] text-[color:var(--accent-fg)]"
                 : "bg-[var(--bg-subtle)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
@@ -332,10 +333,18 @@ export function ReviewPanel({
         onClick={() => void handleBulkAccept()}
         disabled={bulkBusy || proposedDrafts.length === 0}
         className={cn(
+          // DESIGN.md §4 — primary CTA carries the full PS hover signature
+          // (cyan fill + 2px white border + 2px PS-blue ring + 1.05× lift,
+          // 180ms ease).
           "inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-full",
           "bg-[var(--accent)] text-[color:var(--accent-fg)] text-[12px] font-medium",
-          "hover:bg-[var(--accent-hover)] transition-colors",
+          "border border-[var(--accent)]",
+          "transition-all duration-[180ms] ease-out",
+          "hover:bg-[var(--accent-hover)] hover:border-white",
+          "hover:shadow-[0_0_0_2px_var(--accent)] hover:scale-[1.05]",
+          "active:opacity-60 active:scale-100",
           "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
+          "disabled:hover:scale-100 disabled:hover:border-[var(--border-subtle)] disabled:hover:bg-[var(--bg-subtle)] disabled:hover:shadow-none",
         )}
       >
         {bulkBusy ? (

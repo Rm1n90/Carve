@@ -58,12 +58,17 @@ const SelectTrigger = forwardRef<HTMLButtonElement, SelectTriggerProps>(
         ref={ref}
         className={cn(
           "inline-flex h-8 items-center justify-between gap-2",
-          "rounded-[var(--radius-sm)] px-2.5",
-          "border border-[var(--glass-border)] bg-[var(--glass-chip-bg)]",
+          // DESIGN.md §4 — Select trigger is an input, so it gets the
+          // 3px input radius and the 2px PS-blue focus ring (no
+          // border-color change). Solid surface — no glass on form
+          // controls per DESIGN.md §1.
+          "rounded-[var(--radius-3)] px-2.5",
+          "border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
           "text-[12.5px] text-[color:var(--text-primary)]",
+          "transition-[border-color,box-shadow] duration-[180ms] ease-out",
           "hover:border-[var(--border-strong)]",
-          "focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
-          "data-[state=open]:border-[var(--accent)]",
+          "focus:outline-none focus:shadow-[0_0_0_2px_var(--accent)]",
+          "data-[state=open]:shadow-[0_0_0_2px_var(--accent)]",
           "disabled:opacity-60 disabled:cursor-not-allowed",
           className,
         )}
@@ -95,9 +100,13 @@ const SelectContent = forwardRef<HTMLDivElement, SelectContentProps>(
           sideOffset={4}
           className={cn(
             "z-[1200] min-w-[var(--radix-select-trigger-width)]",
-            "overflow-hidden rounded-[var(--radius-lg)] p-1",
-            "glass-surface-strong glass-specular",
-            "shadow-[var(--shadow-elev-2)]",
+            // DESIGN.md §1 — no glass on form controls; solid panel
+            // with the standard card-tier shadow. 6px radius keeps the
+            // popover compact and matches §5's "compact buttons and
+            // inline images" tier.
+            "overflow-hidden rounded-[var(--radius-6)] p-1",
+            "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+            "shadow-[var(--shadow-card)]",
             className,
           )}
         >

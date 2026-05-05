@@ -199,7 +199,8 @@ export function AppearancePanel() {
         data-testid="appearance-panel-toggle"
         className={cn(
           "w-full flex items-center gap-1.5 px-2 py-1.5",
-          "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] transition-colors",
+          "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]",
+          "transition-colors duration-[180ms] ease-out",
         )}
       >
         {open ? (

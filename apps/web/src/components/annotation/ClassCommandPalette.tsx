@@ -247,10 +247,13 @@ export function ClassCommandPalette({
       />
       <div
         className={cn(
+          // DESIGN.md §1 / §6 — solid surface (no glass on transient
+          // command palette overlays). Keeps the larger 10px radius and
+          // the deeper drop shadow appropriate for a centred dialog.
           "relative mx-auto w-[min(92vw,560px)]",
-          "rounded-[var(--radius-lg)] glass-surface-strong glass-specular",
+          "rounded-[var(--radius-lg)] p-3",
+          "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
           "shadow-[0_24px_60px_rgba(0,0,0,0.45)]",
-          "p-3",
           "animate-confirm-in",
         )}
         onClick={(e) => e.stopPropagation()}

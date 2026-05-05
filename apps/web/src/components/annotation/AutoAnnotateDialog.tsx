@@ -236,10 +236,19 @@ export function AutoAnnotateDialog({
             data-testid="auto-annotate-trigger"
             disabled={!assetId}
             className={cn(
-              "inline-flex h-8 items-center gap-1.5 px-3 rounded-full",
-              "bg-[#7C3AED] text-white text-[12.5px] font-medium tracking-tight",
-              "hover:bg-[#6D28D9] transition-colors",
-              "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
+              // DESIGN.md §4 — primary CTA pill: PS Blue at rest, full
+              // hover signature (cyan fill + white border + blue ring +
+              // 1.05× lift, 180ms ease). Drops the off-brand purple
+              // (#7C3AED/#6D28D9) — DESIGN.md §2 only allows the
+              // declared palette + Commerce Orange + Warning Red.
+              "inline-flex h-8 items-center gap-1.5 px-3 rounded-[var(--radius-pill)]",
+              "bg-[var(--accent)] text-white text-[12.5px] font-medium tracking-[0.4px]",
+              "border border-[var(--accent)]",
+              "transition-all duration-[180ms] ease-out",
+              "hover:bg-[var(--accent-hover)] hover:border-white",
+              "hover:shadow-[0_0_0_2px_var(--accent)] hover:scale-[1.05]",
+              "active:opacity-60 active:scale-100",
+              "disabled:bg-[var(--bg-subtle)] disabled:border-[var(--border-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none",
             )}
             title="Auto-annotate with SAM 3 text prompts"
           >

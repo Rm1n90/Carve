@@ -105,9 +105,16 @@ export function TasksToolbar({
           onClick={onNewTask}
           data-testid="tasks-toolbar-new"
           className={cn(
-            "inline-flex items-center gap-1 h-8 px-3 rounded-[var(--radius-sm)]",
+            // DESIGN.md §4 — primary CTA carries the full PS hover
+            // signature: cyan fill, 2px white border, 2px PS-blue ring,
+            // 1.05× lift, 180ms ease.
+            "inline-flex items-center gap-1 h-8 px-3 rounded-[var(--radius-pill)]",
             "bg-[var(--accent)] text-[color:var(--accent-fg)] text-[12.5px] font-medium",
-            "hover:opacity-90 transition-opacity",
+            "border border-[var(--accent)]",
+            "transition-all duration-[180ms] ease-out",
+            "hover:bg-[var(--accent-hover)] hover:border-white",
+            "hover:shadow-[0_0_0_2px_var(--accent)] hover:scale-[1.05]",
+            "active:opacity-60 active:scale-100",
           )}
         >
           <Plus className="h-3.5 w-3.5" />
@@ -126,7 +133,8 @@ export function TasksToolbar({
               data-testid={`tasks-toolbar-status-${chip.value}`}
               aria-pressed={active}
               className={cn(
-                "h-6 px-2.5 rounded-full text-[11.5px] tracking-tight border transition-colors",
+                "h-6 px-2.5 rounded-full text-[11.5px] tracking-tight border",
+                "transition-colors duration-[180ms] ease-out",
                 active
                   ? "border-[var(--accent)] bg-[var(--bg-subtle)] text-[color:var(--text-primary)]"
                   : "border-[var(--border-subtle)] text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",

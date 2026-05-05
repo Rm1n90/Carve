@@ -45,3 +45,4 @@ Thumbs.db
 # Reference design screenshots (kept locally for design comparison; not tracked)
 apps/web/ref-*.png
 .playwright-mcp/
+.claude/scheduled_tasks.lock

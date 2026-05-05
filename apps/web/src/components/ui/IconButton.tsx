@@ -3,10 +3,14 @@ import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/cn";
 
+// DESIGN.md §4 Buttons — Icon Circle variant is genuinely circular at
+// 100% radius. The "primary" variant carries the same hover signature as
+// the main Button: cyan fill swap, 2px white border, 2px PS-blue ring,
+// 1.05× lift, 180ms ease.
 const iconButtonStyles = cva(
   [
     "inline-flex items-center justify-center",
-    "transition-colors duration-150",
+    "transition-all duration-[180ms] ease-out",
     "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
     "disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none",
     "border",
@@ -38,12 +42,24 @@ const iconButtonStyles = cva(
           "glass-chip text-[color:var(--text-secondary)] border-transparent",
           "hover:text-[color:var(--text-primary)]",
         ],
+        // DESIGN.md §4 — primary icon button gets the full PS hover
+        // signature. Use this on prominent toolbar actions.
+        primary: [
+          "bg-[var(--accent)] text-[color:var(--accent-fg)] border-[var(--accent)]",
+          "hover:bg-[var(--accent-hover)] hover:border-white",
+          "hover:shadow-[0_0_0_2px_var(--accent)] hover:scale-[1.05]",
+          "active:opacity-60 active:scale-100",
+        ],
       },
       size: {
         xs: "h-6 w-6 rounded-[var(--radius-sm)]",
         sm: "h-7 w-7 rounded-[var(--radius-sm)]",
         md: "h-8 w-8 rounded-[var(--radius-md)]",
         lg: "h-10 w-10 rounded-[var(--radius-md)]",
+        // DESIGN.md §4 — Icon Circle. Reach for this when the button
+        // sits over photography (carousel arrows, share, close).
+        circle: "h-10 w-10 rounded-[var(--radius-pill)]",
+        circleSm: "h-8 w-8 rounded-[var(--radius-pill)]",
       },
     },
     defaultVariants: {

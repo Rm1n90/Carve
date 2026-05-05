@@ -190,7 +190,7 @@ export function ExportDialog({ projectId, taskId }: Props) {
 
   return (
     <section className="grid gap-4">
-      <h2 className="text-[18px] font-medium tracking-tight text-primary">Export annotations</h2>
+      <h2 className="text-[18px] font-light tracking-tight text-primary">Export annotations</h2>
 
       <div className="flex flex-wrap items-center gap-4 text-[13px] text-secondary">
         <div className="flex items-center gap-2.5">

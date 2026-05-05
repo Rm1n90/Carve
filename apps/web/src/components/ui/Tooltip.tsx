@@ -31,16 +31,21 @@ export function Tooltip({
           align={align}
           sideOffset={6}
           className={cn(
+            // DESIGN.md §1 — solid surface; tooltips stay tight (3px
+            // input-tier radius) and use the lightweight tile shadow
+            // so they read as "close to the cursor" rather than a
+            // lifted modal.
             "z-[1000] px-2 py-1",
-            "rounded-[var(--radius-sm)]",
-            "glass-tooltip text-[color:var(--text-primary)]",
+            "rounded-[var(--radius-3)]",
+            "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+            "shadow-[var(--shadow-tile)] text-[color:var(--text-primary)]",
             "text-[11px] font-medium tracking-tight",
             className,
           )}
         >
           {content}
           <TooltipPrimitive.Arrow
-            className="fill-[var(--glass-bg-strong)]"
+            className="fill-[var(--bg-elev)]"
             width={10}
             height={5}
           />

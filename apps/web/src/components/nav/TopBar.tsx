@@ -163,15 +163,18 @@ export function TopBar({ crumbs, breadcrumbSegments, rightAction }: TopBarProps)
               align="end"
               sideOffset={6}
               className={cn(
-                "min-w-[220px] rounded-[var(--radius-md)]",
-                "glass-surface-strong p-1 z-50",
+                // DESIGN.md §1 / §6 — solid surface, compact 6px radius,
+                // standard card-tier shadow (no glass on transient menus).
+                "min-w-[220px] rounded-[var(--radius-6)] p-1 z-50",
+                "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                "shadow-[var(--shadow-card)]",
               )}
             >
               <div className="px-2 py-2 grid gap-0.5">
                 <p className="text-[12.5px] tracking-tight text-[color:var(--text-primary)] truncate">
                   {user.email}
                 </p>
-                <p className="text-[10.5px] uppercase tracking-wider text-[color:var(--text-tertiary)]">
+                <p className="text-[10.5px] tracking-tight text-[color:var(--text-tertiary)]">
                   {user.role}
                 </p>
               </div>
@@ -189,7 +192,7 @@ export function TopBar({ crumbs, breadcrumbSegments, rightAction }: TopBarProps)
               </DropdownMenu.Item>
               <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
               <DropdownMenu.Label
-                className="px-2 pt-1.5 pb-1 text-[10.5px] uppercase tracking-wider text-[color:var(--text-tertiary)]"
+                className="px-2 pt-1.5 pb-1 text-[10.5px] tracking-tight text-[color:var(--text-tertiary)]"
               >
                 Theme
               </DropdownMenu.Label>

@@ -65,8 +65,13 @@ const PANEL_CLASSES = cn(
   "fixed left-1/2 top-1/2 z-[1100]",
   // Sizing.
   "w-[min(92vw,440px)] max-h-[88vh] overflow-hidden",
-  // Glass.
-  "rounded-[20px] glass-surface-strong glass-specular",
+  // DESIGN.md §4 + §6 — alert dialogs are hero-tier surfaces. Solid
+  // background, 24px radius, and the dramatic 0.8-shadow that genuinely
+  // floats over the backdrop. No glass — DESIGN.md §1 reserves glass
+  // for the Filter Mist sticky-bar moment only.
+  "rounded-[var(--radius-24)]",
+  "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+  "shadow-[var(--shadow-hero)]",
   // Layout & padding (28 28 24 per spec).
   "px-7 pt-7 pb-6",
   // Animation hooks — see @keyframes confirm-* below.
@@ -83,31 +88,36 @@ const OVERLAY_CLASSES = cn(
   "data-[state=closed]:animate-confirm-fade-out",
 );
 
+// DESIGN.md §4 — confirm/cancel buttons carry the same PlayStation hover
+// signature as every other primary button: cyan fill swap, 2px white
+// border, 2px PS-blue ring, 1.05× lift, 180ms ease.
 const CONFIRM_BUTTON_CLASSES: Record<ConfirmVariant, string> = {
   default: cn(
     "bg-[var(--accent)] text-[color:var(--accent-fg)] border-[var(--accent)]",
-    "hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]",
-    "active:bg-[var(--accent-active)]",
+    "hover:bg-[var(--accent-hover)] hover:border-white",
+    "hover:shadow-[0_0_0_2px_var(--accent)] hover:scale-[1.05]",
+    "active:opacity-60 active:scale-100",
   ),
   danger: cn(
     "bg-[var(--danger)] text-white border-[var(--danger)]",
-    "hover:brightness-110",
-    "active:brightness-95",
+    "hover:border-white hover:shadow-[0_0_0_2px_var(--danger)] hover:scale-[1.05]",
+    "active:opacity-60 active:scale-100",
   ),
 };
 
 const BASE_BUTTON_CLASSES = cn(
   "inline-flex items-center justify-center",
-  "h-9 px-4 rounded-[var(--radius-md)] border",
-  "text-[13px] font-medium tracking-tight whitespace-nowrap select-none",
-  "transition-[background-color,border-color,filter,box-shadow] duration-150",
+  // DESIGN.md §4 + §5 — primary action pills are full 999px radius.
+  "h-9 px-5 rounded-[var(--radius-pill)] border",
+  "text-[13px] font-medium tracking-[0.4px] whitespace-nowrap select-none",
+  "transition-all duration-[180ms] ease-out",
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
   "disabled:opacity-60 disabled:cursor-not-allowed",
 );
 
 const CANCEL_BUTTON_CLASSES = cn(
-  "bg-transparent text-[color:var(--text-primary)] border-[var(--glass-border-strong)]",
-  "hover:bg-[var(--bg-hover)]",
+  "bg-transparent text-[color:var(--text-primary)] border-[var(--border-subtle)]",
+  "hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)]",
 );
 
 /**

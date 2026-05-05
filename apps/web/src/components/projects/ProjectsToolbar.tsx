@@ -170,7 +170,7 @@ export function ProjectsToolbar({
               aria-pressed={active}
               className={cn(
                 "h-6 px-2.5 rounded-full text-[11.5px] tracking-tight",
-                "border transition-colors",
+                "border transition-colors duration-[180ms] ease-out",
                 active
                   ? "border-[var(--accent)] bg-[var(--bg-subtle)] text-[color:var(--text-primary)]"
                   : "border-[var(--border-subtle)] text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",

@@ -3523,7 +3523,7 @@ export function AnnotationCanvas({
                 border: "none",
                 background: inert
                   ? "var(--bg-subtle, rgba(255,255,255,0.05))"
-                  : "var(--accent, #6366f1)",
+                  : "var(--accent, #0070cc)",
                 color: inert
                   ? "var(--text-tertiary, rgba(255,255,255,0.4))"
                   : "var(--accent-fg, #fff)",
@@ -3712,9 +3712,9 @@ function TextSamHelpers({
             height: 24,
             padding: "0 8px",
             borderRadius: 5,
-            border: "1px solid var(--accent, #6366f1)",
+            border: "1px solid var(--accent, #0070cc)",
             background: "transparent",
-            color: "var(--accent, #6366f1)",
+            color: "var(--accent, #0070cc)",
             fontSize: 11,
             cursor: "pointer",
             whiteSpace: "nowrap",

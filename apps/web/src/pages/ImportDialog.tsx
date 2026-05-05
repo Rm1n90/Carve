@@ -237,7 +237,7 @@ export function ImportDialog({ taskId }: Props) {
 
   return (
     <section className="grid gap-3">
-      <h2 className="text-[18px] font-medium tracking-tight text-primary">Import annotations</h2>
+      <h2 className="text-[18px] font-light tracking-tight text-primary">Import annotations</h2>
 
       {!stagedImportId && !committedImportId && (
         <>

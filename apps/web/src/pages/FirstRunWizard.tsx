@@ -98,7 +98,7 @@ export function FirstRunWizard({ onSuccess }: Props) {
         {error && (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-[var(--radius-md)] border border-[#fecaca] bg-[var(--danger-bg)] px-3 py-2 text-[13px] text-[color:var(--danger)]"
+            className="flex items-start gap-2 rounded-[var(--radius-3)] border border-[var(--danger)] bg-[var(--danger-bg)] px-3 py-2 text-[13px] text-[color:var(--danger)]"
           >
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             <span>{error}</span>

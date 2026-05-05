@@ -79,7 +79,7 @@ function AssetTile({
         }}
         className={cn(
           "absolute top-2 left-2 z-10 grid h-6 w-6 place-items-center",
-          "rounded-[var(--radius-xs)] border transition-all duration-150",
+          "rounded-[var(--radius-xs)] border transition-all duration-[180ms] ease-out",
           selected
             ? "bg-[var(--accent)] border-[var(--accent)] text-[var(--accent-fg)] opacity-100"
             : "bg-[oklch(0.06_0.012_240_/_0.75)] border-[var(--border-strong)] text-transparent opacity-0 group-hover:opacity-100 hover:text-secondary",
@@ -208,7 +208,7 @@ function FilterChip({ label, active, onClick, count }: FilterChipProps) {
       data-testid={`filter-chip-${label.toLowerCase()}`}
       className={cn(
         "px-3 py-1.5 rounded-full text-[12px] font-medium",
-        "border transition-all duration-150",
+        "border transition-all duration-[180ms] ease-out",
         active
           ? "bg-[var(--accent)] text-[var(--accent-fg)] border-[var(--accent)]"
           : "bg-[var(--bg-sunken)] text-secondary border-[var(--border-subtle)] hover:border-[var(--border-strong)]",
@@ -459,7 +459,7 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p
-          className="font-mono-data text-[11px] tracking-[0.12em] uppercase text-tertiary"
+          className="font-mono-data text-[11px] tracking-tight text-tertiary"
           data-testid="asset-count-summary"
         >
           {countQ.data
@@ -488,7 +488,7 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
               onClick={allVisibleSelected ? clearSelection : selectAllVisible}
               className={cn(
                 "px-3 py-1 rounded-full text-[11.5px] font-medium",
-                "border transition-colors duration-150",
+                "border transition-colors duration-[180ms] ease-out",
                 allVisibleSelected
                   ? "border-[var(--accent)] text-[color:var(--accent)] hover:bg-[var(--accent-bg)]"
                   : "border-[var(--border-strong)] text-secondary hover:text-primary hover:border-[var(--border-accent)]",
@@ -601,8 +601,16 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
             data-testid="asset-bulk-tag-trigger"
             onClick={() => setBulkOpen(true)}
             className={cn(
+              // DESIGN.md §4 — primary CTA carries the full PS hover
+              // signature: cyan fill + 2px white border + 2px PS-blue
+              // ring + 1.05× lift, 180ms ease.
               "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium",
-              "bg-[var(--accent)] text-[var(--accent-fg)] hover:opacity-90",
+              "bg-[var(--accent)] text-[var(--accent-fg)]",
+              "border border-[var(--accent)]",
+              "transition-all duration-[180ms] ease-out",
+              "hover:bg-[var(--accent-hover)] hover:border-white",
+              "hover:shadow-[0_0_0_2px_var(--accent)] hover:scale-[1.05]",
+              "active:opacity-60 active:scale-100",
             )}
           >
             <Tag className="h-3.5 w-3.5" />
