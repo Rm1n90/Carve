@@ -16,6 +16,7 @@ import {
   Copy,
   Database,
   Download,
+  FileArchive,
   Image as ImageIcon,
   ListChecks,
   MoreVertical,
@@ -46,6 +47,7 @@ import { NewTaskDialog } from "./NewTaskDialog";
 import { DatasetsPage } from "./DatasetsPage";
 import { AssetUploadDialog } from "./AssetUploadDialog";
 import { ExportDialog } from "./ExportDialog";
+import { ImportDialog } from "./ImportDialog";
 // StatsPanel is dynamically imported so the recharts chunk lands in
 // its own bundle and is fetched only when the stats UI is rendered.
 const StatsPanel = lazy(() =>
@@ -1097,6 +1099,10 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   // the row's icon and reset when the dialog closes.
   const [uploadTaskTarget, setUploadTaskTarget] = useState<Task | null>(null);
   const [exportTaskTarget, setExportTaskTarget] = useState<Task | null>(null);
+  // Plan-20.9 — per-task Import target. Mirrors the upload/export
+  // pattern; the dialog reused here is the same one mounted from the
+  // task page's toolbar.
+  const [importTaskTarget, setImportTaskTarget] = useState<Task | null>(null);
 
   // Plan 14 Phase 8 Task 2 — Tasks-toolbar state. Search is filtered
   // case-insensitively against task name; status uses the existing
@@ -1495,6 +1501,22 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        setImportTaskTarget(t);
+                      }}
+                      title={`Import annotations into ${t.name}`}
+                      data-testid={`task-row-import-${t.id}`}
+                      className={cn(
+                        "grid h-7 w-7 place-items-center rounded-[var(--radius-sm)]",
+                        "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+                      )}
+                    >
+                      <FileArchive className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
                         setExportTaskTarget(t);
                       }}
                       title={`Export annotations from ${t.name}`}
@@ -1807,6 +1829,25 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
               projectId={projectId}
               taskId={exportTaskTarget.id}
             />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Plan-20.9 — per-task Import dialog launched from the task row's
+          inline action button. Same dialog as the task page's toolbar
+          mount, just with a per-row trigger. */}
+      <Dialog
+        open={importTaskTarget !== null}
+        onOpenChange={(o) => !o && setImportTaskTarget(null)}
+      >
+        <DialogContent className="w-[min(92vw,640px)]">
+          <DialogHeader>
+            <DialogTitle>
+              Import annotations{importTaskTarget ? ` — ${importTaskTarget.name}` : ""}
+            </DialogTitle>
+          </DialogHeader>
+          {importTaskTarget && (
+            <ImportDialog taskId={importTaskTarget.id} />
           )}
         </DialogContent>
       </Dialog>
