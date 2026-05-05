@@ -485,14 +485,15 @@
     0 0 14px oklch(0.62 0.18 220 / 0.18);
 }
 
-/* Editorial display utility for Fraunces moments —
-   dialog titles, page headers, hero numbers. Non-italic, distinctive serif. */
+/* DESIGN.md §3 — "No serif anywhere. The entire system is sans."
+   The class name is kept so existing callsites continue to compile,
+   but the rule now resolves to the sans display family at weight 300
+   (the PlayStation "quiet authority" voice for headlines 22px+). */
 .font-editorial {
-  font-family: "Fraunces Variable", "Fraunces", "Times New Roman", serif;
+  font-family: var(--font-display);
   font-style: normal;
-  font-weight: 500;
-  font-variation-settings: "opsz" 100, "SOFT" 0;
-  letter-spacing: -0.015em;
+  font-weight: 300;
+  letter-spacing: -0.01em;
 }
 
 /* Tabular numerals utility — keeps stat tile numbers aligned across rows. */
