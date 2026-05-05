@@ -91,6 +91,41 @@
   --radius-lg: 10px;
   --radius-xl: 14px;
 
+  /* ---- DESIGN.md §5 — full PlayStation 11-radius scale.
+         The named tokens above stay for legacy callsites; the numeric
+         tokens below are the canonical scale primitives should reach
+         for going forward. Each radius maps to a specific hierarchy
+         tier: 3 = inputs, 12 = media, 19 = feature card, 24 = hero,
+         999 = pill. ---- */
+  --radius-2: 2px;
+  --radius-3: 3px;
+  --radius-6: 6px;
+  --radius-12: 12px;
+  --radius-13: 13px;
+  --radius-19: 19px;
+  --radius-20: 20px;
+  --radius-24: 24px;
+  --radius-36: 36px;
+  --radius-48: 48px;
+  --radius-pill: 999px;
+
+  /* ---- DESIGN.md §6 — 4-tier shadow scale. Opacity is the only
+         dimension that varies; spread/offset are constant. The
+         feather/tile/card tiers are the everyday elevation language;
+         the hero tier is reserved for cards that genuinely float over
+         photography. There is deliberately nothing between 0.16 and
+         0.8 — DESIGN.md §6 specifies elevation is "whispered or
+         shouted, never muttered". ---- */
+  --shadow-feather: 0 5px 9px 0 rgba(0, 0, 0, 0.06);
+  --shadow-tile: 0 5px 9px 0 rgba(0, 0, 0, 0.08);
+  --shadow-card: 0 5px 9px 0 rgba(0, 0, 0, 0.16);
+  --shadow-hero: 0 5px 9px 0 rgba(0, 0, 0, 0.8);
+
+  /* DESIGN.md §2 — the two declared section gradients. Use only as
+     section backgrounds; never inside components. */
+  --gradient-section-light: linear-gradient(180deg, #ffffff 0%, #f5f7fa 100%);
+  --gradient-section-dark: linear-gradient(180deg, #121314 0%, #000000 100%);
+
   /* ---- Shadows — proper depth in dark ---- */
   --shadow-1:
     0 1px 0 rgba(255, 255, 255, 0.04) inset,

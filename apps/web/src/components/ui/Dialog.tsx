@@ -51,8 +51,13 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
           className={cn(
             "fixed left-1/2 top-1/2 z-[901]",
             "w-[min(92vw,520px)] max-h-[88vh] overflow-auto",
-            "rounded-[var(--radius-lg)]",
-            "glass-surface-strong glass-specular",
+            // DESIGN.md §4 + §6 — hero dialogs use 24px radius and the
+            // dramatic 0.8-shadow that genuinely floats over the
+            // backdrop. Solid surface — DESIGN.md §1 keeps glass for
+            // the Filter Mist sticky bar only, never for modals.
+            "rounded-[var(--radius-24)]",
+            "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+            "shadow-[var(--shadow-hero)]",
             "p-6",
             "outline-none",
             "data-[state=open]:animate-confirm-in",
@@ -87,7 +92,16 @@ export function DialogHeader({ children, className }: { children: ReactNode; cla
 export function DialogTitle({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <DialogPrimitive.Title
-      className={cn("text-[16px] font-medium tracking-tight text-[color:var(--text-primary)]", className)}
+      // DESIGN.md §3 — display text 22px+ should be weight 300 (the
+      // "quiet authority" voice). Dialogs sit at the boundary between
+      // display and UI, so we use 18px/light-400 with tight tracking
+      // — large enough to read as a panel headline, light enough to
+      // honour the §3 weight gradient. Kbd/Toaster keep their own
+      // smaller UI weights.
+      className={cn(
+        "text-[18px] font-light tracking-[-0.005em] text-[color:var(--text-primary)]",
+        className,
+      )}
     >
       {children}
     </DialogPrimitive.Title>

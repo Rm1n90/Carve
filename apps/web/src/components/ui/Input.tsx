@@ -46,18 +46,22 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? errorId : hint ? hintId : undefined}
           className={cn(
-            "w-full h-9 rounded-[var(--radius-md)]",
+            // DESIGN.md §4 Inputs — 3px radius (the one place the system
+            // gets compact, a deliberate "functional UI" cue), 2px
+            // PlayStation-blue focus ring via box-shadow with no
+            // border-color change (the ring does the work), 180ms ease.
+            "w-full h-9 rounded-[var(--radius-3)]",
             "bg-[var(--bg-elev)] text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
             "border border-[var(--border-subtle)]",
             "px-3 py-2 text-[13px]",
-            "transition-colors duration-150",
+            "transition-[border-color,box-shadow] duration-[180ms] ease-out",
             "hover:border-[var(--border-strong)]",
-            "focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[rgba(99,102,241,0.18)]",
+            "focus:outline-none focus:shadow-[0_0_0_2px_var(--accent)]",
             "disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-[var(--bg-hover)]",
             leftIcon && "pl-9",
             rightIcon && "pr-9",
             error &&
-              "border-[var(--danger)] focus:border-[var(--danger)] focus:ring-[rgba(220,38,38,0.18)]",
+              "border-[var(--danger)] focus:shadow-[0_0_0_2px_var(--danger)]",
             className,
           )}
           {...rest}
