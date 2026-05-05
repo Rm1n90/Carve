@@ -20,6 +20,7 @@ import { Trash2, FolderInput, Tag, X } from "lucide-react";
 import { assetsApi, type Asset, type AssetListPage } from "@/api/assets";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
+import { useShortcutHandler } from "@/state/shortcuts";
 
 interface Props {
   taskId: string;
@@ -262,16 +263,10 @@ export function AssetThumbnailStrip({
     [anchorIndex, assets, selectedAssetIds],
   );
 
-  // Plan 14 Phase 8 Task 3 — global key handlers: ``Esc`` clears the
-  // multi-select set, ``g`` opens the jump-to prompt. We attach to
-  // document so the user doesn't have to focus the strip first.
+  // Plan 14 Phase 8 Task 3 -- ``Esc`` clears the multi-select set / closes
+  // jump-to. Esc stays as an inline system handler (dialog-local).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      const isTyping =
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target?.isContentEditable;
       if (e.key === "Escape") {
         if (selectedAssetIds.size > 0) {
           setSelectedAssetIds(new Set());
@@ -281,18 +276,18 @@ export function AssetThumbnailStrip({
           setJumpOpen(false);
           setJumpDraft("");
         }
-        return;
-      }
-      if (isTyping) return;
-      if (e.key === "g" || e.key === "G") {
-        e.preventDefault();
-        setJumpOpen(true);
-        setJumpDraft("");
       }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [selectedAssetIds, jumpOpen]);
+
+  // v3.21 -- "g" opens the jump-to-asset prompt. Customizable via
+  // ``group_assets`` in Settings -> Shortcuts.
+  useShortcutHandler("group_assets", () => {
+    setJumpOpen(true);
+    setJumpDraft("");
+  });
 
   useEffect(() => {
     if (jumpOpen) {

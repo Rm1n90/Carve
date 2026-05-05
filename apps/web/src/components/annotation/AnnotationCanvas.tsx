@@ -9,6 +9,7 @@ import { TagTool } from "@/canvas/tools/TagTool";
 import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
+import { useShortcutHandler } from "@/state/shortcuts";
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
@@ -307,6 +308,33 @@ export function AnnotationCanvas({
     "set-active",
   );
   const [paletteInitialQuery, setPaletteInitialQuery] = useState("");
+
+  // v3.20 -- user-customizable triggers for the class palette. These
+  // replace the hardcoded ``/`` and ``r`` branches in the inline
+  // window-keydown handler below; the Cmd-Shift-C power-user alias is
+  // still system-managed (not in the v1 catalog).
+  useShortcutHandler("open_class_palette", (e) => {
+    e.stopImmediatePropagation();
+    setPaletteMode("set-active");
+    setPaletteInitialQuery("");
+    setPaletteOpen(true);
+  });
+  useShortcutHandler("reassign_class", (e) => {
+    const selIds = useAnnotations.getState().selectedIds;
+    if (selIds.length === 0) return;
+    e.stopImmediatePropagation();
+    setPaletteMode("reassign");
+    setPaletteInitialQuery("");
+    setPaletteOpen(true);
+  });
+  // v3.21 -- power-user alt-trigger for the class palette. Default
+  // chord is mod+shift+c; user-customizable.
+  useShortcutHandler("open_class_palette_alt", (e) => {
+    e.stopImmediatePropagation();
+    setPaletteMode("set-active");
+    setPaletteInitialQuery("");
+    setPaletteOpen(true);
+  });
   // v3.8 Phase 3.7 — when true, Apply commits every result above
   // SAM_TEXT_FIND_ALL_THRESHOLD as a polygon (or mask) annotation
   // straight to the active class. Default true: addresses the user's
@@ -2925,59 +2953,10 @@ export function AnnotationCanvas({
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
 
-      // Plan 14 Phase 8 Task 4 — universal class-palette triggers.
-      // ``/`` opens the palette in set-active mode (replaces the
-      // earlier SAM-only ``/`` binding); ``R`` opens it in reassign
-      // mode when at least one annotation is selected; Cmd-Shift-C is
-      // a power-user alt for set-active.
-      //
-      // These guard against modifier collisions so ⌘A still selects
-      // all and ⌘P still prints (etc.). We intentionally fire BEFORE
-      // the tool-specific switch so the palette is reachable from any
-      // tool.
-      if (
-        e.key === "/" &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        !e.shiftKey
-      ) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        setPaletteMode("set-active");
-        setPaletteInitialQuery("");
-        setPaletteOpen(true);
-        return;
-      }
-      if (
-        (e.metaKey || e.ctrlKey) &&
-        e.shiftKey &&
-        e.key.toLowerCase() === "c"
-      ) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        setPaletteMode("set-active");
-        setPaletteInitialQuery("");
-        setPaletteOpen(true);
-        return;
-      }
-      if (
-        e.key.toLowerCase() === "r" &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        !e.shiftKey
-      ) {
-        const selIds = useAnnotations.getState().selectedIds;
-        if (selIds.length > 0) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          setPaletteMode("reassign");
-          setPaletteInitialQuery("");
-          setPaletteOpen(true);
-          return;
-        }
-      }
+      // v3.21 -- both ``/`` (open_class_palette), ``r`` (reassign_class),
+      // and the mod+shift+c power-user alt (open_class_palette_alt) are
+      // routed through the user-customizable shortcut system; see the
+      // ``useShortcutHandler`` calls near the top of this component.
 
       // Plan 14 Phase 8 Task 6 — L toggles lock on selected annotations.
       if (

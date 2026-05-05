@@ -8,6 +8,7 @@ import {
   SettingsProfilePage,
   SettingsWorkspacePage,
 } from "@/pages/SettingsPages";
+import { SettingsShortcutsPage } from "@/pages/SettingsShortcutsPage";
 import { ModelsYoloPage, ModelsSamPage, TrashPage } from "@/pages/Phase2Pages";
 import { AboutPage } from "@/pages/AboutPage";
 import { SystemPage } from "@/pages/SystemPage";
@@ -60,6 +61,17 @@ export const settingsWorkspaceRoute = createRoute({
   component: () => (
     <RequireAuth>
       <SettingsWorkspacePage />
+    </RequireAuth>
+  ),
+});
+
+// v3.20 -- per-user keyboard shortcut customization.
+export const settingsShortcutsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/shortcuts",
+  component: () => (
+    <RequireAuth>
+      <SettingsShortcutsPage />
     </RequireAuth>
   ),
 });

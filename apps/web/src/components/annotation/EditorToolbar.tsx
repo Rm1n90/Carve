@@ -73,6 +73,8 @@ import {
 } from "@/lib/samPostProcess";
 import { cn } from "@/lib/cn";
 import { useOptionalConfirm } from "@/components/ui/ConfirmDialog";
+import { chordTokens } from "@/lib/shortcuts/chord";
+import { useShortcut, useShortcutHandler } from "@/state/shortcuts";
 
 const PREDICT_CONF_KEY = "carve.predict.minConfidence";
 const DEFAULT_PREDICT_CONFIDENCE = 0.4;
@@ -204,17 +206,18 @@ function loadStoredIou(): number {
 interface ToolDef {
   name: ToolName;
   label: string;
-  hotkey: string;
+  /** Action id in the shortcut registry. */
+  actionId: string;
   icon: ReactNode;
 }
 
 const TOOLS: ToolDef[] = [
-  { name: "cursor", label: "Drag", hotkey: "V", icon: <MousePointer2 className="h-[18px] w-[18px]" /> },
-  { name: "sam", label: "Smart (SAM)", hotkey: "S", icon: <Wand2 className="h-[18px] w-[18px]" /> },
-  { name: "bbox", label: "Bounding box", hotkey: "B", icon: <Square className="h-[18px] w-[18px]" /> },
-  { name: "polygon", label: "Polygon", hotkey: "P", icon: <Pentagon className="h-[18px] w-[18px]" /> },
-  { name: "mask", label: "Mask brush", hotkey: "M", icon: <Brush className="h-[18px] w-[18px]" /> },
-  { name: "tag", label: "Tag", hotkey: "T", icon: <Tag className="h-[18px] w-[18px]" /> },
+  { name: "cursor", label: "Drag", actionId: "tool_cursor", icon: <MousePointer2 className="h-[18px] w-[18px]" /> },
+  { name: "sam", label: "Smart (SAM)", actionId: "tool_sam", icon: <Wand2 className="h-[18px] w-[18px]" /> },
+  { name: "bbox", label: "Bounding box", actionId: "tool_bbox", icon: <Square className="h-[18px] w-[18px]" /> },
+  { name: "polygon", label: "Polygon", actionId: "tool_polygon", icon: <Pentagon className="h-[18px] w-[18px]" /> },
+  { name: "mask", label: "Mask brush", actionId: "tool_mask", icon: <Brush className="h-[18px] w-[18px]" /> },
+  { name: "tag", label: "Tag", actionId: "tool_tag", icon: <Tag className="h-[18px] w-[18px]" /> },
 ];
 
 interface EditorToolbarProps {
@@ -261,16 +264,20 @@ interface EditorToolbarProps {
 function ToolButton({
   active,
   label,
-  hotkey,
+  actionId,
   onClick,
   children,
 }: {
   active: boolean;
   label: string;
-  hotkey: string;
+  actionId: string;
   onClick: () => void;
   children: ReactNode;
 }) {
+  // v3.21 -- read the live chord so the tooltip stays in sync with
+  // user overrides without re-mounting the button.
+  const chord = useShortcut(actionId);
+  const hotkey = chord ? chordTokens(chord).join("") : "Unbound";
   return (
     <button
       type="button"
@@ -2494,21 +2501,28 @@ export function EditorToolbar({
         onFitToScreen?.();
         return;
       }
-      const match = TOOLS.find((tool) => tool.hotkey.toLowerCase() === k);
-      if (match) {
-        setActive(match.name);
-      }
+      // v3.21 -- tool activation (V/B/P/M/T/S) is now routed through
+      // the user-customizable shortcut registry; see the
+      // ``useShortcutHandler`` calls below.
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [
-    setActive,
     toggleAutoApply,
     onFitToScreen,
     onZoomIn,
     onZoomOut,
     onZoomActual,
   ]);
+
+  // v3.21 -- per-tool keyboard activation. Each tool reads its chord
+  // from the registry so user overrides apply on the next keystroke.
+  useShortcutHandler("tool_cursor", () => setActive("cursor"), { preventDefault: false });
+  useShortcutHandler("tool_bbox", () => setActive("bbox"), { preventDefault: false });
+  useShortcutHandler("tool_polygon", () => setActive("polygon"), { preventDefault: false });
+  useShortcutHandler("tool_mask", () => setActive("mask"), { preventDefault: false });
+  useShortcutHandler("tool_tag", () => setActive("tag"), { preventDefault: false });
+  useShortcutHandler("tool_sam", () => setActive("sam"), { preventDefault: false });
 
   return (
     <div
@@ -2533,7 +2547,7 @@ export function EditorToolbar({
           key={t.name}
           active={active === t.name}
           label={t.label}
-          hotkey={t.hotkey}
+          actionId={t.actionId}
           onClick={() => setActive(t.name)}
         >
           {t.icon}

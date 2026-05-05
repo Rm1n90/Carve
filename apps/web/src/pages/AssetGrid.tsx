@@ -17,6 +17,7 @@ import { annotationsApi } from "@/api/annotations";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
+import { useShortcutHandler } from "@/state/shortcuts";
 
 const PAGE_SIZE = 100;
 // Tile size is purely CSS-driven via `auto-fill, minmax(...)` so the layout is
@@ -373,7 +374,7 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
     setAnchorId(null);
   };
 
-  // Cmd/Ctrl+A → select all visible. Esc → clear.
+  // Esc -> clear selection. Stays inline (system / dialog-local).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
@@ -383,10 +384,7 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
       ) {
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
-        e.preventDefault();
-        selectAllVisible();
-      } else if (e.key === "Escape" && selected.size > 0) {
+      if (e.key === "Escape" && selected.size > 0) {
         clearSelection();
       }
     };
@@ -394,6 +392,13 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assets, selected.size]);
+
+  // v3.21 -- "select all assets in grid" is customizable. Default chord
+  // is mod+shift+a so it doesn't collide with the editor's mod+a
+  // (select-all-on-frame).
+  useShortcutHandler("select_all_assets", () => {
+    selectAllVisible();
+  });
 
   const bulkTagMut = useMutation({
     mutationFn: (input: { class_id: string; className: string }) =>

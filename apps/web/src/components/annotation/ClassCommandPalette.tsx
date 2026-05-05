@@ -11,6 +11,8 @@ import { Input } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { MOD_LABEL } from "@/lib/platform";
 import { cn } from "@/lib/cn";
+import { useShortcut } from "@/state/shortcuts";
+import { matchChord } from "@/lib/shortcuts/chord";
 
 /**
  * Plan 14 Phase 8 Task 4 — Class Command Palette.
@@ -80,6 +82,9 @@ export function ClassCommandPalette({
   const [tab, setTab] = useState<PaletteTab>("all");
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // v3.21 -- live pin chord. Matched against the input's onKeyDown
+  // event so user overrides apply on the very next keypress.
+  const pinChord = useShortcut("pin_class");
 
   // Subscribed reads — select the stable map reference and slice with
   // useMemo. Selecting ``map[pid] ?? []`` would return a fresh array
@@ -295,10 +300,8 @@ export function ClassCommandPalette({
             } else if (e.key === "Tab") {
               e.preventDefault();
               cycleTab(e.shiftKey ? -1 : 1);
-            } else if (
-              (e.metaKey || e.ctrlKey) &&
-              e.key.toLowerCase() === "p"
-            ) {
+            } else if (matchChord(e.nativeEvent, pinChord)) {
+              // v3.21 -- pin chord is user-customizable via "pin_class".
               e.preventDefault();
               togglePinHighlighted();
             }

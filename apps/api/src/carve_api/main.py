@@ -47,6 +47,10 @@ def create_app() -> FastAPI:
     from carve_api.system.router import router as system_router
     app.include_router(system_router)
 
+    # v3.20 -- per-user keyboard shortcut overrides (/me/shortcuts).
+    from carve_api.shortcuts.router import router as shortcuts_router
+    app.include_router(shortcuts_router)
+
     from carve_api.models_info.router import router as models_info_router
     app.include_router(models_info_router)
 

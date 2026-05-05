@@ -1,5 +1,5 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ChevronsUp,
   ChevronUp,
@@ -29,23 +29,32 @@ import { buildPolygon } from "@/lib/geometryConvert";
 import { samPolygonForGeometry } from "@/lib/samConvert";
 import { bulkConvertSelectedToBboxWithToast } from "@/lib/bulkConvert";
 import { localizeHotkey } from "@/lib/platform";
+import { formatChord } from "@/lib/shortcuts/chord";
+import { useShortcut } from "@/state/shortcuts";
 import type { ClassRow } from "@/api/classes";
 
+// v3.20 -- the hotkey labels rendered next to menu items are now
+// driven by the user's customizable shortcuts. The legacy
+// ``localizeHotkey`` helper is kept around for any non-customizable
+// labels (none today; reserved for future static hotkeys).
+void localizeHotkey;
+
 /**
- * Item 6 — platform-localised hotkey labels. These are the strings the
- * user actually sees next to menu items; `localizeHotkey` swaps "⌘"
- * for "Ctrl" on non-Mac platforms so the labels match what their
- * keyboards actually look like.
+ * Returns the live, formatted hotkey labels for every customizable
+ * action this menu surfaces. Pulls each chord through ``useShortcut``
+ * so overrides (and resets) are reflected immediately.
  */
-const HK = {
-  front: localizeHotkey("⌘⇧]"),
-  up: localizeHotkey("⌘]"),
-  down: localizeHotkey("⌘["),
-  back: localizeHotkey("⌘⇧["),
-  paste: localizeHotkey("⌘V"),
-  duplicate: localizeHotkey("⌘D"),
-  copy: localizeHotkey("⌘C"),
-};
+function useMenuHotkeys() {
+  return {
+    front: formatChord(useShortcut("bring_to_front")),
+    up: formatChord(useShortcut("bring_forward")),
+    down: formatChord(useShortcut("send_backward")),
+    back: formatChord(useShortcut("send_to_back")),
+    paste: formatChord(useShortcut("paste")),
+    duplicate: formatChord(useShortcut("duplicate")),
+    copy: formatChord(useShortcut("copy")),
+  };
+}
 
 interface MenuItem {
   key: string;
@@ -55,36 +64,38 @@ interface MenuItem {
   onSelect: (annId: string) => void;
 }
 
-const Z_ITEMS: MenuItem[] = [
-  {
-    key: "front",
-    label: "Bring to Front",
-    icon: <ChevronsUp className="h-3.5 w-3.5" />,
-    hotkey: HK.front,
-    onSelect: (id) => useAnnotations.getState().bringToFront(id),
-  },
-  {
-    key: "forward",
-    label: "Bring Forward",
-    icon: <ChevronUp className="h-3.5 w-3.5" />,
-    hotkey: HK.up,
-    onSelect: (id) => useAnnotations.getState().bringForward(id),
-  },
-  {
-    key: "backward",
-    label: "Send Backward",
-    icon: <ChevronDown className="h-3.5 w-3.5" />,
-    hotkey: HK.down,
-    onSelect: (id) => useAnnotations.getState().sendBackward(id),
-  },
-  {
-    key: "back",
-    label: "Send to Back",
-    icon: <ChevronsDown className="h-3.5 w-3.5" />,
-    hotkey: HK.back,
-    onSelect: (id) => useAnnotations.getState().sendToBack(id),
-  },
-];
+function buildZItems(hk: ReturnType<typeof useMenuHotkeys>): MenuItem[] {
+  return [
+    {
+      key: "front",
+      label: "Bring to Front",
+      icon: <ChevronsUp className="h-3.5 w-3.5" />,
+      hotkey: hk.front,
+      onSelect: (id) => useAnnotations.getState().bringToFront(id),
+    },
+    {
+      key: "forward",
+      label: "Bring Forward",
+      icon: <ChevronUp className="h-3.5 w-3.5" />,
+      hotkey: hk.up,
+      onSelect: (id) => useAnnotations.getState().bringForward(id),
+    },
+    {
+      key: "backward",
+      label: "Send Backward",
+      icon: <ChevronDown className="h-3.5 w-3.5" />,
+      hotkey: hk.down,
+      onSelect: (id) => useAnnotations.getState().sendBackward(id),
+    },
+    {
+      key: "back",
+      label: "Send to Back",
+      icon: <ChevronsDown className="h-3.5 w-3.5" />,
+      hotkey: hk.back,
+      onSelect: (id) => useAnnotations.getState().sendToBack(id),
+    },
+  ];
+}
 
 interface Props {
   hostRef: React.RefObject<HTMLElement | null>;
@@ -477,6 +488,13 @@ export function AnnotationContextMenu({
   const [submenuLeft, setSubmenuLeft] = useState(true);
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
+
+  // v3.20 -- live hotkey labels and Z-order menu items, reactive to
+  // user shortcut overrides. ``HK`` shadows the legacy module-level
+  // const that was removed in this change; the call sites below are
+  // unchanged.
+  const HK = useMenuHotkeys();
+  const Z_ITEMS = useMemo(() => buildZItems(HK), [HK]);
   const hoverCloseTimer = useRef<number | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 

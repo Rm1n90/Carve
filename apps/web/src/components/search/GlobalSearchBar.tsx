@@ -7,6 +7,7 @@ import { CheckSquare, Folder, Search } from "lucide-react";
 import { projectsApi, type Project } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
 import { MOD_LABEL } from "@/lib/platform";
+import { useShortcutHandler } from "@/state/shortcuts";
 import { cn } from "@/lib/cn";
 
 /**
@@ -71,17 +72,11 @@ export function GlobalSearchBar() {
   const [text, setText] = useState("");
   const navigate = useNavigate();
 
-  // Cmd/Ctrl-K toggles the palette globally.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setOpen((v) => !v);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  // v3.20 -- toggle the palette via the user-customizable
+  // "global_search" shortcut (default: mod+k).
+  useShortcutHandler("global_search", () => {
+    setOpen((v) => !v);
+  });
 
   const corpusQ = useQuery({
     queryKey: ["global-search-corpus"],

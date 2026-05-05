@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, Enum, String, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from carve_api.db import Base
@@ -43,4 +43,13 @@ class User(Base):
     # unique constraint and break multiple NULL rows on some dialects.
     sso_subject: Mapped[str | None] = mapped_column(
         String(255), nullable=True, default=None
+    )
+    # v3.20 -- per-user keyboard shortcut overrides. Sparse map of
+    # ``action_id -> chord``; absent keys mean "use the default chord".
+    # Empty string is reserved for "unbound" (handler stays registered
+    # but never fires; UI doesn't expose this state in v1). The column
+    # is non-nullable with a server default of ``{}`` so existing rows
+    # (and writers that never touched it) read back as "all defaults".
+    shortcut_overrides: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, server_default="{}"
     )

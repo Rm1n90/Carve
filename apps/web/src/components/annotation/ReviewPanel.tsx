@@ -33,6 +33,7 @@ import {
 import { useReviewCompare } from "@/state/reviewCompare";
 import { useOptionalConfirm } from "@/components/ui/ConfirmDialog";
 import type { ClassRow } from "@/api/classes";
+import { useShortcutHandler } from "@/state/shortcuts";
 
 export type ReviewFilter = "all" | ReviewStatus;
 
@@ -249,36 +250,22 @@ export function ReviewPanel({
     }
   }, [byId, pinnedCompare, unpinCompare]);
 
-  // Keyboard: A/R when a SINGLE annotation is selected and the user
-  // isn't typing into a text input.
-  useEffect(() => {
-    function isEditableTarget(t: EventTarget | null): boolean {
-      if (!(t instanceof HTMLElement)) return false;
-      const tag = t.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-      if (t.isContentEditable) return true;
-      return false;
-    }
-    function handler(e: KeyboardEvent) {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (isEditableTarget(e.target)) return;
-      if (selectedIds.length !== 1 || !selectedId) return;
-      const draft = useAnnotations.getState().byId[selectedId];
-      if (!draft) return;
-      const key = e.key.toLowerCase();
-      if (key === "a") {
-        e.preventDefault();
-        void applyReview(draft, "accept");
-      } else if (key === "r") {
-        e.preventDefault();
-        void applyReview(draft, "reject");
-      }
-    }
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-    // deps intentional: handler reads live state via useAnnotations.getState()
-    // and busyRef.current, so a stale closure on selectedId/applyReview is fine.
-  }, [selectedId, selectedIds.length]);
+  // v3.21 -- review_accept / review_reject are user-customizable. The
+  // handlers gate on a single-selected annotation outside any text
+  // input -- ``useShortcutHandler``'s built-in matchChord exemption
+  // already keeps non-mod chords from firing inside editable elements.
+  useShortcutHandler("review_accept", () => {
+    if (selectedIds.length !== 1 || !selectedId) return;
+    const draft = useAnnotations.getState().byId[selectedId];
+    if (!draft) return;
+    void applyReview(draft, "accept");
+  });
+  useShortcutHandler("review_reject", () => {
+    if (selectedIds.length !== 1 || !selectedId) return;
+    const draft = useAnnotations.getState().byId[selectedId];
+    if (!draft) return;
+    void applyReview(draft, "reject");
+  });
 
   return (
     <aside

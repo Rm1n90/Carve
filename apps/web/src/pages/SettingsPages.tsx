@@ -50,6 +50,7 @@ import { cn } from "@/lib/cn";
 const TABS: { to: string; label: string; adminOnly?: boolean }[] = [
   { to: "/settings/profile", label: "Profile" },
   { to: "/settings/api-keys", label: "API Keys" },
+  { to: "/settings/shortcuts", label: "Shortcuts" },
   { to: "/settings/members", label: "Members", adminOnly: true },
   { to: "/settings/workspace", label: "Workspace" },
 ];

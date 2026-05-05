@@ -1,5 +1,5 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Keyboard } from "lucide-react";
 import {
   Dialog,
@@ -10,6 +10,8 @@ import {
 } from "@/components/ui/Dialog";
 import { Kbd } from "@/components/ui/Kbd";
 import { MOD_LABEL } from "@/lib/platform";
+import { chordTokens } from "@/lib/shortcuts/chord";
+import { useShortcut } from "@/state/shortcuts";
 import { cn } from "@/lib/cn";
 
 /**
@@ -126,6 +128,152 @@ export const SHORTCUTS: ShortcutGroup[] = [
 // is preserved by mapping in the renderer. The exported canonical
 // shape uses ``items`` / ``desc`` (Plan 09 Task 10 spec).
 
+/**
+ * v3.20 -- live, per-render shortcut groups. Migrated rows pull their
+ * keys through ``useShortcut`` so user overrides are reflected in the
+ * cheat sheet immediately. Non-migrated rows fall through to the
+ * static ``SHORTCUTS`` definitions above.
+ */
+function useLiveShortcutGroups(): ShortcutGroup[] {
+  const t = {
+    select_all: chordTokens(useShortcut("select_all")),
+    open_class_palette: chordTokens(useShortcut("open_class_palette")),
+    open_class_palette_alt: chordTokens(useShortcut("open_class_palette_alt")),
+    reassign_class: chordTokens(useShortcut("reassign_class")),
+    convert_to_bbox: chordTokens(useShortcut("convert_to_bbox")),
+    bring_to_front: chordTokens(useShortcut("bring_to_front")),
+    send_to_back: chordTokens(useShortcut("send_to_back")),
+    bring_forward: chordTokens(useShortcut("bring_forward")),
+    send_backward: chordTokens(useShortcut("send_backward")),
+    undo: chordTokens(useShortcut("undo")),
+    redo: chordTokens(useShortcut("redo")),
+    copy: chordTokens(useShortcut("copy")),
+    paste: chordTokens(useShortcut("paste")),
+    duplicate: chordTokens(useShortcut("duplicate")),
+    frame_prev: chordTokens(useShortcut("frame_prev")),
+    frame_next: chordTokens(useShortcut("frame_next")),
+    frame_prev_bracket: chordTokens(useShortcut("frame_prev_bracket")),
+    frame_next_bracket: chordTokens(useShortcut("frame_next_bracket")),
+    frame_prev_comma: chordTokens(useShortcut("frame_prev_comma")),
+    frame_next_period: chordTokens(useShortcut("frame_next_period")),
+    frame_play_pause: chordTokens(useShortcut("frame_play_pause")),
+    global_search: chordTokens(useShortcut("global_search")),
+    tool_cursor: chordTokens(useShortcut("tool_cursor")),
+    tool_bbox: chordTokens(useShortcut("tool_bbox")),
+    tool_polygon: chordTokens(useShortcut("tool_polygon")),
+    tool_mask: chordTokens(useShortcut("tool_mask")),
+    tool_tag: chordTokens(useShortcut("tool_tag")),
+    tool_sam: chordTokens(useShortcut("tool_sam")),
+    delete_annotation: chordTokens(useShortcut("delete_annotation")),
+    save_annotations: chordTokens(useShortcut("save_annotations")),
+    pin_class: chordTokens(useShortcut("pin_class")),
+    review_accept: chordTokens(useShortcut("review_accept")),
+    review_reject: chordTokens(useShortcut("review_reject")),
+    select_all_assets: chordTokens(useShortcut("select_all_assets")),
+    group_assets: chordTokens(useShortcut("group_assets")),
+  };
+  return useMemo<ShortcutGroup[]>(
+    () => [
+      {
+        title: "Tool",
+        items: [
+          { keys: t.tool_cursor, desc: "Drag / select" },
+          { keys: t.tool_bbox, desc: "Bounding box" },
+          { keys: t.tool_polygon, desc: "Polygon" },
+          { keys: t.tool_mask, desc: "Mask brush" },
+          { keys: t.tool_tag, desc: "Tag" },
+          { keys: t.tool_sam, desc: "Smart (SAM)" },
+          { keys: ["A"], desc: "Auto-apply (smart)" },
+          { keys: ["F"], desc: "Fit to screen" },
+          { keys: ["Enter"], desc: "Commit polygon" },
+        ],
+      },
+      {
+        title: "Selection",
+        items: [
+          { keys: t.select_all, desc: "Select all on frame" },
+          { keys: t.delete_annotation, desc: "Delete selected" },
+          { keys: ["Esc"], desc: "Cancel / clear selection" },
+          { keys: ["⇧", "click"], desc: "Multi-select" },
+          { keys: ["1", "..", "9"], desc: "Switch active class" },
+          { keys: t.open_class_palette, desc: "Open class palette" },
+          { keys: t.open_class_palette_alt, desc: "Open class palette (alt)" },
+          { keys: t.pin_class, desc: "Pin highlighted class" },
+          { keys: t.reassign_class, desc: "Reassign selected to class…" },
+          { keys: t.convert_to_bbox, desc: "Convert selected to BBox" },
+          { keys: ["←", "→", "↑", "↓"], desc: "Nudge selected bbox" },
+          { keys: ["⇧", "+", "arrow"], desc: "Nudge by 10px" },
+        ],
+      },
+      {
+        title: "Navigation",
+        items: [
+          { keys: t.frame_prev, desc: "Previous asset / frame" },
+          { keys: t.frame_next, desc: "Next asset / frame" },
+          { keys: ["⇧", "←"], desc: "Previous asset (video)" },
+          { keys: ["⇧", "→"], desc: "Next asset (video)" },
+          { keys: t.frame_prev_bracket, desc: "Previous frame" },
+          { keys: t.frame_next_bracket, desc: "Next frame" },
+          { keys: t.frame_prev_comma, desc: "Step frame back" },
+          { keys: t.frame_next_period, desc: "Step frame forward" },
+          { keys: t.frame_play_pause, desc: "Play / pause" },
+        ],
+      },
+      {
+        title: "Review",
+        items: [
+          { keys: t.review_accept, desc: "Accept selected" },
+          { keys: t.review_reject, desc: "Reject selected" },
+        ],
+      },
+      {
+        title: "Assets",
+        items: [
+          { keys: t.select_all_assets, desc: "Select all assets in grid" },
+          { keys: t.group_assets, desc: "Jump to asset by index" },
+        ],
+      },
+      {
+        title: "SAM",
+        items: [
+          { keys: ["P"], desc: "Point mode" },
+          { keys: ["B"], desc: "Box mode" },
+          { keys: ["T"], desc: "Text mode" },
+          { keys: ["drag"], desc: "Track mode: bbox seed" },
+          { keys: ["click"], desc: "Track mode: point seed" },
+        ],
+      },
+      {
+        title: "Z-order",
+        items: [
+          { keys: t.bring_to_front, desc: "Bring to front" },
+          { keys: t.send_to_back, desc: "Send to back" },
+          { keys: t.bring_forward, desc: "Bring forward" },
+          { keys: t.send_backward, desc: "Send backward" },
+        ],
+      },
+      {
+        title: "Files",
+        items: [
+          { keys: t.save_annotations, desc: "Save now" },
+          { keys: t.undo, desc: "Undo" },
+          { keys: t.redo, desc: "Redo" },
+          { keys: t.copy, desc: "Copy selected" },
+          { keys: t.paste, desc: "Paste" },
+          { keys: t.duplicate, desc: "Duplicate selected" },
+          { keys: t.global_search, desc: "Global search" },
+          { keys: ["L"], desc: "Lock / unlock selected" },
+          { keys: ["?"], desc: "Show this cheat sheet" },
+        ],
+      },
+    ],
+    // The token arrays change identity when overrides change; tracking
+    // them collectively via JSON.stringify keeps the memo cheap.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(t)],
+  );
+}
+
 export function KeyboardCheatSheet({
   hideTrigger = false,
 }: {
@@ -137,6 +285,7 @@ export function KeyboardCheatSheet({
   hideTrigger?: boolean;
 } = {}) {
   const [open, setOpen] = useState(false);
+  const liveGroups = useLiveShortcutGroups();
 
   useEffect(() => {
     function onOpen() {
@@ -181,7 +330,7 @@ export function KeyboardCheatSheet({
               className="grid grid-cols-2 gap-x-8 gap-y-5"
               data-testid="cheatsheet-groups"
             >
-              {SHORTCUTS.map((g) => (
+              {liveGroups.map((g) => (
                 <div key={g.title} className="grid gap-2">
                   <p className="text-[10.5px] tracking-tight text-[color:var(--text-tertiary)] font-medium">
                     {g.title}

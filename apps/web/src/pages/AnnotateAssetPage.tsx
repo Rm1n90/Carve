@@ -52,6 +52,7 @@ import { useAnnotations } from "@/state/annotations";
 import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
+import { useShortcutHandler } from "@/state/shortcuts";
 import { useResizableRightPanel } from "@/hooks/useResizableRightPanel";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
@@ -668,108 +669,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     };
   }, []);
 
-  // Manual Cmd+S, Cmd+Z, Cmd+Shift+Z, Cmd+A, Backspace, z-order shortcuts
+  // v3.21 -- only ``Esc`` (dialog-local) stays as an inline handler;
+  // ``Cmd+S`` and ``Backspace/Delete`` are now customizable through the
+  // shortcut registry (``save_annotations`` and ``delete_annotation``).
   useEffect(() => {
     function handler(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
         return;
       }
-      const k = e.key.toLowerCase();
-      const meta = e.metaKey || e.ctrlKey;
-      if (meta && k === "s") {
-        e.preventDefault();
-        saveNowRef.current();
-        return;
-      }
-      if (meta && k === "z" && !e.shiftKey) {
-        e.preventDefault();
-        useAnnotations.getState().undo();
-        return;
-      }
-      if (meta && k === "z" && e.shiftKey) {
-        e.preventDefault();
-        useAnnotations.getState().redo();
-        return;
-      }
-      if (meta && k === "a") {
-        e.preventDefault();
-        // Read the live frameId so Cmd+A picks up the current asset's
-        // frame, not the value captured when this useEffect first ran
-        // (frameId can flip from null -> non-null when assetQ resolves;
-        // the useEffect deps are [projectId, taskId] for stability so
-        // we use a ref instead). v2.7 wave 2 item 4.
-        useAnnotations.getState().selectAll(frameIdRef.current);
-        return;
-      }
-      if (e.key === "Backspace" || e.key === "Delete") {
-        const ids = useAnnotations.getState().selectedIds;
-        if (ids.length > 0) {
-          e.preventDefault();
-          for (const id of ids) {
-            useAnnotations.getState().remove(id);
-          }
-        }
-        return;
-      }
-      // Plan-19 follow-up — `C` (no modifier) bulk-converts every
-      // selected polygon / mask annotation to a bbox. Mirrors the
-      // right-click "Convert → BBox" item so users can flip whole
-      // selections in one keystroke. The helper is shared with the
-      // context menu so toast wording stays in sync.
-      if (!meta && !e.shiftKey && k === "c") {
-        const sel = useAnnotations.getState().selectedIds;
-        if (sel.length === 0) return;
-        const drafts = useAnnotations.getState().byId;
-        const eligible = sel.filter((id) => {
-          const d = drafts[id];
-          return !!d && (d.kind === "polygon" || d.kind === "mask");
-        });
-        if (eligible.length === 0) return;
-        e.preventDefault();
-        bulkConvertSelectedToBboxWithToast(eligible);
-        return;
-      }
-      // Z-order: Cmd+Shift+] / Cmd+] / Cmd+[ / Cmd+Shift+[
-      if (meta && (e.key === "]" || e.key === "[")) {
-        const sel = useAnnotations.getState().selectedId;
-        if (!sel) return;
-        e.preventDefault();
-        if (e.key === "]" && e.shiftKey) {
-          useAnnotations.getState().bringToFront(sel);
-        } else if (e.key === "]") {
-          useAnnotations.getState().bringForward(sel);
-        } else if (e.key === "[" && e.shiftKey) {
-          useAnnotations.getState().sendToBack(sel);
-        } else if (e.key === "[") {
-          useAnnotations.getState().sendBackward(sel);
-        }
-        return;
-      }
-      // Prev/next asset navigation. Stop at boundaries (no wrap).
-      // v3.8 Phase 4-video step F8 — on video assets plain ArrowLeft/
-      // ArrowRight steps frames (FrameTimeline owns that handler);
-      // Shift+Arrow falls through to asset navigation. On image
-      // assets plain Arrow keeps the legacy asset-nav behaviour.
-      if (!meta && e.key === "ArrowLeft") {
-        if (isVideoAsset && !e.shiftKey) return;
-        const target = navAssetRef.current.prev;
-        if (target) {
-          e.preventDefault();
-          goToAsset(target.id);
-        }
-        return;
-      }
-      if (!meta && e.key === "ArrowRight") {
-        if (isVideoAsset && !e.shiftKey) return;
-        const target = navAssetRef.current.next;
-        if (target) {
-          e.preventDefault();
-          goToAsset(target.id);
-        }
-        return;
-      }
-      // Esc clears selection
       if (e.key === "Escape") {
         useAnnotations.getState().clearSelection();
       }
@@ -778,6 +686,83 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, taskId]);
+
+  // v3.21 -- save_annotations & delete_annotation are user-customizable.
+  useShortcutHandler("save_annotations", () => {
+    saveNowRef.current();
+  });
+  useShortcutHandler("delete_annotation", () => {
+    const ids = useAnnotations.getState().selectedIds;
+    if (ids.length > 0) {
+      for (const id of ids) {
+        useAnnotations.getState().remove(id);
+      }
+    }
+  });
+
+  // v3.20 -- customizable shortcuts. Every action below is editable in
+  // Settings -> Shortcuts. Empty-chord overrides ("unbound") are
+  // honored by useShortcutHandler -- the listener stays registered
+  // but never fires.
+  useShortcutHandler("undo", () => {
+    useAnnotations.getState().undo();
+  });
+  useShortcutHandler("redo", () => {
+    useAnnotations.getState().redo();
+  });
+  useShortcutHandler("select_all", () => {
+    // Read the live frameId so select-all picks up the current asset's
+    // frame, not a stale capture (frameId flips when assetQ resolves).
+    useAnnotations.getState().selectAll(frameIdRef.current);
+  });
+  useShortcutHandler("convert_to_bbox", (e) => {
+    const sel = useAnnotations.getState().selectedIds;
+    if (sel.length === 0) {
+      // Nothing selected -- don't preventDefault would have already
+      // fired; this is a no-op fallthrough to keep `c` typeable in
+      // contexts where nothing is selected.
+      return;
+    }
+    const drafts = useAnnotations.getState().byId;
+    const eligible = sel.filter((id) => {
+      const d = drafts[id];
+      return !!d && (d.kind === "polygon" || d.kind === "mask");
+    });
+    if (eligible.length === 0) return;
+    e.preventDefault();
+    bulkConvertSelectedToBboxWithToast(eligible);
+  });
+  useShortcutHandler("bring_to_front", () => {
+    const sel = useAnnotations.getState().selectedId;
+    if (sel) useAnnotations.getState().bringToFront(sel);
+  });
+  useShortcutHandler("bring_forward", () => {
+    const sel = useAnnotations.getState().selectedId;
+    if (sel) useAnnotations.getState().bringForward(sel);
+  });
+  useShortcutHandler("send_to_back", () => {
+    const sel = useAnnotations.getState().selectedId;
+    if (sel) useAnnotations.getState().sendToBack(sel);
+  });
+  useShortcutHandler("send_backward", () => {
+    const sel = useAnnotations.getState().selectedId;
+    if (sel) useAnnotations.getState().sendBackward(sel);
+  });
+  // v3.8 Phase 4-video step F8 -- on video assets plain ArrowLeft/Right
+  // steps frames (FrameTimeline owns that handler); Shift+Arrow falls
+  // through to asset navigation. We mirror that gate here: bail out
+  // when on a video AND the user did NOT hold shift, regardless of
+  // whether the user customized the chord.
+  useShortcutHandler("frame_prev", (e) => {
+    if (isVideoAsset && !e.shiftKey) return;
+    const target = navAssetRef.current.prev;
+    if (target) goToAsset(target.id);
+  });
+  useShortcutHandler("frame_next", (e) => {
+    if (isVideoAsset && !e.shiftKey) return;
+    const target = navAssetRef.current.next;
+    if (target) goToAsset(target.id);
+  });
 
   // Plan 14 Phase 8 Task 9 — typed editor breadcrumbs
   // ``Workspace › <Project> › <Task> › Asset N/M``

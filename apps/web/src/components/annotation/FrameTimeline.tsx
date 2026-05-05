@@ -1,8 +1,9 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useEditorSettings, type PlayerSpeed } from "@/state/editorSettings";
+import { useShortcutHandler } from "@/state/shortcuts";
 
 interface Props {
   totalFrames: number;
@@ -30,67 +31,51 @@ function speedToIntervalMs(speed: PlayerSpeed): number {
 
 export function FrameTimeline({ totalFrames, currentIdx, onChange }: Props) {
   const playingRef = useRef<number | null>(null);
-  // playerStep / playerSpeed are personal preferences — read directly from
-  // the store inside the keydown handler so changes apply on the very next
-  // keypress without re-binding.
-  useEffect(() => {
-    function handler(e: KeyboardEvent) {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      const settings = useEditorSettings.getState();
-      const step = Math.max(1, Math.round(settings.playerStep));
-      // v3.8 Phase 4-video step F3 — accept `,` and `.` as alternate
-      // frame-step shortcuts (matches video-editor convention) along
-      // with the legacy `[` / `]`.
-      // v3.8 Phase 4-video step F8 — ArrowLeft/Right step frames on video
-      // assets too (matches the user's mental model: arrows = navigate
-      // the visible frame). Asset navigation moves to Shift+Arrow.
-      const plainArrowLeft =
-        e.key === "ArrowLeft" &&
-        !e.shiftKey &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey;
-      const plainArrowRight =
-        e.key === "ArrowRight" &&
-        !e.shiftKey &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey;
-      if (e.key === "[" || e.key === "," || plainArrowLeft) {
-        if (plainArrowLeft) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-        onChange(Math.max(0, currentIdx - step));
-      } else if (e.key === "]" || e.key === "." || plainArrowRight) {
-        if (plainArrowRight) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
+
+  // playerStep / playerSpeed are personal preferences -- read directly
+  // from the store inside the handlers so changes apply on the very
+  // next keypress without re-binding.
+  const stepBack = useCallback(() => {
+    const step = Math.max(1, Math.round(useEditorSettings.getState().playerStep));
+    onChange(Math.max(0, currentIdx - step));
+  }, [currentIdx, onChange]);
+
+  const stepForward = useCallback(() => {
+    const step = Math.max(1, Math.round(useEditorSettings.getState().playerStep));
+    onChange(Math.min(totalFrames - 1, currentIdx + step));
+  }, [currentIdx, totalFrames, onChange]);
+
+  // v3.21 -- every chord is now user-customizable. The bracket / comma /
+  // period defaults are reused from FrameTimeline's legacy shortcuts.
+  // The plain ArrowLeft / ArrowRight keys default to ``frame_prev`` /
+  // ``frame_next`` (handled in AnnotateAssetPage); on a video asset the
+  // page delegates to this component via the bracket variants below.
+  useShortcutHandler("frame_prev_bracket", stepBack);
+  useShortcutHandler("frame_next_bracket", stepForward);
+  useShortcutHandler("frame_prev_comma", stepBack);
+  useShortcutHandler("frame_next_period", stepForward);
+  useShortcutHandler("frame_play_pause", () => {
+    const settings = useEditorSettings.getState();
+    const step = Math.max(1, Math.round(settings.playerStep));
+    if (playingRef.current !== null) {
+      window.clearInterval(playingRef.current);
+      playingRef.current = null;
+    } else {
+      const interval = speedToIntervalMs(settings.playerSpeed);
+      playingRef.current = window.setInterval(() => {
         onChange(Math.min(totalFrames - 1, currentIdx + step));
-      } else if (e.key === " ") {
-        e.preventDefault();
-        if (playingRef.current !== null) {
-          window.clearInterval(playingRef.current);
-          playingRef.current = null;
-        } else {
-          const interval = speedToIntervalMs(settings.playerSpeed);
-          playingRef.current = window.setInterval(() => {
-            onChange(Math.min(totalFrames - 1, currentIdx + step));
-          }, interval);
-        }
-      }
+      }, interval);
     }
-    window.addEventListener("keydown", handler);
+  });
+
+  useEffect(() => {
     return () => {
-      window.removeEventListener("keydown", handler);
       if (playingRef.current !== null) {
         window.clearInterval(playingRef.current);
         playingRef.current = null;
       }
     };
-  }, [currentIdx, totalFrames, onChange]);
+  }, []);
 
   if (totalFrames <= 1) return null;
   const max = totalFrames - 1;
