@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import threading
+import time
 from io import BytesIO
 from typing import Any
 
@@ -27,6 +28,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL_PATH = "omlab/VLM-FO1_Qwen2.5-VL-3B-v01"
 DEFAULT_MAX_BOXES = 64
 DEFAULT_MAX_NEW_TOKENS = 4096
+# v3.22 — match the SAM idle eviction default. FO1 + SAM 3 together
+# saturate a 24 GB card; freeing FO1 weights when nobody's using them
+# is what gives the editor (SAM) full GPU access for routine work.
+DEFAULT_IDLE_TIMEOUT_S = 15 * 60
 
 
 _REGION_TOKEN_RE = re.compile(r"<\s*r(?:egion)?\s*_?\s*(\d+)\s*>")
@@ -35,10 +40,65 @@ _BARE_REGION_RE = re.compile(r"\bregion[\s_]*(\d+)\b")
 
 _state: dict[str, Any] = {}
 _load_lock = threading.Lock()
+_last_used_at: float = 0.0
 
 
 def is_loaded() -> bool:
     return "model" in _state
+
+
+def _idle_timeout_s() -> int:
+    raw = os.environ.get("VLM_FO1_IDLE_TIMEOUT_S", str(DEFAULT_IDLE_TIMEOUT_S))
+    try:
+        v = int(raw)
+        return max(0, v)
+    except (TypeError, ValueError):
+        return DEFAULT_IDLE_TIMEOUT_S
+
+
+def _empty_cuda_cache() -> None:
+    """Best-effort ``torch.cuda.empty_cache()`` — silent on failure."""
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def evict_if_idle() -> bool:
+    """Free FO1 weights + GPU memory if idle longer than the timeout.
+
+    Returns True when eviction happened. No-op when no model is loaded,
+    the timeout is 0 (disabled), or the last-used timestamp is within
+    the timeout window. Mirrors ``carve_model.sam.predictor.evict_predictor_if_idle``.
+    """
+    timeout = _idle_timeout_s()
+    if timeout == 0:
+        return False
+    with _load_lock:
+        if "model" not in _state:
+            return False
+        if (time.monotonic() - _last_used_at) < timeout:
+            return False
+        _state.clear()
+    _empty_cuda_cache()
+    logger.info(
+        "FO1 weights evicted after %ds idle; will lazy-load on next request",
+        timeout,
+    )
+    return True
+
+
+def force_evict() -> bool:
+    """Unconditionally free the cached model + GPU memory."""
+    with _load_lock:
+        if "model" not in _state:
+            return False
+        _state.clear()
+    _empty_cuda_cache()
+    return True
 
 
 def _resolve_model_path() -> str:
@@ -120,10 +180,13 @@ def _load_model() -> None:
 
 
 def _ensure_loaded() -> None:
+    global _last_used_at
     if "model" in _state:
+        _last_used_at = time.monotonic()
         return
     with _load_lock:
         _load_model()
+        _last_used_at = time.monotonic()
 
 
 def _decode_image(image_b64: str) -> Any:
@@ -256,14 +319,21 @@ def run_filter(
             "quant": _resolve_quant(),
         }
 
+    global _last_used_at
+
     _ensure_loaded()
 
     capped_boxes = boxes[:max_boxes]
     capped_n = len(capped_boxes)
 
     image = _decode_image(image_b64)
-    output_text = _generate(image, text, capped_boxes, max_new_tokens)
+    try:
+        output_text = _generate(image, text, capped_boxes, max_new_tokens)
+    finally:
+        # Free generation activations even if /generate raised partway.
+        _empty_cuda_cache()
     indexes = _extract_indexes(output_text, n_boxes=capped_n)
+    _last_used_at = time.monotonic()
 
     return {
         "indexes": indexes,

@@ -393,13 +393,21 @@ class Sam3p1NativeImagePredictorAdapter:
         ``image`` is a numpy ``HxWx3`` RGB uint8 array (per router contract).
         Converted to PIL before handing to the native processor.
 
-        The forward pass is wrapped in ``torch.autocast(cuda, bf16)``:
+        The forward pass is wrapped in ``torch.no_grad()`` (we never
+        backprop through inference) and ``torch.autocast(cuda, bf16)``:
         the native sam3 image stack uses a fused ``addmm_act`` MLP
         kernel that internally casts to bf16, plus
         ``with autocast(enabled=False)`` blocks in the decoder that
         force specific FFNs back to float32. PyTorch's autocast handles
         the per-op rules; trying to manually cast everything to a
         single dtype breaks the design.
+
+        v3.22 GPU-hygiene: the prior ``self._state`` dict holds GPU
+        tensors (image embedding, encoder feats). Drop the reference and
+        run ``torch.cuda.empty_cache()`` BEFORE building a new state so
+        the allocator can reuse those bytes — without this, batch
+        auto-annotate accumulates one stale image-embedding's worth of
+        VRAM per asset (≈ 0.5–1 GB), eventually OOM-ing.
         """
         from PIL import Image  # type: ignore[import-not-found]
         import torch  # type: ignore[import-not-found]
@@ -407,11 +415,19 @@ class Sam3p1NativeImagePredictorAdapter:
         h, w = int(image.shape[0]), int(image.shape[1])
         self._original_size = (h, w)
         pil = Image.fromarray(image)
+
+        if self._state is not None:
+            self._state = None
+            if self._device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         if self._device == "cuda":
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                self._state = self._processor.set_image(pil)
+            with torch.no_grad():
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    self._state = self._processor.set_image(pil)
         else:
-            self._state = self._processor.set_image(pil)
+            with torch.no_grad():
+                self._state = self._processor.set_image(pil)
 
     def predict(
         self,
@@ -446,7 +462,17 @@ class Sam3p1NativeImagePredictorAdapter:
 
         import torch  # type: ignore[import-not-found]
         if self._device == "cuda":
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.no_grad():
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    masks, scores, logits = self._model.predict_inst(
+                        self._state,
+                        point_coords=pc,
+                        point_labels=pl,
+                        box=b,
+                        multimask_output=multimask_output,
+                    )
+        else:
+            with torch.no_grad():
                 masks, scores, logits = self._model.predict_inst(
                     self._state,
                     point_coords=pc,
@@ -454,14 +480,6 @@ class Sam3p1NativeImagePredictorAdapter:
                     box=b,
                     multimask_output=multimask_output,
                 )
-        else:
-            masks, scores, logits = self._model.predict_inst(
-                self._state,
-                point_coords=pc,
-                point_labels=pl,
-                box=b,
-                multimask_output=multimask_output,
-            )
         return masks, scores, logits
 
     def extract_embedding(self) -> dict | None:
@@ -602,10 +620,12 @@ def make_sam3p1_text_predictor():
         # Reset any prior prompts before applying the new text concept.
         adapter._processor.reset_all_prompts(state)
         if adapter._device == "cuda":
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                adapter._processor.set_text_prompt(text, state)
+            with torch.no_grad():
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    adapter._processor.set_text_prompt(text, state)
         else:
-            adapter._processor.set_text_prompt(text, state)
+            with torch.no_grad():
+                adapter._processor.set_text_prompt(text, state)
 
         detections = _extract_text_detections(state)
         boxes = state.get("boxes")
@@ -627,6 +647,24 @@ def make_sam3p1_text_predictor():
                 "polygon": polygon,
             })
         rows.sort(key=lambda r: r["score"], reverse=True)
+
+        # v3.22 GPU-hygiene: drop GPU tensors from the state dict
+        # (masks_logits, masks, boxes, scores, text features) and run
+        # empty_cache so the allocator can reclaim them before the next
+        # batch iteration. Without this, sequential auto-annotate
+        # requests accumulate intermediate tensors and OOM.
+        boxes_np = None  # noqa: F841 — drop GPU ref
+        boxes = None  # noqa: F841
+        if "masks_logits" in state:
+            state["masks_logits"] = None
+        if "masks" in state:
+            state["masks"] = None
+        if "boxes" in state:
+            state["boxes"] = None
+        if "scores" in state:
+            state["scores"] = None
+        if adapter._device == "cuda":
+            torch.cuda.empty_cache()
 
         # v3.21+ — VLM-FO1 precision filter pass for the native sam3.1
         # backend. Mirrors the transformers-side path in sam3_adapter so
@@ -710,10 +748,12 @@ def make_sam3p1_box_predictor():
 
         if text:
             if adapter._device == "cuda":
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    adapter._processor.set_text_prompt(text, state)
+                with torch.no_grad():
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        adapter._processor.set_text_prompt(text, state)
             else:
-                adapter._processor.set_text_prompt(text, state)
+                with torch.no_grad():
+                    adapter._processor.set_text_prompt(text, state)
 
         positive_masks: list[Any] = []
         negative_masks: list[Any] = []
@@ -723,7 +763,17 @@ def make_sam3p1_box_predictor():
         for box, label in zip(boxes, box_labels, strict=False):
             box_arr = np.asarray(box, dtype=np.float32).reshape(-1)
             if adapter._device == "cuda":
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                with torch.no_grad():
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        masks, scores, _ = adapter._model.predict_inst(
+                            state,
+                            point_coords=None,
+                            point_labels=None,
+                            box=box_arr,
+                            multimask_output=False,
+                        )
+            else:
+                with torch.no_grad():
                     masks, scores, _ = adapter._model.predict_inst(
                         state,
                         point_coords=None,
@@ -731,19 +781,19 @@ def make_sam3p1_box_predictor():
                         box=box_arr,
                         multimask_output=False,
                     )
-            else:
-                masks, scores, _ = adapter._model.predict_inst(
-                    state,
-                    point_coords=None,
-                    point_labels=None,
-                    box=box_arr,
-                    multimask_output=False,
-                )
             if masks is None or len(masks) == 0:
+                # Drop GPU refs even on the no-mask path, then continue.
+                masks = None  # noqa: F841
+                scores = None  # noqa: F841
                 continue
             best_idx = int(np.argmax(np.asarray(scores)))
             best_mask = np.asarray(masks[best_idx]).astype(np.uint8)
             best_score = float(np.asarray(scores)[best_idx])
+            # v3.22 GPU-hygiene: free the per-iteration GPU outputs
+            # AFTER copying to numpy. Without this, K-output × N-box
+            # accumulates VRAM in a multi-box request.
+            masks = None  # noqa: F841
+            scores = None  # noqa: F841
             if int(label) == 1:
                 positive_masks.append(best_mask)
                 positive_scores.append(best_score)
@@ -778,6 +828,21 @@ def make_sam3p1_box_predictor():
                 "polygon": polygon,
             })
         rows.sort(key=lambda r: r["score"], reverse=True)
+
+        # v3.22 GPU-hygiene: clear residual state-dict GPU tensors and
+        # run empty_cache so the allocator returns memory between
+        # /sam/box-prompt requests.
+        if "masks_logits" in state:
+            state["masks_logits"] = None
+        if "masks" in state:
+            state["masks"] = None
+        if "boxes" in state:
+            state["boxes"] = None
+        if "scores" in state:
+            state["scores"] = None
+        if adapter._device == "cuda":
+            torch.cuda.empty_cache()
+
         return rows
 
     return _predict_from_boxes

@@ -51,7 +51,21 @@ def _fake_torch(monkeypatch):
     fake.cuda = SimpleNamespace(
         is_available=lambda: False,
         is_bf16_supported=lambda: False,
+        empty_cache=lambda: None,
     )
+
+    # v3.22 GPU-hygiene: adapters wrap inference in ``torch.no_grad()``.
+    # The dev-venv stub didn't expose it; provide a no-op context
+    # manager so tests that don't run on real torch still pass.
+    class _NullCtx:
+        def __enter__(self) -> "_NullCtx":
+            return self
+
+        def __exit__(self, *_exc) -> None:  # noqa: ANN001
+            return None
+
+    fake.no_grad = lambda: _NullCtx()
+    fake.inference_mode = lambda: _NullCtx()
     monkeypatch.setitem(sys.modules, "torch", fake)
 
 

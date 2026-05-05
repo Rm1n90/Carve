@@ -19,6 +19,8 @@ re-design.
 from __future__ import annotations
 
 import logging
+import threading
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -28,7 +30,33 @@ from model_vlm_fo1 import runner
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="VLM-FO1 sidecar", version="0.1.0")
+# Background sweeper config — mirrors the model service's SAM sweeper.
+# Daemon thread → never blocks shutdown. Event-based wait exits early
+# when lifespan stops the sweeper.
+_SWEEP_INTERVAL_S = 60.0
+_SWEEPER_STOP = threading.Event()
+
+
+def _sweep_loop() -> None:
+    """Idle-eviction loop. Swallows all exceptions so it never crashes the app."""
+    while not _SWEEPER_STOP.wait(_SWEEP_INTERVAL_S):
+        try:
+            runner.evict_if_idle()
+        except Exception:  # noqa: BLE001 — sweeper must never crash
+            logger.exception("FO1 idle sweeper iteration failed")
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):  # noqa: ANN001
+    sweeper = threading.Thread(target=_sweep_loop, daemon=True, name="fo1-sweeper")
+    sweeper.start()
+    try:
+        yield
+    finally:
+        _SWEEPER_STOP.set()
+
+
+app = FastAPI(title="VLM-FO1 sidecar", version="0.1.0", lifespan=_lifespan)
 
 
 class FilterRequest(BaseModel):

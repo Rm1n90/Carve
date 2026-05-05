@@ -236,6 +236,14 @@ class Sam2ImagePredictorAdapter:
         else:
             scores_for_router = torch.ones((n_masks,), dtype=torch.float32)
 
+        # v3.22 GPU-hygiene: pred_masks and outputs were produced on
+        # GPU; we already moved what we need to CPU above. Drop the
+        # GPU refs and run empty_cache so /sam/decode doesn't leak
+        # ~30–60 MB per click on long editing sessions.
+        del outputs, pred_masks, inputs
+        if self._device == "cuda":
+            torch.cuda.empty_cache()
+
         return masks_for_router, scores_for_router, None
 
 

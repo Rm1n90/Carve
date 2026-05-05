@@ -350,6 +350,10 @@ def make_sam3_text_predictor():
         boxes = results.get("boxes") if hasattr(results, "get") else None
         out: list[dict] = []
         if masks is None:
+            # Free GPU refs before returning even on the empty path.
+            del inputs, outputs, results
+            if device == "cuda":
+                torch.cuda.empty_cache()
             return out
         for i in range(len(masks)):
             # bf16 / f16 tensors raise on .numpy(); to_numpy_safe casts up.
@@ -371,6 +375,14 @@ def make_sam3_text_predictor():
                 # usable contour. Falls back to mask_rle on the client.
                 "polygon": polygon,
             })
+
+        # v3.22 GPU-hygiene: drop the GPU tensors we copied to numpy so
+        # they don't survive the function call. Without this, every
+        # batch auto-annotate iteration leaks ~50–500 MB of activations
+        # and the 24 GB card OOMs around the ~30th asset.
+        del inputs, outputs, results, masks, scores, boxes
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
         # v3.21+ — VLM-FO1 precision filter pass. Cheap-exit if the
         # request didn't opt in or SAM 3 produced nothing for FO1 to
@@ -483,6 +495,25 @@ def make_sam3_box_predictor():
             input_boxes_labels=labels_arg,
             return_tensors="pt",
         ).to(device)
+
+        # v3.22 dtype-fix: when the model was loaded as bf16 (default on
+        # CUDA per perf.get_dtype()), the Sam3Processor returns float32
+        # tensors that mismatch the model's Linear layer weights —
+        # ``geometry_encoder._encode_boxes -> boxes_direct_project``
+        # raises ``mat1 and mat2 must have the same dtype, but got
+        # Float and BFloat16``. Cast every floating-point input tensor
+        # to the model dtype to match. Integer label tensors are left
+        # alone (they're indexed, not matmul'd).
+        try:
+            model_dtype = next(model.parameters()).dtype
+            if hasattr(inputs, "items"):
+                for k, v in list(inputs.items()):
+                    if hasattr(v, "dtype") and hasattr(v, "to") and v.is_floating_point():
+                        if v.dtype != model_dtype:
+                            inputs[k] = v.to(dtype=model_dtype)
+        except (StopIteration, AttributeError, TypeError):
+            pass
+
         with torch.no_grad():
             outputs = model(**inputs)
         results = proc.post_process_instance_segmentation(
@@ -496,6 +527,9 @@ def make_sam3_box_predictor():
         boxes_out = results.get("boxes") if hasattr(results, "get") else None
         out: list[dict] = []
         if masks is None:
+            del inputs, outputs, results
+            if device == "cuda":
+                torch.cuda.empty_cache()
             return out
         for i in range(len(masks)):
             # bf16 / f16 tensors raise on .numpy(); to_numpy_safe casts up.
@@ -516,6 +550,11 @@ def make_sam3_box_predictor():
                 # client. Empty when the mask had no usable contour.
                 "polygon": polygon,
             })
+
+        # v3.22 GPU-hygiene: same release pattern as text_predictor.
+        del inputs, outputs, results, masks, scores, boxes_out
+        if device == "cuda":
+            torch.cuda.empty_cache()
         return out
 
     return _predict_from_boxes

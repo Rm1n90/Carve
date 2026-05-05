@@ -159,6 +159,13 @@ services:
       MODEL_HOST: 0.0.0.0
       MODEL_PORT: 8100
       HF_TOKEN: ${HF_TOKEN:-}
+      # v3.22 — expandable_segments lets PyTorch's CUDA allocator return
+      # memory to the system between request peaks, dramatically
+      # reducing fragmentation on long batch jobs (auto-annotate over
+      # hundreds of assets). Without this, sequential text-prompt calls
+      # accumulate fragments until any new allocation OOMs even though
+      # the in-use bytes are small.
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       # v3.8 Phase 3 — pass SAM_MODEL through so .env can pick the
       # boot-time variant. Without this, the container always starts on
       # the hard-coded default (sam2.1-large) and runtime /sam/switch
@@ -240,6 +247,14 @@ services:
       # service to gate the toggle.
       VLM_FO1_MODEL_PATH: ${VLM_FO1_MODEL_PATH:-}
       VLM_FO1_QUANT: ${VLM_FO1_QUANT:-}
+      # v3.22 — idle-eviction: drop the 6 GB Qwen2.5-VL-3B weights
+      # after this many seconds without a /filter request, freeing
+      # GPU memory for SAM 3 / SAM 3.1 in the meantime. Default 15 min,
+      # mirrors the model service's SAM_IDLE_TIMEOUT_S. Set to 0 to
+      # disable (useful for benchmarks; pins ~6 GB permanently).
+      VLM_FO1_IDLE_TIMEOUT_S: ${VLM_FO1_IDLE_TIMEOUT_S:-900}
+      # Same allocator tweak as the model service.
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
     volumes:
       # Share the HF cache with the model service. Both pull from the
