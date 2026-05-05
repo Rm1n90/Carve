@@ -80,6 +80,15 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-}
       MINIO_BUCKET: ${MINIO_BUCKET}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-http://model:8100}
+      # /system/info path-rewrite root — see apps/api/src/carve_api/system/router.py
+      HOST_ROOT: /host
+    volumes:
+      # Read-only bind of the host root so /system/info can enumerate
+      # all host disks, not just the bind-mount the api container was
+      # built on. ``rslave`` propagation keeps new host mounts visible
+      # without leaking container mounts back out. Standard monitoring
+      # pattern used by node-exporter, cAdvisor, Netdata.
+      - /:/host:ro,rslave
     depends_on:
       postgres:
         condition: service_healthy

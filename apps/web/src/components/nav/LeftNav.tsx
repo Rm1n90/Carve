@@ -4,6 +4,7 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Activity,
   ChevronDown,
   ChevronRight,
   Cpu,
@@ -559,6 +560,12 @@ export function LeftNav() {
           icon={<HelpCircle className="h-3.5 w-3.5" />}
           initiallyOpen={false}
         >
+          <NavItem
+            label="System"
+            to="/system"
+            active={isActive(path, "/system", false)}
+            icon={<Activity className="h-3.5 w-3.5" />}
+          />
           <NavItem
             label="About"
             to="/about"

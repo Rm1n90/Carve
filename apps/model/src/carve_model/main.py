@@ -92,6 +92,72 @@ def create_app() -> FastAPI:
             "device": get_device(),
         }
 
+    @app.get("/gpus")
+    def gpus() -> list[dict]:
+        """Per-GPU stats sourced from nvidia-smi.
+
+        Returns an empty list when nvidia-smi is unavailable or no GPU is
+        attached. Used by the api service's /system/info endpoint, which
+        cannot run nvidia-smi in its own container.
+        """
+        import shutil
+        import subprocess
+
+        if shutil.which("nvidia-smi") is None:
+            return []
+        try:
+            proc = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,name,driver_version,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return []
+        if proc.returncode != 0:
+            return []
+        out: list[dict] = []
+        for line in proc.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 8:
+                continue
+            try:
+                total_mb = int(parts[3])
+                used_mb = int(parts[4])
+                free_mb = int(parts[5])
+            except ValueError:
+                continue
+
+            def _opt_float(s: str) -> float | None:
+                if s in ("[N/A]", "N/A", ""):
+                    return None
+                try:
+                    return float(s)
+                except ValueError:
+                    return None
+
+            out.append(
+                {
+                    "index": int(parts[0]),
+                    "name": parts[1],
+                    "driver_version": parts[2] or None,
+                    "memory_total_mb": total_mb,
+                    "memory_used_mb": used_mb,
+                    "memory_free_mb": free_mb,
+                    "memory_percent": (
+                        round((used_mb / total_mb) * 100, 1) if total_mb > 0 else 0.0
+                    ),
+                    "utilization_percent": _opt_float(parts[6]),
+                    "temperature_c": _opt_float(parts[7]),
+                }
+            )
+        return out
+
     app.include_router(yolo_router)
     app.include_router(sam_router)
     app.include_router(sam_track_router)

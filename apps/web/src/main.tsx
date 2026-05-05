@@ -25,6 +25,7 @@ import {
   settingsMembersRoute,
   settingsProfileRoute,
   settingsWorkspaceRoute,
+  systemRoute,
   trashRoute,
 } from "./routes/phase2";
 import { ThemeProvider } from "./components/theme/ThemeProvider";
@@ -49,6 +50,7 @@ const routeTree = rootRoute.addChildren([
   modelsYoloRoute,
   modelsSamRoute,
   trashRoute,
+  systemRoute,
   aboutRoute,
 ]);
 const router = createRouter({ routeTree });

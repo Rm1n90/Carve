@@ -44,6 +44,9 @@ def create_app() -> FastAPI:
     from carve_api.trash.router import router as trash_router
     app.include_router(trash_router)
 
+    from carve_api.system.router import router as system_router
+    app.include_router(system_router)
+
     from carve_api.models_info.router import router as models_info_router
     app.include_router(models_info_router)
 
