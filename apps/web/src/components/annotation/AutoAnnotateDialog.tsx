@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Sparkles, X } from "lucide-react";
 
 import { samApi } from "@/api/sam";
+import { vlmFo1Api } from "@/api/vlm_fo1";
+import { modelsApi } from "@/api/phase2";
 import type { ClassRow } from "@/api/classes";
 import {
   newAnnotationIdsSince,
@@ -70,6 +72,9 @@ export function AutoAnnotateDialog({
   const [threshold, setThreshold] = useState<number>(0.4);
   const [findAll, setFindAll] = useState<boolean>(true);
   const [overwrite, setOverwrite] = useState<boolean>(false);
+  // v3.21+ — VLM-FO1 precision filter opt-in. Local UI state seeded
+  // from the per-user pref via useEffect once both queries resolve.
+  const [useVlmFo1, setUseVlmFo1] = useState<boolean>(false);
   // Phase 3.5: only "this" is wired. "all" reserved for Phase 3.6 (RQ batch).
   const [scope, setScope] = useState<"this" | "all">("this");
   // v3.8 Phase 3.5 — track an in-flight RQ batch so the dialog can
@@ -101,6 +106,33 @@ export function AutoAnnotateDialog({
     [classes],
   );
 
+  // v3.21+ — capability gate: hide the FO1 toggle when the model
+  // service isn't advertising it. Only fetched while the dialog is open.
+  const samStatusQuery = useQuery({
+    queryKey: ["sam", "status", "vlm-fo1-cap"],
+    queryFn: () => modelsApi.samStatus(),
+    enabled: open,
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+  });
+  const vlmFo1Available = samStatusQuery.data?.vlm_fo1_available === true;
+
+  // Per-user preference seeds the local toggle. We read once when the
+  // dialog opens; the user's interaction within the dialog persists via
+  // an explicit save (see toggle handler below).
+  const vlmFo1PrefQuery = useQuery({
+    queryKey: ["vlm-fo1", "pref"],
+    queryFn: () => vlmFo1Api.get(),
+    enabled: open,
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
+  });
+  useEffect(() => {
+    if (vlmFo1PrefQuery.data) {
+      setUseVlmFo1(vlmFo1PrefQuery.data.enabled);
+    }
+  }, [vlmFo1PrefQuery.data]);
+
   const run = useMutation({
     mutationFn: async () => {
       // Plan-17 Phase 2 — capture snapshot of annotation IDs before
@@ -116,6 +148,10 @@ export function AutoAnnotateDialog({
       // v3.8 Phase 3.5 — branch on scope. "this" is sync; "all" enqueues
       // an RQ batch and we return a pseudo-result the onSuccess can
       // recognise by the presence of a `job_id` field.
+      // v3.21+ — only forward use_vlm_fo1 when the server actually
+      // supports it AND the user opted in. Sending the flag to a server
+      // without the capability is harmless but pointless.
+      const wireUseVlmFo1 = vlmFo1Available && useVlmFo1;
       if (scope === "all") {
         if (!taskId) throw new Error("no_task");
         const r = await samApi.autoTextBatch(taskId, {
@@ -123,6 +159,7 @@ export function AutoAnnotateDialog({
           threshold,
           find_all: findAll,
           overwrite,
+          ...(wireUseVlmFo1 ? { use_vlm_fo1: true } : {}),
         });
         return { kind: "batch", job_id: r.job_id } as const;
       }
@@ -132,6 +169,7 @@ export function AutoAnnotateDialog({
         threshold,
         find_all: findAll,
         overwrite,
+        ...(wireUseVlmFo1 ? { use_vlm_fo1: true } : {}),
       });
       return { kind: "sync", ...r } as const;
     },
@@ -511,6 +549,36 @@ export function AutoAnnotateDialog({
             </label>
           </div>
         </div>
+
+        {/* v3.21+ — VLM-FO1 precision filter toggle. Hidden when the
+            model service hasn't registered a filter (capability gate)
+            so users on FO1-less deployments don't see a dead control. */}
+        {vlmFo1Available && (
+          <label
+            className="flex items-center gap-2 mb-2 text-[12.5px] text-[color:var(--text-primary)] cursor-pointer"
+            title="Run a vision-language precision filter on top of SAM 3 mask proposals. Slower but reduces false positives on compositional prompts. Beta."
+          >
+            <Checkbox
+              checked={useVlmFo1}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setUseVlmFo1(next);
+                // Persist the preference so the choice survives the
+                // dialog and applies to single-image text-prompt as well.
+                void vlmFo1Api.put(next).catch(() => {
+                  /* silent — UI state already updated */
+                });
+              }}
+              data-testid="auto-annotate-vlm-fo1"
+            />
+            <span className="flex-1">
+              VLM-FO1 smart filter
+              <span className="ml-1 font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                beta · slower · higher precision
+              </span>
+            </span>
+          </label>
+        )}
 
         {/* Overwrite */}
         <label className="flex items-center gap-2 mb-2 text-[12.5px] text-[color:var(--text-primary)] cursor-pointer">

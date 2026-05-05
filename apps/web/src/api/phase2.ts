@@ -72,6 +72,13 @@ export interface SamLoadStatus {
   error: string | null;
   /** Correlation token from the most recent switch, if any. */
   job_id?: string | null;
+  /**
+   * v3.21+ — true when the model service has a VLM-FO1 precision
+   * filter registered (i.e. ``VLM_FO1_AVAILABLE=1`` was set at startup).
+   * The editor uses this to decide whether to show the per-user FO1
+   * toggle.
+   */
+  vlm_fo1_available?: boolean;
 }
 
 export const modelsApi = {

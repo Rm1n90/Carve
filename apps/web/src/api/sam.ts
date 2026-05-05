@@ -84,13 +84,25 @@ export const samApi = {
     assetId: string,
     text: string,
     frameId?: string | null,
-  ): Promise<SamPromptResult[]> =>
-    (
+    useVlmFo1?: boolean,
+  ): Promise<SamPromptResult[]> => {
+    const body: Record<string, unknown> = { text };
+    if (frameId) {
+      body.frame_id = frameId;
+    }
+    // v3.21+ — send the FO1 flag only when the caller opted in. Older
+    // API/model deployments that pre-date the field stay byte-for-byte
+    // compatible because the field is simply absent.
+    if (useVlmFo1) {
+      body.use_vlm_fo1 = true;
+    }
+    return (
       await api.post<SamPromptResult[]>(
         `/assets/${assetId}/sam/text-prompt`,
-        frameId ? { text, frame_id: frameId } : { text },
+        body,
       )
-    ).data,
+    ).data;
+  },
   /**
    * v3.8 Phase 3.5 — multi-class SAM 3 text-prompt auto-annotate (sync,
    * single asset). The dialog UI builds the body from a class checklist
@@ -105,6 +117,8 @@ export const samApi = {
       threshold?: number;
       find_all?: boolean;
       overwrite?: boolean;
+      // v3.21+ — opt-in VLM-FO1 precision filter. Default unset (false).
+      use_vlm_fo1?: boolean;
     },
   ): Promise<{
     annotations_created: number;
@@ -131,6 +145,9 @@ export const samApi = {
       threshold?: number;
       find_all?: boolean;
       overwrite?: boolean;
+      // v3.21+ — opt-in VLM-FO1 precision filter; persists into the
+      // RQ payload so every per-asset iteration honors the same toggle.
+      use_vlm_fo1?: boolean;
     },
   ): Promise<{ job_id: string }> =>
     (
