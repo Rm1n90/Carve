@@ -60,11 +60,50 @@ def _hf_login_from_env() -> None:
         )
 
 
+def _maybe_register_vlm_fo1() -> None:
+    """Register the VLM-FO1 precision filter when the operator opts in.
+
+    Default OFF: ``VLM_FO1_AVAILABLE=0`` (or unset) means no filter is
+    registered, ``/sam/status.vlm_fo1_available`` reports ``false``,
+    and the model service behaves byte-for-byte identical to today.
+
+    When ``VLM_FO1_AVAILABLE=1``, build a filter closure (lazy — no
+    model weights download until the first opted-in request lands).
+    Failures here MUST NOT crash startup: if the vlm_fo1 module can't
+    import or build, log and continue without the filter so the rest
+    of the service stays up.
+    """
+    import os
+
+    if os.environ.get("VLM_FO1_AVAILABLE", "0").lower() not in ("1", "true", "yes"):
+        log.info("VLM_FO1_AVAILABLE unset; skipping FO1 filter registration")
+        return
+
+    try:
+        from carve_model.sam.predictor import set_vlm_fo1_filter
+        from carve_model.vlm_fo1 import make_vlm_fo1_filter
+
+        quant = os.environ.get("VLM_FO1_QUANT") or None
+        filter_fn = make_vlm_fo1_filter(quant=quant)
+        set_vlm_fo1_filter(filter_fn)
+        log.info(
+            "VLM-FO1 precision filter registered (quant=%s); lazy-load on "
+            "first opted-in /sam/text-prompt request",
+            quant or "bf16",
+        )
+    except Exception:  # noqa: BLE001 — startup must never crash on FO1
+        log.exception(
+            "VLM_FO1_AVAILABLE=1 but filter registration failed; FO1 stays "
+            "disabled, /sam/status.vlm_fo1_available will report false",
+        )
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     _hf_login_from_env()
     from carve_model.yolo.registry import install_default_loader
     install_default_loader()
+    _maybe_register_vlm_fo1()
     _SWEEPER_STOP.clear()
     t = threading.Thread(target=_sweep_loop, daemon=True, name="sam-sweeper")
     t.start()

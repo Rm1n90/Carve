@@ -224,6 +224,11 @@ def _reset_for_test() -> None:
 class TextPromptIn(BaseModel):
     image_b64: str
     text: str = Field(..., min_length=1, max_length=200)
+    # v3.21+ — opt-in VLM-FO1 precision filter. Default False preserves
+    # byte-for-byte the existing /sam/text-prompt behavior. Honored only
+    # when the model service has a filter registered (reflected by
+    # /sam/status.vlm_fo1_available).
+    use_vlm_fo1: bool = False
 
 
 class TextPromptOut(BaseModel):
@@ -248,6 +253,15 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
             status_code=503,
             detail="sam3_predictor_not_loaded",
         ) from exc
+    # Forward use_vlm_fo1 only when the client opted in. Older factories
+    # whose signature predates the kwarg keep working — they're called
+    # exactly as before.
+    if payload.use_vlm_fo1:
+        return factory(
+            image_b64=payload.image_b64,
+            text=payload.text,
+            use_vlm_fo1=True,
+        )
     return factory(image_b64=payload.image_b64, text=payload.text)
 
 
@@ -355,6 +369,10 @@ class StatusOut(BaseModel):
     loaded_at: str | None
     error: str | None
     job_id: str | None = None
+    # v3.21+ — VLM-FO1 capability gate. ``True`` means the operator has
+    # registered a filter and the per-request ``use_vlm_fo1`` flag will
+    # be honored. The editor toggle hides itself when this is False.
+    vlm_fo1_available: bool = False
 
 
 @router.get("/status", response_model=StatusOut)
@@ -367,6 +385,8 @@ def sam_status() -> StatusOut:
       ready   — predictor is loaded and ready to encode/decode
       error   — last load attempt failed; ``error`` carries the detail
     """
+    from carve_model.sam.predictor import get_vlm_fo1_filter
+
     state = get_load_state()
     # If the state machine has never been touched but the env already
     # names a variant (e.g. operator preset SAM_MODEL but nobody hit
@@ -379,6 +399,7 @@ def sam_status() -> StatusOut:
         loaded_at=state.loaded_at,
         error=state.error,
         job_id=state.job_id,
+        vlm_fo1_available=get_vlm_fo1_filter() is not None,
     )
 
 
