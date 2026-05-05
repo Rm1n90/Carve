@@ -18,12 +18,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.orm import configure_mappers
 
 from carve_api.annotations.models import Annotation
 from carve_api.assets.models import Asset, Frame
 from carve_api.io.coco_in import parse_coco_bytes
 from carve_api.io.yolo_in import AnnotationDraft, ParsedArchive, parse_yolo_archive
-from carve_api.projects.models import Class, Task
+from carve_api.projects.models import Class, Project, Task  # noqa: F401 -- mapper registry
+
+# Plan-20.10 — when the RQ worker loads this module via the dataclass
+# pickle payload it imports Annotation lazily. SQLAlchemy then can't
+# resolve the FK from ``annotations.reviewed_by_id`` to ``users.id``
+# at flush time and raises ``NoReferencedTableError``. The first
+# import job tried to flush 2204 rows, hit the error on row 0, never
+# updated progress, and the dialog stayed at "Importing… 0 of 2,204"
+# forever. Same shape as the export-job fix in plan-20.2.
+from carve_api.auth.models import User  # noqa: F401 -- mapper registry
+from carve_api.exports.models import Export  # noqa: F401 -- mapper registry
+
+configure_mappers()
 
 
 _IMP_KEY_PREFIX = "imp:job:"
