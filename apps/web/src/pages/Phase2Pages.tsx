@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/Dialog";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { Input, Select } from "@/components/ui";
 import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import {
   trashApi,
@@ -604,19 +605,24 @@ export function ModelsYoloPage() {
               <span className="text-[11.5px] text-[color:var(--text-tertiary)] uppercase tracking-tight">
                 Project
               </span>
-              <select
+              <Select
                 value={setDefaultProject}
-                onChange={(e) => setSetDefaultProject(e.target.value)}
-                data-testid="yolo-set-default-project-select"
-                className="h-8 px-2 rounded-[var(--radius-xs)] border border-[var(--border-strong)] bg-[var(--bg-elev)] text-[13px] outline-none focus:border-[var(--accent)]"
+                onValueChange={setSetDefaultProject}
               >
-                <option value="">— Choose a project —</option>
-                {(projectsQ.data ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+                <Select.Trigger
+                  aria-label="Choose a project"
+                  data-testid="yolo-set-default-project-select"
+                >
+                  <Select.Value placeholder="— Choose a project —" />
+                </Select.Trigger>
+                <Select.Content>
+                  {(projectsQ.data ?? []).map((p) => (
+                    <Select.Item key={p.id} value={p.id}>
+                      {p.name}
+                    </Select.Item>
+                  ))}
+                </Select.Content>
+              </Select>
             </label>
           </div>
           <DialogFooter>

@@ -6,6 +6,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/Popover";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { useEditorSettings, type ColorBy } from "@/state/editorSettings";
 import { useTool } from "@/state/tool";
@@ -144,13 +145,13 @@ function CheckboxRow({
           : "text-[color:var(--text-secondary)] cursor-pointer hover:text-[color:var(--text-primary)]",
       )}
     >
-      <input
-        type="checkbox"
+      <Checkbox
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange?.(e.target.checked)}
         data-testid={testId}
-        className="h-3 w-3 accent-[var(--accent)]"
+        className="h-3 w-3"
+        boxClassName="h-3 w-3"
       />
       <span className="flex-1">{label}</span>
       {trailing}

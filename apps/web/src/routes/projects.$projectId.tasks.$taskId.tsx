@@ -28,6 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/Dialog";
+import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
 
 type Tab = "assets" | "stats";
@@ -70,43 +71,6 @@ function ToolbarAction({ icon, label, hint, variant = "default", testId }: Toolb
         <span className="text-[13px] font-medium tracking-tight">{label}</span>
       </button>
     </DialogTrigger>
-  );
-}
-
-interface TabButtonProps {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-  testId?: string;
-}
-
-function TabButton({ active, onClick, icon, label, testId }: TabButtonProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      data-testid={testId}
-      role="tab"
-      aria-selected={active}
-      className={cn(
-        "relative inline-flex items-center gap-2 h-10 px-4",
-        "text-[13px] font-medium tracking-tight transition-colors duration-150",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
-        active
-          ? "text-[color:var(--text-primary)]"
-          : "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-secondary)]",
-      )}
-    >
-      <span className="inline-flex h-4 w-4 items-center justify-center">{icon}</span>
-      <span>{label}</span>
-      {active && (
-        <span
-          aria-hidden
-          className="absolute inset-x-3 -bottom-px h-[2px] rounded-full bg-[var(--accent)]"
-        />
-      )}
-    </button>
   );
 }
 
@@ -221,36 +185,28 @@ function TaskDetail() {
           </div>
         </header>
 
-        <div
-          role="tablist"
-          aria-label="Task sections"
-          className="flex items-center gap-1 border-b border-[var(--border-subtle)]"
+        <Tabs
+          value={tab}
+          onValueChange={(v) => setTab(v as Tab)}
+          variant="underline"
         >
-          <TabButton
-            active={tab === "assets"}
-            onClick={() => setTab("assets")}
-            icon={<Images className="h-4 w-4" />}
-            label="Assets"
-            testId="task-tab-assets"
-          />
-          <TabButton
-            active={tab === "stats"}
-            onClick={() => setTab("stats")}
-            icon={<BarChart3 className="h-4 w-4" />}
-            label="Stats"
-            testId="task-tab-stats"
-          />
-        </div>
-
-        <div role="tabpanel">
-          {tab === "assets" ? (
+          <Tabs.List aria-label="Task sections">
+            <Tabs.Trigger value="assets" data-testid="task-tab-assets">
+              <Images className="h-4 w-4" /> Assets
+            </Tabs.Trigger>
+            <Tabs.Trigger value="stats" data-testid="task-tab-stats">
+              <BarChart3 className="h-4 w-4" /> Stats
+            </Tabs.Trigger>
+          </Tabs.List>
+          <Tabs.Content value="assets">
             <AssetGrid projectId={projectId} taskId={taskId} />
-          ) : (
+          </Tabs.Content>
+          <Tabs.Content value="stats">
             <Suspense fallback={null}>
               <StatsPanel taskId={taskId} />
             </Suspense>
-          )}
-        </div>
+          </Tabs.Content>
+        </Tabs>
       </div>
     </RequireAuth>
   );

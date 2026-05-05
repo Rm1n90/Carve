@@ -18,6 +18,7 @@ import {
 } from "react";
 import { Trash2, FolderInput, Tag, X } from "lucide-react";
 import { assetsApi, type Asset, type AssetListPage } from "@/api/assets";
+import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 
 interface Props {
@@ -462,7 +463,7 @@ export function AssetThumbnailStrip({
           )}
         >
           <span className="text-[color:var(--text-tertiary)]">Go to asset</span>
-          <input
+          <Input
             ref={jumpInputRef}
             type="number"
             min={1}
@@ -481,12 +482,7 @@ export function AssetThumbnailStrip({
             }}
             data-testid="asset-strip-jump-input"
             aria-label="Asset number"
-            className={cn(
-              "w-20 h-7 px-2 rounded-[var(--radius-sm)]",
-              "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
-              "border border-[var(--border-subtle)]",
-              "focus:outline-none focus:border-[var(--accent)]",
-            )}
+            className="w-20"
           />
           <span className="font-mono text-[color:var(--text-tertiary)]">
             / {virtualCount}

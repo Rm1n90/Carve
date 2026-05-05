@@ -6,6 +6,7 @@ import { classesApi, type ClassRow } from "@/api/classes";
 import { projectsApi, type Project } from "@/api/projects";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Textarea } from "@/components/ui/Textarea";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import {
   Dialog,
@@ -651,19 +652,14 @@ function BulkPasteClassesDialog({
             Colors are auto-assigned so no two classes share a color.
           </DialogDescription>
         </DialogHeader>
-        <textarea
+        <Textarea
           autoFocus
           rows={8}
           placeholder={'car\nperson\nbike\n\n— or —\n\n["car", "person", "bike"]\n\n— or —\n\n- car\n- person\n- bike'}
           value={text}
           onChange={(e) => setText(e.target.value)}
           data-testid="bulk-paste-classes-input"
-          className={cn(
-            "w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)]",
-            "px-3 py-2 text-[13px] font-mono leading-relaxed",
-            "text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
-            "focus:outline-none focus:border-[var(--accent)]",
-          )}
+          className="font-mono leading-relaxed"
         />
         {entries.length > 0 && (
           <div className="grid gap-1 max-h-[180px] overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-2">

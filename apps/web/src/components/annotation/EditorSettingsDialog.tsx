@@ -1,6 +1,5 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useState, type ReactNode } from "react";
-import * as Tabs from "@radix-ui/react-tabs";
 import { Info, RotateCcw } from "lucide-react";
 
 import {
@@ -11,6 +10,10 @@ import {
   DialogTitle,
 } from "@/components/ui/Dialog";
 import { Tooltip, TooltipProvider } from "@/components/ui/Tooltip";
+import { Checkbox as UiCheckbox } from "@/components/ui/Checkbox";
+import { Input } from "@/components/ui/Input";
+import { Select as UiSelect } from "@/components/ui/Select";
+import { Tabs } from "@/components/ui/Tabs";
 import {
   useEditorSettings,
   type CanvasPattern,
@@ -142,7 +145,7 @@ function NumberInput({
   testId?: string;
 }) {
   return (
-    <input
+    <Input
       type="number"
       min={min}
       max={max}
@@ -154,7 +157,6 @@ function NumberInput({
         onChange(Math.max(min, Math.min(max, n)));
       }}
       data-testid={testId}
-      className="h-8 px-2 rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] text-[13px] focus:outline-none focus:border-[var(--accent)]"
     />
   );
 }
@@ -180,18 +182,18 @@ function Select<T extends string>({
       })
     : [];
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as T)}
-      data-testid={testId}
-      className="h-8 px-2 rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] text-[13px] focus:outline-none focus:border-[var(--accent)]"
-    >
-      {opts.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
+    <UiSelect value={value} onValueChange={(v) => onChange(v as T)}>
+      <UiSelect.Trigger data-testid={testId} className="w-full">
+        <UiSelect.Value />
+      </UiSelect.Trigger>
+      <UiSelect.Content>
+        {opts.map((o) => (
+          <UiSelect.Item key={o.value} value={o.value}>
+            {o.label}
+          </UiSelect.Item>
+        ))}
+      </UiSelect.Content>
+    </UiSelect>
   );
 }
 
@@ -208,11 +210,9 @@ function Checkbox({
 }) {
   return (
     <label className="inline-flex items-center gap-2 text-[12.5px] text-[color:var(--text-secondary)] cursor-pointer">
-      <input
-        type="checkbox"
+      <UiCheckbox
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-3.5 w-3.5 accent-[var(--accent)]"
         data-testid={testId}
       />
       <span>{label}</span>
@@ -244,13 +244,11 @@ function DeferredCheckbox({
         data-deferred="true"
         data-testid={testId ? `${testId}-row` : undefined}
       >
-        <input
-          type="checkbox"
+        <UiCheckbox
           checked={checked}
           disabled
           readOnly
           aria-disabled="true"
-          className="h-3.5 w-3.5 accent-[var(--accent)]"
           data-testid={testId}
         />
         <span>{label}</span>
@@ -278,15 +276,13 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
           </DialogDescription>
         </DialogHeader>
 
-        <Tabs.Root
+        <Tabs
           value={activeTab}
           onValueChange={(v) => setActiveTab(v as "player" | "workspace")}
           data-testid="editor-settings-tabs"
+          variant="underline"
         >
-          <Tabs.List
-            aria-label="Settings sections"
-            className="flex gap-1 border-b border-[var(--border-subtle)] mb-4"
-          >
+          <Tabs.List aria-label="Settings sections" className="mb-4">
             {(
               [
                 { value: "player", label: "Player" },
@@ -297,11 +293,6 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
                 key={t.value}
                 value={t.value}
                 data-testid={`tab-${t.value}`}
-                className={cn(
-                  "px-3 py-2 text-[13px] tracking-tight border-b-2 transition-colors",
-                  "data-[state=active]:border-[var(--accent)] data-[state=active]:text-[color:var(--text-primary)]",
-                  "data-[state=inactive]:border-transparent data-[state=inactive]:text-[color:var(--text-secondary)] data-[state=inactive]:hover:text-[color:var(--text-primary)]",
-                )}
               >
                 {t.label}
               </Tabs.Trigger>
@@ -312,7 +303,7 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
             value="player"
             forceMount
             hidden={activeTab !== "player"}
-            className="grid gap-4 data-[state=inactive]:hidden"
+            className="grid gap-4"
           >
             <Field
               label="Player step"
@@ -406,7 +397,7 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
             value="workspace"
             forceMount
             hidden={activeTab !== "workspace"}
-            className="grid gap-4 data-[state=inactive]:hidden"
+            className="grid gap-4"
           >
             <Field
               label="Auto-save interval (seconds)"
@@ -552,7 +543,7 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
                 engines (interpolation, AAM, polygon helpers) that
                 Carve does not implement, so they were inert. */}
           </Tabs.Content>
-        </Tabs.Root>
+        </Tabs>
 
         <div className="mt-6 flex justify-between items-center pt-3 border-t border-[var(--border-subtle)]">
           <button

@@ -8,6 +8,7 @@ import {
 } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import {
   Popover,
   PopoverContent,
@@ -293,12 +294,10 @@ export function WeightAssignmentCell({
                           className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-xs)] px-2 py-1 hover:bg-[var(--bg-hover)]"
                           data-testid={`weight-assignments-option-${weightId}-${p.id}`}
                         >
-                          <input
-                            type="checkbox"
+                          <Checkbox
                             checked={checked}
                             onChange={() => toggleDraft(p.id)}
                             data-testid={`weight-assignments-checkbox-${weightId}-${p.id}`}
-                            className="h-3.5 w-3.5 accent-[var(--accent)]"
                           />
                           <span className="flex-1 text-[12.5px] truncate">
                             {p.name}

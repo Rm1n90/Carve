@@ -37,6 +37,7 @@ import {
   shouldShowEdgeGhost,
 } from "@/canvas/polygonEdit";
 import { showToast } from "@/lib/toast";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
 import { AnnotationContextMenu } from "@/components/annotation/AnnotationContextMenu";
 import { ModelLoadingOverlay } from "@/components/annotation/ModelLoadingOverlay";
@@ -3558,11 +3559,9 @@ export function AnnotationCanvas({
             }}
             onPointerDown={(e) => e.stopPropagation()}
           >
-            <input
-              type="checkbox"
+            <Checkbox
               checked={samTextFindAll}
               onChange={(e) => setSamTextFindAll(e.target.checked)}
-              style={{ margin: 0 }}
             />
             All instances
           </label>

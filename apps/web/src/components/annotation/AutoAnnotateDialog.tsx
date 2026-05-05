@@ -22,6 +22,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
@@ -395,8 +396,7 @@ export function AutoAnnotateDialog({
                     checked && "bg-[var(--accent-bg)]",
                   )}
                 >
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={checked}
                     onChange={() => toggleClass(c.id)}
                     className="shrink-0"
@@ -516,8 +516,7 @@ export function AutoAnnotateDialog({
 
         {/* Overwrite */}
         <label className="flex items-center gap-2 mb-2 text-[12.5px] text-[color:var(--text-primary)] cursor-pointer">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={overwrite}
             onChange={(e) => setOverwrite(e.target.checked)}
             data-testid="auto-annotate-overwrite"
@@ -532,8 +531,7 @@ export function AutoAnnotateDialog({
             post-processing only — for batch use marquee+right-click). */}
         <div className="grid gap-1.5 mb-3">
           <label className="flex items-center gap-2 text-[12.5px] text-[color:var(--text-primary)] cursor-pointer">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={samPostMode !== "off"}
               onChange={(e) =>
                 setSamPostMode(e.target.checked ? "to-bbox" : "off")

@@ -7,6 +7,8 @@ import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
 import { useClassRecents } from "@/state/classRecents";
 import { showToast } from "@/lib/toast";
+import { Input } from "@/components/ui/Input";
+import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
 
 /**
@@ -265,13 +267,14 @@ export function ClassCommandPalette({
         >
           {headerCopy}
         </div>
-        <input
+        <Input
           ref={inputRef}
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Type to filter classes…"
           data-testid="class-command-palette-input"
+          className="mb-2"
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
@@ -299,47 +302,36 @@ export function ClassCommandPalette({
               togglePinHighlighted();
             }
           }}
-          className={cn(
-            "w-full h-9 px-3 mb-2",
-            "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-            "bg-[var(--bg-sunken)] text-[13px] text-[color:var(--text-primary)]",
-            "placeholder:text-[color:var(--text-tertiary)]",
-            "focus:outline-none focus:border-[var(--accent)]",
-          )}
         />
         {tabs.length > 1 && (
-          <div
-            role="tablist"
-            data-testid="class-command-palette-tabs"
-            className="flex items-center gap-1 px-1 pb-2"
+          <Tabs
+            value={tab}
+            onValueChange={(v) => {
+              setTab(v as typeof tab);
+              setHighlight(0);
+            }}
+            variant="segment"
+            className="px-1 pb-2"
           >
-            {tabs.map((t) => {
-              const label =
-                t === "pinned" ? "Pinned" : t === "recent" ? "Recent" : "All";
-              const active = tab === t;
-              return (
-                <button
-                  key={t}
-                  role="tab"
-                  type="button"
-                  aria-selected={active}
-                  data-testid={`class-command-palette-tab-${t}`}
-                  onClick={() => {
-                    setTab(t);
-                    setHighlight(0);
-                  }}
-                  className={cn(
-                    "h-6 px-2.5 rounded-[var(--radius-xs)] text-[11.5px] tracking-tight",
-                    active
-                      ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
-                      : "text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)]",
-                  )}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
+            <Tabs.List
+              aria-label="Class scope"
+              data-testid="class-command-palette-tabs"
+            >
+              {tabs.map((t) => {
+                const label =
+                  t === "pinned" ? "Pinned" : t === "recent" ? "Recent" : "All";
+                return (
+                  <Tabs.Trigger
+                    key={t}
+                    value={t}
+                    data-testid={`class-command-palette-tab-${t}`}
+                  >
+                    {label}
+                  </Tabs.Trigger>
+                );
+              })}
+            </Tabs.List>
+          </Tabs>
         )}
         <ul
           role="listbox"

@@ -15,6 +15,7 @@ import {
 } from "@/api/assets";
 import { annotationsApi } from "@/api/annotations";
 import { classesApi, type ClassRow } from "@/api/classes";
+import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 
 const PAGE_SIZE = 100;
@@ -415,24 +416,14 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
   return (
     <section className="grid gap-4">
       <div className="flex flex-wrap items-center gap-3">
-        <div
-          className={cn(
-            "flex items-center gap-2 flex-1 min-w-[200px] max-w-md",
-            "px-3 py-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-            "bg-[var(--bg-sunken)] focus-within:border-[var(--border-accent)]",
-          )}
-        >
-          <Search className="h-4 w-4 text-tertiary shrink-0" />
-          <input
+        <div className="flex-1 min-w-[200px] max-w-md">
+          <Input
             type="search"
             placeholder="Search by filename…"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             data-testid="asset-search-input"
-            className={cn(
-              "flex-1 bg-transparent outline-none text-[13px] text-primary",
-              "placeholder:text-tertiary",
-            )}
+            leftIcon={<Search className="h-4 w-4" aria-hidden />}
           />
         </div>
         <div className="flex gap-2" role="tablist" aria-label="Asset status filter">

@@ -2,8 +2,11 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import * as Tabs from "@radix-ui/react-tabs";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { Input } from "@/components/ui/Input";
+import { Textarea } from "@/components/ui/Textarea";
+import { Tabs } from "@/components/ui/Tabs";
 import {
   AlertTriangle,
   Archive,
@@ -447,47 +450,21 @@ function ProjectSettingsForm({
       }}
       className="grid gap-4 max-w-[640px]"
     >
-      <div className="grid gap-1.5">
-        <label
-          htmlFor="project-name"
-          className="text-[12px] uppercase tracking-[0.08em] text-[color:var(--text-tertiary)]"
-        >
-          Name
-        </label>
-        <input
-          id="project-name"
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className={cn(
-            "h-9 px-2.5 rounded-[var(--radius-sm)]",
-            "bg-[var(--bg-sunken)] text-[color:var(--text-primary)]",
-            "border border-[var(--border-subtle)] text-[13px]",
-            "focus:outline-none focus:border-[var(--accent)]",
-          )}
-        />
-      </div>
+      <Input
+        id="project-name"
+        type="text"
+        label="Name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+      />
 
-      <div className="grid gap-1.5">
-        <label
-          htmlFor="project-description"
-          className="text-[12px] uppercase tracking-[0.08em] text-[color:var(--text-tertiary)]"
-        >
-          Description
-        </label>
-        <textarea
-          id="project-description"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          rows={3}
-          className={cn(
-            "px-2.5 py-2 rounded-[var(--radius-sm)] resize-y",
-            "bg-[var(--bg-sunken)] text-[color:var(--text-primary)]",
-            "border border-[var(--border-subtle)] text-[13px]",
-            "focus:outline-none focus:border-[var(--accent)]",
-          )}
-        />
-      </div>
+      <Textarea
+        id="project-description"
+        label="Description"
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        rows={3}
+      />
 
       <div className="flex items-center gap-3">
         <button
@@ -920,12 +897,10 @@ function EditTaskClassesDialog({
                     "hover:bg-[var(--bg-hover)] transition-colors",
                   )}
                 >
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     data-testid={`task-classes-checkbox-${c.id}`}
                     checked={checked}
                     onChange={() => toggleClass(c.id)}
-                    className="h-3.5 w-3.5 accent-[var(--accent)]"
                   />
                   <span
                     aria-hidden
@@ -971,18 +946,6 @@ function EditTaskClassesDialog({
     </Dialog>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Tab trigger styling — same look as AnnotateAssetPage tabs.
-// ---------------------------------------------------------------------------
-const tabTriggerClass = cn(
-  "px-3 py-1.5 text-[12.5px] tracking-tight rounded-t-[var(--radius-sm)]",
-  "text-[color:var(--text-tertiary)] border-b-2 border-transparent",
-  "hover:text-[color:var(--text-primary)]",
-  "data-[state=active]:text-[color:var(--text-primary)]",
-  "data-[state=active]:border-[var(--accent)]",
-  "transition-colors flex items-center gap-1.5",
-);
 
 // ---------------------------------------------------------------------------
 // Plan 14 Phase 8 Task 2 — task list rendered with extracted ``TaskRow``.
@@ -1365,35 +1328,31 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
         </Link>
       </header>
 
-      <Tabs.Root defaultValue="overview" data-testid="project-detail-tabs">
+      <Tabs defaultValue="overview" data-testid="project-detail-tabs" variant="underline">
         <Tabs.List
           aria-label="Project sections"
-          className="flex border-b border-[var(--border-subtle)] gap-1 mb-5"
+          className="mb-5"
         >
           <Tabs.Trigger
             value="overview"
-            className={tabTriggerClass}
             data-testid="project-tab-overview"
           >
             <ImageIcon className="h-3.5 w-3.5" /> Overview
           </Tabs.Trigger>
           <Tabs.Trigger
             value="stats"
-            className={tabTriggerClass}
             data-testid="project-tab-stats"
           >
             <BarChart3 className="h-3.5 w-3.5" /> Stats
           </Tabs.Trigger>
           <Tabs.Trigger
             value="datasets"
-            className={tabTriggerClass}
             data-testid="project-tab-datasets"
           >
             <Database className="h-3.5 w-3.5" /> Datasets
           </Tabs.Trigger>
           <Tabs.Trigger
             value="settings"
-            className={tabTriggerClass}
             data-testid="project-tab-settings"
           >
             <Settings className="h-3.5 w-3.5" /> Settings
@@ -1622,7 +1581,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
             initialDescription={project.description}
           />
         </Tabs.Content>
-      </Tabs.Root>
+      </Tabs>
 
       {/* v3.1 Bug 2 + v3.2 Issue 4 — Duplicate-task dialog: name input
           plus a class-subset picker. The picker pre-fills with the
@@ -1660,7 +1619,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
             }}
           >
             <div className="grid gap-3">
-              <input
+              <Input
                 type="text"
                 autoFocus
                 data-testid="duplicate-task-input"
@@ -1668,13 +1627,6 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                 value={duplicateDraft}
                 onChange={(e) => setDuplicateDraft(e.target.value)}
                 maxLength={120}
-                className={cn(
-                  "w-full h-9 px-2.5 rounded-[var(--radius-sm)]",
-                  "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
-                  "border border-[var(--border-subtle)]",
-                  "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
-                  "text-[13px]",
-                )}
               />
 
               {/* v3.2 Issue 4 — class-subset picker. */}
@@ -1687,14 +1639,12 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                     Classes
                   </label>
                   <label className="flex items-center gap-1.5 text-[11.5px] text-[color:var(--text-secondary)] cursor-pointer">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       data-testid="duplicate-task-use-source-classes"
                       checked={duplicateUseSourceClasses}
                       onChange={(e) =>
                         setDuplicateUseSourceClasses(e.target.checked)
                       }
-                      className="h-3.5 w-3.5 accent-[var(--accent)]"
                     />
                     Use source classes
                   </label>
@@ -1728,8 +1678,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                           "hover:bg-[var(--bg-hover)] transition-colors",
                         )}
                       >
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           data-testid={`duplicate-task-class-${c.id}`}
                           checked={checked}
                           onChange={() => {
@@ -1743,7 +1692,6 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                               return next;
                             });
                           }}
-                          className="h-3.5 w-3.5 accent-[var(--accent)]"
                         />
                         <span
                           aria-hidden
@@ -1953,22 +1901,13 @@ function EditDueDateDialog({ task, pending, onClose, onSave }: EditDueDateDialog
             </span>
           </p>
         )}
-        <label className="grid gap-1.5">
-          <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
-            Due date
-          </span>
-          <input
-            type="date"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            data-testid="edit-due-date-input"
-            className={cn(
-              "h-9 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-              "bg-[var(--bg-elev)] text-[13px] text-[color:var(--text-primary)]",
-              "focus:outline-none focus:border-[var(--accent)]",
-            )}
-          />
-        </label>
+        <Input
+          type="date"
+          label="Due date"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          data-testid="edit-due-date-input"
+        />
         <DialogFooter>
           {task?.due_date && (
             <button

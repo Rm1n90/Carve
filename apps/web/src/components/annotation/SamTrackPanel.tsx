@@ -9,6 +9,7 @@ import {
   type SamTrackMarker,
 } from "@/state/samTrackBridge";
 import { showToast } from "@/lib/toast";
+import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 import { describeSamError } from "@/components/annotation/AnnotationCanvas";
 
@@ -433,25 +434,21 @@ export function SamTrackPanel({
           </ul>
 
           <div className="flex items-center gap-1.5">
-            <input
-              type="text"
-              data-testid="sam-track-text-input"
-              placeholder="Type a concept (e.g. person)…"
-              value={textValue}
-              onChange={(e) => setTextValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void addObjectWithText(textValue).then(() => setTextValue(""));
-                }
-              }}
-              className={cn(
-                "flex-1 h-7 px-2 rounded-[var(--radius-xs)]",
-                "text-[11.5px] bg-[var(--bg-subtle)] border border-[var(--border-subtle)]",
-                "text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
-                "focus:outline-none focus:border-[var(--accent)]",
-              )}
-            />
+            <div className="flex-1">
+              <Input
+                type="text"
+                data-testid="sam-track-text-input"
+                placeholder="Type a concept (e.g. person)…"
+                value={textValue}
+                onChange={(e) => setTextValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void addObjectWithText(textValue).then(() => setTextValue(""));
+                  }
+                }}
+              />
+            </div>
             <button
               type="button"
               data-testid="sam-track-text-submit"

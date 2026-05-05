@@ -23,6 +23,7 @@ import {
 } from "@/api/imports";
 import { exportsApi } from "@/api/exports";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Select } from "@/components/ui/Select";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
@@ -264,12 +265,10 @@ export function ImportDialog({ taskId }: Props) {
                 </div>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-[12px] text-secondary pl-6">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={replaceExisting}
                   onChange={(e) => setReplaceExisting(e.target.checked)}
                   data-testid="import-replace-existing"
-                  className="h-3.5 w-3.5 accent-[var(--danger)]"
                 />
                 <span>
                   Delete the {existingTotal.toLocaleString()} existing annotation
