@@ -19,6 +19,7 @@ import {
   Eye,
 } from "lucide-react";
 import { useAnnotations } from "@/state/annotations";
+import { useTool } from "@/state/tool";
 import { applyVertexDelete, POLY_MIN_VERTICES } from "@/canvas/polygonEdit";
 import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/lib/cn";
@@ -504,6 +505,16 @@ export function AnnotationContextMenu({
     if (!host) return;
     function onContextMenu(e: Event) {
       const me = e as MouseEvent;
+      // Plan-20.11 — when the user is in the Smart (SAM) tool's
+      // point mode, right-click is reserved as a *negative* point.
+      // The SAM tool handles the click itself; suppressing the menu
+      // here keeps the canvas clean instead of flashing both the
+      // negative-point overlay AND the context menu.
+      const toolState = useTool.getState();
+      if (toolState.active === "sam" && toolState.samMode === "point") {
+        me.preventDefault();
+        return;
+      }
       const vh = vertexHitTest?.(me.clientX, me.clientY);
       if (vh) {
         me.preventDefault();

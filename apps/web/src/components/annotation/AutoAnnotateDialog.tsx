@@ -612,7 +612,10 @@ function BatchProgressView({
   postProgress?: { done: number; total: number; failed: number } | null;
 }) {
   const [canceling, setCanceling] = useState(false);
-  const POLL_INTERVAL_MS = 1200;
+  // Plan-20.11 — was 1200 ms; reduced to 500 ms so the user sees
+  // worker progress ticks promptly. The polled endpoint is a cheap
+  // Redis hash read so the higher rate is fine.
+  const POLL_INTERVAL_MS = 500;
   const statusQ = useQuery({
     queryKey: ["sam-auto-text-batch", taskId, jobId],
     queryFn: () => samApi.autoTextBatchProgress(taskId, jobId),

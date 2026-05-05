@@ -59,7 +59,9 @@ def _http(err: AppError) -> HTTPException:
 
 
 @router.post("/{task_id}/assets", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
-@limiter.limit(SINGLE_ASSET_UPLOAD_LIMIT)
+# Plan-20.11 — rate limit removed. Self-hosted users uploading 1000+
+# images hit 429 even with retry-with-backoff, and there's no abuse
+# vector here that justifies a per-minute cap.
 async def upload_asset(
     request: Request,
     task_id: uuid.UUID,
@@ -167,7 +169,7 @@ def asset_count(
 
 
 @router.post("/{task_id}/assets:zip", response_model=list[AssetOut], status_code=status.HTTP_201_CREATED)
-@limiter.limit("100/minute")
+# Plan-20.11 — see ``upload_asset`` above. Self-hosted, no abuse vector.
 async def upload_archive(
     request: Request,
     task_id: uuid.UUID,

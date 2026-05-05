@@ -145,20 +145,40 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
       setErrors([]);
       setDone(0);
       setRetryNotice(null);
+      // Plan-20.11 — parallel upload pool. Sequential awaiting was the
+      // dominant cost on 1000+ image drops; with 200–300 ms RTT per
+      // request the browser was busy for ~10 min and the nginx
+      // proxy_read_timeout fired before the loop finished. Six
+      // concurrent uploads saturate HTTP/2 multiplexing without
+      // overwhelming the browser's per-host queue. Each completed
+      // file ticks ``done`` so the progress indicator stays live.
+      const CONCURRENCY = 6;
       let count = 0;
-      for (const file of files) {
-        try {
-          await uploadOne(file);
-        } catch (err: unknown) {
-          const code =
-            (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
-            "upload_failed";
-          setErrors((p) => [...p, { name: file.name, error: code }]);
-        } finally {
-          count += 1;
-          setDone(count);
+      let cursor = 0;
+      const worker = async () => {
+        while (true) {
+          const idx = cursor;
+          cursor += 1;
+          if (idx >= files.length) return;
+          const file = files[idx];
+          try {
+            await uploadOne(file);
+          } catch (err: unknown) {
+            const code =
+              (err as { response?: { data?: { error?: string } } })?.response?.data
+                ?.error ?? "upload_failed";
+            setErrors((p) => [...p, { name: file.name, error: code }]);
+          } finally {
+            count += 1;
+            setDone(count);
+          }
         }
-      }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, files.length) }, () =>
+          worker(),
+        ),
+      );
       setRetryNotice(null);
     },
     // v3.7 Issue 5: previously invalidated ["assets", taskId] which no

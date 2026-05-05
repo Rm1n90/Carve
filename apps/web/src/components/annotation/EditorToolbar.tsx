@@ -1577,7 +1577,11 @@ function BatchPredictProgressOverlay({
   onClose: (final: BatchPredictProgress | null) => void;
   postProgress?: { done: number; total: number; failed: number } | null;
 }) {
-  const POLL_INTERVAL_MS = 1500;
+  // Plan-20.11 — was 1500 ms; users felt the bar was 'stuck' between
+  // ticks when an asset took 1–2 seconds. 500 ms is short enough that
+  // every per-asset progress update from the worker is reflected
+  // promptly without flooding the API.
+  const POLL_INTERVAL_MS = 500;
   const statusQ = useQuery<BatchPredictProgress>({
     queryKey: ["batch-predict-progress", taskId, jobId],
     queryFn: () => inferenceApi.pollBatchProgress(taskId, jobId),
