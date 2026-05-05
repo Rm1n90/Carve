@@ -42,6 +42,7 @@ import {
   DialogTitle,
 } from "@/components/ui/Dialog";
 import { annotationsApi, type BatchPayload } from "@/api/annotations";
+import { bulkConvertSelectedToBboxWithToast } from "@/lib/bulkConvert";
 import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
@@ -711,6 +712,24 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         }
         return;
       }
+      // Plan-19 follow-up — `C` (no modifier) bulk-converts every
+      // selected polygon / mask annotation to a bbox. Mirrors the
+      // right-click "Convert → BBox" item so users can flip whole
+      // selections in one keystroke. The helper is shared with the
+      // context menu so toast wording stays in sync.
+      if (!meta && !e.shiftKey && k === "c") {
+        const sel = useAnnotations.getState().selectedIds;
+        if (sel.length === 0) return;
+        const drafts = useAnnotations.getState().byId;
+        const eligible = sel.filter((id) => {
+          const d = drafts[id];
+          return !!d && (d.kind === "polygon" || d.kind === "mask");
+        });
+        if (eligible.length === 0) return;
+        e.preventDefault();
+        bulkConvertSelectedToBboxWithToast(eligible);
+        return;
+      }
       // Z-order: Cmd+Shift+] / Cmd+] / Cmd+[ / Cmd+Shift+[
       if (meta && (e.key === "]" || e.key === "[")) {
         const sel = useAnnotations.getState().selectedId;
@@ -1285,10 +1304,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       <InfoDialog
         open={infoOpen}
         onOpenChange={setInfoOpen}
+        task={currentTask}
         asset={assetQ.data}
         totalAssets={taskAssets.length}
         classes={classesQ.data ?? []}
         assigneeEmail={useAuth.getState().user?.email ?? null}
+        taskId={taskId}
       />
 
       <Dialog

@@ -239,9 +239,7 @@ export function AutoAnnotateDialog({
             className={cn(
               // DESIGN.md §4 — primary CTA pill: PS Blue at rest, full
               // hover signature (cyan fill + white border + blue ring +
-              // 1.05× lift, 180ms ease). Drops the off-brand purple
-              // (#7C3AED/#6D28D9) — DESIGN.md §2 only allows the
-              // declared palette + Commerce Orange + Warning Red.
+              // 1.05× lift, 180ms ease).
               "inline-flex h-8 items-center gap-1.5 px-3 rounded-[var(--radius-pill)]",
               "bg-[var(--accent)] text-white text-[12.5px] font-medium tracking-[0.4px]",
               "border border-[var(--accent)]",
@@ -251,10 +249,10 @@ export function AutoAnnotateDialog({
               "active:opacity-60 active:scale-100",
               "disabled:bg-[var(--bg-subtle)] disabled:border-[var(--border-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none",
             )}
-            title="Auto-annotate with SAM 3 text prompts"
+            title="Auto-annotate (SAM 3 text prompts)"
           >
             <Sparkles className="h-3.5 w-3.5" />
-            Auto-annotate
+            Auto
           </button>
         )}
       </DialogTrigger>

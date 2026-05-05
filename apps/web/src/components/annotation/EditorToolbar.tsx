@@ -63,6 +63,7 @@ import {
 } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
+import { MOD_LABEL } from "@/lib/platform";
 import {
   newAnnotationIdsSince,
   runBatchTaskPostProcess,
@@ -1401,7 +1402,7 @@ const YoloPredictButton = forwardRef<
               data-testid="yolo-predict-shortcut-hint"
               className="text-[10.5px] text-[color:var(--text-tertiary)] mr-auto font-mono tabular-nums"
             >
-              ⌘+Enter to predict
+              {MOD_LABEL}+Enter to predict
             </span>
           )}
           <button
@@ -2307,7 +2308,7 @@ function UndoRedoControls({ onUndo, onRedo }: { onUndo?: () => void; onRedo?: ()
         content={
           <span className="flex items-center gap-1.5">
             Undo
-            <Kbd className="bg-white/10 text-white border-white/20">⌘Z</Kbd>
+            <Kbd className="bg-white/10 text-white border-white/20">{MOD_LABEL}Z</Kbd>
           </span>
         }
       >
@@ -2331,7 +2332,7 @@ function UndoRedoControls({ onUndo, onRedo }: { onUndo?: () => void; onRedo?: ()
         content={
           <span className="flex items-center gap-1.5">
             Redo
-            <Kbd className="bg-white/10 text-white border-white/20">⌘⇧Z</Kbd>
+            <Kbd className="bg-white/10 text-white border-white/20">{MOD_LABEL}⇧Z</Kbd>
           </span>
         }
       >
@@ -2809,7 +2810,7 @@ export function EditorToolbar({
         content={
           <span className="flex items-center gap-1.5">
             Save now
-            <Kbd className="bg-white/10 text-white border-white/20">⌘ S</Kbd>
+            <Kbd className="bg-white/10 text-white border-white/20">{MOD_LABEL} S</Kbd>
           </span>
         }
       >

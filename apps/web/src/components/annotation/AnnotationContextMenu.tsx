@@ -25,12 +25,27 @@ import { Kbd } from "@/components/ui/Kbd";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
 import { setContextMenuOpen } from "@/state/contextMenuState";
-import {
-  bboxOfGeometry,
-  buildPolygon,
-} from "@/lib/geometryConvert";
+import { buildPolygon } from "@/lib/geometryConvert";
 import { samPolygonForGeometry } from "@/lib/samConvert";
+import { bulkConvertSelectedToBboxWithToast } from "@/lib/bulkConvert";
+import { localizeHotkey } from "@/lib/platform";
 import type { ClassRow } from "@/api/classes";
+
+/**
+ * Item 6 — platform-localised hotkey labels. These are the strings the
+ * user actually sees next to menu items; `localizeHotkey` swaps "⌘"
+ * for "Ctrl" on non-Mac platforms so the labels match what their
+ * keyboards actually look like.
+ */
+const HK = {
+  front: localizeHotkey("⌘⇧]"),
+  up: localizeHotkey("⌘]"),
+  down: localizeHotkey("⌘["),
+  back: localizeHotkey("⌘⇧["),
+  paste: localizeHotkey("⌘V"),
+  duplicate: localizeHotkey("⌘D"),
+  copy: localizeHotkey("⌘C"),
+};
 
 interface MenuItem {
   key: string;
@@ -45,28 +60,28 @@ const Z_ITEMS: MenuItem[] = [
     key: "front",
     label: "Bring to Front",
     icon: <ChevronsUp className="h-3.5 w-3.5" />,
-    hotkey: "⌘⇧]",
+    hotkey: HK.front,
     onSelect: (id) => useAnnotations.getState().bringToFront(id),
   },
   {
     key: "forward",
     label: "Bring Forward",
     icon: <ChevronUp className="h-3.5 w-3.5" />,
-    hotkey: "⌘]",
+    hotkey: HK.up,
     onSelect: (id) => useAnnotations.getState().bringForward(id),
   },
   {
     key: "backward",
     label: "Send Backward",
     icon: <ChevronDown className="h-3.5 w-3.5" />,
-    hotkey: "⌘[",
+    hotkey: HK.down,
     onSelect: (id) => useAnnotations.getState().sendBackward(id),
   },
   {
     key: "back",
     label: "Send to Back",
     icon: <ChevronsDown className="h-3.5 w-3.5" />,
-    hotkey: "⌘⇧[",
+    hotkey: HK.back,
     onSelect: (id) => useAnnotations.getState().sendToBack(id),
   },
 ];
@@ -203,57 +218,32 @@ function ConvertItems({
 
   const isPolygonal = geometry.kind === "polygon" || geometry.kind === "mask_rle";
   const isBbox = geometry.kind === "bbox";
-  // Plan-19 — surface the multi-target count in button labels so the
-  // user can see they're about to convert N annotations, not just one.
+  // Plan-19 / Item 2 — surface the multi-target count in button labels.
+  // Whenever a multi-selection exists, prefer it: even if the user
+  // right-clicked an annotation that's NOT part of the selection, we
+  // keep the existing selection (the parent's onContextMenu guard does
+  // the same) so the bulk action behaves consistently with what the
+  // user sees highlighted in the canvas.
   const selectedIds = useAnnotations((s) => s.selectedIds);
-  const targetCount =
-    selectedIds.length > 1 && selectedIds.includes(annId)
-      ? selectedIds.length
-      : 1;
+  const targetCount = selectedIds.length > 1 ? selectedIds.length : 1;
   const countSuffix = targetCount > 1 ? ` (${targetCount})` : "";
 
-  // Plan-17 — bulk-aware ids. When the user has marquee-selected
-  // multiple annotations and the right-clicked one is among them, the
-  // Convert action applies to every selection. Otherwise it operates
-  // on the single right-clicked annotation.
+  // Plan-17 / Item 2 — bulk-aware ids. Whenever a multi-selection
+  // exists, return it (even if the right-clicked id isn't part of
+  // it) so right-click on a non-selected annotation never silently
+  // collapses the user's selection back to a single target.
   function bulkIds(): string[] {
     const sel = useAnnotations.getState().selectedIds;
-    if (sel.length > 1 && sel.includes(annId)) return sel;
+    if (sel.length > 1) {
+      // eslint-disable-next-line no-console
+      console.log("[Convert] bulk on", sel.length, "selected");
+      return sel;
+    }
     return [annId];
   }
 
   function commitToBbox() {
-    const ids = bulkIds();
-    let converted = 0;
-    let skipped = 0;
-    for (const id of ids) {
-      const cur = useAnnotations.getState().byId[id];
-      if (!cur) {
-        skipped++;
-        continue;
-      }
-      const box = bboxOfGeometry(cur.geometry);
-      if (!box || box.w < 1 || box.h < 1) {
-        skipped++;
-        continue;
-      }
-      useAnnotations.getState().update(id, {
-        geometry: box,
-        kind: "bbox",
-        dirty: true,
-      });
-      converted++;
-    }
-    if (converted > 0) {
-      showToast(
-        `Converted ${converted} ${converted === 1 ? "annotation" : "annotations"} to bbox${skipped > 0 ? ` (${skipped} skipped)` : ""}.`,
-        { variant: "success" },
-      );
-    } else {
-      showToast("No annotation could be converted to a bbox.", {
-        variant: "error",
-      });
-    }
+    bulkConvertSelectedToBboxWithToast(bulkIds());
     onAfterAction();
   }
 
@@ -531,16 +521,17 @@ export function AnnotationContextMenu({
       const annId = hitTest(me.clientX, me.clientY);
       if (annId) {
         me.preventDefault();
-        // Plan-19 — preserve an existing multi-selection if the
-        // right-clicked annotation is already part of it, so bulk
-        // actions (Convert → Polygon / Refine with SAM, Delete) operate
-        // on the whole selection. Without this guard the legacy
-        // `select(annId)` call wiped the selection back to a single id
-        // and the user's "select all → right-click → bulk convert" flow
-        // silently degraded to converting just one annotation.
+        // Plan-19 / Item 2 — preserve an existing multi-selection
+        // regardless of whether the right-clicked annotation is part of
+        // it. Earlier behaviour collapsed the selection back to a
+        // single id on out-of-selection right-click, which silently
+        // degraded "select 5 → right-click → Convert" to converting
+        // one. The right-clicked id still drives the per-annotation
+        // context (geometry kind etc.); ConvertItems.bulkIds() then
+        // returns the full selection when sel.length > 1.
         const sel = useAnnotations.getState().selectedIds;
-        const alreadyInSelection = sel.length > 1 && sel.includes(annId);
-        if (!me.shiftKey && !alreadyInSelection) {
+        const hasMultiSelection = sel.length > 1;
+        if (!me.shiftKey && !hasMultiSelection) {
           useAnnotations.getState().select(annId);
         }
         setState({
@@ -656,7 +647,7 @@ export function AnnotationContextMenu({
           testId="ctx-paste"
           icon={<ClipboardIcon className="h-3.5 w-3.5" />}
           label="Paste annotation"
-          hotkey="⌘V"
+          hotkey={HK.paste}
           disabled={!canPaste}
           onClick={() => {
             useAnnotations
@@ -878,7 +869,7 @@ export function AnnotationContextMenu({
         testId="ctx-duplicate"
         icon={<CopyPlus className="h-3.5 w-3.5" />}
         label="Duplicate"
-        hotkey="⌘D"
+        hotkey={HK.duplicate}
         onClick={() => {
           useAnnotations.getState().duplicate(annId, 16, 16, imageBounds);
           showToast("Duplicated annotation.", { variant: "success" });
@@ -889,7 +880,7 @@ export function AnnotationContextMenu({
         testId="ctx-copy"
         icon={<Copy className="h-3.5 w-3.5" />}
         label="Copy"
-        hotkey="⌘C"
+        hotkey={HK.copy}
         onClick={() => {
           useAnnotations.getState().copyToClipboard(annId);
           showToast("Copied annotation.", { variant: "success" });
@@ -900,7 +891,7 @@ export function AnnotationContextMenu({
         testId="ctx-paste-here"
         icon={<ClipboardIcon className="h-3.5 w-3.5" />}
         label="Paste annotation"
-        hotkey="⌘V"
+        hotkey={HK.paste}
         disabled={useAnnotations.getState().clipboard === null}
         onClick={() => {
           const img = toImageXY?.(state.x, state.y);

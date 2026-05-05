@@ -9,6 +9,7 @@ import { useClassRecents } from "@/state/classRecents";
 import { showToast } from "@/lib/toast";
 import { Input } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
+import { MOD_LABEL } from "@/lib/platform";
 import { cn } from "@/lib/cn";
 
 /**
@@ -343,7 +344,7 @@ export function ClassCommandPalette({
               {query
                 ? `No classes match "${query}".`
                 : tab === "pinned"
-                  ? "No pinned classes yet — press ⌘P on a row to pin."
+                  ? `No pinned classes yet — press ${MOD_LABEL}P on a row to pin.`
                   : tab === "recent"
                     ? "No recent classes yet."
                     : "No classes."}
@@ -413,7 +414,7 @@ export function ClassCommandPalette({
           })}
         </ul>
         <div className="mt-2 pt-2 border-t border-[var(--border-subtle)] px-1 text-[10.5px] text-[color:var(--text-tertiary)] tracking-tight">
-          ↑↓ navigate · Enter pick · ⌘P pin · Esc close
+          ↑↓ navigate · Enter pick · {MOD_LABEL}P pin · Esc close
         </div>
       </div>
     </div>

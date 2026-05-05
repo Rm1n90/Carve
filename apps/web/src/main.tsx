@@ -17,6 +17,7 @@ import { projectStatsRoute } from "./routes/projects.$projectId.stats";
 import { taskDetailRoute } from "./routes/projects.$projectId.tasks.$taskId";
 import { annotateAssetRoute } from "./routes/projects.$projectId.tasks.$taskId.assets.$assetId";
 import {
+  aboutRoute,
   modelsSamRoute,
   modelsYoloRoute,
   settingsApiKeysRoute,
@@ -48,6 +49,7 @@ const routeTree = rootRoute.addChildren([
   modelsYoloRoute,
   modelsSamRoute,
   trashRoute,
+  aboutRoute,
 ]);
 const router = createRouter({ routeTree });
 
