@@ -25,14 +25,27 @@ const ALLOWED_UPLOAD_EXTENSIONS = [
   ".zip",
 ];
 
+// Plan-20.8 — annotation file extensions get a SPECIFIC rejection
+// message that points the user at the Import button. The previous
+// generic "Unsupported file type" was useless when the user
+// accidentally tried to upload labels via this dialog.
+const ANNOTATION_EXTENSIONS = [".txt", ".yaml", ".yml", ".json"];
+
 function validateExtension(file: File) {
   const lower = file.name.toLowerCase();
   if (ALLOWED_UPLOAD_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
     return null;
   }
+  if (ANNOTATION_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+    return {
+      code: "wrong-dialog-annotation",
+      message:
+        "That looks like an annotation file (YOLO/COCO labels). Use the Import button next to Upload — that's where label files go.",
+    };
+  }
   return {
     code: "ext-not-allowed",
-    message: `Unsupported file type — accepted: ${ALLOWED_UPLOAD_EXTENSIONS.join(", ")}`,
+    message: `Unsupported file type — this dialog uploads images & videos. Accepted: ${ALLOWED_UPLOAD_EXTENSIONS.join(", ")}`,
   };
 }
 
@@ -93,7 +106,17 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
     while (true) {
       try {
         if (isZip) {
-          await assetsApi.uploadZip(taskId, file);
+          // Plan-20.8 — if the ZIP yielded zero new assets the user
+          // probably zipped label files instead of images. Tell them
+          // exactly what to do instead of silently succeeding.
+          const created = await assetsApi.uploadZip(taskId, file);
+          if (Array.isArray(created) && created.length === 0) {
+            showToast(
+              `"${file.name}" had no images inside. ` +
+                "If it's a YOLO/COCO label bundle, use the Import button instead.",
+              { variant: "warning", duration: 7000 },
+            );
+          }
         } else {
           const asset = await assetsApi.upload(taskId, file);
           if (isVideo && asset?.id) {

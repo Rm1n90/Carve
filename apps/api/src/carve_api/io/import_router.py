@@ -347,12 +347,17 @@ async def enqueue_import(
 def confirm_import(
     task_id: uuid.UUID,
     import_id: str,
+    replace_existing: bool = Query(False),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """Plan-20.5 — commit a previously-staged dryrun import. Looks up
     the staged ``minio_key`` from Redis and enqueues the actual import
-    job. Returns 404 when the staged record has expired (TTL 24h)."""
+    job. Returns 404 when the staged record has expired (TTL 24h).
+
+    Plan-20.8 — when ``replace_existing=true`` the task's current
+    annotation rows are deleted before the import job runs. Default is
+    ``false`` (preserves existing annotations; import is additive)."""
     try:
         task = require_visible_task(db, user, task_id)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
@@ -372,6 +377,17 @@ def confirm_import(
     info = {_b2s(k): _b2s(v) for k, v in raw.items()}
     if info.get("task_id") != str(task.id):
         raise HTTPException(status_code=404, detail="staged_import_for_other_task")
+
+    if replace_existing:
+        # Plan-20.8 — wipe existing annotations BEFORE enqueueing so
+        # the import job runs against a clean slate. Committed here so
+        # the worker (a separate process) sees the deletion already
+        # persisted by the time it picks up the job.
+        from sqlalchemy import delete as _sa_delete
+        from carve_api.annotations.models import Annotation
+
+        db.execute(_sa_delete(Annotation).where(Annotation.task_id == task.id))
+        db.commit()
 
     payload = ImportJobPayload(
         job_id=import_id,

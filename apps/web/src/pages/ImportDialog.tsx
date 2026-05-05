@@ -21,6 +21,7 @@ import {
   type ImportProgress,
   type ImportReport,
 } from "@/api/imports";
+import { exportsApi } from "@/api/exports";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { showToast } from "@/lib/toast";
@@ -119,6 +120,25 @@ export function ImportDialog({ taskId }: Props) {
   const [report, setReport] = useState<ImportReport | null>(null);
   const [committedImportId, setCommittedImportId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Plan-20.8 — when checked, the server deletes the task's existing
+  // annotations before importing the new ones. Default is OFF so the
+  // import is additive (matches what the user expected when they had
+  // no idea that's what would happen).
+  const [replaceExisting, setReplaceExisting] = useState(false);
+
+  // Plan-20.8 — fetch the task's existing annotation tally so the
+  // dialog can warn the user before they confirm. Same endpoint used
+  // by the export YOLO chooser.
+  const kindsQ = useQuery({
+    queryKey: ["task-annotation-kinds", taskId],
+    queryFn: () => exportsApi.kinds(taskId),
+    staleTime: 30_000,
+  });
+  const existingTotal =
+    (kindsQ.data?.bbox ?? 0) +
+    (kindsQ.data?.polygon ?? 0) +
+    (kindsQ.data?.mask ?? 0) +
+    (kindsQ.data?.tag ?? 0);
 
   // Plan-20.5 — Dropping files starts the dryrun. The server stages the
   // bytes in MinIO and returns a report; nothing is written to the DB
@@ -139,7 +159,8 @@ export function ImportDialog({ taskId }: Props) {
   });
 
   const commit = useMutation({
-    mutationFn: async (importId: string) => importsApi.confirm(taskId, importId),
+    mutationFn: async (importId: string) =>
+      importsApi.confirm(taskId, importId, replaceExisting),
     onSuccess: (res) => setCommittedImportId(res.import_id),
     onError: (err) => setError(formatErrorDetail(err)),
   });
@@ -220,6 +241,43 @@ export function ImportDialog({ taskId }: Props) {
 
       {!stagedImportId && !committedImportId && (
         <>
+          {/* Plan-20.8 — surface the task's existing annotation count up
+              front so the user is never surprised. Additive by default;
+              the checkbox lets them choose to wipe-and-replace. */}
+          {existingTotal > 0 && (
+            <div
+              data-testid="import-existing-warning"
+              className="rounded-[var(--radius-md)] border border-[color:var(--warning)] bg-[color-mix(in_oklch,var(--warning)_10%,transparent)] px-3 py-2.5 grid gap-2"
+            >
+              <div className="flex items-start gap-2 text-[12.5px] text-primary leading-snug">
+                <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-[color:var(--warning)]" />
+                <div className="grid gap-0.5">
+                  <span className="font-medium">
+                    This task already has {existingTotal.toLocaleString()} annotation
+                    {existingTotal === 1 ? "" : "s"}.
+                  </span>
+                  <span className="text-secondary text-[11.5px]">
+                    By default, importing <strong>adds</strong> on top — your
+                    existing annotations stay. Tick the box below to wipe them
+                    first.
+                  </span>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer text-[12px] text-secondary pl-6">
+                <input
+                  type="checkbox"
+                  checked={replaceExisting}
+                  onChange={(e) => setReplaceExisting(e.target.checked)}
+                  data-testid="import-replace-existing"
+                  className="h-3.5 w-3.5 accent-[var(--danger)]"
+                />
+                <span>
+                  Delete the {existingTotal.toLocaleString()} existing annotation
+                  {existingTotal === 1 ? "" : "s"} first (irreversible).
+                </span>
+              </label>
+            </div>
+          )}
           <div className="flex items-center gap-3 text-[13px] text-secondary">
             <span className="font-medium tracking-tight">Format:</span>
             <Select value={format} onValueChange={(v) => setFormat(v as ImportFormat)}>
@@ -276,6 +334,8 @@ export function ImportDialog({ taskId }: Props) {
         <ImportPreview
           report={report}
           format={format}
+          replaceExisting={replaceExisting}
+          existingTotal={existingTotal}
           onCancel={reset}
           onConfirm={() => commit.mutate(stagedImportId)}
           confirming={commit.isPending}
@@ -303,6 +363,8 @@ export function ImportDialog({ taskId }: Props) {
 interface ImportPreviewProps {
   report: ImportReport;
   format: ImportFormat;
+  replaceExisting: boolean;
+  existingTotal: number;
   onCancel: () => void;
   onConfirm: () => void;
   confirming: boolean;
@@ -311,6 +373,8 @@ interface ImportPreviewProps {
 function ImportPreview({
   report,
   format,
+  replaceExisting,
+  existingTotal,
   onCancel,
   onConfirm,
   confirming,
@@ -406,6 +470,17 @@ function ImportPreview({
         </p>
       )}
 
+      {replaceExisting && existingTotal > 0 && (
+        <p
+          data-testid="import-preview-replace-note"
+          className="text-[11.5px] leading-snug text-[color:var(--danger)]"
+        >
+          ⚠ The {existingTotal.toLocaleString()} existing annotation
+          {existingTotal === 1 ? "" : "s"} will be deleted before this
+          import runs.
+        </p>
+      )}
+
       <div className="flex items-center gap-2 mt-1">
         <Button
           variant="primary"
@@ -414,7 +489,9 @@ function ImportPreview({
           disabled={hasNothingImportable}
           data-testid="import-confirm"
         >
-          Continue & import {report.importable.toLocaleString()}
+          {replaceExisting && existingTotal > 0
+            ? `Replace ${existingTotal.toLocaleString()} & import ${report.importable.toLocaleString()}`
+            : `Continue & import ${report.importable.toLocaleString()}`}
         </Button>
         <Button variant="ghost" onClick={onCancel} disabled={confirming} data-testid="import-cancel">
           Cancel

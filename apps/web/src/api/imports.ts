@@ -56,16 +56,21 @@ export const importsApi = {
       )
     ).data;
   },
-  /** Plan-20.5 — commit a previously-staged dryrun import. */
+  /** Plan-20.5 — commit a previously-staged dryrun import.
+   *  Plan-20.8 — when ``replaceExisting`` is true, the task's current
+   *  annotations are deleted before the import job runs. */
   confirm: async (
     taskId: string,
     importId: string,
-  ): Promise<{ import_id: string; status: string }> =>
-    (
+    replaceExisting?: boolean,
+  ): Promise<{ import_id: string; status: string }> => {
+    const qs = replaceExisting ? "?replace_existing=true" : "";
+    return (
       await api.post<{ import_id: string; status: string }>(
-        `/tasks/${taskId}/imports/${importId}/confirm`,
+        `/tasks/${taskId}/imports/${importId}/confirm${qs}`,
       )
-    ).data,
+    ).data;
+  },
   get: async (taskId: string, importId: string): Promise<ImportProgress> =>
     (await api.get<ImportProgress>(`/tasks/${taskId}/imports/${importId}`)).data,
 };
