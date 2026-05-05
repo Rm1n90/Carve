@@ -22,7 +22,13 @@ import cv2
 import numpy as np
 
 
-DEFAULT_EPSILON_FACTOR = 0.0015
+# Plan-20.14 — was 0.0015. Even SAM 3.1's near-pixel-perfect masks
+# collapsed to a visibly coarse polygon at that tolerance — fingers,
+# ears, and small concavities were being smoothed out. 0.0008 doubles
+# the vertex budget for the same arc length, so the polygon traces
+# the mask edge faithfully while staying small on the wire and
+# editable in the polygon-edit tool.
+DEFAULT_EPSILON_FACTOR = 0.0008
 
 
 def mask_to_polygon(

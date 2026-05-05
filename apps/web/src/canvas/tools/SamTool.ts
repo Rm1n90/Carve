@@ -445,6 +445,16 @@ export class SamTool {
    */
   async addClick(p: Point, button: ToolButton): Promise<SamDecodeResult | null> {
     if (this.imageHash === null) return null;
+    // Plan-20.14 — a right-click before any positive point exists used
+    // to send /sam/decode with points=[neg], labels=[0]. SAM
+    // interprets that as 'mask of everything that is NOT this point'
+    // and returns a mask covering nearly the whole image — the user
+    // reads that as 'right-click selected the object'. Negatives only
+    // make sense as refinements of an existing selection, so silently
+    // ignore them until the first positive arrives.
+    if (button.pointer === 2 && this.positives.length === 0) {
+      return null;
+    }
     if (button.pointer === 2) {
       this.negatives.push([Math.round(p.x), Math.round(p.y)]);
       this.clickOrder.push("n");
