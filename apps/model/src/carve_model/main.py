@@ -60,18 +60,61 @@ def _hf_login_from_env() -> None:
         )
 
 
+def _vlm_fo1_can_load(model_path: str) -> tuple[bool, str]:
+    """Probe whether the FO1 model class is actually loadable in this env.
+
+    VLM-FO1's checkpoint reports ``model_type: "omchat_qwen2_5_vl"`` —
+    a custom architecture that lives in the upstream ``vlm_fo1`` Python
+    package (https://github.com/om-ai-lab/VLM-FO1). The HF weights repo
+    is weights-only, so ``trust_remote_code=True`` has nothing to import.
+
+    Returns ``(ok, reason)``:
+      - ``(True, "<source>")`` — architecture is reachable
+      - ``(False, "<reason>")`` — feature should NOT be advertised; the
+        toggle stays hidden so users don't see a dead control.
+
+    Cheap probe — does NOT download the multi-GB safetensors. Pulls the
+    1-KB ``config.json`` once via AutoConfig and inspects the model_type
+    against the locally importable architectures.
+    """
+    # Cheapest path first: upstream package installed and importable.
+    try:
+        import vlm_fo1.model  # type: ignore[import-not-found]  # noqa: F401
+        return True, "upstream-vlm_fo1-package"
+    except ImportError:
+        pass
+
+    # Fallback: maybe a future HF repo version ships modeling code. Pull
+    # config + try with trust_remote_code so a remote-code repo would
+    # register the architecture.
+    try:
+        from transformers import AutoConfig  # type: ignore[import-not-found]
+
+        AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        return True, "remote-code-config"
+    except Exception as exc:  # noqa: BLE001
+        return False, (
+            f"vlm_fo1 package not installed and "
+            f"AutoConfig.from_pretrained failed: {exc.__class__.__name__}"
+        )
+
+
 def _maybe_register_vlm_fo1() -> None:
-    """Register the VLM-FO1 precision filter when the operator opts in.
+    """Register the VLM-FO1 precision filter when the operator opts in
+    AND the FO1 architecture is actually loadable.
 
     Default OFF: ``VLM_FO1_AVAILABLE=0`` (or unset) means no filter is
     registered, ``/sam/status.vlm_fo1_available`` reports ``false``,
     and the model service behaves byte-for-byte identical to today.
 
-    When ``VLM_FO1_AVAILABLE=1``, build a filter closure (lazy — no
-    model weights download until the first opted-in request lands).
-    Failures here MUST NOT crash startup: if the vlm_fo1 module can't
-    import or build, log and continue without the filter so the rest
-    of the service stays up.
+    Probe gate: when ``VLM_FO1_AVAILABLE=1``, run a cheap capability
+    probe before registering. If FO1 can't load (e.g. upstream
+    ``vlm_fo1`` package missing — see ``_vlm_fo1_can_load``), log a
+    clear operator message and skip registration. This keeps the
+    toggle hidden in the editor instead of showing a control that
+    would silently degrade to passthrough on every click.
+
+    Failures here MUST NOT crash startup.
     """
     import os
 
@@ -80,15 +123,31 @@ def _maybe_register_vlm_fo1() -> None:
         return
 
     try:
+        from carve_model.vlm_fo1 import DEFAULT_MODEL_PATH
+
+        model_path = os.environ.get("VLM_FO1_MODEL_PATH") or DEFAULT_MODEL_PATH
+        ok, reason = _vlm_fo1_can_load(model_path)
+        if not ok:
+            log.warning(
+                "VLM_FO1_AVAILABLE=1 but FO1 cannot load: %s. "
+                "Toggle will stay hidden in the editor. To enable, install "
+                "the upstream package via "
+                "`pip install git+https://github.com/om-ai-lab/VLM-FO1.git` "
+                "(see spec for transformers version constraints).",
+                reason,
+            )
+            return
+
         from carve_model.sam.predictor import set_vlm_fo1_filter
         from carve_model.vlm_fo1 import make_vlm_fo1_filter
 
         quant = os.environ.get("VLM_FO1_QUANT") or None
-        filter_fn = make_vlm_fo1_filter(quant=quant)
+        filter_fn = make_vlm_fo1_filter(model_path=model_path, quant=quant)
         set_vlm_fo1_filter(filter_fn)
         log.info(
-            "VLM-FO1 precision filter registered (quant=%s); lazy-load on "
-            "first opted-in /sam/text-prompt request",
+            "VLM-FO1 precision filter registered (source=%s, quant=%s); "
+            "lazy-load on first opted-in /sam/text-prompt request",
+            reason,
             quant or "bf16",
         )
     except Exception:  # noqa: BLE001 — startup must never crash on FO1

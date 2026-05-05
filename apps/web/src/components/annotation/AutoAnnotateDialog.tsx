@@ -115,7 +115,14 @@ export function AutoAnnotateDialog({
     refetchOnWindowFocus: false,
     staleTime: 30_000,
   });
-  const vlmFo1Available = samStatusQuery.data?.vlm_fo1_available === true;
+  // FO1 only makes sense on SAM 3 family variants — the /sam/text-prompt
+  // endpoint already 409s when the variant is sam2.x, and the multiplex
+  // sam3.1 backend doesn't ship a transformers-compatible image runtime.
+  // Hide the toggle in those cases so users don't see a dead control.
+  const samVariant = samStatusQuery.data?.variant ?? "";
+  const isSam3Family = samVariant === "sam3";
+  const vlmFo1Available =
+    samStatusQuery.data?.vlm_fo1_available === true && isSam3Family;
 
   // Per-user preference seeds the local toggle. We read once when the
   // dialog opens; the user's interaction within the dialog persists via

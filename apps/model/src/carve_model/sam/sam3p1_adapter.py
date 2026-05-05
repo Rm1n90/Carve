@@ -578,12 +578,21 @@ def make_sam3p1_text_predictor():
     Each dict: ``{counts, size, score, polygon, bbox}``. Sorted score desc.
     """
 
-    def _predict_from_text(*, image_b64: str, text: str) -> list[dict]:
+    def _predict_from_text(
+        *, image_b64: str, text: str, use_vlm_fo1: bool = False,
+    ) -> list[dict]:
+        import logging
+        import os
+
+        from carve_model.sam import predictor as p_mod
         from carve_model.sam.codec import encode_mask_rle
         from carve_model.sam.perf import to_numpy_safe
         from carve_model.sam.polygonize import mask_to_polygon
 
         import torch  # type: ignore[import-not-found]
+
+        _logger = logging.getLogger(__name__)
+
         adapter = _get_or_build_native_image_predictor()
         image_np = _decode_image_b64_to_numpy(image_b64)
         adapter.set_image(image_np)
@@ -618,7 +627,52 @@ def make_sam3p1_text_predictor():
                 "polygon": polygon,
             })
         rows.sort(key=lambda r: r["score"], reverse=True)
-        return rows
+
+        # v3.21+ — VLM-FO1 precision filter pass for the native sam3.1
+        # backend. Mirrors the transformers-side path in sam3_adapter so
+        # /sam/text-prompt behaves the same regardless of which SAM 3
+        # runtime the operator selected.
+        if not use_vlm_fo1 or not rows:
+            return rows
+
+        try:
+            top_k = int(os.environ.get("SAM3_TOPK_PROPOSALS", "64"))
+        except ValueError:
+            top_k = 64
+        if top_k > 0 and len(rows) > top_k:
+            rows = rows[:top_k]
+
+        vlm_filter = p_mod.get_vlm_fo1_filter()
+        if vlm_filter is None:
+            return rows
+
+        try:
+            import base64
+            from io import BytesIO
+
+            from PIL import Image  # type: ignore[import-not-found]
+
+            img_bytes = base64.b64decode(image_b64)
+            pil = Image.open(BytesIO(img_bytes)).convert("RGB")
+            boxes_xyxy = [list(r["bbox"]) for r in rows]
+            indexes = vlm_filter(image=pil, text=text, boxes=boxes_xyxy)
+        except Exception as exc:  # noqa: BLE001 — graceful degradation
+            _logger.warning(
+                "vlm_fo1 filter failed (%s); degrading to passthrough", exc,
+            )
+            return rows
+
+        seen: set[int] = set()
+        clean: list[int] = []
+        for idx in indexes:
+            try:
+                ii = int(idx)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= ii < len(rows) and ii not in seen:
+                seen.add(ii)
+                clean.append(ii)
+        return [rows[i] for i in clean]
 
     return _predict_from_text
 
