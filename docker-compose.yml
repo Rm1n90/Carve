@@ -174,6 +174,23 @@ services:
       SAM_ATTN_IMPL: ${SAM_ATTN_IMPL:-sdpa}
       SAM_COMPILE: ${SAM_COMPILE:-false}
       SAM_VIDEO_BACKEND: ${SAM_VIDEO_BACKEND:-multiplex}
+      # v3.21+ -- VLM-FO1 precision filter. OFF by default. Setting to 1
+      # registers the filter at lifespan (lazy-load on first opted-in
+      # request). When OFF, /sam/text-prompt behaves identically to
+      # pre-FO1, no Qwen2.5-VL-3B weights download. See spec at
+      # docs/superpowers/specs/2026-05-05-vlm-fo1-sam3-image-integration-design.md
+      VLM_FO1_AVAILABLE: ${VLM_FO1_AVAILABLE:-0}
+      # Optional 4-bit quant for the FO1 base VLM (Qwen2.5-VL-3B).
+      # Empty / unset = bf16 (~6 GB VRAM). "4bit" cuts that ~2x but
+      # adds ~10-30% latency and may regress quality slightly.
+      VLM_FO1_QUANT: ${VLM_FO1_QUANT:-}
+      # SAM 3 proposal-generation tuning when use_vlm_fo1=true. Lower
+      # threshold + bounded top-K give FO1 more candidates to filter
+      # without exploding context length. Defaults match the spec; raise
+      # threshold if your prompts produce too many candidates and FO1
+      # latency becomes the bottleneck.
+      SAM3_PROPOSAL_THRESHOLD: ${SAM3_PROPOSAL_THRESHOLD:-0.2}
+      SAM3_TOPK_PROPOSALS: ${SAM3_TOPK_PROPOSALS:-64}
       # Optional: pin a specific GPU index. Default = use all visible GPUs.
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       # MinIO env — required so the model service's /yolo/train endpoint can
