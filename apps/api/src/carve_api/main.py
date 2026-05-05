@@ -51,6 +51,10 @@ def create_app() -> FastAPI:
     from carve_api.shortcuts.router import router as shortcuts_router
     app.include_router(shortcuts_router)
 
+    # v3.21+ -- per-user VLM-FO1 precision-filter toggle (/me/vlm-fo1).
+    from carve_api.vlm_fo1.router import router as vlm_fo1_router
+    app.include_router(vlm_fo1_router)
+
     from carve_api.models_info.router import router as models_info_router
     app.include_router(models_info_router)
 

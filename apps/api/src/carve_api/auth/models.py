@@ -3,7 +3,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, String, func
+from sqlalchemy import Boolean, DateTime, Enum, String, false, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,4 +52,10 @@ class User(Base):
     # (and writers that never touched it) read back as "all defaults".
     shortcut_overrides: Mapped[dict[str, str]] = mapped_column(
         JSONB, nullable=False, server_default="{}"
+    )
+    # v3.21+ — per-user VLM-FO1 precision filter opt-in. Default False
+    # matches the spec's feature-OFF posture. The editor reads this on
+    # mount and writes via PUT /me/vlm-fo1.
+    vlm_fo1_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(),
     )
