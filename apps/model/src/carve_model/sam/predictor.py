@@ -246,10 +246,24 @@ class SamSession:
     build_key: tuple[str, str, str] | None = None
 
 
+# A VLM-FO1 precision filter is any callable matching the
+# ``carve_model.vlm_fo1.adapter.VlmFo1Filter`` Protocol — accepts
+# ``(image, text, boxes)`` and returns a list of indexes into ``boxes``
+# that the model judges to match ``text``. Stored as a plain Callable
+# here to avoid pulling the vlm_fo1 module into predictor's import
+# graph (the dev path stays import-clean).
+VlmFo1Filter = Callable[..., list[int]]
+
+
 _SESSION: SamSession | None = None
 _TEST_PREDICTOR: SamPredictor | None = None
 _TEXT_PREDICTOR_FACTORY: TextPredictor | None = None
 _BOX_PREDICTOR_FACTORY: BoxPredictor | None = None
+# v3.21+ — VLM-FO1 precision filter slot. ``None`` means the operator
+# has not opted in (or the feature gate is off). The text predictor
+# closure reads this at call time, only consulted when the request
+# carries ``use_vlm_fo1=True``.
+_VLM_FO1_FILTER: VlmFo1Filter | None = None
 
 
 # --- load-state machine (v3.5 Phase C) -------------------------------------
@@ -815,6 +829,34 @@ def reset_text_predictor() -> None:
     """Clear the text predictor factory. Used by tests."""
     global _TEXT_PREDICTOR_FACTORY
     _TEXT_PREDICTOR_FACTORY = None
+
+
+def set_vlm_fo1_filter(fn: VlmFo1Filter | None) -> None:
+    """Register the VLM-FO1 precision filter.
+
+    Pass ``None`` to clear (used by tests). The operator wires this in
+    ``carve_model.main:_lifespan`` when ``VLM_FO1_AVAILABLE=1`` —
+    feature is OFF by default. The text predictor closure consults
+    this at call time only when the request carries ``use_vlm_fo1=True``.
+    """
+    global _VLM_FO1_FILTER
+    _VLM_FO1_FILTER = fn
+
+
+def get_vlm_fo1_filter() -> VlmFo1Filter | None:
+    """Return the registered VLM-FO1 filter, or ``None`` if unset.
+
+    Unlike ``get_text_predictor`` this does NOT raise — VLM-FO1 is
+    opt-in and absent-by-default; callers degrade to passthrough rather
+    than failing the request.
+    """
+    return _VLM_FO1_FILTER
+
+
+def reset_vlm_fo1_filter() -> None:
+    """Clear the VLM-FO1 filter slot. Used by tests."""
+    global _VLM_FO1_FILTER
+    _VLM_FO1_FILTER = None
 
 
 def set_box_predictor(fn: BoxPredictor | None) -> None:

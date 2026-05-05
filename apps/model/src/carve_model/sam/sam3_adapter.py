@@ -296,17 +296,24 @@ def make_sam3_text_predictor():
         _state["processor"] = processor
         _state["device"] = device
 
-    def _predict_from_text(*, image_b64: str, text: str) -> list[dict]:
+    def _predict_from_text(
+        *, image_b64: str, text: str, use_vlm_fo1: bool = False,
+    ) -> list[dict]:
         import base64
+        import logging
+        import os
         from io import BytesIO
 
         import numpy as np
         import torch  # type: ignore[import-not-found]
         from PIL import Image  # type: ignore[import-not-found]
 
+        from carve_model.sam import predictor as p_mod
         from carve_model.sam.codec import encode_mask_rle
         from carve_model.sam.perf import to_numpy_safe
         from carve_model.sam.polygonize import mask_to_polygon
+
+        _logger = logging.getLogger(__name__)
 
         _ensure_loaded()
         img_bytes = base64.b64decode(image_b64)
@@ -319,9 +326,22 @@ def make_sam3_text_predictor():
         inputs = proc(images=pil, text=text, return_tensors="pt").to(device)
         with torch.no_grad():
             outputs = model(**inputs)
+
+        # v3.21+ — when the request opts into VLM-FO1 we lower the SAM 3
+        # post-processing threshold so FO1 sees more candidate proposals
+        # to filter. Without FO1 the existing 0.5 default is preserved
+        # byte-for-byte (zero behavior change for existing callers).
+        if use_vlm_fo1:
+            try:
+                threshold = float(os.environ.get("SAM3_PROPOSAL_THRESHOLD", "0.2"))
+            except ValueError:
+                threshold = 0.2
+        else:
+            threshold = 0.5
+
         results = proc.post_process_instance_segmentation(
             outputs,
-            threshold=0.5,
+            threshold=threshold,
             mask_threshold=0.5,
             target_sizes=[[h, w]],
         )[0]
@@ -351,7 +371,49 @@ def make_sam3_text_predictor():
                 # usable contour. Falls back to mask_rle on the client.
                 "polygon": polygon,
             })
-        return out
+
+        # v3.21+ — VLM-FO1 precision filter pass. Cheap-exit if the
+        # request didn't opt in or SAM 3 produced nothing for FO1 to
+        # filter. Errors degrade to passthrough so the user still sees
+        # SAM 3's raw output rather than a 500.
+        if not use_vlm_fo1 or not out:
+            return out
+
+        try:
+            top_k = int(os.environ.get("SAM3_TOPK_PROPOSALS", "64"))
+        except ValueError:
+            top_k = 64
+        if top_k > 0 and len(out) > top_k:
+            out = sorted(out, key=lambda d: d["score"], reverse=True)[:top_k]
+
+        vlm_filter = p_mod.get_vlm_fo1_filter()
+        if vlm_filter is None:
+            # Server gate may say "available" but the operator never
+            # wired a real filter — silent passthrough is the safest UX.
+            return out
+
+        try:
+            boxes_xyxy = [list(d["bbox"]) for d in out]
+            indexes = vlm_filter(image=pil, text=text, boxes=boxes_xyxy)
+        except Exception as exc:  # noqa: BLE001 — graceful degradation
+            _logger.warning(
+                "vlm_fo1 filter failed (%s); degrading to passthrough", exc,
+            )
+            return out
+
+        # Defensive: drop indexes outside the valid range, dedup, keep
+        # the model's emission order (higher-confidence first).
+        seen: set[int] = set()
+        clean: list[int] = []
+        for idx in indexes:
+            try:
+                i = int(idx)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < len(out) and i not in seen:
+                seen.add(i)
+                clean.append(i)
+        return [out[i] for i in clean]
 
     return _predict_from_text
 

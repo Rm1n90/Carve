@@ -107,6 +107,12 @@ def _install_torch(monkeypatch) -> None:
     fake_torch.no_grad = lambda: nullcontext()
     fake_torch.bfloat16 = "bfloat16"
     fake_torch.float32 = "float32"
+    fake_torch.float16 = "float16"
+    # ``carve_model.sam.perf:get_dtype`` is annotated ``-> torch.dtype``
+    # without ``from __future__ import annotations`` — so the module-level
+    # annotation is evaluated at import time. Expose a placeholder so the
+    # lookup succeeds when the closure body actually triggers the import.
+    fake_torch.dtype = type
     fake_torch.bool = bool
     fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
 
