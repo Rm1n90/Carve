@@ -1224,7 +1224,7 @@ export function SettingsWorkspacePage() {
             </span>
             <Link
               to="/settings/members"
-              className="text-[28px] tracking-tight font-medium text-[color:var(--text-primary)] hover:text-[color:var(--accent)] transition-colors"
+              className="text-[28px] tracking-tight font-light text-[color:var(--text-primary)] hover:text-[color:var(--accent)] transition-colors"
               data-testid="workspace-members-link"
             >
               {wsQ.data.members_count}
@@ -1238,7 +1238,7 @@ export function SettingsWorkspacePage() {
               Created
             </span>
             <span
-              className="text-[28px] tracking-tight font-medium text-[color:var(--text-primary)]"
+              className="text-[28px] tracking-tight font-light text-[color:var(--text-primary)]"
               data-testid="workspace-created"
             >
               {created ?? "—"}
