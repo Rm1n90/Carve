@@ -18,7 +18,6 @@ from carve_api.projects.service import (
     get_project_role,
     require_visible_task,
 )
-from carve_api.ratelimit import limiter
 from carve_api.weights.models import Weight, WeightTaskKind
 from carve_api.weights.schemas import (
     WeightAssignmentCreate,
@@ -53,7 +52,6 @@ def list_workspace_weights(
     response_model=WeightOut,
     status_code=status.HTTP_201_CREATED,
 )
-@limiter.limit("30/minute")
 async def upload_workspace_weight(
     request: Request,  # noqa: ARG001 — required by slowapi limiter
     name: str = Form(...),
@@ -108,7 +106,6 @@ def _http(err: AppError) -> HTTPException:
     response_model=WeightOut,
     status_code=status.HTTP_201_CREATED,
 )
-@limiter.limit("30/minute")
 async def upload_weight(
     request: Request,
     project_id: uuid.UUID,

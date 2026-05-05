@@ -14,7 +14,6 @@ from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.projects.service import ProjectService, TaskService, _can_modify, NotProjectOwner, require_visible_task
-from carve_api.ratelimit import limiter
 from carve_api.storage.client import MinioClient
 
 router = APIRouter(prefix="/tasks", tags=["assets"])
@@ -29,12 +28,9 @@ asset_router = APIRouter(prefix="/assets", tags=["assets"])
 # with >500 assets.
 _MAX_PAGE_LIMIT = 5000
 
-# v2.6: raised from "100/minute" so an authenticated user can drop a
-# typical batch of a few hundred images without tripping a 429 mid-loop.
-# The web client uploads sequentially, so 1000 RPM caps a sustained
-# adversary while leaving normal batches well within budget. The zip
-# upload endpoint stays at 100/minute since one zip carries many images.
-SINGLE_ASSET_UPLOAD_LIMIT = "1000/minute"
+# Plan-20.12 — SlowAPI removed application-wide. Per-minute caps and
+# the SINGLE_ASSET_UPLOAD_LIMIT constant are gone; uploads are
+# unbounded.
 
 
 def _enqueue_post_upload(asset) -> None:

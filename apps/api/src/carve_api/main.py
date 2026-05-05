@@ -2,22 +2,20 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
 
 from carve_api.auth.router import router as auth_router
 from carve_api.config import get_settings
 from carve_api.errors import AppError
 from carve_api.health import router as health_router
-from carve_api.ratelimit import limiter
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Carve API", version="0.1.0")
-
-    app.state.limiter = limiter
-    app.add_middleware(SlowAPIMiddleware)
+    # Plan-20.12 — SlowAPI removed application-wide. The app is
+    # self-hosted behind an authenticated boundary; per-minute caps
+    # caused real-user pain (uploads of 1000+ images returning 429)
+    # and added no security value.
 
     if settings.cors_origin_list:
         app.add_middleware(
@@ -115,36 +113,6 @@ def create_app() -> FastAPI:
         return {"pong": "admin"}
 
     app.include_router(admin_router)
-
-    @app.exception_handler(RateLimitExceeded)
-    async def _rate_limited(_request: Request, exc: RateLimitExceeded) -> JSONResponse:
-        # v2.6: Surface enough info for clients to back off intelligently.
-        # The web upload dialog reads `retry_after_seconds` to decide how
-        # long to wait before retrying a 429'd batch. Falls back gracefully
-        # if the slowapi internals shift shape across versions.
-        retry_after = 60
-        amount = 0
-        try:
-            limit_item = exc.limit.limit  # type: ignore[union-attr]
-            retry_after = max(1, int(limit_item.get_expiry()))
-            amount = int(limit_item.amount)
-        except Exception:  # noqa: BLE001 — defensive against slowapi internals
-            pass
-        detail = (
-            f"Slow down — limit is {amount} requests per minute. "
-            f"Wait {retry_after} seconds."
-            if amount
-            else f"Slow down — rate limit hit. Wait {retry_after} seconds."
-        )
-        return JSONResponse(
-            status_code=429,
-            content={
-                "error": "rate_limited",
-                "retry_after_seconds": retry_after,
-                "detail": detail,
-            },
-            headers={"Retry-After": str(retry_after)},
-        )
 
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError) -> JSONResponse:

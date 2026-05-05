@@ -41,8 +41,6 @@ from carve_api.auth.sso import (
 from carve_api.config import get_enabled_sso_providers
 from carve_api.deps import _bearer_token, get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.ratelimit import limiter
-
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -58,14 +56,12 @@ def _to_http(err: AppError) -> HTTPException:
 
 
 @router.get("/bootstrap-status")
-@limiter.limit("60/minute")
 def bootstrap_status(request: Request, db: Session = Depends(get_db)) -> dict:
     exists = db.execute(select(User.id).limit(1)).scalar_one_or_none() is not None
     return {"users_exist": exists}
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/minute")
 def register(
     request: Request,
     payload: RegisterIn,
@@ -99,7 +95,6 @@ def register(
 
 
 @router.post("/login", response_model=TokenPair)
-@limiter.limit("10/minute")
 def login(request: Request, payload: LoginIn, db: Session = Depends(get_db)) -> TokenPair:
     try:
         user = AuthService(db).authenticate(email=payload.email, password=payload.password)
@@ -126,7 +121,6 @@ def me(current: User = Depends(get_current_user)) -> UserOut:
 
 
 @router.post("/password", status_code=204)
-@limiter.limit("5/minute")
 def change_password(
     request: Request,  # required by slowapi for rate-limit key extraction
     payload: ChangePasswordIn,
@@ -165,7 +159,6 @@ def _random_password_hash() -> str:
 
 
 @router.get("/sso/{provider}/start")
-@limiter.limit("20/minute")
 async def sso_start(
     request: Request,
     provider: str,
@@ -198,7 +191,6 @@ async def sso_start(
 
 
 @router.get("/sso/{provider}/callback")
-@limiter.limit("20/minute")
 async def sso_callback(
     request: Request,
     provider: str,
