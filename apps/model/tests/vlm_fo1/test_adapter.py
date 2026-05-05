@@ -1,20 +1,18 @@
-"""Tests for VLM-FO1 adapter — the precision filter that sits between
-SAM 3's mask proposals and the final returned annotations.
+"""Tests for the VLM-FO1 HTTP-client adapter.
 
-The real Qwen2.5-VL-3B + FO1 head is multi-GB and gated — never loaded
-in tests. We stub torch + transformers + PIL via ``sys.modules`` so the
-adapter logic runs without GPUs or network access. Mirrors the
-``fake_sam2_modules`` / ``fake_sam3_concept`` patterns used elsewhere in
-``apps/model/tests/sam/``.
+After the sidecar split, this module is just a thin httpx wrapper:
+serialize the PIL image, POST to /filter, parse the response, handle
+errors. We verify behaviour by intercepting httpx.Client and feeding
+canned responses — no real network or model.
 """
 
 from __future__ import annotations
 
 import sys
+from io import BytesIO
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
-import numpy as np
 import pytest
 
 from carve_model.vlm_fo1 import adapter as a_mod
@@ -24,193 +22,167 @@ from carve_model.vlm_fo1 import adapter as a_mod
 
 
 class _FakeImage:
-    """Minimal PIL.Image-like object."""
+    """Minimal PIL.Image-like object with a .save() that writes PNG bytes."""
 
-    def __init__(self, w: int = 64, h: int = 64) -> None:
-        self.size = (w, h)
+    def __init__(self, width: int = 64, height: int = 64) -> None:
+        self.size = (width, height)
         self.mode = "RGB"
+
+    def save(self, buf: BytesIO, format: str = "PNG") -> None:  # noqa: A002
+        # Emit a minimal but distinct payload so b64 round-trips
+        # produce a deterministic string in assertions.
+        buf.write(b"\x89PNG\r\n\x1a\n" + bytes([self.size[0], self.size[1]]))
 
     def convert(self, _mode: str) -> "_FakeImage":
         return self
 
 
-class _FakeModel:
-    def __init__(self, decoded_output: str = "<region0>") -> None:
-        self._decoded = decoded_output
-        self.generate_calls: list[dict] = []
+class _FakeResponse:
+    def __init__(self, body: dict[str, Any] | None = None, status: int = 200) -> None:
+        self._body = body or {}
+        self.status_code = status
 
-    def generate(self, **kwargs) -> Any:
-        self.generate_calls.append(kwargs)
-        return np.zeros((1, 1), dtype=np.int64)
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
-
-class _FakeTokenizer:
-    def __init__(self, decoded_output: str) -> None:
-        self.decoded_output = decoded_output
-        self.decode_calls: list[Any] = []
-
-    def decode(self, _ids, *_a, **_kw) -> str:
-        self.decode_calls.append(_ids)
-        return self.decoded_output
+    def json(self) -> dict[str, Any]:
+        return self._body
 
 
-class _FakeProcessor:
-    """Stand-in for the FO1 image processor / message builder."""
+class _FakeClient:
+    """Drop-in for ``httpx.Client``.
 
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
+    The closure under test calls ``client.post("/filter", json=...)``;
+    we record the request and return whatever the test queued via
+    ``responses`` (a list of dicts to wrap in ``_FakeResponse``, or
+    bare exceptions to raise).
+    """
 
-    def __call__(self, **kwargs) -> dict:
-        self.calls.append(kwargs)
-        return _FakeBatch({"input_ids": np.zeros((1, 8), dtype=np.int64)})
+    last_instance: "_FakeClient | None" = None
+
+    def __init__(self, base_url: str = "", timeout: float = 0.0) -> None:
+        self.base_url = base_url
+        self.timeout = timeout
+        self.posts: list[dict[str, Any]] = []
+        self.responses: list[Any] = []
+        self._index = 0
+        _FakeClient.last_instance = self
+
+    def post(self, path: str, json: dict[str, Any] | None = None) -> _FakeResponse:
+        self.posts.append({"path": path, "json": json})
+        if not self.responses:
+            return _FakeResponse({"indexes": []})
+        r = self.responses[min(self._index, len(self.responses) - 1)]
+        self._index += 1
+        if isinstance(r, BaseException):
+            raise r
+        if isinstance(r, _FakeResponse):
+            return r
+        return _FakeResponse(r)
+
+    def close(self) -> None:
+        pass
 
 
-class _FakeBatch(dict):
-    def __init__(self, data: dict) -> None:
-        super().__init__(data)
-
-    def to(self, _device: Any) -> "_FakeBatch":
-        return self
-
-    @property
-    def shape(self) -> tuple:
-        ids = self.get("input_ids")
-        return tuple(ids.shape) if ids is not None else (1, 0)
-
-
-# --- shared monkeypatch helpers --------------------------------------------
-
-
-@pytest.fixture
-def fake_vlm_fo1_modules(monkeypatch):
-    fake_torch = ModuleType("torch")
-
-    class _InferenceMode:
-        def __enter__(self) -> "_InferenceMode":
-            return self
-
-        def __exit__(self, *_exc: Any) -> None:
-            return None
-
-    fake_torch.inference_mode = lambda: _InferenceMode()
-    fake_torch.no_grad = lambda: _InferenceMode()
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-
-    fake_pil = ModuleType("PIL")
-    fake_pil_image = ModuleType("PIL.Image")
-    fake_pil_image.Image = _FakeImage
-    fake_pil.Image = fake_pil_image
-    monkeypatch.setitem(sys.modules, "PIL", fake_pil)
-    monkeypatch.setitem(sys.modules, "PIL.Image", fake_pil_image)
-
-    fake_transformers = ModuleType("transformers")
-    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
-
-    return SimpleNamespace(
-        Model=_FakeModel,
-        Tokenizer=_FakeTokenizer,
-        Processor=_FakeProcessor,
-    )
+# --- shared fixtures --------------------------------------------------------
 
 
 @pytest.fixture
-def stubbed_filter(monkeypatch, fake_vlm_fo1_modules):
-    """Patch ``a_mod._build_vlm_fo1_pair`` to return canned fakes."""
-    bundle = SimpleNamespace(
-        decoded_output="<region0>",
-        build_calls=0,
-        last_pair=None,
-    )
+def fake_httpx(monkeypatch):
+    """Replace ``httpx.Client`` with ``_FakeClient`` for the duration of a test.
 
-    def _fake_build(*_args, **_kwargs):
-        bundle.build_calls += 1
-        model = fake_vlm_fo1_modules.Model(bundle.decoded_output)
-        tok = fake_vlm_fo1_modules.Tokenizer(bundle.decoded_output)
-        proc = fake_vlm_fo1_modules.Processor()
-        pair = (tok, model, proc, "cpu")
-        bundle.last_pair = pair
-        return pair
+    Returns a SimpleNamespace with a ``set_responses(seq)`` helper so
+    individual tests don't need to dig into ``_FakeClient.last_instance``.
+    The pending response list is queued *before* ``make_vlm_fo1_filter``
+    is called because that's when the client is constructed.
+    """
+    fake_module = ModuleType("httpx")
+    fake_module.Client = _FakeClient  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "httpx", fake_module)
 
-    monkeypatch.setattr(a_mod, "_build_vlm_fo1_pair", _fake_build)
-    return bundle
+    state = SimpleNamespace(pending_responses=[])
+
+    def _install_pending() -> None:
+        client = _FakeClient.last_instance
+        if client is not None:
+            client.responses = list(state.pending_responses)
+
+    state.install_pending = _install_pending
+    return state
+
+
+def _make_filter_with_responses(fake_httpx, responses: list[Any], **kwargs):
+    """Helper: queue responses, build the filter, return (fn, fake-client)."""
+    fake_httpx.pending_responses = responses
+    fn = a_mod.make_vlm_fo1_filter(**kwargs)
+    fake_httpx.install_pending()
+    return fn, _FakeClient.last_instance
 
 
 # --- behavioural tests -----------------------------------------------------
 
 
-def test_filter_short_circuits_on_empty_boxes(stubbed_filter):
-    fn = a_mod.make_vlm_fo1_filter()
+def test_filter_short_circuits_on_empty_boxes(fake_httpx):
+    fn, client = _make_filter_with_responses(fake_httpx, [{"indexes": [0]}])
     image = _FakeImage()
 
     out = fn(image=image, text="lion", boxes=[])
 
     assert out == []
-    assert stubbed_filter.build_calls == 0
+    assert client.posts == []  # no HTTP call
 
 
-def test_filter_short_circuits_on_blank_text(stubbed_filter):
-    """Blank text → degrade to passthrough (return all indexes)."""
-    fn = a_mod.make_vlm_fo1_filter()
+def test_filter_short_circuits_on_blank_text(fake_httpx):
+    """Blank text → degrade to passthrough; no HTTP call."""
+    fn, client = _make_filter_with_responses(fake_httpx, [{"indexes": [0]}])
     image = _FakeImage()
     boxes = [[0.0, 0.0, 10.0, 10.0], [5.0, 5.0, 15.0, 15.0]]
 
     out = fn(image=image, text="   ", boxes=boxes)
 
     assert out == [0, 1]
-    assert stubbed_filter.build_calls == 0
+    assert client.posts == []
 
 
-def test_filter_returns_indexes_emitted_by_model(stubbed_filter):
-    stubbed_filter.decoded_output = "<region2>, <region0>"
-    fn = a_mod.make_vlm_fo1_filter()
+def test_filter_returns_indexes_from_sidecar(fake_httpx):
+    fn, client = _make_filter_with_responses(
+        fake_httpx, [{"indexes": [2, 0]}],
+    )
     image = _FakeImage()
     boxes = [[i, i, i + 5, i + 5] for i in range(4)]
 
     out = fn(image=image, text="ball nearest the bear", boxes=boxes)
 
     assert out == [2, 0]
+    assert len(client.posts) == 1
+    body = client.posts[0]["json"]
+    assert body["text"] == "ball nearest the bear"
+    assert len(body["boxes"]) == 4
+    assert isinstance(body["image_b64"], str) and len(body["image_b64"]) > 0
 
 
-def test_filter_caps_box_count_for_model_input(stubbed_filter):
-    stubbed_filter.decoded_output = "<region0>"
-    fn = a_mod.make_vlm_fo1_filter(max_boxes=3)
+def test_filter_caps_box_count_in_request(fake_httpx):
+    fn, client = _make_filter_with_responses(
+        fake_httpx, [{"indexes": [0]}], max_boxes=3,
+    )
     image = _FakeImage()
     boxes = [[i, i, i + 5, i + 5] for i in range(10)]
 
     fn(image=image, text="lion", boxes=boxes)
 
-    proc = stubbed_filter.last_pair[2]
-    last_call = proc.calls[-1]
-    assert "bbox_list" in last_call
-    assert len(last_call["bbox_list"]) == 3
+    assert len(client.posts) == 1
+    # max_boxes flows through as the cap on what the sidecar runs over,
+    # but the wire request still carries the per-call max_boxes hint
+    # so the sidecar can defensively cap a second time.
+    assert client.posts[0]["json"]["max_boxes"] == 3
 
 
-def test_filter_lazy_loads_only_once(stubbed_filter):
-    stubbed_filter.decoded_output = "<region0>"
-    fn = a_mod.make_vlm_fo1_filter()
-    image = _FakeImage()
-    boxes = [[0.0, 0.0, 10.0, 10.0]]
-
-    fn(image=image, text="a", boxes=boxes)
-    fn(image=image, text="b", boxes=boxes)
-    fn(image=image, text="c", boxes=boxes)
-
-    assert stubbed_filter.build_calls == 1
-
-
-def test_filter_degrades_to_passthrough_on_model_error(monkeypatch, fake_vlm_fo1_modules):
-    """A runtime error inside the model must NOT crash the request."""
-    def _build_exploding():
-        class _Boom:
-            def generate(self, **_kw):
-                raise RuntimeError("simulated cuda OOM")
-        tok = type("T", (), {"decode": lambda self, *_a, **_kw: ""})()
-        proc = type("P", (), {"__call__": lambda self, **_kw: {}})()
-        return tok, _Boom(), proc, "cpu"
-
-    monkeypatch.setattr(a_mod, "_build_vlm_fo1_pair", _build_exploding)
-
-    fn = a_mod.make_vlm_fo1_filter()
+def test_filter_degrades_to_passthrough_on_sidecar_error(fake_httpx):
+    """A 5xx / connect error must NOT crash the request."""
+    fn, _client = _make_filter_with_responses(
+        fake_httpx, [RuntimeError("simulated connection refused")],
+    )
     image = _FakeImage()
     boxes = [[0.0, 0.0, 10.0, 10.0], [5.0, 5.0, 15.0, 15.0]]
 
@@ -219,9 +191,20 @@ def test_filter_degrades_to_passthrough_on_model_error(monkeypatch, fake_vlm_fo1
     assert out == [0, 1]
 
 
-def test_filter_returns_empty_when_model_emits_no_matches(stubbed_filter):
-    stubbed_filter.decoded_output = "no objects matched."
-    fn = a_mod.make_vlm_fo1_filter()
+def test_filter_degrades_to_passthrough_on_5xx(fake_httpx):
+    fn, _client = _make_filter_with_responses(
+        fake_httpx, [_FakeResponse({"detail": "boom"}, status=500)],
+    )
+    image = _FakeImage()
+    boxes = [[0.0, 0.0, 10.0, 10.0]]
+
+    out = fn(image=image, text="lion", boxes=boxes)
+
+    assert out == [0]
+
+
+def test_filter_returns_empty_when_sidecar_returns_no_matches(fake_httpx):
+    fn, _client = _make_filter_with_responses(fake_httpx, [{"indexes": []}])
     image = _FakeImage()
     boxes = [[i, i, i + 5, i + 5] for i in range(3)]
 
@@ -230,12 +213,33 @@ def test_filter_returns_empty_when_model_emits_no_matches(stubbed_filter):
     assert out == []
 
 
-def test_filter_drops_indexes_outside_box_range(stubbed_filter):
-    stubbed_filter.decoded_output = "<region77>, <region1>"
-    fn = a_mod.make_vlm_fo1_filter()
+def test_filter_drops_indexes_outside_box_range(fake_httpx):
+    """Defensive — sidecar shouldn't emit OOB indexes, but if it does
+    we strip them before returning."""
+    fn, _client = _make_filter_with_responses(
+        fake_httpx, [{"indexes": [77, 1]}],
+    )
     image = _FakeImage()
     boxes = [[0.0, 0.0, 10.0, 10.0], [5.0, 5.0, 15.0, 15.0]]
 
     out = fn(image=image, text="lion", boxes=boxes)
 
     assert out == [1]
+
+
+def test_filter_reuses_same_http_client_across_calls(fake_httpx):
+    """Repeated calls share the closure's httpx client (connection
+    pooling); we don't construct a new client per call."""
+    fn, _client = _make_filter_with_responses(
+        fake_httpx,
+        [{"indexes": [0]}, {"indexes": [0]}, {"indexes": [0]}],
+    )
+    image = _FakeImage()
+    boxes = [[0.0, 0.0, 10.0, 10.0]]
+
+    fn(image=image, text="a", boxes=boxes)
+    fn(image=image, text="b", boxes=boxes)
+    fn(image=image, text="c", boxes=boxes)
+
+    # Only one client got constructed; that client received 3 posts.
+    assert len(_FakeClient.last_instance.posts) == 3

@@ -60,42 +60,34 @@ def _hf_login_from_env() -> None:
         )
 
 
-def _vlm_fo1_can_load(model_path: str) -> tuple[bool, str]:
-    """Probe whether the FO1 model class is actually loadable in this env.
+def _vlm_fo1_can_load(model_path: str) -> tuple[bool, str]:  # noqa: ARG001 — kept for API compat
+    """Probe whether the FO1 sidecar is reachable.
 
-    VLM-FO1's checkpoint reports ``model_type: "omchat_qwen2_5_vl"`` —
-    a custom architecture that lives in the upstream ``vlm_fo1`` Python
-    package (https://github.com/om-ai-lab/VLM-FO1). The HF weights repo
-    is weights-only, so ``trust_remote_code=True`` has nothing to import.
+    FO1 inference was moved out of this process into the
+    ``model-vlm-fo1`` sidecar container (transformers==4.50.1, separate
+    GPU consumer). The capability check is now an HTTP ``GET /healthz``
+    against the sidecar — cheap, sub-second, no model load triggered.
 
     Returns ``(ok, reason)``:
-      - ``(True, "<source>")`` — architecture is reachable
+      - ``(True, "<sidecar-url>")`` — sidecar is reachable
       - ``(False, "<reason>")`` — feature should NOT be advertised; the
         toggle stays hidden so users don't see a dead control.
-
-    Cheap probe — does NOT download the multi-GB safetensors. Pulls the
-    1-KB ``config.json`` once via AutoConfig and inspects the model_type
-    against the locally importable architectures.
     """
-    # Cheapest path first: upstream package installed and importable.
-    try:
-        import vlm_fo1.model  # type: ignore[import-not-found]  # noqa: F401
-        return True, "upstream-vlm_fo1-package"
-    except ImportError:
-        pass
+    import httpx
 
-    # Fallback: maybe a future HF repo version ships modeling code. Pull
-    # config + try with trust_remote_code so a remote-code repo would
-    # register the architecture.
-    try:
-        from transformers import AutoConfig  # type: ignore[import-not-found]
+    from carve_model.vlm_fo1.adapter import _resolve_sidecar_url
 
-        AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-        return True, "remote-code-config"
+    base = _resolve_sidecar_url()
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            resp = client.get(f"{base}/healthz")
+            resp.raise_for_status()
+        return True, base
     except Exception as exc:  # noqa: BLE001
         return False, (
-            f"vlm_fo1 package not installed and "
-            f"AutoConfig.from_pretrained failed: {exc.__class__.__name__}"
+            f"vlm_fo1 sidecar unreachable at {base} ({exc}). "
+            f"Start the model-vlm-fo1 service: "
+            f"`docker compose --profile inference up -d model-vlm-fo1`."
         )
 
 
@@ -129,11 +121,8 @@ def _maybe_register_vlm_fo1() -> None:
         ok, reason = _vlm_fo1_can_load(model_path)
         if not ok:
             log.warning(
-                "VLM_FO1_AVAILABLE=1 but FO1 cannot load: %s. "
-                "Toggle will stay hidden in the editor. To enable, install "
-                "the upstream package via "
-                "`pip install git+https://github.com/om-ai-lab/VLM-FO1.git` "
-                "(see spec for transformers version constraints).",
+                "VLM_FO1_AVAILABLE=1 but FO1 sidecar is unreachable: %s. "
+                "Toggle will stay hidden in the editor.",
                 reason,
             )
             return

@@ -50,6 +50,12 @@ sam3p1 = [
   "timm>=1.0.17",
 ]
 
+# v3.21+ — VLM-FO1 precision filter is NOT a pyproject extras because
+# the upstream repo (om-ai-lab/VLM-FO1) has no setup.py / pyproject.toml
+# and is therefore not pip-installable. The Dockerfile clones it and
+# copies the vlm_fo1 package dir into site-packages directly — see
+# apps/model/Dockerfile for the install steps and rationale.
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

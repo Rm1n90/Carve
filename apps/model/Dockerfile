@@ -36,6 +36,12 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     && pip3 install --no-cache-dir --break-system-packages --no-deps \
         "git+https://github.com/facebookresearch/sam3.git"
 
+# NOTE: VLM-FO1 was extracted into a separate sidecar service
+# (apps/model-vlm-fo1) when it became clear the upstream package
+# requires transformers==4.50.1, incompatible with this image's
+# transformers==5.0.0 used by SAM 3. The model service now calls the
+# sidecar over HTTP — see carve_model.vlm_fo1.adapter.
+
 COPY src ./src
 ENV PYTHONPATH=/app/src
 ENV HF_HOME=/root/.cache/huggingface \

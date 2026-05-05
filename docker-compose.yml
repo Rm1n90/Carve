@@ -183,7 +183,13 @@ services:
       # Optional 4-bit quant for the FO1 base VLM (Qwen2.5-VL-3B).
       # Empty / unset = bf16 (~6 GB VRAM). "4bit" cuts that ~2x but
       # adds ~10-30% latency and may regress quality slightly.
+      # Read by the model-vlm-fo1 sidecar; surfaced here so a single
+      # .env entry configures both services symmetrically.
       VLM_FO1_QUANT: ${VLM_FO1_QUANT:-}
+      # Sidecar URL inside the docker-compose network. The model
+      # service calls this for capability probes (/healthz) and for
+      # actual /filter requests when use_vlm_fo1=true.
+      VLM_FO1_SIDECAR_URL: ${VLM_FO1_SIDECAR_URL:-http://model-vlm-fo1:8101}
       # SAM 3 proposal-generation tuning when use_vlm_fo1=true. Lower
       # threshold + bounded top-K give FO1 more candidates to filter
       # without exploding context length. Defaults match the spec; raise
@@ -205,6 +211,43 @@ services:
       - hf_cache:/root/.cache/huggingface
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  # VLM-FO1 sidecar — separate process pinned to transformers==4.50.1
+  # so the upstream om-ai-lab/VLM-FO1 package can run unmodified. See
+  # apps/model-vlm-fo1/ and carve_model.vlm_fo1.adapter for the split
+  # rationale. Lazy-loads weights on first /filter request.
+  model-vlm-fo1:
+    build: ./apps/model-vlm-fo1
+    restart: unless-stopped
+    profiles:
+      - inference
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      # Inherits the same VLM_FO1_* env as the model service so a
+      # single .env entry tunes both. The sidecar reads MODEL_PATH
+      # and QUANT directly; AVAILABLE is read only by the model
+      # service to gate the toggle.
+      VLM_FO1_MODEL_PATH: ${VLM_FO1_MODEL_PATH:-}
+      VLM_FO1_QUANT: ${VLM_FO1_QUANT:-}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+    volumes:
+      # Share the HF cache with the model service. Both pull from the
+      # same HF Hub paths (sam3 + FO1 are different repos so no
+      # collision) and saves ~9 GB of duplicated downloads.
+      - hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/healthz').read()"]
       interval: 10s
       timeout: 3s
       retries: 5

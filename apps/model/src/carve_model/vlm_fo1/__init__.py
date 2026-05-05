@@ -14,18 +14,17 @@ Perception in VLMs" (Liu et al., 2025, arXiv:2509.25916).
 
 Default model: ``omlab/VLM-FO1_Qwen2.5-VL-3B-v01`` (Qwen2.5-VL-3B base
 + Hybrid Fine-grained Region Encoder head, ~3B params total).
+
+Architecture: this module no longer loads FO1 in-process. The actual
+model lives in the ``model-vlm-fo1`` sidecar container, pinned to
+``transformers==4.50.1``. ``make_vlm_fo1_filter`` returns a thin HTTP
+client. See ``apps/model-vlm-fo1/`` for the server side.
 """
 
 from carve_model.vlm_fo1.adapter import (
     DEFAULT_MAX_BOXES,
     DEFAULT_MODEL_PATH,
+    DEFAULT_SIDECAR_URL,
     VlmFo1Filter,
     make_vlm_fo1_filter,
 )
-
-__all__ = [
-    "DEFAULT_MAX_BOXES",
-    "DEFAULT_MODEL_PATH",
-    "VlmFo1Filter",
-    "make_vlm_fo1_filter",
-]
