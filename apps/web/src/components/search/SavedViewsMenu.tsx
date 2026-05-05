@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Eye, Plus } from "lucide-react";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { Input } from "@/components/ui/Input";
 import {
   viewsApi,
   type SavedView,
@@ -161,26 +163,20 @@ export function SavedViewsMenu({
                 create.mutate();
               }}
             >
-              <label className="grid gap-1 text-[12.5px]">
-                Name
-                <input
-                  data-testid="saved-views-name-input"
-                  type="text"
-                  value={draftName}
-                  onChange={(e) => setDraftName(e.target.value)}
-                  className="h-8 px-2 rounded-[var(--radius-xs)] bg-[var(--bg-subtle)] outline-none text-[13px]"
-                  autoFocus
-                />
-              </label>
-              <label className="inline-flex items-center gap-2 text-[12.5px]">
-                <input
-                  data-testid="saved-views-shared-toggle"
-                  type="checkbox"
-                  checked={draftShared}
-                  onChange={(e) => setDraftShared(e.target.checked)}
-                />
-                Share with project
-              </label>
+              <Input
+                label="Name"
+                data-testid="saved-views-name-input"
+                type="text"
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                autoFocus
+              />
+              <Checkbox
+                data-testid="saved-views-shared-toggle"
+                checked={draftShared}
+                onChange={(e) => setDraftShared(e.target.checked)}
+                label="Share with project"
+              />
               <div className="flex justify-end gap-2 mt-1">
                 <button
                   type="button"

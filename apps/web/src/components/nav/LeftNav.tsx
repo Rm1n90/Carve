@@ -7,6 +7,8 @@ import {
   ChevronDown,
   ChevronRight,
   Cpu,
+  HelpCircle,
+  Info,
   KeyRound,
   LogOut,
   Pencil,
@@ -549,6 +551,19 @@ export function LeftNav() {
             to="/trash"
             active={isActive(path, "/trash", false)}
             icon={<Trash2 className="h-3.5 w-3.5" />}
+          />
+        </Section>
+
+        <Section
+          label="Help"
+          icon={<HelpCircle className="h-3.5 w-3.5" />}
+          initiallyOpen={false}
+        >
+          <NavItem
+            label="About"
+            to="/about"
+            active={isActive(path, "/about", false)}
+            icon={<Info className="h-3.5 w-3.5" />}
           />
         </Section>
       </nav>

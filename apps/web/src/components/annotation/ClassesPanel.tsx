@@ -33,6 +33,7 @@ import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
 import { useClassRecents } from "@/state/classRecents";
 import { Kbd } from "@/components/ui/Kbd";
+import { Input } from "@/components/ui/Input";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 import { PALETTE_HEX, nextHexForIdx } from "@/lib/swatch";
@@ -883,24 +884,15 @@ export function ClassesPanel({
           Classes
         </h3>
         <div className="flex items-center gap-1.5">
-          <div className="relative flex-1">
-            <Search
-              aria-hidden
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[color:var(--text-tertiary)] pointer-events-none"
-            />
-            <input
+          <div className="flex-1">
+            <Input
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search classes…"
               aria-label="Search classes"
               data-testid="classes-search-input"
-              className={cn(
-                "w-full h-8 pl-8 pr-2 rounded-[var(--radius-sm)]",
-                "glass-surface-subtle text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
-                "text-[12.5px]",
-                "focus:outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[rgba(99,102,241,0.16)]",
-              )}
+              leftIcon={<Search className="h-3.5 w-3.5" aria-hidden />}
             />
           </div>
           <DropdownMenu.Root>

@@ -9,6 +9,7 @@ import {
   DialogDescription,
 } from "@/components/ui/Dialog";
 import { Kbd } from "@/components/ui/Kbd";
+import { MOD_LABEL } from "@/lib/platform";
 import { cn } from "@/lib/cn";
 
 /**
@@ -56,14 +57,14 @@ export const SHORTCUTS: ShortcutGroup[] = [
   {
     title: "Selection",
     items: [
-      { keys: ["⌘", "A"], desc: "Select all on frame" },
+      { keys: [MOD_LABEL, "A"], desc: "Select all on frame" },
       { keys: ["Backspace"], desc: "Delete selected" },
       { keys: ["Delete"], desc: "Delete selected" },
       { keys: ["Esc"], desc: "Cancel / clear selection" },
       { keys: ["⇧", "click"], desc: "Multi-select" },
       { keys: ["1", "..", "9"], desc: "Switch active class" },
       { keys: ["/"], desc: "Open class palette" },
-      { keys: ["⌘", "⇧", "C"], desc: "Open class palette (alt)" },
+      { keys: [MOD_LABEL, "⇧", "C"], desc: "Open class palette (alt)" },
       { keys: ["R"], desc: "Reassign selected to class…" },
       { keys: ["←", "→", "↑", "↓"], desc: "Nudge selected bbox" },
       { keys: ["⇧", "+", "arrow"], desc: "Nudge by 10px" },
@@ -102,19 +103,19 @@ export const SHORTCUTS: ShortcutGroup[] = [
   {
     title: "Z-order",
     items: [
-      { keys: ["⌘", "⇧", "]"], desc: "Bring to front" },
-      { keys: ["⌘", "⇧", "["], desc: "Send to back" },
-      { keys: ["⌘", "]"], desc: "Bring forward" },
-      { keys: ["⌘", "["], desc: "Send backward" },
+      { keys: [MOD_LABEL, "⇧", "]"], desc: "Bring to front" },
+      { keys: [MOD_LABEL, "⇧", "["], desc: "Send to back" },
+      { keys: [MOD_LABEL, "]"], desc: "Bring forward" },
+      { keys: [MOD_LABEL, "["], desc: "Send backward" },
     ],
   },
   {
     title: "Files",
     items: [
-      { keys: ["⌘", "S"], desc: "Save now" },
-      { keys: ["⌘", "Z"], desc: "Undo" },
-      { keys: ["⌘", "⇧", "Z"], desc: "Redo" },
-      { keys: ["⌘", "D"], desc: "Duplicate selected" },
+      { keys: [MOD_LABEL, "S"], desc: "Save now" },
+      { keys: [MOD_LABEL, "Z"], desc: "Undo" },
+      { keys: [MOD_LABEL, "⇧", "Z"], desc: "Redo" },
+      { keys: [MOD_LABEL, "D"], desc: "Duplicate selected" },
       { keys: ["L"], desc: "Lock / unlock selected" },
       { keys: ["?"], desc: "Show this cheat sheet" },
     ],

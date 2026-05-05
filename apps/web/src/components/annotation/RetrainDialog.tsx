@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
+import { Checkbox, Input, Select } from "@/components/ui";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
@@ -102,7 +103,8 @@ export function RetrainDialog({
     mutationFn: async () => {
       if (!taskId) throw new Error("no_task");
       return weightsApi.retrainStart(taskId, {
-        base_weight_id: baseWeightId || null,
+        base_weight_id:
+          baseWeightId && baseWeightId !== "__none__" ? baseWeightId : null,
         epochs,
         imgsz,
         include_proposed: includeProposed,
@@ -295,19 +297,25 @@ function RetrainForm({
         <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
           Base weight
         </span>
-        <select
-          data-testid="retrain-base-weight"
-          value={baseWeightId}
-          onChange={(e) => setBaseWeightId(e.target.value)}
-          className="h-9 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] text-[12.5px] text-[color:var(--text-primary)]"
-        >
-          <option value="">(none — start from yolov8n.pt)</option>
-          {availableWeights.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name} ({w.task_kind})
-            </option>
-          ))}
-        </select>
+        <Select value={baseWeightId} onValueChange={setBaseWeightId}>
+          <Select.Trigger
+            aria-label="Base weight"
+            data-testid="retrain-base-weight"
+            className="h-9 w-full"
+          >
+            <Select.Value placeholder="(none — start from yolov8n.pt)" />
+          </Select.Trigger>
+          <Select.Content>
+            <Select.Item value="__none__">
+              (none — start from yolov8n.pt)
+            </Select.Item>
+            {availableWeights.map((w) => (
+              <Select.Item key={w.id} value={w.id}>
+                {w.name} ({w.task_kind})
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select>
       </label>
 
       {/* Epochs */}
@@ -315,7 +323,7 @@ function RetrainForm({
         <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
           Epochs
         </span>
-        <input
+        <Input
           data-testid="retrain-epochs"
           type="number"
           min={1}
@@ -326,7 +334,6 @@ function RetrainForm({
             const n = parseInt(e.target.value, 10);
             if (Number.isFinite(n)) setEpochs(Math.max(1, Math.min(200, n)));
           }}
-          className="h-9 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] text-[12.5px] text-[color:var(--text-primary)]"
         />
       </label>
 
@@ -335,25 +342,31 @@ function RetrainForm({
         <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
           Image size
         </span>
-        <select
-          data-testid="retrain-imgsz"
-          value={imgsz}
-          onChange={(e) => setImgsz(parseInt(e.target.value, 10))}
-          className="h-9 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] text-[12.5px] text-[color:var(--text-primary)]"
+        <Select
+          value={String(imgsz)}
+          onValueChange={(v) => setImgsz(parseInt(v, 10))}
         >
-          {IMG_SIZES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+          <Select.Trigger
+            aria-label="Image size"
+            data-testid="retrain-imgsz"
+            className="h-9 w-full"
+          >
+            <Select.Value />
+          </Select.Trigger>
+          <Select.Content>
+            {IMG_SIZES.map((s) => (
+              <Select.Item key={s} value={String(s)}>
+                {s}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select>
       </label>
 
       {/* Include proposed */}
       <label className="flex items-center gap-2 text-[12.5px] text-[color:var(--text-primary)] cursor-pointer">
-        <input
+        <Checkbox
           data-testid="retrain-include-proposed"
-          type="checkbox"
           checked={includeProposed}
           onChange={(e) => setIncludeProposed(e.target.checked)}
         />
@@ -365,13 +378,12 @@ function RetrainForm({
         <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
           New weight name <span className="opacity-60">(optional)</span>
         </span>
-        <input
+        <Input
           data-testid="retrain-weight-name"
           type="text"
           placeholder="Leave blank for an auto-generated name"
           value={weightName}
           onChange={(e) => setWeightName(e.target.value)}
-          className="h-9 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] text-[12.5px] text-[color:var(--text-primary)]"
         />
       </label>
     </div>

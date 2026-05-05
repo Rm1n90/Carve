@@ -37,6 +37,7 @@ import {
   shouldShowEdgeGhost,
 } from "@/canvas/polygonEdit";
 import { showToast } from "@/lib/toast";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
 import { AnnotationContextMenu } from "@/components/annotation/AnnotationContextMenu";
 import { ModelLoadingOverlay } from "@/components/annotation/ModelLoadingOverlay";
@@ -250,7 +251,18 @@ export function AnnotationCanvas({
     | null
   >(null);
   // Cursor override during a drag — clears when the drag ends.
-  const [dragCursor, setDragCursor] = useState<string | null>(null);
+  // Stored in a ref + applied directly to the host element's inline style,
+  // not React state. AnnotationCanvas is a large component; routing every
+  // cursor change through React caused a re-render on every pointermove
+  // that crossed a handle/vertex/bbox boundary, producing visible cursor
+  // flicker. Direct DOM mutation makes updates atomic, deduped, and free.
+  const cursorRef = useRef<string | null>(null);
+  const setDragCursor = (value: string | null): void => {
+    if (cursorRef.current === value) return;
+    cursorRef.current = value;
+    const host = hostRef.current;
+    if (host) host.style.cursor = value ?? toolCursor(tool);
+  };
   // v3.5 Phase D — in-flight box draft for SAM ``box`` mode. Mirrors
   // BboxTool's anchor/current pair; lives in a ref so the tool-routing
   // useEffect doesn't recreate on every move event.
@@ -1470,6 +1482,11 @@ export function AnnotationCanvas({
   }) {
     const app = appRef.current;
     if (!app) return;
+    // Bail early if pointerup already cleared the draft — otherwise the
+    // dynamic-import await microtask races with pointerup's clearMarquee()
+    // and the rectangle gets re-painted on top of the cleared graphic,
+    // leaving the blue selection box stuck on screen until the next click.
+    if (!marqueeDraftRef.current) return;
     let Graphics: typeof import("pixi.js").Graphics | undefined;
     try {
       const pixi = await import("pixi.js");
@@ -1478,6 +1495,9 @@ export function AnnotationCanvas({
       return;
     }
     if (!Graphics) return;
+    // Re-check after the await: pointerup can fire between scheduling
+    // and resolving the import.
+    if (!marqueeDraftRef.current) return;
     let g = marqueeGfxRef.current as InstanceType<typeof Graphics> | null;
     if (!g) {
       g = new Graphics();
@@ -2202,9 +2222,16 @@ export function AnnotationCanvas({
           if (hit) {
             // Right-click on annotation: select so the contextmenu
             // listener can open the menu pointed at this annotation.
+            // Preserve any active multi-selection — collapsing it to
+            // one here was the root cause of "Convert ▸ only converts
+            // one of N selected": pointerdown fired BEFORE contextmenu,
+            // so by the time ConvertItems read selectedIds the selection
+            // had already been wiped down to the right-clicked id.
+            const sel = useAnnotations.getState().selectedIds;
+            const inMulti = sel.length > 1 && sel.includes(hit);
             if (e.shiftKey) {
               useAnnotations.getState().toggleSelect(hit);
-            } else {
+            } else if (!inMulti) {
               useAnnotations.getState().select(hit);
             }
           }
@@ -2693,7 +2720,7 @@ export function AnnotationCanvas({
         } else {
           clearEdgeGhost();
         }
-        if (dragCursor !== null) setDragCursor(null);
+        if (cursorRef.current !== null) setDragCursor(null);
         const hit = hitTest(p);
         const cur = useTool.getState().hoveredAnnotationId;
         if (hit !== cur) useTool.getState().setHoveredAnnotationId(hit);
@@ -3379,7 +3406,11 @@ export function AnnotationCanvas({
       style={{
         position: "absolute",
         inset: 0,
-        cursor: dragCursor ?? toolCursor(tool),
+        // Cursor is applied directly to host.style.cursor via setDragCursor
+        // (see ref-based cursor handling above). The initial value comes from
+        // toolCursor(tool); subsequent changes bypass React re-renders to
+        // avoid flicker on hover.
+        cursor: toolCursor(tool),
         overflow: "hidden",
         touchAction: "none",
         backgroundColor: canvasBg,
@@ -3558,11 +3589,9 @@ export function AnnotationCanvas({
             }}
             onPointerDown={(e) => e.stopPropagation()}
           >
-            <input
-              type="checkbox"
+            <Checkbox
               checked={samTextFindAll}
               onChange={(e) => setSamTextFindAll(e.target.checked)}
-              style={{ margin: 0 }}
             />
             All instances
           </label>

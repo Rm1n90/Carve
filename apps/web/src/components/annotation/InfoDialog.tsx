@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -10,6 +11,7 @@ import {
 } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { useAnnotations, type AnnotationDraft, type AnnotationKind } from "@/state/annotations";
+import { annotationsApi } from "@/api/annotations";
 import type { Task } from "@/api/tasks";
 import type { AssetWithUrl } from "@/api/assets";
 import type { ClassRow } from "@/api/classes";
@@ -28,6 +30,14 @@ interface InfoDialogProps {
   classes?: ClassRow[];
   /** Email of the user the task is assigned to (or current user for v2.6). */
   assigneeEmail?: string | null;
+  /**
+   * Plan-19 follow-up — when supplied, the stats table aggregates over
+   * the WHOLE TASK (every asset/frame), not just the editor's open
+   * frame. Without this prop the dialog falls back to the in-memory
+   * ``useAnnotations`` store and only shows counts for the current
+   * asset (legacy behaviour).
+   */
+  taskId?: string;
 }
 
 interface ClassStatRow {
@@ -156,17 +166,40 @@ export function InfoDialog({
   totalAssets,
   classes,
   assigneeEmail,
+  taskId,
 }: InfoDialogProps) {
-  const byId = useAnnotations((s) => s.byId);
-  const { rows, totals } = useMemo(
-    () => aggregateAnnotationStats(byId, classes ?? []),
-    [byId, classes],
-  );
+  // Plan-19 follow-up — when ``taskId`` is provided the dialog renders
+  // task-wide stats by hitting the per-task list endpoint. The
+  // in-memory ``useAnnotations`` store remains as a no-network
+  // fallback so the legacy single-asset behaviour still works for any
+  // caller that never opts into a task scope.
+  const taskAnnotationsQ = useQuery({
+    queryKey: ["annotations", taskId, "info-dialog"],
+    queryFn: () => annotationsApi.listForTask(taskId as string),
+    enabled: open && !!taskId,
+    staleTime: 30_000,
+  });
+  const fallbackById = useAnnotations((s) => s.byId);
+  const { rows, totals } = useMemo(() => {
+    const dict: Record<string, AnnotationDraft> = taskId
+      ? (taskAnnotationsQ.data ?? []).reduce<Record<string, AnnotationDraft>>(
+          (acc, draft, idx) => {
+            const key = draft.tempId || draft.serverId || String(idx);
+            acc[key] = draft;
+            return acc;
+          },
+          {},
+        )
+      : fallbackById;
+    return aggregateAnnotationStats(dict, classes ?? []);
+  }, [taskId, taskAnnotationsQ.data, fallbackById, classes]);
   const totalAnnotations = totals.total;
   const overviewAssets =
     typeof totalAssets === "number" ? totalAssets : asset ? 1 : 0;
   const createdAt = task?.created_at ?? asset?.asset?.created_at ?? null;
   const assignee = assigneeEmail ?? "Nobody";
+  const statsLoading = !!taskId && taskAnnotationsQ.isLoading;
+  const statsError = !!taskId && !!taskAnnotationsQ.error;
 
   if (!open) return null;
   return (
@@ -238,7 +271,37 @@ export function InfoDialog({
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.length === 0 ? (
+                  {statsLoading ? (
+                    <tr>
+                      <td
+                        colSpan={7}
+                        className="px-3 py-6 text-center text-[color:var(--text-tertiary)] italic"
+                        data-testid="info-stats-loading"
+                      >
+                        Loading…
+                      </td>
+                    </tr>
+                  ) : statsError ? (
+                    <tr>
+                      <td
+                        colSpan={7}
+                        className="px-3 py-6 text-center text-[color:var(--text-tertiary)]"
+                        data-testid="info-stats-error"
+                      >
+                        <span className="block text-[color:var(--danger)] mb-1.5">
+                          Failed to load
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => taskAnnotationsQ.refetch()}
+                          data-testid="info-stats-retry"
+                        >
+                          Retry
+                        </Button>
+                      </td>
+                    </tr>
+                  ) : rows.length === 0 ? (
                     <tr>
                       <td
                         colSpan={7}

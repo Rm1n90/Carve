@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { weightsApi, type UploadWeightInput, type Weight } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
@@ -154,49 +155,50 @@ export function UploadWeightDialog({ open, onOpenChange, defaultProjectId }: Pro
             <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
               Task kind
             </span>
-            <select
-              aria-label="Task kind"
+            <Select
               value={taskKind}
-              onChange={(e) =>
-                setTaskKind(e.target.value as UploadWeightInput["task_kind"])
+              onValueChange={(v) =>
+                setTaskKind(v as UploadWeightInput["task_kind"])
               }
-              className={cn(
-                "h-9 px-2 rounded-[var(--radius-sm)]",
-                "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
-                "text-[13px] tracking-tight",
-                "focus:outline-none focus:border-[var(--accent)]",
-              )}
             >
-              {TASK_KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {k}
-                </option>
-              ))}
-            </select>
+              <Select.Trigger aria-label="Task kind" className="h-9 w-full">
+                <Select.Value />
+              </Select.Trigger>
+              <Select.Content>
+                {TASK_KINDS.map((k) => (
+                  <Select.Item key={k} value={k}>
+                    {k}
+                  </Select.Item>
+                ))}
+              </Select.Content>
+            </Select>
           </label>
 
           <label className="grid gap-1.5">
             <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
               Project
             </span>
-            <select
-              aria-label="Project"
-              value={effectiveProjectId}
-              onChange={(e) => setProjectId(e.target.value)}
-              className={cn(
-                "h-9 px-2 rounded-[var(--radius-sm)]",
-                "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
-                "text-[13px] tracking-tight",
-                "focus:outline-none focus:border-[var(--accent)]",
-              )}
-            >
-              {projects.length === 0 && <option value="">No projects yet</option>}
-              {projects.map((p: Project) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+            {projects.length === 0 ? (
+              <p className="text-[12.5px] text-[color:var(--text-tertiary)]">
+                No projects yet
+              </p>
+            ) : (
+              <Select
+                value={effectiveProjectId}
+                onValueChange={setProjectId}
+              >
+                <Select.Trigger aria-label="Project" className="h-9 w-full">
+                  <Select.Value />
+                </Select.Trigger>
+                <Select.Content>
+                  {projects.map((p: Project) => (
+                    <Select.Item key={p.id} value={p.id}>
+                      {p.name}
+                    </Select.Item>
+                  ))}
+                </Select.Content>
+              </Select>
+            )}
           </label>
 
           {errorMsg && (

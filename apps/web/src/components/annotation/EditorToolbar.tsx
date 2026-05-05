@@ -46,8 +46,10 @@ import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
 import { useTool, type ToolName, type VisibilityFlags } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { Kbd } from "@/components/ui/Kbd";
+import { Select } from "@/components/ui/Select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/Popover";
 import { SaveIndicator } from "@/components/annotation/SaveIndicator";
 import {
@@ -61,6 +63,7 @@ import {
 } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
+import { MOD_LABEL } from "@/lib/platform";
 import {
   newAnnotationIdsSince,
   runBatchTaskPostProcess,
@@ -1195,35 +1198,33 @@ const YoloPredictButton = forwardRef<
                       >
                         #{s.weight_class_idx} {s.weight_class_name}
                       </span>
-                      <select
-                        value={value}
-                        onChange={(e) => {
-                          const next = e.target.value;
+                      <Select
+                        value={value || OVERRIDE_SKIP}
+                        onValueChange={(next) => {
                           setOverrides((prev) => ({
                             ...prev,
-                            [key]:
-                              next === OVERRIDE_SKIP
-                                ? null
-                                : next === ""
-                                  ? null
-                                  : next,
+                            [key]: next === OVERRIDE_SKIP ? null : next,
                           }));
                         }}
-                        data-testid={`yolo-class-overrides-select-${s.weight_class_idx}`}
-                        aria-label={`Project class for ${s.weight_class_name}`}
-                        className={cn(
-                          "h-7 px-2 rounded-[var(--radius-xs)]",
-                          "border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
-                          "text-[11.5px] outline-none focus:border-[var(--accent)]",
-                        )}
                       >
-                        <option value={OVERRIDE_SKIP}>None / skip</option>
-                        {s.alternatives.map((alt) => (
-                          <option key={alt.id} value={alt.id}>
-                            {alt.name}
-                          </option>
-                        ))}
-                      </select>
+                        <Select.Trigger
+                          data-testid={`yolo-class-overrides-select-${s.weight_class_idx}`}
+                          aria-label={`Project class for ${s.weight_class_name}`}
+                          className="h-7 w-full text-[11.5px]"
+                        >
+                          <Select.Value />
+                        </Select.Trigger>
+                        <Select.Content>
+                          <Select.Item value={OVERRIDE_SKIP}>
+                            None / skip
+                          </Select.Item>
+                          {s.alternatives.map((alt) => (
+                            <Select.Item key={alt.id} value={alt.id}>
+                              {alt.name}
+                            </Select.Item>
+                          ))}
+                        </Select.Content>
+                      </Select>
                     </label>
                   );
                 })}
@@ -1285,11 +1286,11 @@ const YoloPredictButton = forwardRef<
           />
         </div>
         <label className="flex items-center gap-2 px-2 py-2 text-[12px] text-[color:var(--text-secondary)]">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={overwrite}
             onChange={(e) => setOverwrite(e.target.checked)}
-            className="h-3 w-3 accent-[var(--accent)]"
+            className="h-3 w-3"
+            boxClassName="h-3 w-3"
           />
           Overwrite existing annotations
         </label>
@@ -1303,12 +1304,12 @@ const YoloPredictButton = forwardRef<
         {samPostLabel && (
           <div className="grid gap-1.5 px-2 pb-2">
             <label className="flex items-center gap-2 text-[12px] text-[color:var(--text-secondary)]">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={samPost}
                 onChange={(e) => setSamPost(e.target.checked)}
                 data-testid="yolo-sam-post-toggle"
-                className="h-3 w-3 accent-[var(--accent)]"
+                className="h-3 w-3"
+                boxClassName="h-3 w-3"
               />
               <span className="flex-1">
                 {samPostLabel}
@@ -1401,7 +1402,7 @@ const YoloPredictButton = forwardRef<
               data-testid="yolo-predict-shortcut-hint"
               className="text-[10.5px] text-[color:var(--text-tertiary)] mr-auto font-mono tabular-nums"
             >
-              ⌘+Enter to predict
+              {MOD_LABEL}+Enter to predict
             </span>
           )}
           <button
@@ -2307,7 +2308,7 @@ function UndoRedoControls({ onUndo, onRedo }: { onUndo?: () => void; onRedo?: ()
         content={
           <span className="flex items-center gap-1.5">
             Undo
-            <Kbd className="bg-white/10 text-white border-white/20">⌘Z</Kbd>
+            <Kbd className="bg-white/10 text-white border-white/20">{MOD_LABEL}Z</Kbd>
           </span>
         }
       >
@@ -2331,7 +2332,7 @@ function UndoRedoControls({ onUndo, onRedo }: { onUndo?: () => void; onRedo?: ()
         content={
           <span className="flex items-center gap-1.5">
             Redo
-            <Kbd className="bg-white/10 text-white border-white/20">⌘⇧Z</Kbd>
+            <Kbd className="bg-white/10 text-white border-white/20">{MOD_LABEL}⇧Z</Kbd>
           </span>
         }
       >
@@ -2809,7 +2810,7 @@ export function EditorToolbar({
         content={
           <span className="flex items-center gap-1.5">
             Save now
-            <Kbd className="bg-white/10 text-white border-white/20">⌘ S</Kbd>
+            <Kbd className="bg-white/10 text-white border-white/20">{MOD_LABEL} S</Kbd>
           </span>
         }
       >

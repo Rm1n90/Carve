@@ -14,6 +14,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
@@ -205,7 +206,7 @@ export function FrameExtractDialog({
             >
               {strategy === "every_nth" ? "N (step):" : "K (total frames):"}
             </label>
-            <input
+            <Input
               id="frame-extract-n"
               type="number"
               min={1}
@@ -215,12 +216,7 @@ export function FrameExtractDialog({
                 setNValue(Math.max(1, parseInt(e.target.value, 10) || 1))
               }
               data-testid="frame-extract-n"
-              className={cn(
-                "h-8 w-24 px-2 rounded-[var(--radius-xs)]",
-                "bg-[var(--bg-sunken)] text-[13px] text-[color:var(--text-primary)]",
-                "border border-[var(--border-subtle)]",
-                "focus:outline-none focus:border-[var(--accent)]",
-              )}
+              className="w-24"
             />
           </div>
         )}

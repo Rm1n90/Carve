@@ -1,6 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { Search, X, Plus } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { Input, Select } from "@/components/ui";
 
 /**
  * Plan 14 Phase 8 Task 2 — sticky toolbar for the project detail's
@@ -50,23 +51,15 @@ export function TasksToolbar({
     >
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-[200px] flex-1">
-          <Search
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[color:var(--text-tertiary)] pointer-events-none"
-            aria-hidden
-          />
-          <input
+          <Input
             type="search"
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             placeholder="Search tasks…"
             data-testid="tasks-toolbar-search"
             aria-label="Search tasks"
-            className={cn(
-              "w-full h-8 pl-8 pr-8 rounded-[var(--radius-sm)]",
-              "bg-[var(--bg-elev)] text-[color:var(--text-primary)] placeholder:text-[color:var(--text-tertiary)]",
-              "border border-[var(--border-subtle)] text-[12.5px]",
-              "focus:outline-none focus:border-[var(--accent)]",
-            )}
+            leftIcon={<Search className="h-3.5 w-3.5" aria-hidden />}
+            className={query ? "pr-9" : undefined}
           />
           {query && (
             <button
@@ -81,24 +74,24 @@ export function TasksToolbar({
           )}
         </div>
 
-        <select
+        <Select
           value={sort}
-          onChange={(e) => onSortChange(e.target.value as TaskSort)}
-          data-testid="tasks-toolbar-sort"
-          aria-label="Sort tasks"
-          className={cn(
-            "h-8 px-2 rounded-[var(--radius-sm)]",
-            "bg-[var(--bg-elev)] text-[color:var(--text-primary)]",
-            "border border-[var(--border-subtle)] text-[12px]",
-            "focus:outline-none focus:border-[var(--accent)]",
-          )}
+          onValueChange={(v) => onSortChange(v as TaskSort)}
         >
-          {SORT_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+          <Select.Trigger
+            aria-label="Sort tasks"
+            data-testid="tasks-toolbar-sort"
+          >
+            <Select.Value />
+          </Select.Trigger>
+          <Select.Content>
+            {SORT_OPTIONS.map((o) => (
+              <Select.Item key={o.value} value={o.value}>
+                {o.label}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select>
 
         <button
           type="button"

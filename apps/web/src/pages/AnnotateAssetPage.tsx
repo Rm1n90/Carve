@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import * as Tabs from "@radix-ui/react-tabs";
+import { Tabs } from "@/components/ui/Tabs";
+import { Input } from "@/components/ui/Input";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   AlertCircle,
@@ -41,6 +42,7 @@ import {
   DialogTitle,
 } from "@/components/ui/Dialog";
 import { annotationsApi, type BatchPayload } from "@/api/annotations";
+import { bulkConvertSelectedToBboxWithToast } from "@/lib/bulkConvert";
 import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
@@ -710,6 +712,24 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         }
         return;
       }
+      // Plan-19 follow-up — `C` (no modifier) bulk-converts every
+      // selected polygon / mask annotation to a bbox. Mirrors the
+      // right-click "Convert → BBox" item so users can flip whole
+      // selections in one keystroke. The helper is shared with the
+      // context menu so toast wording stays in sync.
+      if (!meta && !e.shiftKey && k === "c") {
+        const sel = useAnnotations.getState().selectedIds;
+        if (sel.length === 0) return;
+        const drafts = useAnnotations.getState().byId;
+        const eligible = sel.filter((id) => {
+          const d = drafts[id];
+          return !!d && (d.kind === "polygon" || d.kind === "mask");
+        });
+        if (eligible.length === 0) return;
+        e.preventDefault();
+        bulkConvertSelectedToBboxWithToast(eligible);
+        return;
+      }
       // Z-order: Cmd+Shift+] / Cmd+] / Cmd+[ / Cmd+Shift+[
       if (meta && (e.key === "]" || e.key === "[")) {
         const sel = useAnnotations.getState().selectedId;
@@ -1165,53 +1185,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 "border-y-0 border-r-0 border-l border-[var(--glass-border)]",
               )}
             >
-              <Tabs.Root defaultValue="classes" className="relative flex-1 min-h-0 flex flex-col">
-                <Tabs.List
-                  aria-label="Side panel"
-                  className="flex shrink-0 border-b border-[var(--glass-border)] px-2 pt-2 gap-1 bg-transparent"
-                >
-                  <Tabs.Trigger
-                    value="classes"
-                    className={cn(
-                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-full",
-                      "text-[color:var(--text-tertiary)]",
-                      "hover:text-[color:var(--text-primary)] hover:bg-[var(--glass-bg-subtle)]",
-                      "data-[state=active]:text-[color:var(--text-primary)]",
-                      "data-[state=active]:bg-[var(--glass-bg-subtle)]",
-                      "data-[state=active]:shadow-[inset_0_1px_0_var(--glass-highlight),0_0_0_1px_var(--glass-border)]",
-                      "transition-all duration-150",
-                    )}
-                  >
-                    Classes
-                  </Tabs.Trigger>
-                  <Tabs.Trigger
-                    value="objects"
-                    className={cn(
-                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-full",
-                      "text-[color:var(--text-tertiary)]",
-                      "hover:text-[color:var(--text-primary)] hover:bg-[var(--glass-bg-subtle)]",
-                      "data-[state=active]:text-[color:var(--text-primary)]",
-                      "data-[state=active]:bg-[var(--glass-bg-subtle)]",
-                      "data-[state=active]:shadow-[inset_0_1px_0_var(--glass-highlight),0_0_0_1px_var(--glass-border)]",
-                      "transition-all duration-150",
-                    )}
-                  >
-                    Objects
-                  </Tabs.Trigger>
-                  <Tabs.Trigger
-                    value="review"
-                    className={cn(
-                      "px-2.5 py-1.5 text-[12px] tracking-tight rounded-full",
-                      "text-[color:var(--text-tertiary)]",
-                      "hover:text-[color:var(--text-primary)] hover:bg-[var(--glass-bg-subtle)]",
-                      "data-[state=active]:text-[color:var(--text-primary)]",
-                      "data-[state=active]:bg-[var(--glass-bg-subtle)]",
-                      "data-[state=active]:shadow-[inset_0_1px_0_var(--glass-highlight),0_0_0_1px_var(--glass-border)]",
-                      "transition-all duration-150",
-                    )}
-                  >
-                    Review
-                  </Tabs.Trigger>
+              <Tabs
+                defaultValue="classes"
+                variant="segment"
+                className="relative flex-1 min-h-0 flex flex-col"
+              >
+                <Tabs.List aria-label="Side panel" className="mx-2 mt-2 self-start">
+                  <Tabs.Trigger value="classes">Classes</Tabs.Trigger>
+                  <Tabs.Trigger value="objects">Objects</Tabs.Trigger>
+                  <Tabs.Trigger value="review">Review</Tabs.Trigger>
                 </Tabs.List>
                 <Tabs.Content
                   value="classes"
@@ -1261,7 +1243,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                     resolveReviewerName={resolveReviewerName}
                   />
                 </Tabs.Content>
-              </Tabs.Root>
+              </Tabs>
               <AppearancePanel />
               {/* v3.5 Phase E — SAM video tracking panel. Renders below
                   the tabs (i.e. doesn't replace the existing right rail)
@@ -1322,10 +1304,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       <InfoDialog
         open={infoOpen}
         onOpenChange={setInfoOpen}
+        task={currentTask}
         asset={assetQ.data}
         totalAssets={taskAssets.length}
         classes={classesQ.data ?? []}
         assigneeEmail={useAuth.getState().user?.email ?? null}
+        taskId={taskId}
       />
 
       <Dialog
@@ -1353,20 +1337,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
               setRenameDraft("");
             }}
           >
-            <input
+            <Input
               type="text"
               autoFocus
               data-testid="rename-class-input"
               aria-label="Class name"
               value={renameDraft}
               onChange={(e) => setRenameDraft(e.target.value)}
-              className={cn(
-                "w-full h-9 px-2.5 rounded-[var(--radius-sm)]",
-                "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
-                "border border-[var(--border-subtle)]",
-                "outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
-                "text-[13px]",
-              )}
             />
             <DialogFooter>
               <button
@@ -1495,7 +1472,7 @@ function AssetNavControls({
         <ChevronLeft className="h-4 w-4" />
       </IconButton>
       {editing ? (
-        <input
+        <Input
           ref={inputRef}
           type="number"
           min={1}

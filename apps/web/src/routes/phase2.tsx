@@ -9,6 +9,7 @@ import {
   SettingsWorkspacePage,
 } from "@/pages/SettingsPages";
 import { ModelsYoloPage, ModelsSamPage, TrashPage } from "@/pages/Phase2Pages";
+import { AboutPage } from "@/pages/AboutPage";
 
 // ---------------------------- Settings family ----------------------------
 
@@ -92,6 +93,18 @@ export const trashRoute = createRoute({
   component: () => (
     <RequireAuth>
       <TrashPage />
+    </RequireAuth>
+  ),
+});
+
+// ------------------------------- About -------------------------------
+
+export const aboutRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/about",
+  component: () => (
+    <RequireAuth>
+      <AboutPage />
     </RequireAuth>
   ),
 });

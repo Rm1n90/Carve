@@ -92,23 +92,15 @@ export function NewTaskDialog({
           </Select.Content>
         </Select>
       </div>
-      <div className="grid gap-1">
-        <label
-          htmlFor="new-task-due-date"
-          className="text-[10.5px] uppercase tracking-[0.08em] text-tertiary font-medium"
-        >
-          Due date
-        </label>
-        <input
-          id="new-task-due-date"
-          data-testid="new-task-due-date"
-          type="date"
-          value={dueDate}
-          onChange={(e) => setDueDate(e.target.value)}
-          className="h-9 px-2.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] text-[12.5px] text-[color:var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40 focus:border-[var(--accent)]"
-          aria-label="Task due date (optional)"
-        />
-      </div>
+      <Input
+        id="new-task-due-date"
+        data-testid="new-task-due-date"
+        type="date"
+        label="Due date"
+        value={dueDate}
+        onChange={(e) => setDueDate(e.target.value)}
+        aria-label="Task due date (optional)"
+      />
       <Button
         type="submit"
         variant="primary"

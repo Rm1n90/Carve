@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import {
   isFilterGroup,
   makeEmptyGroup,
@@ -215,12 +216,10 @@ function RuleRow({ rule, path, onChange, onRemove }: RuleRowProps) {
         Not
       </button>
 
-      <select
-        aria-label="Field"
-        data-testid="filter-rule-field"
+      <Select
         value={rule.field}
-        onChange={(e) => {
-          const nextField = e.target.value as FilterField;
+        onValueChange={(v) => {
+          const nextField = v as FilterField;
           // When swapping from numeric → string (or vice versa), reset
           // the value so the input control matches the field's type.
           const wasNumeric = NUMERIC_FIELDS.has(rule.field);
@@ -228,30 +227,38 @@ function RuleRow({ rule, path, onChange, onRemove }: RuleRowProps) {
           const nextValue = wasNumeric === isNowNumeric ? rule.value : "";
           onChange(path, { ...rule, field: nextField, value: nextValue });
         }}
-        className="h-7 rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] px-2 text-[12px] text-[color:var(--text-primary)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
       >
-        {FIELD_OPTIONS.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
+        <Select.Trigger aria-label="Field" data-testid="filter-rule-field">
+          <Select.Value />
+        </Select.Trigger>
+        <Select.Content>
+          {FIELD_OPTIONS.map((o) => (
+            <Select.Item key={o.value} value={o.value}>
+              {o.label}
+            </Select.Item>
+          ))}
+        </Select.Content>
+      </Select>
 
-      <select
-        aria-label="Operator"
-        data-testid="filter-rule-op"
+      <Select
         value={rule.op}
-        onChange={(e) =>
-          onChange(path, { ...rule, op: e.target.value as FilterOp })
-        }
-        className="h-7 w-[60px] rounded-[var(--radius-sm)] border border-[var(--glass-border)] bg-[var(--glass-bg-subtle)] px-2 text-[12px] text-[color:var(--text-primary)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+        onValueChange={(v) => onChange(path, { ...rule, op: v as FilterOp })}
       >
-        {OP_OPTIONS.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
+        <Select.Trigger
+          aria-label="Operator"
+          data-testid="filter-rule-op"
+          className="w-[68px]"
+        >
+          <Select.Value />
+        </Select.Trigger>
+        <Select.Content>
+          {OP_OPTIONS.map((o) => (
+            <Select.Item key={o.value} value={o.value}>
+              {o.label}
+            </Select.Item>
+          ))}
+        </Select.Content>
+      </Select>
 
       <Input
         aria-label="Value"

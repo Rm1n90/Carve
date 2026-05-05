@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/Dialog";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
 import { formatRelative } from "@/lib/relativeTime";
@@ -109,26 +110,23 @@ function CompareDialog({ open, onOpenChange, projectId, a, b }: CompareDialogPro
             })}
           </div>
 
-          <div role="tablist" className="flex gap-1 border-b border-[var(--border-subtle)]">
-            {(["by_class", "by_image"] as const).map((t) => (
-              <button
-                key={t}
-                role="tab"
-                type="button"
-                aria-selected={tab === t}
-                data-testid={`dataset-compare-tab-${t}`}
-                onClick={() => setTab(t)}
-                className={cn(
-                  "px-3 py-1.5 text-[12.5px] tracking-tight border-b-2",
-                  tab === t
-                    ? "border-[var(--accent)] text-[color:var(--text-primary)]"
-                    : "border-transparent text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]",
-                )}
-              >
-                {t === "by_class" ? "By class" : "By image"}
-              </button>
-            ))}
-          </div>
+          <Tabs
+            value={tab}
+            onValueChange={(v) => setTab(v as typeof tab)}
+            variant="underline"
+          >
+            <Tabs.List aria-label="Diff view">
+              {(["by_class", "by_image"] as const).map((t) => (
+                <Tabs.Trigger
+                  key={t}
+                  value={t}
+                  data-testid={`dataset-compare-tab-${t}`}
+                >
+                  {t === "by_class" ? "By class" : "By image"}
+                </Tabs.Trigger>
+              ))}
+            </Tabs.List>
+          </Tabs>
 
           {q.isLoading && (
             <p className="text-[12.5px] text-[color:var(--text-tertiary)]">

@@ -15,6 +15,8 @@ import {
   type YoloMode,
 } from "@/api/exports";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
 interface Props {
@@ -260,7 +262,7 @@ export function ExportDialog({ projectId, taskId }: Props) {
           {(["train", "val", "test"] as const).map((k) => (
             <label key={k} className="flex items-center gap-1.5">
               <span className="text-tertiary text-[11px] uppercase tracking-wide">{k}</span>
-              <input
+              <Input
                 type="number"
                 step="0.1"
                 min={0}
@@ -268,7 +270,7 @@ export function ExportDialog({ projectId, taskId }: Props) {
                 value={splits[k]}
                 onChange={(e) => setSplits((p) => ({ ...p, [k]: Number(e.target.value) }))}
                 aria-label={`split-${k}`}
-                className={numInput}
+                className="w-20"
               />
             </label>
           ))}
@@ -320,15 +322,16 @@ export function ExportDialog({ projectId, taskId }: Props) {
         <div className="grid gap-2">
           {/* v3.0 B10 — class density: filter input + count above the scroll host. */}
           <div className="flex items-center gap-3">
-            <input
-              type="search"
-              placeholder="Filter classes…"
-              value={classFilter}
-              onChange={(e) => setClassFilter(e.target.value)}
-              aria-label="filter-classes"
-              data-testid="export-class-filter"
-              className="h-8 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2.5 text-[12px] text-primary placeholder:text-tertiary focus:outline-none focus:border-[var(--accent)]"
-            />
+            <div className="flex-1">
+              <Input
+                type="search"
+                placeholder="Filter classes…"
+                value={classFilter}
+                onChange={(e) => setClassFilter(e.target.value)}
+                aria-label="filter-classes"
+                data-testid="export-class-filter"
+              />
+            </div>
             <span
               className="font-mono-data text-[11px] text-tertiary whitespace-nowrap"
               data-testid="export-class-count"
@@ -369,7 +372,7 @@ export function ExportDialog({ projectId, taskId }: Props) {
                         <span className="text-primary tracking-tight">{c.name}</span>
                       </td>
                       <td className="px-3 py-2">
-                        <input
+                        <Input
                           type="number"
                           // v3.7 Issue 7: clamp to 0 so negative typing
                           // never produces a negative class id, which the
@@ -383,26 +386,23 @@ export function ExportDialog({ projectId, taskId }: Props) {
                             updateRow(c.id, { export_id: v });
                           }}
                           aria-label={`export-id-${c.id}`}
-                          className={numInput}
+                          className="w-24"
                         />
                       </td>
                       <td className="px-3 py-2">
-                        <input
+                        <Input
                           type="text"
                           value={row.name}
                           disabled={row.skip}
                           onChange={(e) => updateRow(c.id, { name: e.target.value })}
                           aria-label={`export-name-${c.id}`}
-                          className={textInput}
                         />
                       </td>
                       <td className="px-3 py-2">
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           checked={row.skip}
                           onChange={(e) => updateRow(c.id, { skip: e.target.checked })}
                           aria-label={`skip-${c.id}`}
-                          className="h-4 w-4 accent-[var(--accent)]"
                         />
                       </td>
                     </tr>

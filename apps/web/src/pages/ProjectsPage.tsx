@@ -86,7 +86,7 @@ export function ProjectsPage() {
   // grid can react to the same values.
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
-  const [sort, setSort] = useState<ProjectSort>("name-asc");
+  const [sort, setSort] = useState<ProjectSort>("created-desc");
   const [filter, setFilter] = useState<ProjectFilter>("all");
   const [view, setView] = useState<ProjectView>("cards");
 
