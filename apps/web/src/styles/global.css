@@ -827,3 +827,17 @@ select:not([data-radix-select-trigger]):not([data-no-default-style]) option {
   letter-spacing: -0.1px;
   line-height: 1.25;
 }
+
+/* DESIGN.md §3 — "No ALL-CAPS labels or kickers." The repository
+   used to ship a Tailwind ``uppercase`` modifier on dozens of
+   small-mono kickers (stats cards, settings overview, project hero
+   eyebrows, etc.). Rather than hand-edit every callsite, this rule
+   neutralises the uppercase transform on the canonical kicker
+   pattern, which is reliably .font-mono in this codebase. The few
+   uppercase usages that *aren't* kickers (data-table column headers
+   in DatasetsPage and ClassesEditor) use sans-serif, so they are
+   not caught by this rule. */
+.font-mono.uppercase {
+  text-transform: none;
+  letter-spacing: 0.04em;
+}

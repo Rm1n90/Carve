@@ -171,7 +171,7 @@ export function TopBar({ crumbs, breadcrumbSegments, rightAction }: TopBarProps)
                 <p className="text-[12.5px] tracking-tight text-[color:var(--text-primary)] truncate">
                   {user.email}
                 </p>
-                <p className="text-[10.5px] uppercase tracking-wider text-[color:var(--text-tertiary)]">
+                <p className="text-[10.5px] tracking-tight text-[color:var(--text-tertiary)]">
                   {user.role}
                 </p>
               </div>
@@ -189,7 +189,7 @@ export function TopBar({ crumbs, breadcrumbSegments, rightAction }: TopBarProps)
               </DropdownMenu.Item>
               <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
               <DropdownMenu.Label
-                className="px-2 pt-1.5 pb-1 text-[10.5px] uppercase tracking-wider text-[color:var(--text-tertiary)]"
+                className="px-2 pt-1.5 pb-1 text-[10.5px] tracking-tight text-[color:var(--text-tertiary)]"
               >
                 Theme
               </DropdownMenu.Label>
