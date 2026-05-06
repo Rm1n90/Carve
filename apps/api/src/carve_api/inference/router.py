@@ -1086,7 +1086,7 @@ class YoloeVisualIn(BaseModel):
     # v3.24 — preferred field. List of distinct source assets, each
     # with its own class-keyed bbox groups.
     sources: list[YoloeVisualSourceIn] | None = Field(
-        default=None, max_length=32,
+        default=None, min_length=1, max_length=32,
     )
     # Legacy single-source fields. Deprecated; kept so older clients
     # don't break. The endpoint converts them into a single-entry
