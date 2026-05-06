@@ -1025,7 +1025,20 @@ class YoloeTextIn(BaseModel):
 
 
 class YoloeVisualIn(BaseModel):
-    refer_b64: str = Field(..., min_length=1)
+    """Visual-prompt body.
+
+    ``refer_b64`` is optional. When omitted (or empty), the api uses
+    the target asset's own bytes as the reference image, matching the
+    Ultralytics "same image as reference" pattern and saving the
+    frontend a MinIO round-trip.
+    """
+
+    refer_b64: str | None = Field(default=None)
+    # Alternative to refer_b64: caller specifies the reference asset by
+    # id and the api fetches its bytes from MinIO. Cheaper than the
+    # frontend round-tripping ~MB of base64 over the wire. When both
+    # are unset, the target asset itself serves as the reference.
+    refer_asset_id: uuid.UUID | None = None
     bboxes: list[list[float]] = Field(..., min_length=1, max_length=64)
     cls_indices: list[int] = Field(default_factory=list)
     class_names: list[str] = Field(default_factory=list, max_length=64)
@@ -1152,10 +1165,25 @@ def yoloe_visual_predict_endpoint(
         raise HTTPException(status_code=422, detail="bboxes_cls_length_mismatch")
     cls_indices = payload.cls_indices or [0] * len(payload.bboxes)
 
-    try:
-        refer_bytes = _b64.b64decode(payload.refer_b64)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="bad_refer_b64") from exc
+    # Reference image resolution order:
+    #   1. ``refer_b64`` if explicitly supplied (legacy / advanced)
+    #   2. ``refer_asset_id`` if supplied — fetch from MinIO
+    #   3. otherwise omit; the apply layer reuses the target bytes
+    refer_bytes: bytes | None = None
+    if payload.refer_b64:
+        try:
+            refer_bytes = _b64.b64decode(payload.refer_b64)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail="bad_refer_b64") from exc
+    elif payload.refer_asset_id is not None:
+        refer_asset = db.get(Asset, payload.refer_asset_id)
+        if refer_asset is None:
+            raise HTTPException(status_code=404, detail="refer_asset_not_found")
+        try:
+            require_visible_task(db, user, refer_asset.task_id)
+        except AppError as exc:
+            raise _http(exc) from exc
+        refer_bytes = _resolve_yoloe_asset_bytes(refer_asset, None)
 
     image_bytes = _resolve_yoloe_asset_bytes(asset, payload.frame_id)
     try:

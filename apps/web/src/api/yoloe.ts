@@ -50,7 +50,11 @@ export interface YoloeTextRequest {
 }
 
 export interface YoloeVisualRequest {
-  refer_b64: string;
+  /** Optional separate reference image as base64. */
+  refer_b64?: string;
+  /** Alternative to refer_b64: id of an asset whose bytes should be
+   *  used as the reference image (the api fetches from MinIO). */
+  refer_asset_id?: string;
   bboxes: [number, number, number, number][];
   cls_indices?: number[];
   class_names?: string[];

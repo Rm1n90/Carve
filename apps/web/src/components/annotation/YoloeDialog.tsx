@@ -265,24 +265,6 @@ export function YoloeDialog({
     });
   }
 
-  // Convert a remote asset URL into a base64 string for the visual mode
-  // reference image. The api endpoint `/api/assets/{id}/image` returns
-  // the raw asset bytes.
-  async function fetchAssetAsBase64(url: string): Promise<string> {
-    const res = await fetch(url);
-    const blob = await res.blob();
-    return await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = String(reader.result || "");
-        const idx = result.indexOf(",");
-        resolve(idx >= 0 ? result.slice(idx + 1) : result);
-      };
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
-  }
-
   function buildVisualPayload(): {
     bboxes: [number, number, number, number][];
     cls_indices: number[];
@@ -342,11 +324,9 @@ export function YoloeDialog({
         if (mode === "visual") {
           const vp = buildVisualPayload();
           if (!vp) throw new Error("no_visual_reference");
-          const refer_b64 = await fetchAssetAsBase64(
-            `/api/assets/${assetId}/image`,
-          );
+          // refer_b64 omitted — api uses the target asset's bytes as
+          // the reference (Ultralytics "same image as reference").
           return await yoloeApi.visualPredict(assetId, {
-            refer_b64,
             bboxes: vp.bboxes,
             cls_indices: vp.cls_indices,
             class_names: vp.class_names,
@@ -373,11 +353,13 @@ export function YoloeDialog({
         const vp = buildVisualPayload();
         if (!vp) throw new Error("no_visual_reference");
         if (!assetId) throw new Error("no_asset");
-        const refer_b64 = await fetchAssetAsBase64(
-          `/api/assets/${assetId}/image`,
-        );
+        // The user picked the bbox(es) on the current asset, so that
+        // asset is the reference. Send only its id — the worker
+        // fetches its bytes from MinIO once before the loop. Each
+        // target asset in the batch is paired with this single
+        // reference, matching Ultralytics' refer_image semantics.
         params = {
-          refer_b64,
+          refer_asset_id: assetId,
           bboxes: vp.bboxes,
           cls_indices: vp.cls_indices,
           class_names: vp.class_names,

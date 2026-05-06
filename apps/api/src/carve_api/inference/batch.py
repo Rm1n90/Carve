@@ -538,8 +538,35 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                 iou=float(p.get("iou", 0.7)),
             )
         elif mode is YoloeMode.visual:
+            # Visual reference resolution (in order):
+            #   1. ``refer_b64`` — caller-supplied bytes (advanced).
+            #   2. ``refer_asset_id`` — worker fetches once before
+            #      the per-asset loop (preferred: small RQ payload).
+            #   3. neither — each target asset is its own reference.
+            from carve_api.assets.models import Asset as _A
+            from carve_api.inference.autoannotate import (
+                fetch_asset_bytes as _fetch,
+            )
+            refer_b64_raw = p.get("refer_b64") or ""
+            refer_bytes_payload: bytes | None = (
+                _b64.b64decode(refer_b64_raw) if refer_b64_raw else None
+            )
+            if refer_bytes_payload is None:
+                refer_asset_id = p.get("refer_asset_id")
+                if refer_asset_id:
+                    boot = get_session_factory()()
+                    try:
+                        ra = boot.get(_A, uuid.UUID(str(refer_asset_id)))
+                        if ra is None:
+                            finalize_progress(
+                                redis_client, payload.job_id, status="failed",
+                            )
+                            return {"ok": False, "error": "refer_asset_not_found"}
+                        refer_bytes_payload = _fetch(ra)
+                    finally:
+                        boot.close()
             typed_params = YoloeVisualParams(
-                refer_bytes=_b64.b64decode(p["refer_b64"]),
+                refer_bytes=refer_bytes_payload,
                 bboxes=[list(b) for b in p.get("bboxes") or []],
                 cls_indices=list(p.get("cls_indices") or []),
                 class_names=list(p.get("class_names") or []),

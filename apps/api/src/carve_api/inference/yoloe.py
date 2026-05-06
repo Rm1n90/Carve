@@ -108,11 +108,19 @@ class YoloeTextParams:
 
 @dataclass
 class YoloeVisualParams:
-    refer_bytes: bytes
+    """Visual-prompt config.
+
+    ``refer_bytes`` is optional: when ``None`` (the v1 single-asset
+    flow), the target asset's own bytes are used as the reference. This
+    matches the Ultralytics "use the same image as reference" pattern
+    and saves the frontend a round-trip through MinIO.
+    """
+
     bboxes: list[list[float]]
     cls_indices: list[int]
     class_names: list[str]
     annotate_as_class_id: uuid.UUID
+    refer_bytes: bytes | None = None
     conf: float = 0.25
     iou: float = 0.7
 
@@ -207,11 +215,20 @@ def predict_for_asset(
         assert isinstance(params, YoloeVisualParams)
         if not params.bboxes:
             raise YoloeBadRequest("bboxes_empty")
+        # When the caller didn't supply a separate reference image, use
+        # the target image as the reference. The model service's
+        # predict_visual now omits the ``refer_image`` kwarg when
+        # target == reference (Ultralytics canonical path).
+        refer_bytes = (
+            params.refer_bytes
+            if params.refer_bytes is not None
+            else image_bytes
+        )
         return _wrap_predict_errors(
             "yoloe/visual-predict",
             lambda: yoloe_visual_predict(
                 image_b64,
-                _b64(params.refer_bytes),
+                _b64(refer_bytes),
                 params.bboxes,
                 params.cls_indices,
                 params.class_names,
