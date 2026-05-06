@@ -216,6 +216,10 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET}
     volumes:
       - hf_cache:/root/.cache/huggingface
+      # v3.23 — YOLOE checkpoints. Bind-mount survives rebuilds and
+      # avoids baking ~150 MB into the image. Read-only so the runtime
+      # can't accidentally mutate the operator-supplied weights.
+      - ./weights/yoloe:/app/weights/yoloe:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health').read()"]
       interval: 10s

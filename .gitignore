@@ -46,3 +46,7 @@ Thumbs.db
 apps/web/ref-*.png
 .playwright-mcp/
 .claude/scheduled_tasks.lock
+
+# YOLOE checkpoints (v3.23) — bind-mounted into the model container at
+# /app/weights/yoloe. ~150 MB total, not appropriate to track in git.
+weights/yoloe/*.pt

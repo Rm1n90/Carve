@@ -45,7 +45,6 @@ export interface YoloeTextRequest {
   classes: string[];
   conf?: number;
   iou?: number;
-  min_confidence?: number;
   overwrite?: boolean;
   frame_id?: string | null;
 }
@@ -58,7 +57,6 @@ export interface YoloeVisualRequest {
   annotate_as_class_id: string;
   conf?: number;
   iou?: number;
-  min_confidence?: number;
   overwrite?: boolean;
   frame_id?: string | null;
 }
@@ -67,7 +65,6 @@ export interface YoloePromptFreeRequest {
   annotate_as_class_id?: string | null;
   conf?: number;
   iou?: number;
-  min_confidence?: number;
   max_detections?: number | null;
   overwrite?: boolean;
   frame_id?: string | null;
@@ -78,7 +75,6 @@ export interface YoloeBatchRequest {
   /** Mode-specific params; see api/inference/router.YoloeBatchIn. */
   params: Record<string, unknown>;
   overwrite?: boolean;
-  min_confidence?: number | null;
 }
 
 export interface YoloeBatchProgress {

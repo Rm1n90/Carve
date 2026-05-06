@@ -151,7 +151,6 @@ def predict_visual(
     if len(bboxes) != len(cls_indices):
         raise ValueError("bboxes_cls_length_mismatch")
     target = _bytes_to_rgb(target_bytes)
-    refer = _bytes_to_rgb(refer_bytes)
     visual_prompts = {
         "bboxes": np.asarray(bboxes, dtype=float),
         "cls": np.asarray(cls_indices, dtype=int),
@@ -159,15 +158,24 @@ def predict_visual(
     # Lazy-import so the module loads on dev boxes without ultralytics.
     from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor  # type: ignore[import-not-found]
 
-    results = model.predict(
-        target,
-        refer_image=refer,
-        visual_prompts=visual_prompts,
-        predictor=YOLOEVPSegPredictor,
-        conf=conf,
-        iou=iou,
-        verbose=False,
-    )[0]
+    # v3.23 fix — the Ultralytics example for "use the same image as
+    # reference" omits ``refer_image`` entirely. Passing the same array
+    # for both target and reference is functionally equivalent for
+    # current Ultralytics, but the canonical API is to omit the kwarg
+    # when there's no separate reference. Identity check first (the
+    # api wraps both calls around the same in-memory bytes); fall back
+    # to value equality.
+    same_image = (refer_bytes is target_bytes) or (refer_bytes == target_bytes)
+    kwargs: dict[str, Any] = {
+        "visual_prompts": visual_prompts,
+        "predictor": YOLOEVPSegPredictor,
+        "conf": conf,
+        "iou": iou,
+        "verbose": False,
+    }
+    if not same_image:
+        kwargs["refer_image"] = _bytes_to_rgb(refer_bytes)
+    results = model.predict(target, **kwargs)[0]
     if class_names:
         names_map = {i: str(n) for i, n in enumerate(class_names)}
         try:
@@ -185,7 +193,7 @@ def predict_prompt_free(
     iou: float = 0.7,
     max_detections: int | None = None,
 ) -> dict:
-    """Run YOLOE-PF over the image with its internal vocabulary.
+    """Run YOLOE-PF over the image with its 4585-class RAM++ vocabulary.
 
     ``max_detections`` caps the per-image output via Ultralytics'
     ``max_det`` arg. ``None`` keeps the default (300).
