@@ -442,6 +442,36 @@ def get_sam_auto_text_batch_progress(
     return read_progress(_redis_client_or_none(), job_id)
 
 
+# v3.22 — co-operative cancel for the YOLO auto-annotate batch.
+# Mirrors the SAM auto-text-batch cancel: the worker checks the Redis
+# hash's ``status`` between assets; setting it to ``canceled`` breaks
+# the loop after the in-flight asset commits. Already-saved
+# annotations are kept (per-asset commit pattern).
+@task_inference_router.post(
+    "/{task_id}/auto-annotate/{job_id}/cancel",
+    status_code=202,
+)
+def cancel_auto_annotate_batch(
+    task_id: uuid.UUID,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    client = _redis_client_or_none()
+    if client is None:
+        raise HTTPException(status_code=503, detail="redis_unavailable")
+    try:
+        from carve_api.inference.batch import progress_key
+        client.hset(progress_key(job_id), "status", "canceled")
+    except Exception:
+        raise HTTPException(status_code=502, detail="cancel_failed") from None
+    return {"job_id": job_id, "status": "canceled"}
+
+
 # v3.8 Phase 3.5 — co-operative cancellation. The worker reads the
 # Redis hash's ``status`` between assets; setting it to ``canceled``
 # breaks the loop after the in-flight asset commits. Already-saved

@@ -546,4 +546,20 @@ export const inferenceApi = {
           : {},
     };
   },
+
+  /**
+   * v3.22 — co-operative cancel for the YOLO auto-annotate batch.
+   * Mirrors ``samApi.autoTextBatchCancel``. The server sets the
+   * Redis hash status to "canceled"; the worker breaks its loop on
+   * the next iteration. Already-saved annotations are kept.
+   */
+  cancelBatchPredict: async (
+    taskId: string,
+    jobId: string,
+  ): Promise<{ job_id: string; status: string }> => {
+    const r = await api.post<{ job_id: string; status: string }>(
+      `/tasks/${taskId}/auto-annotate/${jobId}/cancel`,
+    );
+    return r.data;
+  },
 };

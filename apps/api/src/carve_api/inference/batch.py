@@ -698,8 +698,26 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
             "errors": [f"weight_load_failed_at_start: {type(exc).__name__}"],
         }
 
+    canceled = False
     try:
         for asset_id in asset_ids:
+            # v3.22 — co-operative cancel between assets, mirroring
+            # ``run_auto_text_batch``. The cancel endpoint sets the
+            # Redis hash status to "canceled"; we break here so the
+            # in-flight asset (already committed) is preserved.
+            if redis_client is not None:
+                try:
+                    cur_status = redis_client.hget(
+                        progress_key(payload.job_id), "status",
+                    )
+                    if cur_status is not None and isinstance(cur_status, bytes):
+                        cur_status = cur_status.decode("utf-8", errors="ignore")
+                    if cur_status == "canceled":
+                        canceled = True
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+
             original_name = asset_names_by_id.get(asset_id, str(asset_id))
             try:
                 asset_db = session.get(Asset, asset_id)
@@ -834,7 +852,12 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
     finally:
         session.close()
 
-    final_status = "completed" if counts["failed"] == 0 else "completed_with_errors"
+    if canceled:
+        final_status = "canceled"
+    elif counts["failed"] == 0:
+        final_status = "completed"
+    else:
+        final_status = "completed_with_errors"
     finalize_progress(redis_client, payload.job_id, status=final_status)
     log.info(
         "batch.done job_id=%s status=%s done=%d failed=%d total=%d "

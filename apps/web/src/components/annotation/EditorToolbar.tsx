@@ -75,6 +75,7 @@ import { cn } from "@/lib/cn";
 import { useOptionalConfirm } from "@/components/ui/ConfirmDialog";
 import { chordTokens } from "@/lib/shortcuts/chord";
 import { useShortcut, useShortcutHandler } from "@/state/shortcuts";
+import { useBackgroundJobs } from "@/state/backgroundJobs";
 
 const PREDICT_CONF_KEY = "carve.predict.minConfidence";
 const DEFAULT_PREDICT_CONFIDENCE = 0.4;
@@ -411,6 +412,22 @@ const YoloPredictButton = forwardRef<
   // flight. Renders the <BatchPredictProgressOverlay/> when set.
   const [batchJobId, setBatchJobId] = useState<string | null>(null);
   const qc = useQueryClient();
+
+  // v3.22 — re-open the YOLO batch overlay when the operator clicks
+  // "Expand" on a backgrounded job in the floating bar. The bar sets
+  // ``expandRequest`` in the global store; we restore the overlay
+  // here and unregister the job (the overlay now owns polling again).
+  const bgExpandRequest = useBackgroundJobs((s) => s.expandRequest);
+  const bgJobs = useBackgroundJobs((s) => s.jobs);
+  useEffect(() => {
+    if (!bgExpandRequest || !taskId) return;
+    const job = bgJobs[bgExpandRequest];
+    if (!job || job.taskId !== taskId) return;
+    if (job.kind !== "yolo-predict-batch") return;
+    setBatchJobId(bgExpandRequest);
+    useBackgroundJobs.getState().remove(bgExpandRequest);
+    useBackgroundJobs.getState().clearExpandRequest();
+  }, [bgExpandRequest, bgJobs, taskId]);
 
   // Persist confidence so the user's preferred threshold sticks across
   // sessions. Plain string-encoded float 0..1.
@@ -1463,6 +1480,31 @@ const YoloPredictButton = forwardRef<
           taskId={taskId}
           jobId={batchJobId}
           postProgress={batchPostProgress}
+          onBackground={() => {
+            // v3.22 — minimize without canceling. Register the running
+            // job in the global background store; the floating
+            // <BackgroundJobsBar /> takes over progress polling and
+            // exposes Cancel + Expand. Operator can re-open this
+            // overlay later via the Expand button (sets expandRequest
+            // in the store; the toolbar's effect below picks it up).
+            const cap = taskId;
+            const id = batchJobId;
+            useBackgroundJobs.getState().add({
+              jobId: id,
+              taskId: cap,
+              kind: "yolo-predict-batch",
+              label: "YOLO predict (batch)",
+              startedAt: Date.now(),
+              cancel: async () => {
+                await inferenceApi.cancelBatchPredict(cap, id);
+              },
+            });
+            setBatchJobId(null);
+            showToast("Running in background — progress shown bottom-right.", {
+              variant: "info",
+              duration: 3000,
+            });
+          }}
           onClose={(progress) => {
             // Plan-19 — task-wide SAM post-process for the batch path.
             // Fires only when the user opted in via ``samPost`` AND the
@@ -1596,11 +1638,14 @@ function BatchPredictProgressOverlay({
   taskId,
   jobId,
   onClose,
+  onBackground,
   postProgress,
 }: {
   taskId: string;
   jobId: string;
   onClose: (final: BatchPredictProgress | null) => void;
+  /** v3.22 — minimize to floating bar without canceling. */
+  onBackground?: () => void;
   postProgress?: { done: number; total: number; failed: number } | null;
 }) {
   // Plan-20.11 — was 1500 ms; users felt the bar was 'stuck' between
@@ -1782,13 +1827,39 @@ function BatchPredictProgressOverlay({
         </p>
 
         <div className="mt-6 flex items-center justify-end gap-2">
+          {onBackground && (
+            <button
+              type="button"
+              onClick={onBackground}
+              data-testid="batch-predict-background"
+              className={cn(
+                "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium",
+                "text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+              )}
+            >
+              Background
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => onClose(null)}
+            onClick={async () => {
+              // v3.22 — true cancel: hit the server endpoint so the
+              // worker breaks its loop, then unmount the overlay.
+              try {
+                await inferenceApi.cancelBatchPredict(taskId, jobId);
+                showToast("Cancellation requested.", {
+                  variant: "warning",
+                  duration: 2500,
+                });
+              } catch {
+                showToast("Failed to cancel.", { variant: "error" });
+              }
+              onClose(null);
+            }}
             data-testid="batch-predict-cancel"
             className={cn(
               "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px]",
-              "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+              "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--danger)]",
             )}
           >
             Cancel

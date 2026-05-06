@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, ChevronUp, Loader2, X, AlertTriangle } from "lucide-react";
 import { samApi } from "@/api/sam";
+import { inferenceApi } from "@/api/phase2";
 import { showToast } from "@/lib/toast";
 import {
   useBackgroundJobs,
@@ -63,6 +64,8 @@ function usePollJob(job: BackgroundJob): PollResult {
     switch (job.kind) {
       case "sam-auto-text":
         return () => samApi.autoTextBatchProgress(job.taskId, job.jobId);
+      case "yolo-predict-batch":
+        return () => inferenceApi.pollBatchProgress(job.taskId, job.jobId);
       // Other kinds wire their own endpoint when they integrate.
       default:
         return async () => null;
