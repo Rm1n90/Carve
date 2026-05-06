@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   Loader2,
   Plus,
+  RotateCcw,
   ScanEye,
   Sparkles,
   Type,
@@ -142,7 +143,40 @@ export function YoloeDialog({
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<YoloeMode>("text");
-  const [scope, setScope] = useState<Scope>("this");
+  // v3.24.3 — config (conf, iou, output_kind, overwrite, scope) is
+  // PER-MODE. Sliders / pills the user moves in Text mode no longer
+  // propagate to Visual or Prompt-Free, and vice versa. State carries
+  // one ``ModeConfig`` per mode plus a derived alias for the active
+  // mode so the JSX stays compact.
+  interface ModeConfig {
+    conf: number;
+    iou: number;
+    outputKind: YoloeOutputKind;
+    overwrite: boolean;
+    scope: Scope;
+  }
+  const DEFAULT_MODE_CONFIG: ModeConfig = {
+    conf: 0.25,
+    iou: 0.7,
+    outputKind: "bbox",
+    overwrite: false,
+    scope: "this",
+  };
+  const [configByMode, setConfigByMode] = useState<Record<YoloeMode, ModeConfig>>(
+    () => ({
+      text: { ...DEFAULT_MODE_CONFIG },
+      visual: { ...DEFAULT_MODE_CONFIG },
+      prompt_free: { ...DEFAULT_MODE_CONFIG },
+    }),
+  );
+  const activeConfig = configByMode[mode];
+  const { conf, iou, outputKind, overwrite, scope } = activeConfig;
+  function patchActiveConfig(patch: Partial<ModeConfig>) {
+    setConfigByMode((prev) => ({
+      ...prev,
+      [mode]: { ...prev[mode], ...patch },
+    }));
+  }
 
   // Text mode state — list of (project class, prompt) rows. Default
   // to a single empty row so the user immediately sees the shape of
@@ -184,15 +218,8 @@ export function YoloeDialog({
   const [pfClassId, setPfClassId] = useState<string>("");
   const [pfMaxDet, setPfMaxDet] = useState<number>(300);
 
-  // Common controls
-  const [conf, setConf] = useState<number>(0.25);
-  const [iou, setIou] = useState<number>(0.7);
-  const [overwrite, setOverwrite] = useState<boolean>(false);
-  // YOLOE-seg always emits BOTH a bbox and a mask polygon for every
-  // detection. Saving both produces stacked duplicates per object,
-  // so the user picks ONE shape to commit. Default to bboxes — most
-  // workflows annotate boxes first and refine to polygons later.
-  const [outputKind, setOutputKind] = useState<YoloeOutputKind>("bbox");
+  // (Common controls — conf/iou/overwrite/outputKind — moved into
+  // ``configByMode`` above so each prompt mode keeps its own values.)
 
   // Active batch tracking
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
@@ -654,6 +681,36 @@ export function YoloeDialog({
 
   function resetState() {
     setRunningJobId(null);
+  }
+
+  // v3.24.3 — Clear button. Resets ONLY the currently-active mode:
+  // its config (conf/iou/output_kind/overwrite/scope) plus any mode-
+  // specific selections (text rows, visual picks, prompt-free fields).
+  // Other modes' state is preserved so the user doesn't lose work
+  // they did in another tab.
+  function clearActiveMode() {
+    setConfigByMode((prev) => ({
+      ...prev,
+      [mode]: { ...DEFAULT_MODE_CONFIG },
+    }));
+    if (mode === "text") {
+      setTextRows([
+        { rid: `r-${Date.now()}`, classId: "", prompt: "" },
+      ]);
+    } else if (mode === "visual") {
+      setPicks({});
+      // Keep activeSourceAssetId — it's a UI navigation cursor, not
+      // user-entered data; resetting would just bounce them back to
+      // the current asset which they might have already moved away
+      // from intentionally.
+    } else {
+      setPfClassId("");
+      setPfMaxDet(300);
+    }
+    showToast(`${MODE_TABS.find((t) => t.id === mode)?.label ?? "Mode"} reset to defaults.`, {
+      variant: "info",
+      duration: 2200,
+    });
   }
 
   // Move an in-flight batch into the floating BackgroundJobsBar and
@@ -1223,12 +1280,10 @@ export function YoloeDialog({
                   </div>
                 )}
                 <p className="text-[10.5px] text-[color:var(--text-tertiary)]">
-                  Pick refs from one or more <em>image assets</em> in this
-                  task and assign each to a project class. YOLOE runs once
-                  per source–target pair and merges per-target detections via
-                  cross-source NMS, so refs sharing a class strengthen the
-                  signature without inflating the count. Video assets and
-                  per-frame picks aren't supported in this iteration.
+                  Pick references from any image asset in this task and assign
+                  each to a project class. Refs sharing a class strengthen
+                  that class's visual signature; YOLOE finds visually similar
+                  objects across the target asset(s).
                 </p>
               </div>
             )}
@@ -1282,7 +1337,7 @@ export function YoloeDialog({
                     <button
                       key={s}
                       type="button"
-                      onClick={() => !dis && setScope(s)}
+                      onClick={() => !dis && patchActiveConfig({ scope: s })}
                       disabled={dis}
                       data-testid={`yoloe-scope-${s}`}
                       title={
@@ -1317,7 +1372,9 @@ export function YoloeDialog({
                     max={1}
                     step={0.05}
                     value={conf}
-                    onChange={(e) => setConf(Number(e.target.value))}
+                    onChange={(e) =>
+                      patchActiveConfig({ conf: Number(e.target.value) })
+                    }
                     className="w-full"
                     data-testid="yoloe-conf"
                   />
@@ -1335,7 +1392,9 @@ export function YoloeDialog({
                     max={1}
                     step={0.05}
                     value={iou}
-                    onChange={(e) => setIou(Number(e.target.value))}
+                    onChange={(e) =>
+                      patchActiveConfig({ iou: Number(e.target.value) })
+                    }
                     className="w-full"
                     data-testid="yoloe-iou"
                   />
@@ -1361,7 +1420,7 @@ export function YoloeDialog({
                       <button
                         key={opt.v}
                         type="button"
-                        onClick={() => setOutputKind(opt.v)}
+                        onClick={() => patchActiveConfig({ outputKind: opt.v })}
                         data-testid={`yoloe-output-${opt.v}`}
                         className={cn(
                           "flex flex-col items-start gap-0 px-3 py-1.5 rounded-[var(--radius-sm)]",
@@ -1386,7 +1445,9 @@ export function YoloeDialog({
               <label className="flex items-center gap-2 text-[12.5px] text-[color:var(--text-primary)] cursor-pointer">
                 <Checkbox
                   checked={overwrite}
-                  onChange={(e) => setOverwrite(e.target.checked)}
+                  onChange={(e) =>
+                    patchActiveConfig({ overwrite: e.target.checked })
+                  }
                   data-testid="yoloe-overwrite"
                 />
                 Replace existing annotations on this frame
@@ -1394,6 +1455,20 @@ export function YoloeDialog({
             </div>
 
             <DialogFooter>
+              {/* Clear button — left-aligned via mr-auto so the
+                  positive/negative actions (Cancel, Run) stay grouped
+                  on the right where the user expects to find them. */}
+              <Button
+                variant="ghost"
+                size="md"
+                onClick={clearActiveMode}
+                data-testid="yoloe-clear"
+                title={`Reset ${MODE_TABS.find((t) => t.id === mode)?.label ?? "this mode"} to defaults`}
+                className="mr-auto"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Clear
+              </Button>
               <Button variant="ghost" size="md" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
