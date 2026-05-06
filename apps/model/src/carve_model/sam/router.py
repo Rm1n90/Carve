@@ -59,6 +59,7 @@ from carve_model.sam.predictor import (
     get_text_predictor,
     load_predictor,
     set_loaded_image,
+    set_prev_logits,
 )
 from carve_model.sam.tracker import force_evict_all_sessions
 
@@ -161,36 +162,55 @@ def decode(payload: DecodeIn) -> DecodeOut:
     pts = np.asarray(payload.points) if payload.points else np.zeros((0, 2), dtype=np.float32)
     lbl = np.asarray(payload.labels) if payload.labels else np.zeros((0,), dtype=np.int64)
 
-    # v3.22 — multimask semantics fix.
+    # v3.22 — multimask semantics + iterative-refinement (mask_input).
     #
-    # Pre-fix: ``multimask_output=True`` was used unconditionally. SAM
-    # returns 3 candidate masks at different scales/granularities; we
-    # picked the highest-score one. That works for the very first
-    # positive click (gives a "best size" mask), but for every
-    # refinement click — especially when the user places a NEGATIVE
-    # point to exclude part of the mask — the highest-scoring candidate
-    # is often the broadest interpretation that ignores the negative.
-    # Users reported the negative click being "ignored".
+    # Two related fixes for the "negatives don't exclude / mask has
+    # holes / boundary jagged" complaints:
     #
-    # Fix: any refinement context (multi-point, any negative, or a
-    # box+points combo) uses ``multimask_output=False``. SAM then
-    # returns a single mask that integrates all click constraints
-    # rather than 3 alternative interpretations.
+    # 1. ``multimask_output=True`` only on the very first positive
+    #    click (gives a "best size" mask). Any refinement context
+    #    (multi-point, any negative, or box+points) uses
+    #    ``multimask_output=False`` so SAM returns one mask that
+    #    integrates all clicks instead of 3 alternative
+    #    interpretations.
+    #
+    # 2. Pass ``mask_input`` (the previous decode's chosen low-res
+    #    logits) on every refinement call. THIS is the canonical
+    #    SAM 2 / CVAT iterative-refinement signal: each click then
+    #    refines the SAME mask instead of re-deriving the mask from
+    #    scratch with the new prompt set. Without it, click 2 with a
+    #    negative produces a mask that ignores the negative because
+    #    the model has no notion of "build on the previous mask"; it
+    #    just sees one positive + one negative and picks whatever
+    #    high-score candidate matches the positives best.
+    #
+    # ``prev_logits`` is taken from the session — populated by the
+    # previous /sam/decode call. We only use it when the click set
+    # has strictly grown (``n_now > prev_n``); otherwise (undo, or a
+    # fresh chain) we treat the call as a fresh prompt.
     has_negative = bool(payload.labels) and 0 in payload.labels
+    n_now = len(payload.points)
     is_refinement = (
-        len(payload.points) > 1
+        n_now > 1
         or has_negative
-        or (payload.box is not None and len(payload.points) > 0)
+        or (payload.box is not None and n_now > 0)
     )
     multimask = not is_refinement
 
+    sess = get_session()
+    prev_logits = sess.prev_low_res_logits if sess is not None else None
+    prev_n = sess.prev_n_points if sess is not None else 0
+    use_prev = is_refinement and prev_logits is not None and n_now > prev_n
+    mask_input = prev_logits if use_prev else None
+
     p = get_predictor()
     with autocast_ctx():
-        masks, scores, _ = p.predict(
+        masks, scores, low_res_all = p.predict(
             point_coords=pts,
             point_labels=lbl,
             multimask_output=multimask,
             box=payload.box,
+            mask_input=mask_input,
         )
 
     masks_np = _to_numpy(masks)
@@ -200,14 +220,36 @@ def decode(payload: DecodeIn) -> DecodeOut:
     best = int(np.argmax(scores_np))
     best_mask = masks_np[best]
 
+    # Stash the chosen channel of the new low-res logits on the session
+    # so the NEXT /sam/decode call can use it as ``mask_input``. This
+    # is what makes multi-click refinement converge on a single mask
+    # instead of fighting itself.
+    chosen_low_res: Any = None
+    if low_res_all is not None and hasattr(low_res_all, "shape"):
+        try:
+            shape = tuple(low_res_all.shape)
+            if len(shape) == 5:
+                # Sam2 transformers: [1, 1, K, 256, 256]
+                chosen_low_res = low_res_all[:, :, best : best + 1, :, :]
+                if hasattr(chosen_low_res, "detach"):
+                    chosen_low_res = chosen_low_res.detach()
+            elif len(shape) == 3:
+                # sam3.1 native: (K, 256, 256)
+                chosen_low_res = low_res_all[best : best + 1]
+        except Exception:  # noqa: BLE001 — best-effort; absence is OK
+            chosen_low_res = None
+    set_prev_logits(chosen_low_res, n_now)
+
     # v3.22 — clean the mask once (delete sub-pixel-wide spikes,
-    # keep only the largest connected component) so BOTH the RLE the
-    # editor renders AND the polygon derived from it come from the
-    # same de-spiked source. Without this the RLE overlay painted
-    # tendrils into excluded regions even when the polygon looked
-    # smooth.
+    # keep only the largest connected component, optionally fill
+    # internal holes when no negative click is present) so BOTH the
+    # RLE the editor renders AND the polygon derived from it come
+    # from the same de-spiked source. ``fill_holes`` is gated on
+    # ``not has_negative`` because a negative click is the user's
+    # explicit "make this region a hole" signal — filling would
+    # defeat it.
     from carve_model.sam.polygonize import cleanup_mask
-    cleaned = cleanup_mask(best_mask)
+    cleaned = cleanup_mask(best_mask, fill_holes=not has_negative)
 
     counts, size = encode_mask_rle(cleaned)
     # The polygon doesn't need a second cleanup pass; pass kernel=0.

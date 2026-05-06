@@ -244,6 +244,16 @@ class SamSession:
     # at predictor construction so the cache can detect env-driven drift and
     # rebuild on the next get_predictor() call.
     build_key: tuple[str, str, str] | None = None
+    # v3.22 — SAM 2 iterative refinement state. ``prev_low_res_logits``
+    # is a torch tensor of shape ``[1, 1, 1, 256, 256]`` (the chosen
+    # mask channel from the previous /sam/decode call) that the router
+    # feeds back as ``input_masks`` so a multi-click chain refines the
+    # SAME mask instead of producing 3 fresh interpretations on each
+    # call. ``prev_n_points`` lets the router detect undo (point-count
+    # decreased → drop the prev so the new prompt is a fresh start).
+    # Both reset on /sam/encode (a new image starts a fresh chain).
+    prev_low_res_logits: Any | None = None
+    prev_n_points: int = 0
 
 
 # A VLM-FO1 precision filter is any callable matching the
@@ -425,6 +435,10 @@ def set_loaded_image(image_hash: str, shape: list[int]) -> None:
     Preserves ``last_used_at`` — encode is itself an inference touch
     (``get_predictor`` already updated the clock); resetting again here
     would break the idle eviction tests that backdate the timestamp.
+
+    v3.22 — drops ``prev_low_res_logits`` / ``prev_n_points`` because a
+    new image starts a fresh refinement chain (the previous logits are
+    spatial — they're tied to the old image's coordinates).
     """
     global _SESSION
     if _SESSION is None:
@@ -434,6 +448,32 @@ def set_loaded_image(image_hash: str, shape: list[int]) -> None:
         loaded_hash=image_hash,
         loaded_shape=list(shape),
         last_used_at=_SESSION.last_used_at,
+    )
+
+
+def set_prev_logits(low_res_logits: Any | None, n_points: int) -> None:
+    """Record the previous decode's low-res mask logits on the session.
+
+    Called by ``/sam/decode`` after a successful predict, so the next
+    refinement click feeds these logits as ``input_masks`` to the
+    SAM 2 forward — matching the official SAM 2 / CVAT click chain.
+    No-op when no session is active (defensive).
+
+    ``low_res_logits`` is expected as a torch tensor of shape
+    ``[1, 1, 1, 256, 256]`` (already sliced to the chosen channel).
+    Pass ``None`` to clear (e.g. on undo).
+    """
+    global _SESSION
+    if _SESSION is None:
+        return
+    _SESSION = SamSession(
+        predictor=_SESSION.predictor,
+        loaded_hash=_SESSION.loaded_hash,
+        loaded_shape=list(_SESSION.loaded_shape),
+        last_used_at=_SESSION.last_used_at,
+        build_key=_SESSION.build_key,
+        prev_low_res_logits=low_res_logits,
+        prev_n_points=int(n_points),
     )
 
 DEFAULT_SAM_IDLE_TIMEOUT_S = 15 * 60  # 15 minutes

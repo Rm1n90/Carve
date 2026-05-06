@@ -435,12 +435,19 @@ class Sam3p1NativeImagePredictorAdapter:
         point_labels: Any,
         multimask_output: bool = True,
         box: Any = None,
+        mask_input: Any | None = None,
     ) -> tuple[Any, Any, Any]:
         """Run a click/box prompt forward pass and return ``(masks, scores, logits)``.
 
         Returns numpy arrays. Shape:
           - ``multimask_output=True``  → masks (K, H, W), scores (K,)
           - ``multimask_output=False`` → masks (1, H, W), scores (1,)
+
+        v3.22 — ``mask_input`` is the canonical SAM 2 iterative-refinement
+        signal. The native sam3 ``predict_inst`` forwards it to its inner
+        ``SAM3InteractiveImagePredictor.predict(... mask_input=...)``.
+        Without it, multi-click sequences produce contradictory masks
+        (holes, negatives that expand the mask, jagged boundaries).
         """
         if self._state is None or self._original_size is None:
             raise RuntimeError("set_image must be called before predict")
@@ -460,25 +467,28 @@ class Sam3p1NativeImagePredictorAdapter:
         if box is not None:
             b = np.asarray(box, dtype=np.float32).reshape(-1)
 
+        # Build the kwargs dict so we only send mask_input when present.
+        # The native predictor accepts numpy or torch; we pass through.
+        predict_kwargs: dict[str, Any] = {
+            "point_coords": pc,
+            "point_labels": pl,
+            "box": b,
+            "multimask_output": multimask_output,
+        }
+        if mask_input is not None:
+            predict_kwargs["mask_input"] = mask_input
+
         import torch  # type: ignore[import-not-found]
         if self._device == "cuda":
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                     masks, scores, logits = self._model.predict_inst(
-                        self._state,
-                        point_coords=pc,
-                        point_labels=pl,
-                        box=b,
-                        multimask_output=multimask_output,
+                        self._state, **predict_kwargs,
                     )
         else:
             with torch.no_grad():
                 masks, scores, logits = self._model.predict_inst(
-                    self._state,
-                    point_coords=pc,
-                    point_labels=pl,
-                    box=b,
-                    multimask_output=multimask_output,
+                    self._state, **predict_kwargs,
                 )
         return masks, scores, logits
 

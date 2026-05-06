@@ -30,16 +30,23 @@ class _FakePredictor:
     def set_image(self, image: Any) -> None:
         self.set_image_calls.append(tuple(image.shape))
 
-    def predict(self, point_coords, point_labels, multimask_output=True, box=None):
+    def predict(
+        self, point_coords, point_labels, multimask_output=True, box=None,
+        mask_input=None,
+    ):
         # v3.8 Phase 2 -- record ``box`` so router tests can assert it
         # gets forwarded from /sam/decode without coupling the stub to
         # any particular tensor backend.
+        # v3.22 -- ``mask_input`` is the SAM 2 iterative-refinement
+        # signal (previous low-res logits). The fake records whether
+        # one was passed so chain tests can assert it.
         pts_arr = np.asarray(point_coords)
         lbls_arr = np.asarray(point_labels)
         self.predict_calls.append({
             "points": pts_arr.tolist() if pts_arr.size else [],
             "labels": lbls_arr.tolist() if lbls_arr.size else [],
             "box": list(box) if box is not None else None,
+            "had_mask_input": mask_input is not None,
         })
         # Three candidate masks — the highest score should win
         masks = np.stack([

@@ -135,18 +135,26 @@ class Sam2ImagePredictorAdapter:
         point_labels: Any,
         multimask_output: bool = True,
         box: list[float] | None = None,
+        mask_input: Any | None = None,
     ) -> tuple[Any, Any, Any]:
-        """Run a click-prompt forward pass and return ``(masks, scores, None)``.
+        """Run a click-prompt forward pass.
 
-        ``Sam2Model`` returns ``outputs.pred_masks`` shape
-        ``[batch=1, num_obj=1, K, H, W]`` plus ``iou_scores``. We
-        post-process via ``processor.post_process_masks`` and return
-        shape ``(K, H, W)`` so the router's existing argmax over scores
-        keeps working.
+        Returns ``(masks, scores, low_res_logits_all)``:
+          * ``masks`` are post-processed binary masks at original image
+            size, shape ``(K, H, W)``.
+          * ``scores`` are the K iou scores.
+          * ``low_res_logits_all`` is the raw ``outputs.pred_masks``
+            tensor of shape ``[1, 1, K, 256, 256]`` (kept on device).
+            The router slices the chosen channel and stores it on the
+            session for the next refinement call.
 
-        v3.8 Phase 2 — optional ``box`` (xyxy) is forwarded as
-        ``input_boxes`` to the processor so the BBox-then-refine flow
-        can issue a single decode per click via the embedding cache.
+        v3.22 — ``mask_input`` is the canonical SAM 2 iterative-
+        refinement signal: a ``[1, 1, 1, 256, 256]`` tensor (the chosen
+        channel of the previous decode's low-res logits). Without it,
+        multi-click sequences produce contradictory masks (holes,
+        negatives that expand the mask, jagged boundaries). With it,
+        each click refines the same mask — matching CVAT and the
+        official SAM 2 demo.
         """
         if self._raw_image is None or self._original_size is None:
             raise RuntimeError("set_image must be called before predict")
@@ -169,9 +177,11 @@ class Sam2ImagePredictorAdapter:
             x1, y1, x2, y2 = (float(v) for v in box)
             proc_kwargs["input_boxes"] = [[[x1, y1, x2, y2]]]
         inputs = self._processor(**proc_kwargs).to(self._device)
+
         # Cast pixel_values to the model dtype (mirrors set_image()) so a
         # bf16-cast model accepts the float32 processor output without a
         # mat1/mat2 dtype mismatch on the encoder forward.
+        model_dtype = None
         try:
             model_dtype = next(self._model.parameters()).dtype
             pv = inputs.get("pixel_values") if isinstance(inputs, dict) else getattr(
@@ -185,22 +195,44 @@ class Sam2ImagePredictorAdapter:
         except StopIteration:
             pass  # parameterless test stub
 
-        with torch.no_grad():
-            outputs = self._model(
-                **inputs,
-                multimask_output=multimask_output,
-            )
+        # v3.22 — feed prev-iteration logits as input_masks. Sam2Model's
+        # forward accepts this directly (NOT via the processor). Cast to
+        # the model's dtype + device so the cross-attention matmul matches.
+        forward_kwargs: dict[str, Any] = {"multimask_output": multimask_output}
+        if mask_input is not None:
+            mi = mask_input
+            try:
+                if hasattr(mi, "to"):
+                    if model_dtype is not None:
+                        mi = mi.to(self._device, dtype=model_dtype)
+                    else:
+                        mi = mi.to(self._device)
+            except Exception:  # noqa: BLE001 — cast is best-effort
+                pass
+            forward_kwargs["input_masks"] = mi
 
-        # outputs.pred_masks shape: [batch=1, num_obj=1, K, H, W]
-        pred_masks = outputs.pred_masks
-        if hasattr(pred_masks, "cpu"):
-            pred_masks = pred_masks.cpu()
+        with torch.no_grad():
+            outputs = self._model(**inputs, **forward_kwargs)
+
+        # outputs.pred_masks shape: [batch=1, num_obj=1, K, 256, 256] (low-res)
+        # Detached GPU-side tensor — the router slices the chosen channel
+        # and parks it on SamSession for the next call.
+        pred_masks_raw = (
+            outputs.pred_masks.detach()
+            if hasattr(outputs.pred_masks, "detach")
+            else outputs.pred_masks
+        )
+        pred_masks_cpu = (
+            pred_masks_raw.cpu()
+            if hasattr(pred_masks_raw, "cpu")
+            else pred_masks_raw
+        )
         original_sizes = (
             inputs["original_sizes"]
             if "original_sizes" in inputs
             else [[self._original_size[0], self._original_size[1]]]
         )
-        masks = self._processor.post_process_masks(pred_masks, original_sizes)[0]
+        masks = self._processor.post_process_masks(pred_masks_cpu, original_sizes)[0]
 
         scores_tensor = getattr(outputs, "iou_scores", None)
         if scores_tensor is not None and hasattr(scores_tensor, "cpu"):
@@ -236,15 +268,14 @@ class Sam2ImagePredictorAdapter:
         else:
             scores_for_router = torch.ones((n_masks,), dtype=torch.float32)
 
-        # v3.22 GPU-hygiene: pred_masks and outputs were produced on
-        # GPU; we already moved what we need to CPU above. Drop the
-        # GPU refs and run empty_cache so /sam/decode doesn't leak
-        # ~30–60 MB per click on long editing sessions.
-        del outputs, pred_masks, inputs
+        # v3.22 GPU-hygiene: ``outputs`` and ``pred_masks_cpu`` are no
+        # longer needed; ``pred_masks_raw`` (low-res, kept on device for
+        # iteration feedback) is the only GPU ref we hand back.
+        del outputs, pred_masks_cpu, inputs
         if self._device == "cuda":
             torch.cuda.empty_cache()
 
-        return masks_for_router, scores_for_router, None
+        return masks_for_router, scores_for_router, pred_masks_raw
 
 
 def build_sam2_image_predictor(

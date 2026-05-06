@@ -45,6 +45,7 @@ DEFAULT_CLEANUP_KERNEL = 3
 def cleanup_mask(
     mask: np.ndarray,
     kernel: int = DEFAULT_CLEANUP_KERNEL,
+    fill_holes: bool = False,
 ) -> np.ndarray:
     """Return a cleaned binary uint8 mask.
 
@@ -54,12 +55,15 @@ def cleanup_mask(
     filter runs). Returns the original binary cast when no foreground
     is present.
 
+    v3.22 — when ``fill_holes=True`` any internal background hole
+    inside the foreground component is filled. Use this only when no
+    negative click is present: a negative click is the user's signal
+    that they WANT a hole in that region, and filling would defeat it.
+    The router passes ``fill_holes=not has_negative``.
+
     Used by /sam/decode (and other prompt routes) so BOTH the mask RLE
     that the editor renders AND the polygon derived from it come from
-    the same de-spiked source. Without this, users saw the mask
-    overlay paint thin tendrils into excluded regions even when the
-    polygon was simplified, because the polygon and the RLE were
-    computed from the raw model output.
+    the same de-spiked source.
     """
     if mask.ndim != 2:
         raise ValueError(f"mask must be 2-D, got shape {mask.shape}")
@@ -81,6 +85,19 @@ def cleanup_mask(
         sizes[0] = 0
         largest_label = int(sizes.argmax())
         binary = (labels == largest_label).astype(np.uint8)
+
+    if fill_holes and binary.any():
+        # findContours with RETR_EXTERNAL ignores internal holes; drawing
+        # those external contours back as FILLED produces a solid mask.
+        # Equivalent to scipy.ndimage.binary_fill_holes but uses cv2 only.
+        contours, _ = cv2.findContours(
+            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+        )
+        if contours:
+            filled = np.zeros_like(binary)
+            cv2.drawContours(filled, contours, -1, 1, thickness=cv2.FILLED)
+            binary = filled
+
     return binary
 
 
