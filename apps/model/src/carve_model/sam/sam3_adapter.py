@@ -108,18 +108,39 @@ class Sam3ImagePredictorAdapter:
         point_labels: Any,
         multimask_output: bool = True,
         box: list[float] | None = None,
+        mask_input: Any | None = None,
     ) -> tuple[Any, Any, Any]:
-        """Run a click-prompt forward pass and return ``(masks, scores, None)``.
+        """Run a click-prompt forward pass.
 
-        Sam3TrackerModel returns ``outputs.pred_masks`` of shape
-        ``[batch=1, num_obj=1, K=3, H, W]`` plus an ``iou_scores`` tensor.
-        We post-process via ``processor.post_process_masks`` (which collapses
-        the batch dim) and return shape ``(K, H, W)`` so the router's
-        existing argmax logic continues to work.
+        Returns ``(masks, scores, low_res_logits_all)``:
+          * ``masks``: post-processed binary masks at original image
+            size, shape ``(K, H, W)``.
+          * ``scores``: K iou scores.
+          * ``low_res_logits_all``: raw ``outputs.pred_masks`` tensor
+            of shape ``[1, 1, K, 256, 256]`` (kept on device). The
+            router slices the chosen channel and stores it on the
+            session for the next refinement call.
 
-        v3.8 Phase 2 — optional ``box`` (xyxy) is forwarded as
-        ``input_boxes`` so the BBox-then-refine flow shares the
-        embedding cache instead of re-encoding per click.
+        v3.22 — fixes two related bugs:
+
+          1. ``multimask_output`` was accepted as a kwarg but never
+             forwarded to the model (the call was simply
+             ``self._model(**inputs)``). The router's
+             "multimask=False on refinement" decision was silently
+             ignored, so SAM 3 always returned 3 candidates and the
+             best-score selection often picked the broadest
+             interpretation that ignored negatives.
+
+          2. ``mask_input`` (the previous decode's chosen low-res
+             logits) was not supported, so SAM 3 had no notion of
+             "build on the previous mask" — every click set was a
+             fresh independent prompt, producing holes, jagged
+             boundaries, and negatives that "expanded" the mask.
+             ``Sam3TrackerModel.forward`` accepts the kwarg natively;
+             we simply forward it.
+
+        Both fixes mirror the SAM 2 transformers patch and the
+        sam3.1 native patch in the same v3.22 cycle.
         """
         if self._raw_image is None or self._original_size is None:
             raise RuntimeError("set_image must be called before predict")
@@ -143,20 +164,42 @@ class Sam3ImagePredictorAdapter:
             proc_kwargs["input_boxes"] = [[[x1, y1, x2, y2]]]
         inputs = self._processor(**proc_kwargs).to(self._device)
 
-        with torch.no_grad():
-            outputs = self._model(**inputs)
+        # Cast mask_input prior (if any) to the model device + dtype.
+        forward_kwargs: dict[str, Any] = {"multimask_output": multimask_output}
+        if mask_input is not None:
+            mi = mask_input
+            try:
+                model_dtype = next(self._model.parameters()).dtype
+                if hasattr(mi, "to"):
+                    mi = mi.to(self._device, dtype=model_dtype)
+            except StopIteration:
+                pass
+            except Exception:  # noqa: BLE001 — cast is best-effort
+                pass
+            forward_kwargs["input_masks"] = mi
 
-        # outputs.pred_masks shape: [batch=1, num_obj=1, K=3, H, W]
-        pred_masks = outputs.pred_masks
-        # Move to cpu before post_process_masks if applicable.
-        if hasattr(pred_masks, "cpu"):
-            pred_masks = pred_masks.cpu()
+        with torch.no_grad():
+            outputs = self._model(**inputs, **forward_kwargs)
+
+        # outputs.pred_masks shape: [batch=1, num_obj=1, K, 256, 256]
+        # Detached GPU-side tensor so the router can slice the chosen
+        # channel and stash it on SamSession for the next call.
+        pred_masks_raw = (
+            outputs.pred_masks.detach()
+            if hasattr(outputs.pred_masks, "detach")
+            else outputs.pred_masks
+        )
+        pred_masks_cpu = (
+            pred_masks_raw.cpu()
+            if hasattr(pred_masks_raw, "cpu")
+            else pred_masks_raw
+        )
         original_sizes = inputs["original_sizes"] if "original_sizes" in inputs else [
             [self._original_size[0], self._original_size[1]],
         ]
-        masks = self._processor.post_process_masks(pred_masks, original_sizes)[0]
+        masks = self._processor.post_process_masks(pred_masks_cpu, original_sizes)[0]
         # masks shape after post_process_masks for a single image:
-        # [num_obj=1, K=3, H, W] (we collapse batch in the call above).
+        # [num_obj=1, K, H, W] (we collapse batch in the call above).
         scores_tensor = getattr(outputs, "iou_scores", None)
         if scores_tensor is not None and hasattr(scores_tensor, "cpu"):
             scores_tensor = scores_tensor.cpu()
@@ -191,7 +234,12 @@ class Sam3ImagePredictorAdapter:
         else:
             scores_for_router = torch.ones((n_masks,), dtype=torch.float32)
 
-        return masks_for_router, scores_for_router, None
+        # GPU hygiene: drop refs the caller doesn't need.
+        del outputs, pred_masks_cpu, inputs
+        if self._device == "cuda":
+            torch.cuda.empty_cache()
+
+        return masks_for_router, scores_for_router, pred_masks_raw
 
 
 def build_sam3_image_predictor(device: str | None = None) -> Sam3ImagePredictorAdapter:
