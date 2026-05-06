@@ -228,6 +228,25 @@ def sam_text_prompt(
         return r.json()
 
 
+def sam_vlm_fo1_unload() -> bool:
+    """POST /sam/vlm-fo1/unload — best-effort, never raises.
+
+    The API worker calls this at the end of an auto-annotate batch (or
+    after a single-asset run that opted into FO1) so the FO1 sidecar
+    drops its ~6 GB of GPU weights. Returns True when the sidecar
+    actually evicted, False on no-op or any error.
+    """
+    try:
+        with _client() as c:
+            r = c.post("/sam/vlm-fo1/unload")
+            if r.status_code >= 400:
+                return False
+            body = r.json()
+            return bool(body.get("evicted"))
+    except Exception:  # noqa: BLE001 — best-effort cleanup, never propagate
+        return False
+
+
 def sam_box_prompt(
     image_b64: str,
     boxes: list[list[float]],

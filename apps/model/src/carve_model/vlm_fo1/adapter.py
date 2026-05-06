@@ -90,6 +90,32 @@ def _resolve_sidecar_url() -> str:
     return (os.environ.get("VLM_FO1_SIDECAR_URL") or DEFAULT_SIDECAR_URL).rstrip("/")
 
 
+def unload_sidecar(*, timeout: float = 5.0) -> bool:
+    """POST ``/unload`` to the FO1 sidecar — best-effort.
+
+    Returns True when the sidecar reports it actually evicted weights,
+    False when nothing was loaded or the call failed. Never raises;
+    HTTP / connection errors are swallowed because the sidecar's own
+    idle sweeper is the safety net.
+
+    Called from the API worker at the end of a batch auto-annotate
+    that opted into FO1 so the 6 GB of GPU weights don't sit pinned
+    until the idle timeout fires.
+    """
+    import httpx
+
+    base = _resolve_sidecar_url()
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(f"{base}/unload")
+            resp.raise_for_status()
+            body = resp.json()
+            return bool(body.get("evicted"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("vlm_fo1 sidecar /unload failed: %s", exc)
+        return False
+
+
 def _encode_image_to_b64(image: Any) -> str:
     """Encode a PIL ``Image`` (or already-encoded bytes) to base64 PNG.
 

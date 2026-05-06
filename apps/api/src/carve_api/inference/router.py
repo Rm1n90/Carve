@@ -599,6 +599,14 @@ def sam_auto_text_endpoint(
         # SamModelFailed) get the standard envelope.
         raise _http(exc) from exc
     db.commit()
+    # v3.22 — drop the FO1 sidecar's GPU weights when the user opted
+    # into FO1 for this single-asset run. Best-effort; never raises.
+    if payload.use_vlm_fo1:
+        try:
+            from carve_api.inference.model_client import sam_vlm_fo1_unload
+            sam_vlm_fo1_unload()
+        except Exception:  # noqa: BLE001
+            pass
     return SamAutoTextOut(**result)
 
 

@@ -352,6 +352,17 @@ def unload(payload: UnloadIn = Body(default_factory=UnloadIn)) -> UnloadOut:
     return UnloadOut(evicted=evicted, sessions_released=sessions_released)
 
 
+# v3.22 — proxy endpoint so the API worker can free FO1 GPU memory at
+# the end of a batch without learning the sidecar's URL itself. The
+# model service already knows where the sidecar lives (via
+# VLM_FO1_SIDECAR_URL); this endpoint forwards the request.
+@router.post("/vlm-fo1/unload")
+def sam_vlm_fo1_unload() -> dict[str, bool]:
+    """Force-unload the FO1 weights on the sidecar. Best-effort, idempotent."""
+    from carve_model.vlm_fo1.adapter import unload_sidecar
+    return {"evicted": unload_sidecar()}
+
+
 # --- /sam/status (load lifecycle inspection) --------------------------------
 #
 # v3.5 Phase C — surfaces the predictor's load state so the editor UI can

@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Sparkles, X } from "lucide-react";
 
 import { samApi } from "@/api/sam";
-import { vlmFo1Api } from "@/api/vlm_fo1";
 import { modelsApi } from "@/api/phase2";
 import type { ClassRow } from "@/api/classes";
 import {
@@ -72,8 +71,11 @@ export function AutoAnnotateDialog({
   const [threshold, setThreshold] = useState<number>(0.4);
   const [findAll, setFindAll] = useState<boolean>(true);
   const [overwrite, setOverwrite] = useState<boolean>(false);
-  // v3.21+ — VLM-FO1 precision filter opt-in. Local UI state seeded
-  // from the per-user pref via useEffect once both queries resolve.
+  // v3.21+ — VLM-FO1 precision filter opt-in. v3.22 always defaults to
+  // OFF on dialog open: FO1 holds ~6 GB of GPU weights once loaded
+  // (lazy-loaded on first /filter call), and an "auto-on" toggle would
+  // surprise users into running heavyweight inference. The user opts
+  // in per-session; we no longer seed from a stored per-user pref.
   const [useVlmFo1, setUseVlmFo1] = useState<boolean>(false);
   // Phase 3.5: only "this" is wired. "all" reserved for Phase 3.6 (RQ batch).
   const [scope, setScope] = useState<"this" | "all">("this");
@@ -124,21 +126,11 @@ export function AutoAnnotateDialog({
   const vlmFo1Available =
     samStatusQuery.data?.vlm_fo1_available === true && isSam3Family;
 
-  // Per-user preference seeds the local toggle. We read once when the
-  // dialog opens; the user's interaction within the dialog persists via
-  // an explicit save (see toggle handler below).
-  const vlmFo1PrefQuery = useQuery({
-    queryKey: ["vlm-fo1", "pref"],
-    queryFn: () => vlmFo1Api.get(),
-    enabled: open,
-    refetchOnWindowFocus: false,
-    staleTime: 60_000,
-  });
-  useEffect(() => {
-    if (vlmFo1PrefQuery.data) {
-      setUseVlmFo1(vlmFo1PrefQuery.data.enabled);
-    }
-  }, [vlmFo1PrefQuery.data]);
+  // v3.22 — no longer seed from per-user pref. The toggle starts OFF
+  // each time the dialog opens (see useState above). Existing per-user
+  // pref rows on the server are intentionally ignored; the API
+  // endpoints are kept around for backwards compatibility with older
+  // clients but this dialog no longer reads or writes them.
 
   const run = useMutation({
     mutationFn: async () => {
@@ -567,15 +559,7 @@ export function AutoAnnotateDialog({
           >
             <Checkbox
               checked={useVlmFo1}
-              onChange={(e) => {
-                const next = e.target.checked;
-                setUseVlmFo1(next);
-                // Persist the preference so the choice survives the
-                // dialog and applies to single-image text-prompt as well.
-                void vlmFo1Api.put(next).catch(() => {
-                  /* silent — UI state already updated */
-                });
-              }}
+              onChange={(e) => setUseVlmFo1(e.target.checked)}
               data-testid="auto-annotate-vlm-fo1"
             />
             <span className="flex-1">

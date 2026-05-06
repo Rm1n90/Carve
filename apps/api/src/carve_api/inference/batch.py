@@ -421,6 +421,20 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
         return {"ok": True, "annotations_created": total_created, "failed": failed}
     finally:
         session.close()
+        # v3.22 — when this batch opted into FO1, drop the sidecar's
+        # ~6 GB of GPU weights now that the job is finished. The
+        # sidecar's idle sweeper is the safety net, but unloading
+        # promptly frees the GPU for the editor (single-click SAM
+        # work) right away. Best-effort; never raises.
+        if getattr(payload, "use_vlm_fo1", False):
+            try:
+                from carve_api.inference.model_client import sam_vlm_fo1_unload
+                sam_vlm_fo1_unload()
+            except Exception:  # noqa: BLE001
+                log.warning(
+                    "auto_text_batch: post-batch FO1 unload failed",
+                    exc_info=True,
+                )
 
 
 def list_assets_for_task(session: Session, task_id: uuid.UUID) -> list[Asset]:

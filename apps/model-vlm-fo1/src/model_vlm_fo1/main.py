@@ -101,3 +101,17 @@ def filter_endpoint(req: FilterRequest) -> FilterResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return FilterResponse(**result)
+
+
+@app.post("/unload")
+def unload_endpoint() -> dict[str, bool]:
+    """Free the loaded FO1 weights immediately.
+
+    The API worker calls this at the end of an auto-annotate batch (or
+    after a single-asset auto-annotate that opted into FO1) so the GPU
+    isn't pinned by a model nobody's actively using. Idempotent — safe
+    to call when nothing is loaded.
+    """
+    evicted = runner.force_evict()
+    logger.info("/unload requested; evicted=%s", evicted)
+    return {"evicted": evicted}
