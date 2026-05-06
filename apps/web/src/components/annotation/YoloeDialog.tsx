@@ -31,8 +31,11 @@ import {
 } from "lucide-react";
 
 import { yoloeApi } from "@/api/yoloe";
-import type { YoloeOutputKind } from "@/api/yoloe";
+import type { YoloeOutputKind, YoloeVisualSource } from "@/api/yoloe";
 import type { ClassRow } from "@/api/classes";
+import { annotationsApi } from "@/api/annotations";
+import { assetsApi } from "@/api/assets";
+import type { Asset } from "@/api/assets";
 import {
   Dialog,
   DialogContent,
@@ -154,13 +157,27 @@ export function YoloeDialog({
     { rid: `r-${Date.now()}`, classId: "", prompt: "" },
   ]);
 
-  // Visual mode state — for each picked annotation reference, the user
-  // assigns a project class. The dialog auto-groups by class_id when
-  // building the YOLOE wire payload (one group per project class).
-  // Selection-set is implicit in this map's keys; null means "picked
-  // but no class chosen yet" → blocks Run.
-  const [visualAssign, setVisualAssign] = useState<Record<string, string>>(
-    () => ({}),
+  // Visual mode state (v3.24 multi-source) — picks are keyed by
+  // ``${assetId}:${annotationId}`` so refs from different source
+  // assets coexist. Each pick carries the source coords + class
+  // assignment so the run-payload builder can group them by source
+  // asset → list of class-keyed bbox groups without re-fetching.
+  interface VisualPick {
+    assetId: string;
+    annotationId: string;
+    classId: string;
+    xyxy: [number, number, number, number];
+    className: string;
+    color: string;
+    sourceKind: "bbox" | "polygon";
+  }
+  const [picks, setPicks] = useState<Record<string, VisualPick>>(() => ({}));
+  // The thumbnail strip selects which source asset's refs are
+  // currently being browsed/picked. Default to the asset the editor
+  // is viewing; falls back to first pickable asset on mount when the
+  // current asset has no annotations.
+  const [activeSourceAssetId, setActiveSourceAssetId] = useState<string | null>(
+    assetId ?? null,
   );
 
   // Prompt-free mode state
@@ -190,21 +207,129 @@ export function YoloeDialog({
     return m;
   }, [classes]);
 
-  const visualReferences = useMemo<VisualReference[]>(() => {
-    const out: VisualReference[] = [];
-    for (const [tempId, a] of Object.entries(annotationsById)) {
+  // v3.24 — task-wide visual prompt picker. We need:
+  //   * the list of assets in the task (for the thumbnail strip)
+  //   * the list of annotations across the task (read-only refs from
+  //     non-current assets — current asset reads from useAnnotations
+  //     so unsaved edits are visible).
+  // Both gated to ``mode === "visual"`` so the cost is paid only when
+  // the visual picker is actually open.
+  const taskAssetsQ = useQuery({
+    queryKey: ["yoloe-task-assets", taskId],
+    queryFn: () => assetsApi.listForTask(taskId!),
+    enabled: !!taskId && open && mode === "visual",
+    staleTime: 30_000,
+  });
+  const taskAnnotationsQ = useQuery({
+    queryKey: ["yoloe-task-annotations", taskId],
+    queryFn: () => annotationsApi.listForTaskRaw(taskId!),
+    enabled: !!taskId && open && mode === "visual",
+    staleTime: 5_000,
+  });
+
+  // Group fetched annotations by source asset_id, keeping only
+  // bbox / polygon kinds (the only useful visual references).
+  interface RawRef {
+    id: string;
+    classId: string;
+    kind: "bbox" | "polygon";
+    geometry: Record<string, unknown>;
+  }
+  const annotationsByAssetId = useMemo(() => {
+    const m = new Map<string, RawRef[]>();
+    for (const a of taskAnnotationsQ.data ?? []) {
+      if (!a.asset_id) continue;
       if (a.kind !== "bbox" && a.kind !== "polygon") continue;
-      const xyxy = geometryToXyxy(a.geometry);
-      if (!xyxy) continue;
-      const cls = classesById.get(a.classId);
-      out.push({
-        id: a.serverId ?? tempId,
-        sourceKind: a.kind as "bbox" | "polygon",
-        xyxy,
-        className: cls?.name ?? "<unmapped>",
-        sourceClassId: a.classId,
-        color: cls?.color ?? "#9ca3af",
+      const arr = m.get(a.asset_id) ?? [];
+      arr.push({
+        id: a.id,
+        classId: a.class_id,
+        kind: a.kind as "bbox" | "polygon",
+        geometry: a.geometry,
       });
+      m.set(a.asset_id, arr);
+    }
+    return m;
+  }, [taskAnnotationsQ.data]);
+
+  // Pickable source assets — image-only, must have at least one
+  // bbox/polygon. Videos are out of scope until per-frame picking is
+  // built (see spec §8); the editor's current-asset path also
+  // contributes its in-flight (unsaved) bboxes via useAnnotations.
+  const pickableAssets = useMemo<Asset[]>(() => {
+    const all = taskAssetsQ.data ?? [];
+    const out: Asset[] = [];
+    for (const a of all) {
+      if (a.kind !== "image") continue;
+      const refs = annotationsByAssetId.get(a.id) ?? [];
+      // Include the current asset always (so the user's unsaved
+      // bboxes from useAnnotations show up even if no rows have been
+      // persisted yet).
+      if (refs.length > 0 || a.id === assetId) {
+        out.push(a);
+      }
+    }
+    return out;
+  }, [taskAssetsQ.data, annotationsByAssetId, assetId]);
+
+  // If the active source isn't pickable, fall back to current asset
+  // (if pickable) or the first pickable.
+  useEffect(() => {
+    if (mode !== "visual" || !open) return;
+    if (pickableAssets.length === 0) {
+      if (activeSourceAssetId !== null) setActiveSourceAssetId(null);
+      return;
+    }
+    if (
+      !activeSourceAssetId ||
+      !pickableAssets.some((a) => a.id === activeSourceAssetId)
+    ) {
+      const fallback =
+        pickableAssets.find((a) => a.id === assetId) ?? pickableAssets[0];
+      setActiveSourceAssetId(fallback ? fallback.id : null);
+    }
+  }, [mode, open, pickableAssets, activeSourceAssetId, assetId]);
+
+  // References shown in the picker for the *active* source asset.
+  //   * Current asset → prefer the editor's live store (in-flight
+  //                     bboxes the user just drew show up immediately).
+  //   * Other asset   → use the task-wide fetch (read-only).
+  const visualReferences = useMemo<VisualReference[]>(() => {
+    if (!activeSourceAssetId) return [];
+    const out: VisualReference[] = [];
+    if (activeSourceAssetId === assetId) {
+      // Current asset path — use the live editor store so unsaved
+      // bboxes are visible.
+      for (const [tempId, a] of Object.entries(annotationsById)) {
+        if (a.kind !== "bbox" && a.kind !== "polygon") continue;
+        const xyxy = geometryToXyxy(a.geometry);
+        if (!xyxy) continue;
+        const cls = classesById.get(a.classId);
+        out.push({
+          id: a.serverId ?? tempId,
+          sourceKind: a.kind as "bbox" | "polygon",
+          xyxy,
+          className: cls?.name ?? "<unmapped>",
+          sourceClassId: a.classId,
+          color: cls?.color ?? "#9ca3af",
+        });
+      }
+    } else {
+      // Other asset path — read from the task fetch.
+      const refs = annotationsByAssetId.get(activeSourceAssetId) ?? [];
+      for (const r of refs) {
+        const xyxy = geometryToXyxy(r.geometry as never);
+        if (!xyxy) continue;
+        const cls = classesById.get(r.classId);
+        out.push({
+          id: r.id,
+          sourceKind: r.kind,
+          xyxy,
+          className: cls?.name ?? "<unmapped>",
+          sourceClassId: r.classId,
+          color: cls?.color ?? "#9ca3af",
+        });
+      }
     }
     // Sort: bboxes first (more direct visual prompt), then by id stable.
     out.sort((p, q) => {
@@ -214,7 +339,13 @@ export function YoloeDialog({
       return p.id.localeCompare(q.id);
     });
     return out;
-  }, [annotationsById, classesById]);
+  }, [
+    activeSourceAssetId,
+    assetId,
+    annotationsById,
+    annotationsByAssetId,
+    classesById,
+  ]);
 
   // Pick up "Expand" requests for our task's yoloe-batch jobs.
   const bgExpandRequest = useBackgroundJobs((s) => s.expandRequest);
@@ -278,43 +409,68 @@ export function YoloeDialog({
 
   // Visual selection helpers — toggle picked-state by adding/removing
   // the ref id from the assignment map.
+  // Build the per-pick map key from (sourceAssetId, refId).
+  function pickKey(srcAssetId: string, refId: string): string {
+    return `${srcAssetId}:${refId}`;
+  }
+
   function toggleVisual(refId: string) {
-    setVisualAssign((prev) => {
-      if (refId in prev) {
-        const { [refId]: _drop, ...rest } = prev;
+    if (!activeSourceAssetId) return;
+    const key = pickKey(activeSourceAssetId, refId);
+    setPicks((prev) => {
+      if (key in prev) {
+        const { [key]: _drop, ...rest } = prev;
         return rest;
       }
-      // No client-side pick cap — YOLOE handles arbitrary numbers of
-      // visual prompts; Ultralytics caps were UI-protective only.
-      // Pre-fill with the source annotation's project class when it
-      // maps to one (i.e. the user clicked a bbox of class X — that
-      // class becomes the target by default; one click less work).
-      const sourceClassId =
-        visualReferences.find((r) => r.id === refId)?.sourceClassId ?? "";
-      return { ...prev, [refId]: sourceClassId };
+      // Pre-fill with the source annotation's project class so the
+      // common "find more like this" case is one click less work.
+      const ref = visualReferences.find((r) => r.id === refId);
+      if (!ref) return prev;
+      return {
+        ...prev,
+        [key]: {
+          assetId: activeSourceAssetId,
+          annotationId: refId,
+          classId: ref.sourceClassId,
+          xyxy: ref.xyxy,
+          className: ref.className,
+          color: ref.color,
+          sourceKind: ref.sourceKind,
+        },
+      };
     });
   }
   function setVisualClass(refId: string, classId: string) {
-    setVisualAssign((prev) => ({ ...prev, [refId]: classId }));
+    if (!activeSourceAssetId) return;
+    const key = pickKey(activeSourceAssetId, refId);
+    setPicks((prev) => {
+      if (!(key in prev)) return prev;
+      return { ...prev, [key]: { ...prev[key]!, classId } };
+    });
   }
 
-  // Build the YOLOE wire payload: one group per distinct class_id,
-  // each group's bboxes drawn from every ref the user assigned to it.
-  function buildVisualGroups():
-    | { class_id: string; bboxes: [number, number, number, number][] }[]
-    | null {
-    const byClass = new Map<string, [number, number, number, number][]>();
-    for (const r of visualReferences) {
-      const cid = visualAssign[r.id];
-      if (!cid) continue;
-      const arr = byClass.get(cid) ?? [];
-      arr.push(r.xyxy);
-      byClass.set(cid, arr);
+  // Build the YOLOE wire payload (multi-source): one entry per
+  // distinct source asset, each carrying its class-keyed bbox groups.
+  function buildVisualSources(): YoloeVisualSource[] | null {
+    const bySource = new Map<
+      string,
+      Map<string, [number, number, number, number][]>
+    >();
+    for (const p of Object.values(picks)) {
+      if (!p.classId) continue;
+      const groupMap = bySource.get(p.assetId) ?? new Map();
+      const bboxes = groupMap.get(p.classId) ?? [];
+      bboxes.push(p.xyxy);
+      groupMap.set(p.classId, bboxes);
+      bySource.set(p.assetId, groupMap);
     }
-    if (byClass.size === 0) return null;
-    return Array.from(byClass.entries()).map(([class_id, bboxes]) => ({
-      class_id,
-      bboxes,
+    if (bySource.size === 0) return null;
+    return Array.from(bySource.entries()).map(([asset_id, groupMap]) => ({
+      asset_id,
+      groups: Array.from(groupMap.entries()).map(([class_id, bboxes]) => ({
+        class_id,
+        bboxes,
+      })),
     }));
   }
 
@@ -328,16 +484,28 @@ export function YoloeDialog({
     [textRows],
   );
 
-  // Count DISTINCT project classes the picks resolve to — i.e. the
-  // number of YOLOE visual-prompt groups that will be sent. Picking
-  // 7 refs that all map to one class = 1 group, not 7.
-  const visualGroupsCount = useMemo(() => {
-    const distinct = new Set<string>();
-    for (const cid of Object.values(visualAssign)) {
-      if (cid && cid.length > 0) distinct.add(cid);
+  // Picks summary across ALL sources — distinct counts for the
+  // header chip ("N picks · M sources · K classes"). Picks with no
+  // class assignment count toward `pickCount` but NOT toward
+  // `classCount` (they block Run anyway).
+  const picksSummary = useMemo(() => {
+    const sourceIds = new Set<string>();
+    const classIds = new Set<string>();
+    let pickCount = 0;
+    let unassigned = 0;
+    for (const p of Object.values(picks)) {
+      pickCount += 1;
+      sourceIds.add(p.assetId);
+      if (p.classId && p.classId.length > 0) classIds.add(p.classId);
+      else unassigned += 1;
     }
-    return distinct.size;
-  }, [visualAssign]);
+    return {
+      pickCount,
+      sourceCount: sourceIds.size,
+      classCount: classIds.size,
+      unassigned,
+    };
+  }, [picks]);
 
   const canRun = useMemo(() => {
     if (!available) return false;
@@ -346,13 +514,14 @@ export function YoloeDialog({
       return textAvailable && textValidRows.length > 0;
     }
     if (mode === "visual") {
-      // Every picked ref must have a class assigned; at least one ref.
-      const picked = Object.keys(visualAssign);
-      if (picked.length === 0) return false;
-      const allAssigned = picked.every(
-        (rid) => (visualAssign[rid] || "").length > 0,
-      );
-      return textAvailable && allAssigned && !!assetId;
+      // Every pick across every source must have a class assigned;
+      // at least one pick total.
+      if (picksSummary.pickCount === 0) return false;
+      if (picksSummary.unassigned > 0) return false;
+      // Visual mode needs the *target* asset (assetId for "this
+      // image"; any of the task assets for "all assets").
+      const targetOk = scope === "all" ? !!taskId : !!assetId;
+      return textAvailable && targetOk;
     }
     return pfAvailable;
   }, [
@@ -363,7 +532,8 @@ export function YoloeDialog({
     textAvailable,
     pfAvailable,
     textValidRows.length,
-    visualAssign,
+    picksSummary.pickCount,
+    picksSummary.unassigned,
     assetId,
   ]);
 
@@ -384,12 +554,10 @@ export function YoloeDialog({
           });
         }
         if (mode === "visual") {
-          const groups = buildVisualGroups();
-          if (!groups) throw new Error("no_visual_reference");
-          // refer_b64 omitted — api uses the target asset's bytes as
-          // the reference (Ultralytics "same image as reference").
+          const sources = buildVisualSources();
+          if (!sources) throw new Error("no_visual_reference");
           return await yoloeApi.visualPredict(assetId, {
-            groups,
+            sources,
             conf,
             iou,
             overwrite,
@@ -418,15 +586,13 @@ export function YoloeDialog({
           iou,
         };
       } else if (mode === "visual") {
-        const groups = buildVisualGroups();
-        if (!groups) throw new Error("no_visual_reference");
-        if (!assetId) throw new Error("no_asset");
-        // The user picked refs on the current asset, so that asset
-        // is the visual reference. Worker fetches its bytes from
-        // MinIO once before the per-asset loop.
+        const sources = buildVisualSources();
+        if (!sources) throw new Error("no_visual_reference");
+        // Multi-source: each entry carries its own asset_id; the
+        // worker fetches each source's bytes from MinIO ONCE before
+        // the per-target loop and runs YOLOE per (source, target).
         params = {
-          refer_asset_id: assetId,
-          groups,
+          sources,
           conf,
           iou,
         };
@@ -822,18 +988,98 @@ export function YoloeDialog({
 
             {mode === "visual" && (
               <div className="grid gap-2">
+                {/* Header — picks summary across ALL sources */}
                 <div className="flex items-center justify-between">
                   <label className="text-[12px] font-medium text-[color:var(--text-primary)]">
-                    Pick reference{Object.keys(visualAssign).length === 1 ? "" : "s"}{" "}
-                    &amp; assign a class to each
+                    Pick references &amp; assign a class to each
                   </label>
-                  <span className="text-[10.5px] text-[color:var(--text-tertiary)] font-mono tabular-nums">
-                    {Object.keys(visualAssign).length}/{visualReferences.length}{" "}
-                    picked · {visualGroupsCount} class
-                    {visualGroupsCount === 1 ? "" : "es"}
+                  <span
+                    className="text-[10.5px] text-[color:var(--text-tertiary)] font-mono tabular-nums"
+                    data-testid="yoloe-visual-summary"
+                  >
+                    {picksSummary.pickCount} pick
+                    {picksSummary.pickCount === 1 ? "" : "s"} ·{" "}
+                    {picksSummary.sourceCount} source
+                    {picksSummary.sourceCount === 1 ? "" : "s"} ·{" "}
+                    {picksSummary.classCount} class
+                    {picksSummary.classCount === 1 ? "" : "es"}
+                    {picksSummary.unassigned > 0
+                      ? ` · ${picksSummary.unassigned} need class`
+                      : ""}
                   </span>
                 </div>
-                {visualReferences.length === 0 ? (
+
+                {/* Thumbnail strip — switch source asset */}
+                {taskId && (
+                  taskAssetsQ.isLoading || taskAnnotationsQ.isLoading ? (
+                    <div
+                      className="flex items-center gap-2 text-[11px] text-[color:var(--text-tertiary)] px-2 py-1.5"
+                      data-testid="yoloe-visual-loading"
+                    >
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Loading task assets &amp; annotations…
+                    </div>
+                  ) : pickableAssets.length === 0 ? null : (
+                    <div
+                      className="flex gap-1.5 overflow-x-auto pb-1.5 -mx-1 px-1"
+                      data-testid="yoloe-visual-source-strip"
+                    >
+                      {pickableAssets.map((a) => {
+                        const isActive = a.id === activeSourceAssetId;
+                        const sourcePicks = Object.values(picks).filter(
+                          (p) => p.assetId === a.id,
+                        );
+                        const hasPicks = sourcePicks.length > 0;
+                        return (
+                          <button
+                            key={a.id}
+                            type="button"
+                            onClick={() => setActiveSourceAssetId(a.id)}
+                            data-testid={`yoloe-visual-source-${a.id}`}
+                            title={a.original_name}
+                            className={cn(
+                              "shrink-0 grid gap-1 p-1 rounded-[var(--radius-md)] border",
+                              "transition-all duration-[160ms]",
+                              isActive
+                                ? "border-[color:var(--accent)] shadow-[0_0_0_1px_var(--accent)] scale-[1.03]"
+                                : hasPicks
+                                ? "border-[color:var(--accent)]/40 hover:border-[color:var(--accent)]"
+                                : "border-[var(--border-subtle)] hover:border-[var(--text-tertiary)]",
+                            )}
+                          >
+                            <div className="relative h-12 w-16 rounded-sm overflow-hidden bg-[var(--bg-subtle)]">
+                              {a.thumbnail_url ? (
+                                <img
+                                  src={a.thumbnail_url}
+                                  alt={a.original_name}
+                                  className="h-full w-full object-cover"
+                                />
+                              ) : (
+                                <div className="h-full w-full grid place-items-center text-[10px] text-[color:var(--text-tertiary)]">
+                                  no thumb
+                                </div>
+                              )}
+                              {hasPicks && (
+                                <span
+                                  className="absolute top-0.5 right-0.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-[var(--accent)] text-white text-[9px] font-medium leading-none"
+                                  aria-label={`${sourcePicks.length} picks`}
+                                >
+                                  {sourcePicks.length}
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[10px] truncate max-w-[64px] text-center text-[color:var(--text-secondary)]">
+                              {a.original_name}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )
+                )}
+
+                {/* Per-source refs panel */}
+                {pickableAssets.length === 0 ? (
                   <div className="grid gap-2 p-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border-subtle)] bg-[var(--bg-subtle)]">
                     <div className="flex items-start gap-2 text-[12px] text-[color:var(--text-secondary)]">
                       <Wand2
@@ -842,14 +1088,20 @@ export function YoloeDialog({
                       />
                       <div>
                         <div className="font-medium text-[color:var(--text-primary)]">
-                          No bbox or polygon to use as reference yet.
+                          No bbox/polygon annotations in this task.
                         </div>
                         <div>
-                          Draw one with the bbox or polygon tool (or use SAM)
-                          on this asset, then re-open YOLOE in Visual mode.
+                          Draw at least one bbox or polygon (or use SAM) on
+                          any image asset in this task, then re-open YOLOE in
+                          Visual mode.
                         </div>
                       </div>
                     </div>
+                  </div>
+                ) : visualReferences.length === 0 ? (
+                  <div className="grid gap-1 p-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border-subtle)] bg-[var(--bg-subtle)] text-[12px] text-[color:var(--text-secondary)]">
+                    No bbox/polygon annotations on the selected source.
+                    Draw some on this asset, or pick another source above.
                   </div>
                 ) : (
                   <div
@@ -857,8 +1109,12 @@ export function YoloeDialog({
                     data-testid="yoloe-visual-refs"
                   >
                     {visualReferences.map((r) => {
-                      const picked = r.id in visualAssign;
-                      const assignedCid = visualAssign[r.id] ?? "";
+                      const key = activeSourceAssetId
+                        ? `${activeSourceAssetId}:${r.id}`
+                        : r.id;
+                      const pick = picks[key];
+                      const picked = !!pick;
+                      const assignedCid = pick?.classId ?? "";
                       const assignedCls = classes.find(
                         (c) => c.id === assignedCid,
                       );
@@ -967,12 +1223,12 @@ export function YoloeDialog({
                   </div>
                 )}
                 <p className="text-[10.5px] text-[color:var(--text-tertiary)]">
-                  Pick one or more bbox/polygon refs and assign each to a
-                  project class. Refs sharing a class strengthen its visual
-                  signature; YOLOE finds visually similar objects across the
-                  target asset(s). Picks come from <em>this asset only</em>{" "}
-                  — to mix references from several assets in one run, ask for
-                  multi-asset reference support.
+                  Pick refs from one or more <em>image assets</em> in this
+                  task and assign each to a project class. YOLOE runs once
+                  per source–target pair and merges per-target detections via
+                  cross-source NMS, so refs sharing a class strengthen the
+                  signature without inflating the count. Video assets and
+                  per-frame picks aren't supported in this iteration.
                 </p>
               </div>
             )}
@@ -1149,11 +1405,13 @@ export function YoloeDialog({
                 onClick={() => run.mutate()}
                 data-testid="yoloe-run"
                 title={
-                  !canRun && mode === "visual" && Object.keys(visualAssign).length > 0
-                    ? "Every picked reference needs a class assigned"
-                    : !canRun && mode === "text" && textValidRows.length === 0
-                      ? "Add at least one row with both a class and a prompt"
-                      : undefined
+                  !canRun && mode === "visual" && picksSummary.unassigned > 0
+                    ? `${picksSummary.unassigned} picked reference${picksSummary.unassigned === 1 ? "" : "s"} need a class`
+                    : !canRun && mode === "visual" && picksSummary.pickCount === 0
+                      ? "Pick at least one reference and assign it a class"
+                      : !canRun && mode === "text" && textValidRows.length === 0
+                        ? "Add at least one row with both a class and a prompt"
+                        : undefined
                 }
               >
                 {scope === "this" ? "Run" : "Run on all assets"}

@@ -146,7 +146,7 @@ class YoloeTextParams:
 class YoloeVisualGroup:
     """One (project class -> reference bbox(es)) group for visual mode.
 
-    The user picks 1-N reference bboxes from the source image and
+    The user picks 1-N reference bboxes from a source image and
     assigns them to a project class. YOLOE finds visually similar
     objects in the target image(s) and labels each match with the
     group index. The persistence layer maps the group index back to
@@ -154,23 +154,43 @@ class YoloeVisualGroup:
     """
 
     class_id: uuid.UUID
-    bboxes: list[list[float]]  # xyxy (image-space pixels)
+    bboxes: list[list[float]]  # xyxy (image-space pixels of the source)
+
+
+@dataclass
+class YoloeVisualSource:
+    """One reference image and the class-keyed bboxes inside it.
+
+    Multi-source visual prompts (v3.24): the user can pick refs from
+    several different assets. Each ``YoloeVisualSource`` carries the
+    bytes of one source image plus the bboxes/groups inside that
+    image's coordinate space. The orchestrator runs YOLOE once per
+    (source, target) pair and merges per-target detections via
+    cross-source NMS.
+
+    ``refer_bytes`` may be ``None`` to mean "use the target asset's
+    own bytes as this source's reference" — the canonical Ultralytics
+    "same image as reference" path. The orchestrator substitutes the
+    target bytes per-target in that case.
+    """
+
+    asset_id: uuid.UUID | None
+    refer_bytes: bytes | None
+    groups: list[YoloeVisualGroup]
 
 
 @dataclass
 class YoloeVisualParams:
-    """Visual-prompt config — list of class-keyed reference groups.
+    """Visual-prompt config — list of source images, each with its
+    own class-keyed bbox groups.
 
-    Multiple groups in a single run let the user say "objects that
-    look like THESE bboxes are class A; objects that look like THOSE
-    are class B" — YOLOE handles this via its ``cls`` index array.
-
-    ``refer_bytes`` is optional: when ``None`` (the v1 single-asset
-    flow), the target asset's own bytes are used as the reference.
+    Single-source flows are the special case ``len(sources) == 1``.
+    The orchestrator handles N>=1 uniformly: one YOLOE call per
+    (source, target) pair, then cross-source NMS to dedupe overlapping
+    detections of the same class.
     """
 
-    groups: list[YoloeVisualGroup]
-    refer_bytes: bytes | None = None
+    sources: list[YoloeVisualSource]
     conf: float = 0.25
     iou: float = 0.7
 
@@ -223,6 +243,104 @@ def get_status() -> dict:
 
 def _b64(image_bytes: bytes) -> str:
     return base64.b64encode(image_bytes).decode("ascii")
+
+
+# ---------------------------------------------------------------------------
+# Cross-source NMS (v3.24).
+#
+# When the user's visual prompt has refs from multiple source images,
+# the api runs YOLOE once per (source, target) pair. Different sources
+# often detect the same physical object in the target — without
+# merging, we'd save N near-identical annotations per object. Greedy
+# per-class NMS picks the highest-confidence detection of each pair
+# (or cluster) above the IoU threshold and drops the rest.
+#
+# IoU is computed on the enclosing bbox for both ``detections`` (which
+# carry an ``x/y/w/h`` bbox) and ``polygons`` (where the enclosing
+# bbox is min/max of points). A 0.6 threshold is slightly stricter
+# than standard 0.5 because cross-source false positives tend to
+# cluster tightly; loosening to 0.5 risks merging genuinely separate
+# nearby objects.
+# ---------------------------------------------------------------------------
+
+_NMS_IOU = 0.6
+
+
+def _bbox_xyxy(d: dict) -> tuple[float, float, float, float]:
+    """Return the enclosing xyxy of a detection or polygon dict.
+
+    For bbox-shaped detections, derive xyxy from ``{x, y, w, h}``.
+    For polygon-shaped detections, take min/max over ``points``.
+    Empty / malformed entries collapse to a degenerate (0,0,0,0)
+    box; their IoU with anything else is 0 so they survive without
+    interfering — they'll be filtered out elsewhere.
+    """
+    if "bbox" in d:
+        b = d["bbox"]
+        try:
+            x, y = float(b["x"]), float(b["y"])
+            w, h = float(b["w"]), float(b["h"])
+        except (KeyError, TypeError, ValueError):
+            return (0.0, 0.0, 0.0, 0.0)
+        return (x, y, x + w, y + h)
+    pts = d.get("points") or []
+    if not pts:
+        return (0.0, 0.0, 0.0, 0.0)
+    try:
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
+    except (TypeError, ValueError, IndexError):
+        return (0.0, 0.0, 0.0, 0.0)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _iou(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    """Standard axis-aligned bbox IoU."""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    ua = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    ub = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = ua + ub - inter
+    return (inter / union) if union > 0.0 else 0.0
+
+
+def _nms_dedupe(dets: list[dict], iou_threshold: float) -> list[dict]:
+    """Per-class greedy NMS across detections from multiple sources.
+
+    Detections of different classes never compete (only same-class
+    pairs are checked). Within each class, sort by confidence
+    descending and keep each candidate iff its IoU with all already-
+    kept boxes of that class is below the threshold.
+    """
+    if not dets:
+        return []
+    by_class: dict[str, list[dict]] = {}
+    for d in dets:
+        by_class.setdefault(str(d.get("class_name", "")), []).append(d)
+    out: list[dict] = []
+    for _class_name, group in by_class.items():
+        group.sort(
+            key=lambda d: float(d.get("confidence", 0.0)),
+            reverse=True,
+        )
+        kept_xyxy: list[tuple[float, float, float, float]] = []
+        for cand in group:
+            cx = _bbox_xyxy(cand)
+            if any(_iou(cx, kx) > iou_threshold for kx in kept_xyxy):
+                continue
+            kept_xyxy.append(cx)
+            out.append(cand)
+    return out
 
 
 def _wrap_predict_errors(label: str, fn):
@@ -280,51 +398,79 @@ def predict_for_asset(
         return result
     if mode is YoloeMode.visual:
         assert isinstance(params, YoloeVisualParams)
-        if not params.groups or not any(g.bboxes for g in params.groups):
+        if not params.sources:
+            raise YoloeBadRequest("sources_empty")
+        # Validate at least one bbox somewhere in the request.
+        if not any(g.bboxes for s in params.sources for g in s.groups):
             raise YoloeBadRequest("bboxes_empty")
-        refer_bytes = (
-            params.refer_bytes
-            if params.refer_bytes is not None
-            else image_bytes
-        )
-        # Flatten groups into the YOLOE wire shape: parallel bboxes /
-        # cls arrays, plus class_names indexed by group. We use the
-        # group's class_id (as a string) as the unique token so the
-        # persistence-layer resolver can look it up directly.
-        flat_bboxes: list[list[float]] = []
-        flat_cls: list[int] = []
-        class_name_tokens: list[str] = []
-        cls_index_to_class_id: dict[int, uuid.UUID] = {}
-        for group_idx, g in enumerate(params.groups):
-            if not g.bboxes:
+
+        all_detections: list[dict] = []
+        all_polygons: list[dict] = []
+        token_to_class_id: dict[str, uuid.UUID] = {}
+
+        for source in params.sources:
+            # Per-source: flatten this source's groups into the YOLOE
+            # wire shape. Each pass uses the group's class_id (string)
+            # as the cls-name token so detections come back tagged
+            # with the project class id directly.
+            flat_bboxes: list[list[float]] = []
+            flat_cls: list[int] = []
+            class_name_tokens: list[str] = []
+            for group_idx, g in enumerate(source.groups):
+                if not g.bboxes:
+                    continue
+                token = str(g.class_id)
+                token_to_class_id[token] = g.class_id
+                class_name_tokens.append(token)
+                for b in g.bboxes:
+                    flat_bboxes.append(list(b))
+                    flat_cls.append(group_idx)
+            if not flat_bboxes:
                 continue
-            token = str(g.class_id)
-            class_name_tokens.append(token)
-            cls_index_to_class_id[group_idx] = g.class_id
-            for b in g.bboxes:
-                flat_bboxes.append(list(b))
-                flat_cls.append(group_idx)
-        if not flat_bboxes:
-            raise YoloeBadRequest("bboxes_empty")
-        result = _wrap_predict_errors(
-            "yoloe/visual-predict",
-            lambda: yoloe_visual_predict(
-                image_b64,
-                _b64(refer_bytes),
-                flat_bboxes,
-                flat_cls,
-                class_name_tokens,
-                conf=params.conf,
-                iou=params.iou,
-            ),
+
+            # When this source has no separate refer image, use the
+            # target image bytes (canonical Ultralytics "same image
+            # as reference"). The model service's predict_visual
+            # already omits the ``refer_image`` kwarg when target
+            # bytes equal reference bytes.
+            refer_bytes = (
+                source.refer_bytes
+                if source.refer_bytes is not None
+                else image_bytes
+            )
+
+            sub = _wrap_predict_errors(
+                "yoloe/visual-predict",
+                lambda rb=refer_bytes, fb=flat_bboxes, fc=flat_cls,
+                cn=class_name_tokens: yoloe_visual_predict(
+                    image_b64,
+                    _b64(rb),
+                    fb,
+                    fc,
+                    cn,
+                    conf=params.conf,
+                    iou=params.iou,
+                ),
+            )
+            all_detections.extend(sub.get("detections") or [])
+            all_polygons.extend(sub.get("polygons") or [])
+
+        # Cross-source NMS — when refs from two different source
+        # assets both detect the same object in the target, we get
+        # two near-duplicate boxes. Greedy per-class NMS picks the
+        # higher-confidence one and drops the rest.
+        merged_detections = _nms_dedupe(
+            all_detections, iou_threshold=_NMS_IOU,
         )
-        # Two equivalent resolvers — the persistence layer prefers
-        # the cls-index path (more robust than name-string parsing).
-        result["_cls_index_to_class_id"] = cls_index_to_class_id
-        result["_token_to_class_id"] = {
-            str(cid): cid for cid in cls_index_to_class_id.values()
+        merged_polygons = _nms_dedupe(
+            all_polygons, iou_threshold=_NMS_IOU,
+        )
+
+        return {
+            "detections": merged_detections,
+            "polygons": merged_polygons,
+            "_token_to_class_id": token_to_class_id,
         }
-        return result
     if mode is YoloeMode.prompt_free:
         assert isinstance(params, YoloePromptFreeParams)
         return _wrap_predict_errors(

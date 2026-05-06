@@ -518,6 +518,7 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
         YoloeTextPrompt,
         YoloeVisualGroup,
         YoloeVisualParams,
+        YoloeVisualSource,
         apply_yoloe_to_asset,
     )
 
@@ -565,57 +566,99 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                 iou=float(p.get("iou", 0.7)),
             )
         elif mode is YoloeMode.visual:
-            # Visual reference resolution (in order):
-            #   1. ``refer_b64`` — caller-supplied bytes (advanced).
-            #   2. ``refer_asset_id`` — worker fetches once before
-            #      the per-asset loop (preferred: small RQ payload).
-            #   3. neither — each target asset is its own reference.
+            # v3.24 — multi-source visual prompts. The payload either
+            # carries the new ``sources: [{asset_id, groups}]`` shape
+            # OR the legacy ``refer_asset_id`` / ``refer_b64`` +
+            # top-level ``groups`` shape. Convert legacy → single
+            # source, then fetch each source's bytes ONCE before the
+            # per-target loop. With N sources × T targets, we already
+            # pay N×T model calls; fetching from MinIO N×T times would
+            # add minutes of avoidable overhead.
             from carve_api.assets.models import Asset as _A
             from carve_api.inference.autoannotate import (
                 fetch_asset_bytes as _fetch,
             )
-            refer_b64_raw = p.get("refer_b64") or ""
-            refer_bytes_payload: bytes | None = (
-                _b64.b64decode(refer_b64_raw) if refer_b64_raw else None
-            )
-            if refer_bytes_payload is None:
-                refer_asset_id = p.get("refer_asset_id")
-                if refer_asset_id:
-                    boot = get_session_factory()()
-                    try:
-                        ra = boot.get(_A, uuid.UUID(str(refer_asset_id)))
-                        if ra is None:
-                            finalize_progress(
-                                redis_client, payload.job_id, status="failed",
-                            )
-                            return {"ok": False, "error": "refer_asset_not_found"}
-                        refer_bytes_payload = _fetch(ra)
-                    finally:
-                        boot.close()
-            # Each row is {"class_id": "<uuid>", "bboxes": [[x1,y1,x2,y2], ...]}.
-            group_items = list(p.get("groups") or [])
-            typed_groups: list[YoloeVisualGroup] = []
-            for item in group_items:
-                if not isinstance(item, dict):
-                    continue
-                cid_raw = item.get("class_id")
-                bx = item.get("bboxes") or []
-                if not cid_raw or not bx:
-                    continue
-                typed_groups.append(
-                    YoloeVisualGroup(
-                        class_id=uuid.UUID(str(cid_raw)),
-                        bboxes=[list(b) for b in bx],
-                    ),
-                )
-            if not typed_groups:
+
+            # Normalise legacy single-source payloads to the new
+            # ``sources`` shape so the rest of this branch is uniform.
+            sources_in = list(p.get("sources") or [])
+            if not sources_in and p.get("groups"):
+                sources_in = [{
+                    "asset_id": p.get("refer_asset_id"),
+                    "groups": p.get("groups") or [],
+                    "refer_b64": p.get("refer_b64") or "",
+                }]
+
+            typed_sources: list[YoloeVisualSource] = []
+            boot = get_session_factory()()
+            try:
+                for s in sources_in:
+                    if not isinstance(s, dict):
+                        continue
+                    src_groups: list[YoloeVisualGroup] = []
+                    for g in (s.get("groups") or []):
+                        if not isinstance(g, dict):
+                            continue
+                        cid_raw = g.get("class_id")
+                        bx = g.get("bboxes") or []
+                        if not cid_raw or not bx:
+                            continue
+                        src_groups.append(
+                            YoloeVisualGroup(
+                                class_id=uuid.UUID(str(cid_raw)),
+                                bboxes=[list(b) for b in bx],
+                            ),
+                        )
+                    if not src_groups:
+                        continue
+
+                    # Resolve this source's reference bytes:
+                    #   1. inline ``refer_b64`` (legacy single-source)
+                    #   2. fetch from MinIO via ``asset_id``
+                    #   3. None → use target bytes per-target
+                    refer_bytes_payload: bytes | None = None
+                    raw_b64 = s.get("refer_b64") or ""
+                    if raw_b64:
+                        try:
+                            refer_bytes_payload = _b64.b64decode(raw_b64)
+                        except Exception:  # noqa: BLE001
+                            refer_bytes_payload = None
+                    src_asset_id_raw = s.get("asset_id")
+                    src_asset_id_uuid: uuid.UUID | None = None
+                    if src_asset_id_raw:
+                        try:
+                            src_asset_id_uuid = uuid.UUID(str(src_asset_id_raw))
+                        except (TypeError, ValueError):
+                            src_asset_id_uuid = None
+                    if (
+                        refer_bytes_payload is None
+                        and src_asset_id_uuid is not None
+                    ):
+                        ra = boot.get(_A, src_asset_id_uuid)
+                        if ra is not None:
+                            refer_bytes_payload = _fetch(ra)
+                        # Missing source asset → skip; partial run is
+                        # better than aborting the whole batch on a
+                        # single deleted reference.
+
+                    typed_sources.append(
+                        YoloeVisualSource(
+                            asset_id=src_asset_id_uuid,
+                            refer_bytes=refer_bytes_payload,
+                            groups=src_groups,
+                        ),
+                    )
+            finally:
+                boot.close()
+
+            if not typed_sources:
                 finalize_progress(
                     redis_client, payload.job_id, status="failed",
                 )
-                return {"ok": False, "error": "groups_empty"}
+                return {"ok": False, "error": "no_valid_sources"}
+
             typed_params = YoloeVisualParams(
-                groups=typed_groups,
-                refer_bytes=refer_bytes_payload,
+                sources=typed_sources,
                 conf=float(p.get("conf", 0.25)),
                 iou=float(p.get("iou", 0.7)),
             )

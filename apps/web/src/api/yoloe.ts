@@ -65,21 +65,23 @@ export interface YoloeTextRequest {
 export interface YoloeVisualGroupItem {
   /** Project class to attach every match found for this group. */
   class_id: string;
-  /** xyxy bboxes inside the reference image. Multiple bboxes per
-   *  group strengthen the visual signature for that class. */
+  /** xyxy bboxes inside the source image's coordinate space. */
   bboxes: [number, number, number, number][];
 }
 
-export interface YoloeVisualRequest {
-  /** Optional separate reference image as base64. */
-  refer_b64?: string;
-  /** Alternative to refer_b64: id of an asset whose bytes should be
-   *  used as the reference image (the api fetches from MinIO). */
-  refer_asset_id?: string;
-  /** One group per project class. Within a group the user provides
-   *  1-N reference bboxes; YOLOE detects similar objects in the
-   *  target asset(s) and labels each match with the group's class_id. */
+export interface YoloeVisualSource {
+  /** Source asset whose bytes serve as the YOLOE reference image. */
+  asset_id: string;
+  /** Class-keyed bbox groups inside this source. */
   groups: YoloeVisualGroupItem[];
+}
+
+export interface YoloeVisualRequest {
+  /** v3.24 — list of source assets, each with its own class-keyed
+   *  bbox groups. The api fetches each source's bytes from MinIO and
+   *  runs YOLOE per (source, target) pair, then NMS-merges per-target
+   *  detections to dedupe overlap from multiple sources. */
+  sources: YoloeVisualSource[];
   conf?: number;
   iou?: number;
   overwrite?: boolean;

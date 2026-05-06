@@ -1052,24 +1052,49 @@ class YoloeVisualGroupIn(BaseModel):
     bboxes: list[list[float]] = Field(..., min_length=1, max_length=256)
 
 
-class YoloeVisualIn(BaseModel):
-    """Visual-prompt body.
+class YoloeVisualSourceIn(BaseModel):
+    """One source asset and the class-keyed bbox groups inside it.
 
-    The caller assigns each visual reference (bbox in xyxy pixels) to
-    a project class via ``groups``. Multiple groups in one request let
-    YOLOE find several distinct visual classes simultaneously.
-
-    ``refer_b64`` and ``refer_asset_id`` are optional ways to supply a
-    *separate* reference image; when both are unset the target asset
-    itself serves as the reference (Ultralytics "same image as
-    reference" canonical path).
+    The bbox coordinates are in this source asset's coordinate space.
+    Multiple sources per request let the user mix references from
+    several different assets in a single run; the api fetches each
+    source's bytes from MinIO and orchestrates one YOLOE pass per
+    (source, target) pair, then merges per-target detections via
+    cross-source NMS.
     """
 
+    asset_id: uuid.UUID
+    groups: list[YoloeVisualGroupIn] = Field(
+        ..., min_length=1, max_length=64,
+    )
+
+
+class YoloeVisualIn(BaseModel):
+    """Visual-prompt body (v3.24).
+
+    The caller picks reference bboxes from one or more **source
+    assets** in the task and assigns each to a project class via
+    ``sources[*].groups[*]``. The api orchestrates one YOLOE pass per
+    (source, target) pair and merges per-target detections.
+
+    Legacy single-source fields ``refer_b64`` / ``refer_asset_id`` /
+    top-level ``groups`` are still accepted for back-compat (older
+    clients and the auto-converter); when ``sources`` is supplied the
+    legacy fields are ignored.
+    """
+
+    # v3.24 — preferred field. List of distinct source assets, each
+    # with its own class-keyed bbox groups.
+    sources: list[YoloeVisualSourceIn] | None = Field(
+        default=None, max_length=32,
+    )
+    # Legacy single-source fields. Deprecated; kept so older clients
+    # don't break. The endpoint converts them into a single-entry
+    # ``sources`` list internally.
     refer_b64: str | None = Field(default=None)
     refer_asset_id: uuid.UUID | None = None
-    groups: list[YoloeVisualGroupIn] = Field(
-        ..., min_length=1, max_length=32,
-    )
+    groups: list[YoloeVisualGroupIn] | None = Field(default=None)
+
     conf: float = Field(default=0.25, ge=0.0, le=1.0)
     iou: float = Field(default=0.7, ge=0.0, le=1.0)
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -1186,6 +1211,7 @@ def yoloe_visual_predict_endpoint(
         YoloeOutputKind,
         YoloeVisualGroup,
         YoloeVisualParams,
+        YoloeVisualSource,
         apply_yoloe_to_asset,
     )
 
@@ -1198,25 +1224,86 @@ def yoloe_visual_predict_endpoint(
     except AppError as exc:
         raise _http(exc) from exc
 
-    # Reference image resolution order (unchanged from v3.23.2):
-    #   1. ``refer_b64`` if explicitly supplied (legacy / advanced)
-    #   2. ``refer_asset_id`` if supplied — fetch from MinIO
-    #   3. otherwise omit; the apply layer reuses the target bytes
-    refer_bytes: bytes | None = None
-    if payload.refer_b64:
-        try:
-            refer_bytes = _b64.b64decode(payload.refer_b64)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=422, detail="bad_refer_b64") from exc
-    elif payload.refer_asset_id is not None:
-        refer_asset = db.get(Asset, payload.refer_asset_id)
-        if refer_asset is None:
-            raise HTTPException(status_code=404, detail="refer_asset_not_found")
-        try:
-            require_visible_task(db, user, refer_asset.task_id)
-        except AppError as exc:
-            raise _http(exc) from exc
-        refer_bytes = _resolve_yoloe_asset_bytes(refer_asset, None)
+    # v3.24 — multi-source visual prompts. Build a typed list of
+    # ``YoloeVisualSource`` from whichever wire shape the client
+    # supplied:
+    #
+    # Preferred:
+    #   sources: [{asset_id, groups: [{class_id, bboxes}]}]
+    #
+    # Legacy single-source (back-compat — auto-converted):
+    #   refer_b64 OR refer_asset_id, plus top-level groups.
+    #
+    # Each source's bytes are fetched ONCE here; the orchestrator in
+    # ``predict_for_asset`` then runs YOLOE per (source, target) and
+    # NMS-merges per-target detections.
+    typed_sources: list[YoloeVisualSource] = []
+    if payload.sources:
+        # Preferred path: one entry per distinct source asset.
+        for s in payload.sources:
+            source_asset = db.get(Asset, s.asset_id)
+            if source_asset is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"source_asset_not_found:{s.asset_id}",
+                )
+            try:
+                require_visible_task(db, user, source_asset.task_id)
+            except AppError as exc:
+                raise _http(exc) from exc
+            refer_bytes = _resolve_yoloe_asset_bytes(source_asset, None)
+            typed_sources.append(
+                YoloeVisualSource(
+                    asset_id=source_asset.id,
+                    refer_bytes=refer_bytes,
+                    groups=[
+                        YoloeVisualGroup(
+                            class_id=g.class_id,
+                            bboxes=[list(b) for b in g.bboxes],
+                        )
+                        for g in s.groups
+                    ],
+                ),
+            )
+    else:
+        # Legacy single-source path — convert to one-source shape.
+        refer_bytes: bytes | None = None
+        if payload.refer_b64:
+            try:
+                refer_bytes = _b64.b64decode(payload.refer_b64)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=422, detail="bad_refer_b64",
+                ) from exc
+        elif payload.refer_asset_id is not None:
+            refer_asset = db.get(Asset, payload.refer_asset_id)
+            if refer_asset is None:
+                raise HTTPException(
+                    status_code=404, detail="refer_asset_not_found",
+                )
+            try:
+                require_visible_task(db, user, refer_asset.task_id)
+            except AppError as exc:
+                raise _http(exc) from exc
+            refer_bytes = _resolve_yoloe_asset_bytes(refer_asset, None)
+        if not payload.groups:
+            raise HTTPException(
+                status_code=422,
+                detail="visual_request_requires_sources_or_groups",
+            )
+        typed_sources.append(
+            YoloeVisualSource(
+                asset_id=payload.refer_asset_id,
+                refer_bytes=refer_bytes,
+                groups=[
+                    YoloeVisualGroup(
+                        class_id=g.class_id,
+                        bboxes=[list(b) for b in g.bboxes],
+                    )
+                    for g in payload.groups
+                ],
+            ),
+        )
 
     image_bytes = _resolve_yoloe_asset_bytes(asset, payload.frame_id)
     try:
@@ -1228,14 +1315,7 @@ def yoloe_visual_predict_endpoint(
             image_bytes=image_bytes,
             mode=YoloeMode.visual,
             params=YoloeVisualParams(
-                groups=[
-                    YoloeVisualGroup(
-                        class_id=g.class_id,
-                        bboxes=[list(b) for b in g.bboxes],
-                    )
-                    for g in payload.groups
-                ],
-                refer_bytes=refer_bytes,
+                sources=typed_sources,
                 conf=payload.conf,
                 iou=payload.iou,
             ),
