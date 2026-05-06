@@ -1022,6 +1022,7 @@ class YoloeTextIn(BaseModel):
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     overwrite: bool = False
     frame_id: uuid.UUID | None = None
+    output_kind: str = Field(default="polygon", pattern="^(bbox|polygon)$")
 
 
 class YoloeVisualIn(BaseModel):
@@ -1048,6 +1049,7 @@ class YoloeVisualIn(BaseModel):
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     overwrite: bool = False
     frame_id: uuid.UUID | None = None
+    output_kind: str = Field(default="polygon", pattern="^(bbox|polygon)$")
 
 
 class YoloePromptFreeIn(BaseModel):
@@ -1058,6 +1060,7 @@ class YoloePromptFreeIn(BaseModel):
     max_detections: int | None = Field(default=None, ge=1, le=1000)
     overwrite: bool = False
     frame_id: uuid.UUID | None = None
+    output_kind: str = Field(default="polygon", pattern="^(bbox|polygon)$")
 
 
 def _resolve_yoloe_asset_bytes(
@@ -1102,6 +1105,7 @@ def yoloe_text_predict_endpoint(
 ) -> AutoAnnotateResponse:
     from carve_api.inference.yoloe import (
         YoloeMode,
+        YoloeOutputKind,
         YoloeTextParams,
         apply_yoloe_to_asset,
     )
@@ -1131,6 +1135,7 @@ def yoloe_text_predict_endpoint(
             ),
             overwrite=payload.overwrite,
             min_confidence=payload.min_confidence,
+            output_kind=YoloeOutputKind(payload.output_kind),
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -1148,6 +1153,7 @@ def yoloe_visual_predict_endpoint(
 
     from carve_api.inference.yoloe import (
         YoloeMode,
+        YoloeOutputKind,
         YoloeVisualParams,
         apply_yoloe_to_asset,
     )
@@ -1205,6 +1211,7 @@ def yoloe_visual_predict_endpoint(
             ),
             overwrite=payload.overwrite,
             min_confidence=payload.min_confidence,
+            output_kind=YoloeOutputKind(payload.output_kind),
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -1220,6 +1227,7 @@ def yoloe_prompt_free_predict_endpoint(
 ) -> AutoAnnotateResponse:
     from carve_api.inference.yoloe import (
         YoloeMode,
+        YoloeOutputKind,
         YoloePromptFreeParams,
         apply_yoloe_to_asset,
     )
@@ -1250,6 +1258,7 @@ def yoloe_prompt_free_predict_endpoint(
             ),
             overwrite=payload.overwrite,
             min_confidence=payload.min_confidence,
+            output_kind=YoloeOutputKind(payload.output_kind),
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -1281,6 +1290,9 @@ class YoloeBatchIn(BaseModel):
     params: dict = Field(default_factory=dict)
     overwrite: bool = False
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    # v3.23.3 — choose between bbox-only or polygon-only persistence.
+    # Default polygon (instance-segmentation models output masks).
+    output_kind: str = Field(default="polygon", pattern="^(bbox|polygon)$")
 
 
 @task_inference_router.post("/{task_id}/yoloe/batch")
@@ -1305,6 +1317,7 @@ def enqueue_yoloe_batch(
         params=payload.params,
         overwrite=payload.overwrite,
         min_confidence=payload.min_confidence,
+        output_kind=payload.output_kind,
     )
     try:
         from rq import Queue

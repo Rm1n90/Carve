@@ -23,6 +23,7 @@ interface YoloeAnnotationOut {
 }
 
 export type YoloeMode = "text" | "visual" | "prompt_free";
+export type YoloeOutputKind = "bbox" | "polygon";
 
 export interface YoloeStatus {
   available: boolean;
@@ -47,6 +48,9 @@ export interface YoloeTextRequest {
   iou?: number;
   overwrite?: boolean;
   frame_id?: string | null;
+  /** "polygon" (default) commits instance masks; "bbox" commits boxes only.
+   *  YOLOE-seg returns both per detection; we keep one to avoid dupes. */
+  output_kind?: YoloeOutputKind;
 }
 
 export interface YoloeVisualRequest {
@@ -63,6 +67,7 @@ export interface YoloeVisualRequest {
   iou?: number;
   overwrite?: boolean;
   frame_id?: string | null;
+  output_kind?: YoloeOutputKind;
 }
 
 export interface YoloePromptFreeRequest {
@@ -72,6 +77,7 @@ export interface YoloePromptFreeRequest {
   max_detections?: number | null;
   overwrite?: boolean;
   frame_id?: string | null;
+  output_kind?: YoloeOutputKind;
 }
 
 export interface YoloeBatchRequest {
@@ -79,6 +85,7 @@ export interface YoloeBatchRequest {
   /** Mode-specific params; see api/inference/router.YoloeBatchIn. */
   params: Record<string, unknown>;
   overwrite?: boolean;
+  output_kind?: YoloeOutputKind;
 }
 
 export interface YoloeBatchProgress {

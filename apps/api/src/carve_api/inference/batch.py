@@ -464,6 +464,10 @@ class YoloeBatchPayload:
     params: dict
     overwrite: bool = False
     min_confidence: float | None = None
+    # v3.23.3 — "bbox" or "polygon"; defaults to "polygon" so legacy
+    # pickled payloads (without this field) deserialise into the same
+    # behaviour the v3.23 batches used.
+    output_kind: str = "polygon"
 
 
 def build_yoloe_payload(
@@ -474,6 +478,7 @@ def build_yoloe_payload(
     params: dict,
     overwrite: bool = False,
     min_confidence: float | None = None,
+    output_kind: str = "polygon",
 ) -> YoloeBatchPayload:
     return YoloeBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -483,6 +488,7 @@ def build_yoloe_payload(
         params=params,
         overwrite=overwrite,
         min_confidence=min_confidence,
+        output_kind=output_kind,
     )
 
 
@@ -506,6 +512,7 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
     from carve_api.inference.autoannotate import fetch_asset_bytes
     from carve_api.inference.yoloe import (
         YoloeMode,
+        YoloeOutputKind,
         YoloePromptFreeParams,
         YoloeTextParams,
         YoloeVisualParams,
@@ -661,6 +668,9 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                     params=typed_params,
                     overwrite=payload.overwrite,
                     min_confidence=min_conf,
+                    output_kind=YoloeOutputKind(
+                        getattr(payload, "output_kind", "polygon"),
+                    ),
                 )
                 session.commit()
                 counts["done"] += 1

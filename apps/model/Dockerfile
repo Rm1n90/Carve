@@ -36,6 +36,15 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     && pip3 install --no-cache-dir --break-system-packages --no-deps \
         "git+https://github.com/facebookresearch/sam3.git"
 
+# v3.23.3 — YOLOE text-prompt mode requires OpenAI CLIP (Ultralytics'
+# text encoder imports the ``clip`` module). Without this, every
+# /yoloe/text-predict call 502s with ``ModuleNotFoundError: clip``.
+# Installed with --no-deps so torch/torchvision pins from the [gpu]
+# extra are preserved. The mobileclip2_b.ts text encoder weights
+# (~242 MB) are auto-downloaded by Ultralytics on first use.
+RUN pip3 install --no-cache-dir --break-system-packages --no-deps \
+        "git+https://github.com/openai/CLIP.git"
+
 # NOTE: VLM-FO1 was extracted into a separate sidecar service
 # (apps/model-vlm-fo1) when it became clear the upstream package
 # requires transformers==4.50.1, incompatible with this image's

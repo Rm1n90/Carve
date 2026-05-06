@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 
 import { yoloeApi } from "@/api/yoloe";
+import type { YoloeOutputKind } from "@/api/yoloe";
 import type { ClassRow } from "@/api/classes";
 import {
   Dialog,
@@ -155,6 +156,12 @@ export function YoloeDialog({
   const [conf, setConf] = useState<number>(0.25);
   const [iou, setIou] = useState<number>(0.7);
   const [overwrite, setOverwrite] = useState<boolean>(false);
+  // YOLOE-seg always emits BOTH a bbox and a mask polygon for every
+  // detection. Saving both produces stacked duplicates per object,
+  // so the user picks ONE shape to commit. Default to polygons since
+  // the user shipped the *-seg checkpoints (full instance masks);
+  // bboxes are still one click away for projects that prefer them.
+  const [outputKind, setOutputKind] = useState<YoloeOutputKind>("polygon");
 
   // Active batch tracking
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
@@ -319,6 +326,7 @@ export function YoloeDialog({
             conf,
             iou,
             overwrite,
+            output_kind: outputKind,
           });
         }
         if (mode === "visual") {
@@ -334,6 +342,7 @@ export function YoloeDialog({
             conf,
             iou,
             overwrite,
+            output_kind: outputKind,
           });
         }
         return await yoloeApi.promptFreePredict(assetId, {
@@ -342,6 +351,7 @@ export function YoloeDialog({
           iou,
           max_detections: pfMaxDet || null,
           overwrite,
+          output_kind: outputKind,
         });
       }
       // Batch path — enqueue + return job_id (caller renders progress)
@@ -379,6 +389,7 @@ export function YoloeDialog({
         mode,
         params,
         overwrite,
+        output_kind: outputKind,
       });
       return { job_id: r.job_id };
     },
@@ -866,6 +877,47 @@ export function YoloeDialog({
                     data-testid="yoloe-iou"
                   />
                 </label>
+              </div>
+
+              {/* Output type — YOLOE-seg returns both bbox + mask polygon
+                  per detection. Pick ONE so each object becomes one
+                  annotation (not a stacked pair). */}
+              <div className="grid gap-1">
+                <span className="text-[11px] text-[color:var(--text-secondary)]">
+                  Save detections as
+                </span>
+                <div className="grid grid-cols-2 gap-1 p-1 rounded-[var(--radius-md)] bg-[var(--bg-subtle)]">
+                  {(
+                    [
+                      { v: "polygon" as const, label: "Polygon", sub: "Instance mask" },
+                      { v: "bbox" as const, label: "Box", sub: "Bounding rectangle" },
+                    ]
+                  ).map((opt) => {
+                    const active = outputKind === opt.v;
+                    return (
+                      <button
+                        key={opt.v}
+                        type="button"
+                        onClick={() => setOutputKind(opt.v)}
+                        data-testid={`yoloe-output-${opt.v}`}
+                        className={cn(
+                          "flex flex-col items-start gap-0 px-3 py-1.5 rounded-[var(--radius-sm)]",
+                          "text-left transition-all duration-[140ms]",
+                          active
+                            ? "bg-[var(--bg-elev)] shadow-[0_0_0_1px_var(--accent)]"
+                            : "hover:bg-[var(--bg-hover)]",
+                        )}
+                      >
+                        <span className="text-[12px] font-medium">
+                          {opt.label}
+                        </span>
+                        <span className="text-[10px] text-[color:var(--text-tertiary)]">
+                          {opt.sub}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <label className="flex items-center gap-2 text-[12.5px] text-[color:var(--text-primary)] cursor-pointer">

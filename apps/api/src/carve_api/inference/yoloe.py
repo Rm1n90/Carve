@@ -65,6 +65,20 @@ class YoloeMode(str, enum.Enum):
     prompt_free = "prompt_free"
 
 
+class YoloeOutputKind(str, enum.Enum):
+    """What annotation kind YOLOE-seg should commit per detection.
+
+    YOLOE-seg always returns BOTH a bounding box and an instance-mask
+    polygon for every detection. Persisting both produces two
+    overlapping annotations per object, which is rarely what the user
+    wants. The user picks one — either keep the boxes or keep the
+    polygons — and the persistence layer drops the other.
+    """
+
+    bbox = "bbox"
+    polygon = "polygon"
+
+
 # ---------------------------------------------------------------------------
 # Errors — re-use the model_service_* envelope shape so the api router maps
 # them to the same HTTP responses as YOLO/SAM.
@@ -324,6 +338,7 @@ def apply_yoloe_to_asset(
     overwrite: bool = False,
     min_confidence: float = 0.0,
     class_overrides: dict[int, uuid.UUID | None] | None = None,
+    output_kind: YoloeOutputKind = YoloeOutputKind.polygon,
 ) -> AutoAnnotateResult:
     """Run YOLOE on a single asset and persist new annotations.
 
@@ -346,51 +361,66 @@ def apply_yoloe_to_asset(
     def _bump_skipped(class_name: str) -> None:
         skipped_by_class[class_name] = skipped_by_class.get(class_name, 0) + 1
 
-    for idx, det in enumerate(result.get("detections", [])):
-        class_name = str(det.get("class_name", "") or "")
-        cls_id = resolve_class(class_name, idx)
-        if cls_id is None:
-            _bump_skipped(class_name or "<unknown>")
-            continue
-        score = float(det.get("confidence", det.get("score", 1.0)))
-        if score < min_confidence:
-            continue
-        b = det["bbox"]
-        new_anns.append(
-            Annotation(
-                task_id=task.id,
-                frame_id=frame_id,
-                class_id=cls_id,
-                kind=AnnotationKind.bbox,
-                geometry={"kind": "bbox", "x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]},
-                track_id=None,
-                created_by=actor.id,
-            )
-        )
+    # YOLOE-seg returns both boxes and polygons for the same detections.
+    # Commit only the user-selected output kind so a single object turns
+    # into a single annotation, not a stacked bbox+polygon pair. When
+    # the chosen kind is unavailable (rare — e.g. a future detection-only
+    # checkpoint), we fall through to the other kind so the user still
+    # gets results rather than a silent no-op.
+    have_polys = bool(result.get("polygons"))
+    have_dets = bool(result.get("detections"))
+    effective_kind = output_kind
+    if effective_kind is YoloeOutputKind.polygon and not have_polys and have_dets:
+        effective_kind = YoloeOutputKind.bbox
+    elif effective_kind is YoloeOutputKind.bbox and not have_dets and have_polys:
+        effective_kind = YoloeOutputKind.polygon
 
-    for idx, poly in enumerate(result.get("polygons", [])):
-        class_name = str(poly.get("class_name", "") or "")
-        cls_id = resolve_class(class_name, idx)
-        if cls_id is None:
-            _bump_skipped(class_name or "<unknown>")
-            continue
-        score = float(poly.get("confidence", poly.get("score", 1.0)))
-        if score < min_confidence:
-            continue
-        pts = [[float(p[0]), float(p[1])] for p in poly.get("points", [])]
-        if len(pts) < 3:
-            continue
-        new_anns.append(
-            Annotation(
-                task_id=task.id,
-                frame_id=frame_id,
-                class_id=cls_id,
-                kind=AnnotationKind.polygon,
-                geometry={"kind": "polygon", "points": pts},
-                track_id=None,
-                created_by=actor.id,
+    if effective_kind is YoloeOutputKind.bbox:
+        for idx, det in enumerate(result.get("detections", [])):
+            class_name = str(det.get("class_name", "") or "")
+            cls_id = resolve_class(class_name, idx)
+            if cls_id is None:
+                _bump_skipped(class_name or "<unknown>")
+                continue
+            score = float(det.get("confidence", det.get("score", 1.0)))
+            if score < min_confidence:
+                continue
+            b = det["bbox"]
+            new_anns.append(
+                Annotation(
+                    task_id=task.id,
+                    frame_id=frame_id,
+                    class_id=cls_id,
+                    kind=AnnotationKind.bbox,
+                    geometry={"kind": "bbox", "x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]},
+                    track_id=None,
+                    created_by=actor.id,
+                )
             )
-        )
+    else:  # polygon
+        for idx, poly in enumerate(result.get("polygons", [])):
+            class_name = str(poly.get("class_name", "") or "")
+            cls_id = resolve_class(class_name, idx)
+            if cls_id is None:
+                _bump_skipped(class_name or "<unknown>")
+                continue
+            score = float(poly.get("confidence", poly.get("score", 1.0)))
+            if score < min_confidence:
+                continue
+            pts = [[float(p[0]), float(p[1])] for p in poly.get("points", [])]
+            if len(pts) < 3:
+                continue
+            new_anns.append(
+                Annotation(
+                    task_id=task.id,
+                    frame_id=frame_id,
+                    class_id=cls_id,
+                    kind=AnnotationKind.polygon,
+                    geometry={"kind": "polygon", "points": pts},
+                    track_id=None,
+                    created_by=actor.id,
+                )
+            )
 
     overwrite_skipped = False
     if overwrite and frame_id is not None:

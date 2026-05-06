@@ -104,6 +104,16 @@ def predict_text(
     if not cleaned:
         raise ValueError("classes_empty")
     img = _bytes_to_rgb(image_bytes)
+    # v3.23.3 — defensive: Ultralytics' YOLOE.set_classes does
+    # ``sorted(list(self.model.names.values()))`` to compare current
+    # vs requested vocab. After a previous set_classes that very same
+    # ``self.model.names`` may have been overwritten as a list, which
+    # makes ``.values()`` raise AttributeError on the next call. Coerce
+    # to a dict here so the second-and-later calls always succeed.
+    inner = getattr(model, "model", None)
+    inner_names = getattr(inner, "names", None) if inner is not None else None
+    if inner is not None and isinstance(inner_names, (list, tuple)):
+        inner.names = {i: str(n) for i, n in enumerate(inner_names)}
     model.set_classes(cleaned)
     results = model.predict(img, conf=conf, iou=iou, verbose=False)[0]
     return _shape_results(results)
