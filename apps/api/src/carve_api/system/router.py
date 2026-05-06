@@ -21,7 +21,7 @@ from pydantic import BaseModel
 import psutil
 
 from carve_api.auth.models import User
-from carve_api.deps import get_current_user
+from carve_api.deps import get_current_admin_user, get_current_user
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -666,3 +666,41 @@ def get_system_info(
     _user: User = Depends(get_current_user),  # noqa: ARG001 — auth gate only
 ) -> SystemInfo:
     return _get_cached_system_info()
+
+
+# --------------------------------------------------------------------------
+# v3.22 — manual GPU unload from the System page.
+# Admin-only. Frees SAM (image + tracker sessions) and the FO1 sidecar.
+# --------------------------------------------------------------------------
+
+
+class UnloadModelsResponse(BaseModel):
+    sam_evicted: list[str]
+    sam_sessions_released: int
+    fo1_evicted: bool
+
+
+@router.post("/unload-models", response_model=UnloadModelsResponse)
+def unload_models_endpoint(
+    _user: User = Depends(get_current_admin_user),  # noqa: ARG001 — admin gate
+) -> UnloadModelsResponse:
+    """Force-free every model on the GPU. Idempotent.
+
+    Calls the model service's ``/sam/unload?which=all`` (drops the
+    image predictor singleton and every tracker session) and
+    ``/sam/vlm-fo1/unload`` (drops the FO1 sidecar's ~6 GB Qwen2.5-VL-3B
+    weights). Both calls are best-effort; the response reflects what
+    each side reported as actually evicted.
+    """
+    from carve_api.inference.model_client import (
+        sam_unload,
+        sam_vlm_fo1_unload,
+    )
+
+    sam_result = sam_unload(which="all")
+    fo1_evicted = sam_vlm_fo1_unload()
+    return UnloadModelsResponse(
+        sam_evicted=list(sam_result.get("evicted", [])),
+        sam_sessions_released=int(sam_result.get("sessions_released", 0)),
+        fo1_evicted=fo1_evicted,
+    )

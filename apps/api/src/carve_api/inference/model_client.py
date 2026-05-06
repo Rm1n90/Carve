@@ -228,6 +228,25 @@ def sam_text_prompt(
         return r.json()
 
 
+def sam_unload(which: str = "all") -> dict:
+    """POST /sam/unload — best-effort, never raises.
+
+    Frees SAM models (image predictor + tracker sessions) on the model
+    service. ``which`` is "image", "tracker", or "all". Used by the
+    System page's "Unload all models" button. Returns the model
+    service's response dict (empty on error so callers can still
+    inspect a uniform shape).
+    """
+    try:
+        with _client() as c:
+            r = c.post("/sam/unload", json={"which": which})
+            if r.status_code >= 400:
+                return {"evicted": [], "sessions_released": 0}
+            return r.json()
+    except Exception:  # noqa: BLE001 — best-effort cleanup, never propagate
+        return {"evicted": [], "sessions_released": 0}
+
+
 def sam_vlm_fo1_unload() -> bool:
     """POST /sam/vlm-fo1/unload — best-effort, never raises.
 

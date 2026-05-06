@@ -62,7 +62,17 @@ export interface SystemInfo {
   collected_at: string;
 }
 
+export interface UnloadModelsResponse {
+  sam_evicted: string[];
+  sam_sessions_released: number;
+  fo1_evicted: boolean;
+}
+
 export const systemApi = {
   info: async (): Promise<SystemInfo> =>
     (await api.get<SystemInfo>("/system/info")).data,
+  // v3.22 — admin-only manual unload. Returns what each subsystem
+  // (SAM image / SAM tracker / FO1 sidecar) actually evicted.
+  unloadModels: async (): Promise<UnloadModelsResponse> =>
+    (await api.post<UnloadModelsResponse>("/system/unload-models")).data,
 };

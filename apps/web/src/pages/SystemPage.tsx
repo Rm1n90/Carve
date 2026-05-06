@@ -1,18 +1,20 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
   Cpu,
   HardDrive,
   MemoryStick,
+  PowerOff,
   Server,
   Sparkles,
   Thermometer,
   Zap,
 } from "lucide-react";
 import { Badge, Card } from "@/components/ui";
+import { showToast } from "@/lib/toast";
 import {
   systemApi,
   type SystemCPUInfo,
@@ -21,6 +23,7 @@ import {
   type SystemInfo,
   type SystemMemoryInfo,
   type SystemOSInfo,
+  type UnloadModelsResponse,
 } from "@/api/system";
 
 // ---------------------------- Helpers ----------------------------
@@ -486,6 +489,81 @@ function SkeletonCard({ className = "" }: { className?: string }) {
   );
 }
 
+// ---------------------------- Models card ----------------------------
+//
+// v3.22 — admin button to manually unload every model from the GPU.
+// Frees the SAM image predictor + tracker sessions and the FO1
+// sidecar's Qwen2.5-VL-3B weights. Useful when the operator wants to
+// reclaim VRAM right away (e.g. before a heavy training run on the
+// same host) without waiting for the idle sweepers to fire.
+
+function ModelsCard() {
+  const qc = useQueryClient();
+  const mutation = useMutation<UnloadModelsResponse, Error, void>({
+    mutationFn: () => systemApi.unloadModels(),
+    onSuccess: (data) => {
+      const fragments: string[] = [];
+      if (data.sam_evicted.length > 0) {
+        fragments.push(`SAM: ${data.sam_evicted.join(", ")}`);
+      }
+      if (data.sam_sessions_released > 0) {
+        fragments.push(
+          `${data.sam_sessions_released} tracker session${
+            data.sam_sessions_released === 1 ? "" : "s"
+          }`,
+        );
+      }
+      if (data.fo1_evicted) fragments.push("VLM-FO1");
+      const detail =
+        fragments.length > 0 ? fragments.join(" · ") : "nothing was loaded";
+      showToast(`Models unloaded — ${detail}`, { variant: "success" });
+      // Force the GPU stats card to refresh immediately so the user
+      // can see VRAM drop without waiting for the 5s polling tick.
+      void qc.invalidateQueries({ queryKey: ["system", "info"] });
+    },
+    onError: (err) => {
+      showToast(
+        `Unload failed — ${err.message ?? "admin role required"}`,
+        { variant: "error" },
+      );
+    },
+  });
+
+  const busy = mutation.isPending;
+
+  return (
+    <Card variant="surface" radius="lg" className="p-6 grid gap-4">
+      <div className="flex items-start gap-3">
+        <PowerOff className="h-5 w-5 text-[color:var(--text-tertiary)]" aria-hidden />
+        <div className="grid gap-1 min-w-0">
+          <SectionLabel>GPU controls</SectionLabel>
+          <h2 className="text-[14.5px] font-medium text-[color:var(--text-primary)]">
+            Unload all models
+          </h2>
+          <p className="text-[12.5px] text-[color:var(--text-secondary)] max-w-[52ch]">
+            Free every model from VRAM right now: SAM image predictor,
+            SAM tracker sessions, and the VLM-FO1 sidecar. Models reload
+            lazily on the next request. Admin only.
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => mutation.mutate()}
+          disabled={busy}
+          data-testid="system-unload-models"
+          className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12.5px] font-medium text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          <PowerOff className="h-3.5 w-3.5" aria-hidden />
+          {busy ? "Unloading…" : "Unload all models"}
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+
 // ---------------------------- Page ----------------------------
 
 export function SystemPage() {
@@ -587,6 +665,7 @@ export function SystemPage() {
                 {data.gpus.map((gpu) => (
                   <GpuCard key={gpu.index} gpu={gpu} />
                 ))}
+                <ModelsCard />
               </div>
             ) : (
               <NoGpuCard />
