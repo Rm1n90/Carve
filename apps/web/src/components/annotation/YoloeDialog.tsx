@@ -745,17 +745,24 @@ export function YoloeDialog({
     <button
       type="button"
       data-testid="yoloe-open"
+      title="Find anything by text, visual example, or just look"
       className={cn(
-        "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-[var(--radius-pill)]",
-        "border border-[var(--border-subtle)] bg-[var(--bg-elev)]",
-        "text-[12px] text-[color:var(--text-primary)] font-medium",
+        // v3.24.5 — Smart Find pill matches the My Model (green) and
+        // Auto-Annotate (blue) primary CTAs in shape (h-8 px-3, full
+        // hover signature) so the three buttons read as a coherent
+        // set. Purple distinguishes it as the "open / explore /
+        // anything" tool. Tones are violet-500 / violet-600 — sit
+        // well with the PS Blue accent without clashing.
+        "inline-flex h-8 items-center gap-1.5 px-3 rounded-[var(--radius-pill)]",
+        "bg-[#8b5cf6] text-white text-[12.5px] font-medium tracking-[0.2px]",
+        "border border-[#8b5cf6]",
         "transition-all duration-[180ms] ease-out",
-        "hover:bg-[var(--bg-hover)] hover:border-[color:var(--accent)]",
-        "hover:shadow-[0_0_0_1px_var(--accent)] hover:scale-[1.02]",
+        "hover:bg-[#7c3aed] hover:border-white",
+        "hover:shadow-[0_0_0_2px_#8b5cf6] hover:scale-[1.05]",
         "active:opacity-60 active:scale-100",
       )}
     >
-      <ScanEye className="h-3.5 w-3.5 text-[color:var(--accent)]" />
+      <ScanEye className="h-3.5 w-3.5" />
       <span>Smart Find</span>
     </button>
   );
