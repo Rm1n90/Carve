@@ -483,6 +483,11 @@ class SamDecodeIn(BaseModel):
     # time so a box-then-click refinement loop reuses the embedding
     # cache (no SAM 3-only /sam/box-prompt round-trip).
     box: list[float] | None = None
+    # v3.22 — Douglas-Peucker tolerance for the returned polygon. The
+    # editor's "Polygon approximation points" slider sends this; the
+    # frontend converts its 0-100 range to a useful epsilon range.
+    # ``None`` lets the model service pick a default.
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
 
 
 class SamTextIn(BaseModel):
@@ -650,6 +655,7 @@ def sam_decode_endpoint(
             payload.points,
             payload.labels,
             box=payload.box,
+            epsilon_factor=payload.epsilon_factor,
         )
     except AppError as exc:
         raise _http(exc) from exc

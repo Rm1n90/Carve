@@ -60,6 +60,12 @@ export const samApi = {
     // a box-anchored mask with optional point refinement. Reuses the
     // embedding cache so a box-then-click flow does not re-encode.
     box?: [number, number, number, number] | null,
+    // v3.22 — Douglas-Peucker tolerance for the returned polygon
+    // (fraction of contour arc length). The editor's "Polygon
+    // approximation points" slider controls this; SamTool converts
+    // slider 0..100 -> epsilon and passes it here. ``null`` /
+    // ``undefined`` lets the model service pick its default.
+    epsilonFactor?: number | null,
   ): Promise<SamDecodeResult> => {
     const body: Record<string, unknown> = {
       image_hash: imageHash,
@@ -67,6 +73,7 @@ export const samApi = {
       labels,
     };
     if (box) body.box = box;
+    if (epsilonFactor != null) body.epsilon_factor = epsilonFactor;
     return (
       await api.post<SamDecodeResult>(
         `/assets/${assetId}/sam/decode`,

@@ -90,6 +90,13 @@ class DecodeIn(BaseModel):
     # time so a box-then-click refinement loop reuses the embedding
     # cache, without forcing the SAM 3-only /sam/box-prompt path.
     box: list[float] | None = None
+    # v3.22 — Douglas-Peucker simplification tolerance for the
+    # returned polygon (fraction of the contour arc length). When
+    # ``None`` the polygonize default is used. Surfaced as the
+    # "Polygon approximation points" slider in editor settings — the
+    # frontend converts slider 0-100 to a useful epsilon range, see
+    # apps/web/src/state/editorSettings.ts.
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
 
 
 class DecodeOut(BaseModel):
@@ -153,12 +160,36 @@ def decode(payload: DecodeIn) -> DecodeOut:
 
     pts = np.asarray(payload.points) if payload.points else np.zeros((0, 2), dtype=np.float32)
     lbl = np.asarray(payload.labels) if payload.labels else np.zeros((0,), dtype=np.int64)
+
+    # v3.22 — multimask semantics fix.
+    #
+    # Pre-fix: ``multimask_output=True`` was used unconditionally. SAM
+    # returns 3 candidate masks at different scales/granularities; we
+    # picked the highest-score one. That works for the very first
+    # positive click (gives a "best size" mask), but for every
+    # refinement click — especially when the user places a NEGATIVE
+    # point to exclude part of the mask — the highest-scoring candidate
+    # is often the broadest interpretation that ignores the negative.
+    # Users reported the negative click being "ignored".
+    #
+    # Fix: any refinement context (multi-point, any negative, or a
+    # box+points combo) uses ``multimask_output=False``. SAM then
+    # returns a single mask that integrates all click constraints
+    # rather than 3 alternative interpretations.
+    has_negative = bool(payload.labels) and 0 in payload.labels
+    is_refinement = (
+        len(payload.points) > 1
+        or has_negative
+        or (payload.box is not None and len(payload.points) > 0)
+    )
+    multimask = not is_refinement
+
     p = get_predictor()
     with autocast_ctx():
         masks, scores, _ = p.predict(
             point_coords=pts,
             point_labels=lbl,
-            multimask_output=True,
+            multimask_output=multimask,
             box=payload.box,
         )
 
@@ -169,7 +200,12 @@ def decode(payload: DecodeIn) -> DecodeOut:
     best = int(np.argmax(scores_np))
     best_mask = masks_np[best]
     counts, size = encode_mask_rle(best_mask)
-    polygon = mask_to_polygon(best_mask)
+    # v3.22 — pass the epsilon override through to polygonize. ``None``
+    # means "use the polygonize default".
+    if payload.epsilon_factor is not None:
+        polygon = mask_to_polygon(best_mask, epsilon_factor=payload.epsilon_factor)
+    else:
+        polygon = mask_to_polygon(best_mask)
     return DecodeOut(
         counts=counts,
         size=size,

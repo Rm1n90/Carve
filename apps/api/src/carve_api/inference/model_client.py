@@ -181,6 +181,8 @@ def sam_decode(
     points: list[list[int]],
     labels: list[int],
     box: list[float] | None = None,
+    *,
+    epsilon_factor: float | None = None,
 ) -> dict:
     """POST /sam/decode — returns {counts, size, score, polygon}.
 
@@ -188,6 +190,12 @@ def sam_decode(
     service so the editor's BBox-then-refine flow uses a single decode
     per click via the embedding cache instead of the SAM 3-only
     /sam/box-prompt round-trip.
+
+    v3.22 — ``epsilon_factor`` is the Douglas-Peucker tolerance for
+    polygon simplification, mapped from the editor's "Polygon
+    approximation points" slider. ``None`` lets the model service use
+    its default. Higher slider position → smaller epsilon → more
+    polygon vertices → faithful contours.
     """
     body: dict[str, object] = {
         "image_hash": image_hash,
@@ -196,6 +204,8 @@ def sam_decode(
     }
     if box is not None:
         body["box"] = box
+    if epsilon_factor is not None:
+        body["epsilon_factor"] = float(epsilon_factor)
     with _wrap_unreachable("sam_decode"), _client() as c:
         r = c.post("/sam/decode", json=body)
         if r.status_code >= 400:

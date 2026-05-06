@@ -1,8 +1,34 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useAnnotations } from "@/state/annotations";
+import { useEditorSettings } from "@/state/editorSettings";
 import { samApi, type SamDecodeResult, type SamPromptResult } from "@/api/sam";
 import { canDecodeLocally } from "@/canvas/sam/onnx";
 import type { Point } from "./BboxTool";
+
+/**
+ * Convert the editor's "Polygon approximation points" slider (0..100,
+ * default 50) into a Douglas-Peucker tolerance fraction the model
+ * service understands.
+ *
+ *   slider   0 → epsilon 0.01    (very coarse, ~5–10 vertices)
+ *   slider  50 → epsilon 0.001   (matches the legacy hardcoded default)
+ *   slider 100 → epsilon 0.0001  (faithful trace, many vertices)
+ *
+ * v3.22 — pre-fix this slider was stored in localStorage but never sent
+ * over the wire, so it had no visible effect. ``samApi.decode`` now
+ * forwards this value to /sam/decode → ``mask_to_polygon``.
+ */
+function epsilonFromSlider(slider: number): number {
+  const clamped = Math.max(0, Math.min(100, slider));
+  // Log-linear: 10**(-2 - 2*(slider/100)) = 0.01 * 0.01**(slider/100)
+  return Math.pow(10, -2 - 2 * (clamped / 100));
+}
+
+function currentEpsilonFactor(): number {
+  return epsilonFromSlider(
+    useEditorSettings.getState().polygonApproxPoints ?? 50,
+  );
+}
 
 /**
  * v3.5 Phase D/E — four input modalities for SAM:
@@ -218,6 +244,7 @@ export class SamTool {
         labels,
         ac.signal,
         box,
+        currentEpsilonFactor(),
       );
       if (ac.signal.aborted) return this.lastResult;
       this.lastResult = result;
@@ -285,6 +312,7 @@ export class SamTool {
         [],
         ac.signal,
         box,
+        currentEpsilonFactor(),
       );
       if (ac.signal.aborted) return this.lastResult;
       this.lastResult = result;
@@ -303,6 +331,7 @@ export class SamTool {
         [],
         ac.signal,
         box,
+        currentEpsilonFactor(),
       );
       if (ac.signal.aborted) return this.lastResult;
       this.lastResult = retry;
@@ -492,6 +521,7 @@ export class SamTool {
         labels,
         ac.signal,
         box,
+        currentEpsilonFactor(),
       );
       if (ac.signal.aborted) return this.lastResult;
       this.lastResult = result;
@@ -514,6 +544,7 @@ export class SamTool {
         labels,
         ac.signal,
         box,
+        currentEpsilonFactor(),
       );
       if (ac.signal.aborted) return this.lastResult;
       this.lastResult = retry;

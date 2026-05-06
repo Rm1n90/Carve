@@ -97,13 +97,17 @@ def sam_decode_with_hash(
     points: list[list[int]],
     labels: list[int],
     box: list[float] | None = None,
+    *,
+    epsilon_factor: float | None = None,
 ) -> dict:
     if len(points) != len(labels):
         raise SamModelFailed("points and labels must have equal length")
     if not points and box is None:
         raise SamModelFailed("at least one of points or box must be provided")
     try:
-        return sam_decode(image_hash, points, labels, box=box)
+        return sam_decode(
+            image_hash, points, labels, box=box, epsilon_factor=epsilon_factor,
+        )
     except ModelServiceError as exc:
         if exc.status_code == 409:
             raise SamEmbeddingMissing("embedding not loaded; call /sam/encode first") from exc
