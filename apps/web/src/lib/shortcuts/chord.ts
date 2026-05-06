@@ -128,6 +128,26 @@ export function matchChord(e: KeyboardEvent, chord: string): boolean {
   if (!chord) return false; // empty string is the "unbound" sentinel
   if (!isValidChord(chord)) return false;
 
+  // v3.24.2 — global shortcut suppression while ANY modal dialog is
+  // open. Radix Dialog primitives render with role="dialog" +
+  // data-state="open" while mounted; their presence means the user
+  // is interacting with a modal layer, so global editor shortcuts
+  // (frame nav, asset nav, save, undo, etc.) should NOT fire.
+  // Without this, opening the YOLOE / Auto / YOLO Predict dialog
+  // left the canvas as the keyboard target, so ArrowLeft/Right
+  // navigated the editor instead of doing nothing while the modal
+  // collected input.
+  // Esc still works because Radix attaches its own listener (not
+  // via this dispatcher), and dialog-internal shortcuts wired with
+  // local onKeyDown still work since they run on the dialog's own
+  // events before bubbling to window.
+  if (typeof document !== "undefined") {
+    const openDialog = document.querySelector(
+      '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]',
+    );
+    if (openDialog) return false;
+  }
+
   const target = e.target as HTMLElement | null;
   const inEditable =
     !!target &&
