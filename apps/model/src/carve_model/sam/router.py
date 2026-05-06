@@ -199,13 +199,26 @@ def decode(payload: DecodeIn) -> DecodeOut:
         raise HTTPException(status_code=500, detail="unexpected_predictor_output")
     best = int(np.argmax(scores_np))
     best_mask = masks_np[best]
-    counts, size = encode_mask_rle(best_mask)
-    # v3.22 — pass the epsilon override through to polygonize. ``None``
-    # means "use the polygonize default".
+
+    # v3.22 — clean the mask once (delete sub-pixel-wide spikes,
+    # keep only the largest connected component) so BOTH the RLE the
+    # editor renders AND the polygon derived from it come from the
+    # same de-spiked source. Without this the RLE overlay painted
+    # tendrils into excluded regions even when the polygon looked
+    # smooth.
+    from carve_model.sam.polygonize import cleanup_mask
+    cleaned = cleanup_mask(best_mask)
+
+    counts, size = encode_mask_rle(cleaned)
+    # The polygon doesn't need a second cleanup pass; pass kernel=0.
     if payload.epsilon_factor is not None:
-        polygon = mask_to_polygon(best_mask, epsilon_factor=payload.epsilon_factor)
+        polygon = mask_to_polygon(
+            cleaned,
+            epsilon_factor=payload.epsilon_factor,
+            cleanup_kernel=0,
+        )
     else:
-        polygon = mask_to_polygon(best_mask)
+        polygon = mask_to_polygon(cleaned, cleanup_kernel=0)
     return DecodeOut(
         counts=counts,
         size=size,

@@ -26,7 +26,7 @@ function epsilonFromSlider(slider: number): number {
 
 function currentEpsilonFactor(): number {
   return epsilonFromSlider(
-    useEditorSettings.getState().polygonApproxPoints ?? 50,
+    useEditorSettings.getState().polygonApproxPoints ?? 55,
   );
 }
 

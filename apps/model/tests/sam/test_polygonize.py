@@ -92,4 +92,4 @@ def test_higher_epsilon_factor_simplifies_more() -> None:
 
 def test_default_epsilon_constant_exposed() -> None:
     """Other modules import the constant; guard against accidental rename."""
-    assert DEFAULT_EPSILON_FACTOR == 0.0015
+    assert DEFAULT_EPSILON_FACTOR == 0.0008
