@@ -160,11 +160,10 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       window.dispatchEvent(new CustomEvent("carve:fit-to-screen"));
     }
   }, [currentFrameIdx, resetZoomOnFrameChange]);
-  // v2.9 P0-3: was `useState(true)` paired with dead `visibilityOn` /
-  // `onToggleVisibility` props on EditorToolbar. The visibility menu in
-  // the toolbar already drives `useTool.visibility.annotations`, so we
-  // read that here instead of holding a parallel flag.
-  const annotationsVisible = useTool((s) => s.visibility.annotations);
+  // v3.24.8 — ``visibility.annotations`` is consumed directly by
+  // AnnotationCanvas via ``useTool.getState().visibility`` (see
+  // AnnotationCanvas.tsx:1103) and by the right-rail footer toolbar.
+  // No page-level subscription needed any more.
   // v2.6 — Info dialog (CVAT-style task overview + per-class stats).
   // Aggregates from the in-memory annotations store; no extra API calls.
   const [infoOpen, setInfoOpen] = useState(false);
@@ -971,7 +970,16 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             <main
               className={cn(
                 "relative flex-1 min-w-0 bg-[var(--bg-canvas)]",
-                !annotationsVisible && "[&_.canvas-checker_*]:hidden",
+                // v3.24.8 — removed the broken CSS rule
+                // ``!annotationsVisible && "[&_.canvas-checker_*]:hidden"``
+                // It hid EVERY descendant of ``.canvas-checker`` —
+                // including the Pixi <canvas> element that renders the
+                // underlying image — so toggling "Hide annotations"
+                // also hid the image. The Pixi shape layer already
+                // respects ``visibility.annotations`` correctly
+                // (AnnotationCanvas.tsx:1103: each annotation graphic's
+                // ``.visible`` is set from ``visAnn``), so the CSS
+                // overlay was both redundant and incorrect.
               )}
             >
               <AnnotationCanvas
