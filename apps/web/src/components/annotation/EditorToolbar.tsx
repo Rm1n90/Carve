@@ -41,6 +41,7 @@ import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDial
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
 import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import { AutoAnnotateDialog } from "@/components/annotation/AutoAnnotateDialog";
+import { YoloeDialog } from "@/components/annotation/YoloeDialog";
 import { FrameExtractDialog } from "@/components/annotation/FrameExtractDialog";
 import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
@@ -2756,6 +2757,17 @@ export function EditorToolbar({
           YOLO predict button so users have one consistent place for
           "let the model help me". */}
       <AutoAnnotateDialog
+        assetId={assetId ?? null}
+        taskId={taskId}
+        classes={classesProp ?? []}
+        onSuccess={onAfterYoloPredict}
+      />
+
+      {/* v3.23 — YOLOE: Real-Time Seeing Anything. Three modes
+          (text / visual / prompt-free), supports both current asset
+          and all assets in task. The dialog is capability-gated and
+          renders nothing harmful when YOLOE isn't shipped. */}
+      <YoloeDialog
         assetId={assetId ?? null}
         taskId={taskId}
         classes={classesProp ?? []}

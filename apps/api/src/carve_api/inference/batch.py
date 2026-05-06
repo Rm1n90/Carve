@@ -437,6 +437,274 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
                 )
 
 
+# v3.23 — YOLOE batch (text / visual / prompt-free) over all assets in a task.
+# Reuses the same Redis progress hash + cooperative cancel pattern as the
+# YOLO and SAM auto-text batches so the frontend's BackgroundJobsBar +
+# polling overlay work uniformly.
+
+@dataclass
+class YoloeBatchPayload:
+    """Serialisable args for the YOLOE RQ job.
+
+    ``mode`` is the YoloeMode enum value as a string ("text", "visual",
+    "prompt_free"). All mode-specific params live in ``params`` as a
+    plain dict so RQ pickles cleanly across worker boundaries (the
+    YoloeMode enum is a str subclass so its ``.value`` round-trips
+    fine; we still re-build typed param objects in the worker).
+
+    For visual mode, ``params["refer_b64"]`` carries the base64-encoded
+    reference-image bytes the user supplied at enqueue time (the worker
+    re-uses one reference for every asset in the batch).
+    """
+
+    job_id: str
+    actor_id: str
+    task_id: str
+    mode: str
+    params: dict
+    overwrite: bool = False
+    min_confidence: float | None = None
+
+
+def build_yoloe_payload(
+    *,
+    actor: User,
+    task: Task,
+    mode: str,
+    params: dict,
+    overwrite: bool = False,
+    min_confidence: float | None = None,
+) -> YoloeBatchPayload:
+    return YoloeBatchPayload(
+        job_id=str(uuid.uuid4()),
+        actor_id=str(actor.id),
+        task_id=str(task.id),
+        mode=mode,
+        params=params,
+        overwrite=overwrite,
+        min_confidence=min_confidence,
+    )
+
+
+def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
+    """RQ job entry: run YOLOE over every asset in a task.
+
+    Mirrors ``run_batch_auto_annotate`` — single shared session, per-
+    asset commit, cooperative cancel between assets via the Redis
+    ``status`` flag. Per-asset failure increments ``failed`` and
+    appends a short reason; the rest of the batch keeps going.
+
+    Imports are inside the function so RQ workers without the full
+    FastAPI app stack still pickle/unpickle cleanly.
+    """
+    import base64 as _b64
+    import os
+    from typing import Any
+
+    import redis as _redis
+    from carve_api.db import get_session_factory
+    from carve_api.inference.autoannotate import fetch_asset_bytes
+    from carve_api.inference.yoloe import (
+        YoloeMode,
+        YoloePromptFreeParams,
+        YoloeTextParams,
+        YoloeVisualParams,
+        apply_yoloe_to_asset,
+    )
+
+    redis_client: Any = None
+    try:
+        redis_client = _redis.Redis(
+            host=os.environ.get("REDIS_HOST", "redis"),
+            port=int(os.environ.get("REDIS_PORT", "6379")),
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("yoloe_batch: redis init failed; running without progress")
+
+    try:
+        mode = YoloeMode(payload.mode)
+    except ValueError:
+        finalize_progress(redis_client, payload.job_id, status="failed")
+        return {"ok": False, "error": f"bad_mode:{payload.mode}"}
+
+    # Re-build typed params from the pickled dict.
+    p = payload.params or {}
+    typed_params: YoloeTextParams | YoloeVisualParams | YoloePromptFreeParams
+    try:
+        if mode is YoloeMode.text:
+            typed_params = YoloeTextParams(
+                classes=list(p.get("classes") or []),
+                conf=float(p.get("conf", 0.25)),
+                iou=float(p.get("iou", 0.7)),
+            )
+        elif mode is YoloeMode.visual:
+            typed_params = YoloeVisualParams(
+                refer_bytes=_b64.b64decode(p["refer_b64"]),
+                bboxes=[list(b) for b in p.get("bboxes") or []],
+                cls_indices=list(p.get("cls_indices") or []),
+                class_names=list(p.get("class_names") or []),
+                annotate_as_class_id=uuid.UUID(p["annotate_as_class_id"]),
+                conf=float(p.get("conf", 0.25)),
+                iou=float(p.get("iou", 0.7)),
+            )
+        else:  # prompt_free
+            ann_as = p.get("annotate_as_class_id")
+            typed_params = YoloePromptFreeParams(
+                annotate_as_class_id=uuid.UUID(ann_as) if ann_as else None,
+                conf=float(p.get("conf", 0.25)),
+                iou=float(p.get("iou", 0.7)),
+                max_detections=p.get("max_detections"),
+            )
+    except (KeyError, ValueError, TypeError) as exc:
+        log.exception("yoloe_batch: bad params")
+        finalize_progress(redis_client, payload.job_id, status="failed")
+        return {"ok": False, "error": f"bad_params:{exc}"}
+
+    actor_uuid = uuid.UUID(payload.actor_id)
+    task_uuid = uuid.UUID(payload.task_id)
+    min_conf = (
+        max(0.0, min(1.0, float(payload.min_confidence)))
+        if payload.min_confidence is not None
+        else 0.0
+    )
+
+    counts = {"done": 0, "failed": 0}
+    aggregates: dict = {
+        "total_annotations_created": 0,
+        "total_skipped_detections": 0,
+        "skipped_by_class": {},
+    }
+    errors: list[str] = []
+
+    session = get_session_factory()()
+    try:
+        actor = session.get(User, actor_uuid)
+        task = session.get(Task, task_uuid)
+        if actor is None or task is None:
+            finalize_progress(redis_client, payload.job_id, status="failed")
+            return {"ok": False, "error": "missing_actor_or_task"}
+
+        assets = _list_assets_for_task(session, task_uuid)
+        init_progress(redis_client, payload.job_id, total=len(assets))
+
+        canceled = False
+        for asset in assets:
+            if redis_client is not None:
+                try:
+                    cur_status = redis_client.hget(
+                        progress_key(payload.job_id), "status",
+                    )
+                    if isinstance(cur_status, bytes):
+                        cur_status = cur_status.decode("utf-8", errors="ignore")
+                    if cur_status == "canceled":
+                        canceled = True
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+
+            try:
+                # Videos: use the first extracted frame JPEG (idx=0) so
+                # the model service receives an image, not an mp4. Image
+                # assets feed their original blob.
+                frame_id = None
+                if getattr(asset, "kind", None) == "video":
+                    from carve_api.assets.models import Frame
+
+                    f = session.execute(
+                        select(Frame).where(Frame.asset_id == asset.id).order_by(Frame.idx).limit(1)
+                    ).scalar_one_or_none()
+                    if f is None:
+                        counts["failed"] += 1
+                        errors.append(f"{asset.original_name}: video_no_frames_extracted")
+                        update_progress(
+                            redis_client, payload.job_id, **counts,
+                            errors=errors[-50:], **aggregates,
+                        )
+                        continue
+                    frame_id = f.id
+                image_bytes = fetch_asset_bytes(asset, frame_id=frame_id)
+
+                aa_result = apply_yoloe_to_asset(
+                    session=session,
+                    actor=actor,
+                    task=task,
+                    asset=asset,
+                    image_bytes=image_bytes,
+                    mode=mode,
+                    params=typed_params,
+                    overwrite=payload.overwrite,
+                    min_confidence=min_conf,
+                )
+                session.commit()
+                counts["done"] += 1
+                created = int(getattr(aa_result, "annotations_created", 0) or 0)
+                skipped = int(getattr(aa_result, "skipped_count", 0) or 0)
+                aggregates["total_annotations_created"] += created
+                aggregates["total_skipped_detections"] += skipped
+                per_skipped = getattr(aa_result, "skipped_by_class", None)
+                if isinstance(per_skipped, dict):
+                    bucket: dict[str, int] = aggregates["skipped_by_class"]
+                    for k, v in per_skipped.items():
+                        try:
+                            n = int(v)
+                        except (TypeError, ValueError):
+                            continue
+                        if n <= 0:
+                            continue
+                        bucket[str(k)] = bucket.get(str(k), 0) + n
+            except AppError as exc:
+                try:
+                    session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                counts["failed"] += 1
+                errors.append(f"{asset.original_name}: {exc.code}")
+                log.warning(
+                    "yoloe_batch.asset.failed.app_error job_id=%s asset_id=%s code=%s",
+                    payload.job_id, asset.id, exc.code,
+                )
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                counts["failed"] += 1
+                errors.append(f"{asset.original_name}: {type(exc).__name__}")
+                log.exception(
+                    "yoloe_batch.asset.failed.unexpected job_id=%s asset_id=%s",
+                    payload.job_id, asset.id,
+                )
+
+            update_progress(
+                redis_client, payload.job_id, **counts,
+                errors=errors[-50:], **aggregates,
+            )
+
+        if canceled:
+            finalize_progress(redis_client, payload.job_id, status="canceled")
+            return {"ok": True, "canceled": True, **counts, **aggregates}
+        finalize_progress(
+            redis_client,
+            payload.job_id,
+            status="completed" if counts["failed"] == 0 else "completed_with_errors",
+        )
+        return {"ok": True, **counts, **aggregates}
+    finally:
+        session.close()
+
+
+def _list_assets_for_task(session: Session, task_id: uuid.UUID) -> list[Asset]:
+    """Internal alias used inside ``run_yoloe_batch`` to avoid the
+    forward-reference issue caused by inserting the worker above
+    ``list_assets_for_task`` in this file. Mirrors the public helper.
+    """
+    return list(
+        session.execute(
+            select(Asset).where(Asset.task_id == task_id).order_by(Asset.created_at)
+        ).scalars()
+    )
+
+
 def list_assets_for_task(session: Session, task_id: uuid.UUID) -> list[Asset]:
     return list(
         session.execute(

@@ -53,6 +53,9 @@ from carve_api.weights.models import Weight, WeightAssignment
 
 router = APIRouter(prefix="/assets", tags=["auto-annotate"])
 task_inference_router = APIRouter(prefix="/tasks", tags=["auto-annotate"])
+# v3.23 — YOLOE capability probe + (future) any non-asset/task scoped
+# endpoints. Mounted alongside the other two via main.py.
+inference_yoloe_router = APIRouter(prefix="/inference", tags=["yoloe"])
 
 
 def _redis_client_or_none() -> Redis | None:
@@ -981,3 +984,359 @@ def sam_track_release_endpoint(
         _track_release(session_id)
     except AppError as exc:
         raise _http(exc) from exc
+
+
+# ---------------------------------------------------------------------------
+# v3.23 — YOLOE: Real-Time Seeing Anything.
+#
+# Three sync per-asset endpoints (text / visual / prompt-free), one batch
+# enqueue + poll + cancel set, and a capability probe. The handlers are
+# thin wrappers around ``carve_api.inference.yoloe`` — same service-layer
+# split the YOLO and SAM paths use.
+# ---------------------------------------------------------------------------
+
+
+class YoloeStatusOut(BaseModel):
+    available: bool = False
+    text_available: bool = False
+    pf_available: bool = False
+    text_loaded: bool = False
+    pf_loaded: bool = False
+    device: str = "unknown"
+
+
+@inference_yoloe_router.get("/yoloe/status", response_model=YoloeStatusOut)
+def yoloe_status_endpoint(
+    user: User = Depends(get_current_user),  # noqa: ARG001 — auth gate only
+) -> YoloeStatusOut:
+    """Capability probe: hides the editor toolbar entry when YOLOE is off."""
+    from carve_api.inference.yoloe import get_status
+
+    return YoloeStatusOut(**get_status())
+
+
+class YoloeTextIn(BaseModel):
+    classes: list[str] = Field(..., min_length=1, max_length=100)
+    conf: float = Field(default=0.25, ge=0.0, le=1.0)
+    iou: float = Field(default=0.7, ge=0.0, le=1.0)
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    overwrite: bool = False
+    frame_id: uuid.UUID | None = None
+
+
+class YoloeVisualIn(BaseModel):
+    refer_b64: str = Field(..., min_length=1)
+    bboxes: list[list[float]] = Field(..., min_length=1, max_length=64)
+    cls_indices: list[int] = Field(default_factory=list)
+    class_names: list[str] = Field(default_factory=list, max_length=64)
+    annotate_as_class_id: uuid.UUID
+    conf: float = Field(default=0.25, ge=0.0, le=1.0)
+    iou: float = Field(default=0.7, ge=0.0, le=1.0)
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    overwrite: bool = False
+    frame_id: uuid.UUID | None = None
+
+
+class YoloePromptFreeIn(BaseModel):
+    annotate_as_class_id: uuid.UUID | None = None
+    conf: float = Field(default=0.25, ge=0.0, le=1.0)
+    iou: float = Field(default=0.7, ge=0.0, le=1.0)
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_detections: int | None = Field(default=None, ge=1, le=1000)
+    overwrite: bool = False
+    frame_id: uuid.UUID | None = None
+
+
+def _resolve_yoloe_asset_bytes(
+    asset: Asset, frame_id: uuid.UUID | None,
+) -> bytes:
+    """Fetch image bytes for YOLOE — first frame for videos when no
+    explicit frame_id is given."""
+    from carve_api.assets.models import Frame
+    from carve_api.db import get_session_factory
+    from carve_api.inference.autoannotate import fetch_asset_bytes
+
+    if frame_id is None and getattr(asset, "kind", None) == "video":
+        SessionLocal = get_session_factory()
+        with SessionLocal() as s:
+            f = s.execute(
+                select(Frame).where(Frame.asset_id == asset.id).order_by(Frame.idx).limit(1)
+            ).scalar_one_or_none()
+            if f is not None:
+                frame_id = f.id
+    return fetch_asset_bytes(asset, frame_id=frame_id)
+
+
+def _yoloe_response(
+    db: Session, result,  # noqa: ANN001 — AutoAnnotateResult
+) -> AutoAnnotateResponse:
+    db.commit()
+    return AutoAnnotateResponse(
+        annotations=[AnnotationOut.from_orm_annotation(a) for a in result.annotations],
+        annotations_created=result.annotations_created,
+        skipped_count=result.skipped_count,
+        skipped_by_class=dict(result.skipped_by_class),
+        overwrite_skipped=bool(result.overwrite_skipped),
+    )
+
+
+@router.post("/{asset_id}/yoloe/text", response_model=AutoAnnotateResponse)
+def yoloe_text_predict_endpoint(
+    asset_id: uuid.UUID,
+    payload: YoloeTextIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutoAnnotateResponse:
+    from carve_api.inference.yoloe import (
+        YoloeMode,
+        YoloeTextParams,
+        apply_yoloe_to_asset,
+    )
+
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        task = require_visible_task(db, user, asset.task_id)
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    image_bytes = _resolve_yoloe_asset_bytes(asset, payload.frame_id)
+    try:
+        result = apply_yoloe_to_asset(
+            session=db,
+            actor=user,
+            task=task,
+            asset=asset,
+            image_bytes=image_bytes,
+            mode=YoloeMode.text,
+            params=YoloeTextParams(
+                classes=payload.classes,
+                conf=payload.conf,
+                iou=payload.iou,
+            ),
+            overwrite=payload.overwrite,
+            min_confidence=payload.min_confidence,
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    return _yoloe_response(db, result)
+
+
+@router.post("/{asset_id}/yoloe/visual", response_model=AutoAnnotateResponse)
+def yoloe_visual_predict_endpoint(
+    asset_id: uuid.UUID,
+    payload: YoloeVisualIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutoAnnotateResponse:
+    import base64 as _b64
+
+    from carve_api.inference.yoloe import (
+        YoloeMode,
+        YoloeVisualParams,
+        apply_yoloe_to_asset,
+    )
+
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        task = require_visible_task(db, user, asset.task_id)
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    if len(payload.cls_indices) and len(payload.cls_indices) != len(payload.bboxes):
+        raise HTTPException(status_code=422, detail="bboxes_cls_length_mismatch")
+    cls_indices = payload.cls_indices or [0] * len(payload.bboxes)
+
+    try:
+        refer_bytes = _b64.b64decode(payload.refer_b64)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="bad_refer_b64") from exc
+
+    image_bytes = _resolve_yoloe_asset_bytes(asset, payload.frame_id)
+    try:
+        result = apply_yoloe_to_asset(
+            session=db,
+            actor=user,
+            task=task,
+            asset=asset,
+            image_bytes=image_bytes,
+            mode=YoloeMode.visual,
+            params=YoloeVisualParams(
+                refer_bytes=refer_bytes,
+                bboxes=payload.bboxes,
+                cls_indices=cls_indices,
+                class_names=payload.class_names,
+                annotate_as_class_id=payload.annotate_as_class_id,
+                conf=payload.conf,
+                iou=payload.iou,
+            ),
+            overwrite=payload.overwrite,
+            min_confidence=payload.min_confidence,
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    return _yoloe_response(db, result)
+
+
+@router.post("/{asset_id}/yoloe/prompt-free", response_model=AutoAnnotateResponse)
+def yoloe_prompt_free_predict_endpoint(
+    asset_id: uuid.UUID,
+    payload: YoloePromptFreeIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutoAnnotateResponse:
+    from carve_api.inference.yoloe import (
+        YoloeMode,
+        YoloePromptFreeParams,
+        apply_yoloe_to_asset,
+    )
+
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        task = require_visible_task(db, user, asset.task_id)
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    image_bytes = _resolve_yoloe_asset_bytes(asset, payload.frame_id)
+    try:
+        result = apply_yoloe_to_asset(
+            session=db,
+            actor=user,
+            task=task,
+            asset=asset,
+            image_bytes=image_bytes,
+            mode=YoloeMode.prompt_free,
+            params=YoloePromptFreeParams(
+                annotate_as_class_id=payload.annotate_as_class_id,
+                conf=payload.conf,
+                iou=payload.iou,
+                max_detections=payload.max_detections,
+            ),
+            overwrite=payload.overwrite,
+            min_confidence=payload.min_confidence,
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    return _yoloe_response(db, result)
+
+
+# ---------------------------------------------------------------------------
+# Batch (all assets in task) — async via RQ + Redis progress hash.
+# ---------------------------------------------------------------------------
+
+
+class YoloeBatchIn(BaseModel):
+    """Request body for ``POST /tasks/{task_id}/yoloe/batch``.
+
+    ``mode`` selects which YOLOE mode to run; ``params`` carries the
+    mode-specific config the worker needs to re-build typed param
+    objects:
+
+    * mode="text"        : ``{"classes": ["person", ...], "conf": 0.25, "iou": 0.7}``
+    * mode="visual"      : ``{"refer_b64": "...", "bboxes": [[x1,y1,x2,y2]],
+                              "cls_indices": [0,...], "class_names": [...],
+                              "annotate_as_class_id": "<uuid>", "conf": 0.25, "iou": 0.7}``
+    * mode="prompt_free" : ``{"annotate_as_class_id": "<uuid>" | None,
+                              "conf": 0.25, "iou": 0.7,
+                              "max_detections": int | None}``
+    """
+
+    mode: str = Field(..., pattern="^(text|visual|prompt_free)$")
+    params: dict = Field(default_factory=dict)
+    overwrite: bool = False
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+@task_inference_router.post("/{task_id}/yoloe/batch")
+def enqueue_yoloe_batch(
+    task_id: uuid.UUID,
+    payload: YoloeBatchIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from carve_api.inference.batch import build_yoloe_payload, run_yoloe_batch
+
+    try:
+        task = require_visible_task(db, user, task_id)
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    job_payload = build_yoloe_payload(
+        actor=user,
+        task=task,
+        mode=payload.mode,
+        params=payload.params,
+        overwrite=payload.overwrite,
+        min_confidence=payload.min_confidence,
+    )
+    try:
+        from rq import Queue
+
+        from carve_api.jobs.queue import enqueue_with_defaults
+
+        client = _redis_client_or_none()
+        if client is not None:
+            q = Queue("default", connection=client)
+            enqueue_with_defaults(
+                q,
+                run_yoloe_batch,
+                job_payload,
+                job_id=job_payload.job_id,
+                job_timeout=2 * 3600,
+            )
+    except Exception:  # noqa: BLE001 — same best-effort enqueue as the YOLO batch
+        pass
+    return {"job_id": job_payload.job_id}
+
+
+@task_inference_router.get(
+    "/{task_id}/yoloe/batch/{job_id}",
+    response_model=BatchAutoAnnotateProgress,
+)
+def get_yoloe_batch_progress(
+    task_id: uuid.UUID,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return read_progress(_redis_client_or_none(), job_id)
+
+
+@task_inference_router.post(
+    "/{task_id}/yoloe/batch/{job_id}/cancel",
+    status_code=202,
+)
+def cancel_yoloe_batch(
+    task_id: uuid.UUID,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    client = _redis_client_or_none()
+    if client is None:
+        raise HTTPException(status_code=503, detail="redis_unavailable")
+    try:
+        from carve_api.inference.batch import progress_key
+
+        client.hset(progress_key(job_id), "status", "canceled")
+    except Exception:
+        raise HTTPException(status_code=502, detail="cancel_failed") from None
+    _try_send_stop(client, job_id)
+    return {"job_id": job_id, "status": "canceled"}

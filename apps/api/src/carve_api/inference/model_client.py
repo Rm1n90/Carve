@@ -238,6 +238,117 @@ def sam_text_prompt(
         return r.json()
 
 
+# ---------------------------------------------------------------------------
+# YOLOE — Real-Time Seeing Anything (v3.23). Three predict modes (text,
+# visual, prompt-free) + a status probe + best-effort unload. Mirrors the
+# error-mapping conventions of the YOLO/SAM helpers above: 503 means the
+# model service is unreachable, 4xx/5xx surface as ``ModelServiceError``.
+# ---------------------------------------------------------------------------
+
+
+def yoloe_status() -> dict:
+    """GET /yoloe/status — capability probe.
+
+    Returns ``{"available": False, ...}`` when the model service is
+    reachable but YOLOE checkpoints aren't on disk. Raises
+    ``ModelServiceError(503)`` only when the model service itself is
+    unreachable, so callers can treat "yoloe disabled" and "model
+    service offline" distinctly.
+    """
+    with _wrap_unreachable("yoloe_status"), _client() as c:
+        r = c.get("/yoloe/status")
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def yoloe_text_predict(
+    image_b64: str,
+    classes: list[str],
+    *,
+    conf: float = 0.25,
+    iou: float = 0.7,
+) -> dict:
+    """POST /yoloe/text-predict — open-vocabulary detection + segmentation.
+
+    ``classes`` is the user-typed class list (e.g. ``["person", "bus"]``).
+    Returns ``{detections, polygons}`` matching the YOLO predict shape so
+    downstream class-mapping is reused.
+    """
+    body = {
+        "image_b64": image_b64,
+        "classes": classes,
+        "conf": float(conf),
+        "iou": float(iou),
+    }
+    with _wrap_unreachable("yoloe_text_predict"), _client() as c:
+        r = c.post("/yoloe/text-predict", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def yoloe_visual_predict(
+    target_b64: str,
+    refer_b64: str,
+    bboxes: list[list[float]],
+    cls_indices: list[int],
+    class_names: list[str],
+    *,
+    conf: float = 0.25,
+    iou: float = 0.7,
+) -> dict:
+    """POST /yoloe/visual-predict — reference-image visual prompting."""
+    body = {
+        "target_b64": target_b64,
+        "refer_b64": refer_b64,
+        "bboxes": bboxes,
+        "cls": cls_indices,
+        "class_names": class_names,
+        "conf": float(conf),
+        "iou": float(iou),
+    }
+    with _wrap_unreachable("yoloe_visual_predict"), _client() as c:
+        r = c.post("/yoloe/visual-predict", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def yoloe_prompt_free_predict(
+    image_b64: str,
+    *,
+    conf: float = 0.25,
+    iou: float = 0.7,
+    max_detections: int | None = None,
+) -> dict:
+    """POST /yoloe/prompt-free-predict — internal-vocabulary discovery."""
+    body: dict = {
+        "image_b64": image_b64,
+        "conf": float(conf),
+        "iou": float(iou),
+    }
+    if max_detections is not None:
+        body["max_detections"] = int(max_detections)
+    with _wrap_unreachable("yoloe_prompt_free_predict"), _client() as c:
+        r = c.post("/yoloe/prompt-free-predict", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def yoloe_unload() -> dict:
+    """POST /yoloe/unload — best-effort, never raises."""
+    try:
+        with _client() as c:
+            r = c.post("/yoloe/unload")
+            if r.status_code >= 400:
+                return {"evicted": []}
+            return r.json()
+    except Exception:  # noqa: BLE001 — best-effort cleanup, never propagate
+        return {"evicted": []}
+
+
 def sam_unload(which: str = "all") -> dict:
     """POST /sam/unload — best-effort, never raises.
 

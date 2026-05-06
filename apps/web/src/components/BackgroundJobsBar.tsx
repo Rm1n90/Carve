@@ -18,6 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, ChevronUp, Loader2, X, AlertTriangle } from "lucide-react";
 import { samApi } from "@/api/sam";
 import { inferenceApi } from "@/api/phase2";
+import { yoloeApi } from "@/api/yoloe";
 import { showToast } from "@/lib/toast";
 import {
   useBackgroundJobs,
@@ -69,6 +70,7 @@ const FRONTEND_KINDS: ReadonlySet<BackgroundJob["kind"]> = new Set([
 const EXPANDABLE_KINDS: ReadonlySet<BackgroundJob["kind"]> = new Set([
   "sam-auto-text",
   "yolo-predict-batch",
+  "yoloe-batch",
 ]);
 
 function usePollJob(job: BackgroundJob): PollResult {
@@ -86,6 +88,8 @@ function usePollJob(job: BackgroundJob): PollResult {
         return () => samApi.autoTextBatchProgress(job.taskId, job.jobId);
       case "yolo-predict-batch":
         return () => inferenceApi.pollBatchProgress(job.taskId, job.jobId);
+      case "yoloe-batch":
+        return () => yoloeApi.pollBatch(job.taskId, job.jobId);
       // Other kinds wire their own endpoint when they integrate.
       default:
         return async () => null;

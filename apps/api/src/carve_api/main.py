@@ -80,6 +80,12 @@ def create_app() -> FastAPI:
     from carve_api.inference.router import task_inference_router
     app.include_router(task_inference_router)
 
+    # v3.23 — YOLOE: Real-Time Seeing Anything. Mount at /inference/yoloe/*
+    # so the capability probe (and any future non-asset/task scoped YOLOE
+    # endpoints) live under a stable, predictable prefix.
+    from carve_api.inference.router import inference_yoloe_router
+    app.include_router(inference_yoloe_router)
+
     # Plan-09 task-05 — active-learning retrain endpoints.
     from carve_api.inference.retrain_router import router as retrain_router
     app.include_router(retrain_router)

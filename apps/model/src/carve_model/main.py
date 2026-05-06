@@ -10,6 +10,8 @@ from carve_model.sam.router import router as sam_router
 from carve_model.sam.track_router import router as sam_track_router
 from carve_model.sam.tracker import evict_idle_sessions
 from carve_model.yolo.router import router as yolo_router
+from carve_model.yoloe.registry import REGISTRY as _YOLOE_REGISTRY
+from carve_model.yoloe.router import router as yoloe_router
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +28,12 @@ def _sweep_loop() -> None:
         try:
             evict_predictor_if_idle()
             evict_idle_sessions()
+            # v3.23 — also free idle YOLOE checkpoints. Both the
+            # text+visual model (yoloe-26l-seg.pt) and the prompt-free
+            # model (yoloe-26l-seg-pf.pt) hold ~1 GB of GPU weights
+            # once loaded; idle eviction returns the GPU to the
+            # editor's SAM/YOLO traffic when YOLOE isn't in use.
+            _YOLOE_REGISTRY.evict_idle()
         except Exception:  # noqa: BLE001 — sweeper must never crash
             log.exception("sam idle sweeper iteration failed")
 
@@ -91,6 +99,29 @@ def _vlm_fo1_can_load(model_path: str) -> tuple[bool, str]:  # noqa: ARG001 — 
         )
 
 
+def _maybe_prewarm_yoloe() -> None:
+    """Optionally pre-load both YOLOE checkpoints at startup.
+
+    Default OFF: ``YOLOE_PREWARM=0`` keeps the lifespan fast and only
+    loads each checkpoint on its first request (~3 s). Set to ``1``
+    in production when YOLOE traffic is steady so the first user
+    request doesn't pay the load cost.
+
+    Failures here MUST NOT crash startup.
+    """
+    import os
+
+    if os.environ.get("YOLOE_PREWARM", "0").lower() not in ("1", "true", "yes"):
+        return
+    for key in ("text", "pf"):
+        try:
+            if _YOLOE_REGISTRY.is_available(key):  # type: ignore[arg-type]
+                _YOLOE_REGISTRY.get(key)  # type: ignore[arg-type]
+                log.info("yoloe.prewarm key=%s", key)
+        except Exception:  # noqa: BLE001 — prewarm is best-effort
+            log.exception("yoloe.prewarm key=%s failed", key)
+
+
 def _maybe_register_vlm_fo1() -> None:
     """Register the VLM-FO1 precision filter when the operator opts in
     AND the FO1 architecture is actually loadable.
@@ -151,6 +182,12 @@ async def _lifespan(_app: FastAPI):
     _hf_login_from_env()
     from carve_model.yolo.registry import install_default_loader
     install_default_loader()
+    # v3.23 — YOLOE has its own loader (Ultralytics' YOLOE class, not
+    # YOLO). Install at lifespan so the /yoloe/* endpoints can lazy-
+    # load the two checkpoints. Idempotent.
+    from carve_model.yoloe.registry import install_default_loader as _install_yoloe_loader
+    _install_yoloe_loader()
+    _maybe_prewarm_yoloe()
     _maybe_register_vlm_fo1()
     _SWEEPER_STOP.clear()
     t = threading.Thread(target=_sweep_loop, daemon=True, name="sam-sweeper")
@@ -174,8 +211,14 @@ def create_app() -> FastAPI:
 
     @app.get("/capabilities")
     def capabilities() -> dict:
+        models = ["yolo", "sam"]
+        # v3.23 — advertise YOLOE only when at least one checkpoint
+        # is on disk, so the api/frontend can hide UI when the
+        # operator hasn't shipped the weights.
+        if _YOLOE_REGISTRY.is_available("text") or _YOLOE_REGISTRY.is_available("pf"):
+            models.append("yoloe")
         return {
-            "models": ["yolo", "sam"],
+            "models": models,
             "device": get_device(),
         }
 
@@ -246,6 +289,7 @@ def create_app() -> FastAPI:
         return out
 
     app.include_router(yolo_router)
+    app.include_router(yoloe_router)
     app.include_router(sam_router)
     app.include_router(sam_track_router)
     return app
