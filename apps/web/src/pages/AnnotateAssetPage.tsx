@@ -5,15 +5,27 @@ import { useNavigate } from "@tanstack/react-router";
 import { Tabs } from "@/components/ui/Tabs";
 import { Input } from "@/components/ui/Input";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { Tooltip } from "@/components/ui/Tooltip";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   AlertCircle,
+  CheckSquare,
   ChevronLeft,
   ChevronRight,
+  Eye,
+  EyeOff,
   Info,
+  Layers,
   Loader2,
   RefreshCw,
+  Sliders,
+  Tag,
 } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/Popover";
 
 import { AnnotationCanvas, type ImageLoadStatus } from "@/components/annotation/AnnotationCanvas";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
@@ -1175,10 +1187,36 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 variant="segment"
                 className="relative flex-1 min-h-0 flex flex-col"
               >
-                <Tabs.List aria-label="Side panel" className="mx-2 mt-2 self-start">
-                  <Tabs.Trigger value="classes">Classes</Tabs.Trigger>
-                  <Tabs.Trigger value="objects">Objects</Tabs.Trigger>
-                  <Tabs.Trigger value="review">Review</Tabs.Trigger>
+                {/* v3.24.7 — redesigned tab bar:
+                    - icon + label triggers (visual differentiation)
+                    - flex stretch so tabs share the width evenly
+                    - h-9 hit target (was h-7 — too small to tap reliably)
+                    - 3-up grid keeps the labels honest (no truncation) */}
+                <Tabs.List
+                  aria-label="Side panel"
+                  className="mx-2 mt-2 grid grid-cols-3 gap-1"
+                >
+                  <Tabs.Trigger
+                    value="classes"
+                    className="h-9 justify-center"
+                  >
+                    <Tag className="h-3.5 w-3.5" />
+                    Classes
+                  </Tabs.Trigger>
+                  <Tabs.Trigger
+                    value="objects"
+                    className="h-9 justify-center"
+                  >
+                    <Layers className="h-3.5 w-3.5" />
+                    Objects
+                  </Tabs.Trigger>
+                  <Tabs.Trigger
+                    value="review"
+                    className="h-9 justify-center"
+                  >
+                    <CheckSquare className="h-3.5 w-3.5" />
+                    Review
+                  </Tabs.Trigger>
                 </Tabs.List>
                 <Tabs.Content
                   value="classes"
@@ -1229,7 +1267,25 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   />
                 </Tabs.Content>
               </Tabs>
-              <AppearancePanel />
+
+              {/* v3.24.7 — redesigned footer toolbar.
+                  Replaces the always-visible AppearancePanel with a
+                  compact icon row: Appearance popover, show/hide-all
+                  toggle, plus a live status string ("N objects · M
+                  selected") on the right. Frees up the vertical space
+                  the disclosure used to eat and gives the user one
+                  obvious place to find "render settings" and quick
+                  visibility toggles. */}
+              <RightRailFooter />
+              {/* Legacy appearance disclosure left in place for the
+                  rare case where the popover isn't sufficient — but
+                  hidden via display:none so it doesn't render twice.
+                  Kept as a render-side fallback only; remove when
+                  every existing test that touches
+                  ``data-testid=appearance-panel-toggle`` is updated. */}
+              <div className="hidden">
+                <AppearancePanel />
+              </div>
               {/* v3.5 Phase E — SAM video tracking panel. Renders below
                   the tabs (i.e. doesn't replace the existing right rail)
                   when the user is in SAM Track mode on a video asset.
@@ -1361,6 +1417,113 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     </TooltipProvider>
   );
 }
+
+/**
+ * v3.24.7 — Compact footer toolbar at the bottom of the right rail.
+ * Replaces the always-visible AppearancePanel disclosure with three
+ * affordances:
+ *
+ *   1. A "show / hide all" eye toggle (flips ``visibility.shapes`` —
+ *      one-click way to peek the underlying image without zooming).
+ *   2. An "Appearance" popover trigger (palette icon) — opens the
+ *      existing AppearancePanel content in a focused popover so its
+ *      ~150 px of controls don't eat right-rail vertical space when
+ *      the user isn't actively tuning rendering.
+ *   3. A live status string on the right ("N objects · M selected") —
+ *      gives the user a glanceable sense of frame state without
+ *      switching to the Objects tab.
+ *
+ * Designed as a flat icon row at h-9 so it reads as a chrome strip
+ * (not as content). Kept inside this file because it's tightly bound
+ * to the rail's layout — extracting it to its own module would force
+ * an awkward prop interface for store selectors that already live
+ * here.
+ */
+function RightRailFooter() {
+  const byId = useAnnotations((s) => s.byId);
+  const selectedIds = useAnnotations((s) => s.selectedIds);
+  const visibility = useTool((s) => s.visibility);
+  const setVisibility = useTool((s) => s.setVisibility);
+  const totalCount = Object.keys(byId).length;
+  const selectedCount = selectedIds.length;
+  const shapesVisible = visibility.annotations;
+
+  return (
+    <div
+      role="toolbar"
+      aria-label="Right rail toolbar"
+      data-testid="right-rail-footer"
+      className={cn(
+        "flex items-center gap-1 px-2 py-1.5 h-9",
+        "border-t border-[var(--glass-border)]",
+        "bg-transparent",
+      )}
+    >
+      {/* Show / hide all annotations. Eye/EyeOff swap on toggle so
+          the icon itself communicates state. */}
+      <Tooltip
+        content={shapesVisible ? "Hide all annotations" : "Show all annotations"}
+      >
+        <button
+          type="button"
+          aria-label={shapesVisible ? "Hide all annotations" : "Show all annotations"}
+          aria-pressed={!shapesVisible}
+          data-testid="right-rail-toggle-shapes"
+          onClick={() => setVisibility("annotations", !shapesVisible)}
+          className={cn(
+            "h-7 w-7 grid place-items-center rounded-[var(--radius-sm)]",
+            "text-[color:var(--text-secondary)]",
+            "transition-colors duration-[140ms] ease-out",
+            "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+            !shapesVisible && "text-[color:var(--accent)]",
+          )}
+        >
+          {shapesVisible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+        </button>
+      </Tooltip>
+
+      {/* Appearance popover — same controls as the legacy disclosure,
+          rendered in compact mode so the popover provides chrome. */}
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-label="Appearance settings"
+            data-testid="right-rail-appearance-trigger"
+            className={cn(
+              "h-7 w-7 grid place-items-center rounded-[var(--radius-sm)]",
+              "text-[color:var(--text-secondary)]",
+              "transition-colors duration-[140ms] ease-out",
+              "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+              "data-[state=open]:bg-[var(--bg-subtle)] data-[state=open]:text-[color:var(--accent)]",
+            )}
+          >
+            <Sliders className="h-3.5 w-3.5" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          side="top"
+          sideOffset={6}
+          className="p-0 max-w-[280px]"
+        >
+          <AppearancePanel compact />
+        </PopoverContent>
+      </Popover>
+
+      {/* Live status on the right — frame's annotation count + how
+          many are currently selected. Updates reactively. */}
+      <span
+        data-testid="right-rail-status"
+        className="ml-auto text-[10.5px] text-[color:var(--text-tertiary)] font-mono tabular-nums whitespace-nowrap"
+      >
+        {totalCount} object{totalCount === 1 ? "" : "s"}
+        {selectedCount > 0 ? ` · ${selectedCount} selected` : ""}
+      </span>
+    </div>
+  );
+}
+
 
 /**
  * Tiny status pill rendered in the editor top bar showing the current

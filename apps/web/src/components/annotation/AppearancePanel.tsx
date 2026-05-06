@@ -179,45 +179,31 @@ function CheckboxRow({
  * button + content pair. Functionally equivalent to a Radix Collapsible
  * for the simple expand/collapse interaction we need.
  */
-export function AppearancePanel() {
+interface AppearancePanelProps {
+  /** v3.24.7 — when true, renders the controls directly without the
+   *  expand/collapse disclosure header. Use this when the panel is
+   *  embedded inside a popover that already provides chrome. Default
+   *  is false (legacy in-rail layout with a collapsible header). */
+  compact?: boolean;
+}
+
+export function AppearancePanel(
+  { compact = false }: AppearancePanelProps = {},
+) {
   const settings = useEditorSettings();
   const set = useEditorSettings((s) => s.set);
   const [open, setOpen] = useState(true);
   const visibility = useTool((s) => s.visibility);
   const setVisibility = useTool((s) => s.setVisibility);
 
-  return (
-    <section
-      data-testid="appearance-panel"
-      aria-label="Appearance"
-      className="border-t border-[var(--glass-border)] bg-transparent"
+  // Shared content body — used by both the collapsible legacy layout
+  // and the compact popover layout. Pulled out of the JSX tree below
+  // so we can render it twice without duplicating the controls.
+  const body = (
+    <div
+      id="appearance-panel-content"
+      className={compact ? "grid gap-2 p-3 min-w-[240px]" : "px-2 pb-2 grid gap-1.5"}
     >
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls="appearance-panel-content"
-        onClick={() => setOpen((v) => !v)}
-        data-testid="appearance-panel-toggle"
-        className={cn(
-          "w-full flex items-center gap-1.5 px-2 py-1.5",
-          "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]",
-          "transition-colors duration-[180ms] ease-out",
-        )}
-      >
-        {open ? (
-          <ChevronDown className="h-3 w-3" />
-        ) : (
-          <ChevronRight className="h-3 w-3" />
-        )}
-        <span className="flex-1 text-left text-[11px] uppercase tracking-[0.08em] font-medium leading-none">
-          Appearance
-        </span>
-      </button>
-      {open && (
-        <div
-          id="appearance-panel-content"
-          className="px-2 pb-2 grid gap-1.5"
-        >
           {/* Color by — segmented control */}
           <div className="grid gap-0.5">
             <span className="text-[10.5px] text-[color:var(--text-secondary)]">
@@ -309,8 +295,56 @@ export function AppearancePanel() {
             disabledReason="Coming with skeleton/keypoint tools (v3)"
             testId="appearance-showProjections"
           />
+    </div>
+  );
+
+  // Compact mode: drop the disclosure header — the popover already
+  // provides the chrome (its own surround + arrow + close-on-outside).
+  if (compact) {
+    return (
+      <section
+        data-testid="appearance-panel"
+        aria-label="Appearance"
+        className="bg-transparent"
+      >
+        <div className="px-3 pt-2.5 pb-1 text-[10.5px] uppercase tracking-[0.08em] font-medium text-[color:var(--text-tertiary)]">
+          Appearance
         </div>
-      )}
+        {body}
+      </section>
+    );
+  }
+
+  // Legacy in-rail mode: collapsible disclosure (kept for back-compat
+  // even though the new right-rail layout drops this branch).
+  return (
+    <section
+      data-testid="appearance-panel"
+      aria-label="Appearance"
+      className="border-t border-[var(--glass-border)] bg-transparent"
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="appearance-panel-content"
+        onClick={() => setOpen((v) => !v)}
+        data-testid="appearance-panel-toggle"
+        className={cn(
+          "w-full flex items-center gap-1.5 px-2 py-1.5",
+          "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]",
+          "transition-colors duration-[180ms] ease-out",
+        )}
+      >
+        {open ? (
+          <ChevronDown className="h-3 w-3" />
+        ) : (
+          <ChevronRight className="h-3 w-3" />
+        )}
+        <span className="flex-1 text-left text-[11px] uppercase tracking-[0.08em] font-medium leading-none">
+          Appearance
+        </span>
+      </button>
+      {open && body}
     </section>
   );
 }
