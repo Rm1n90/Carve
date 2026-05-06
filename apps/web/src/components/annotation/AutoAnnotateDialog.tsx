@@ -101,10 +101,25 @@ export function AutoAnnotateDialog({
     if (!bgExpandRequest || !taskId) return;
     const job = bgJobs[bgExpandRequest];
     if (!job || job.taskId !== taskId) return;
+    // v3.22 fix — only claim SAM auto-text jobs. Without this filter
+    // both this dialog AND the YOLO BatchPredictProgressOverlay's
+    // listener match every expand request, racing each other to
+    // ``remove()`` + ``clearExpandRequest()``. Symptom: clicking
+    // Expand on a YOLO job opened the SAM dialog with stale state
+    // ("the dialog is bigger"), and the next Background click hit
+    // the wrong handler.
+    if (job.kind !== "sam-auto-text") return;
     setRunningJobId(bgExpandRequest);
     setOpen(true);
-    useBackgroundJobs.getState().remove(bgExpandRequest);
-    useBackgroundJobs.getState().clearExpandRequest();
+    // Defer store cleanup to a microtask so React's state batching
+    // commits ``runningJobId`` + ``open`` before any subscriber sees
+    // ``bgJobs`` change. Without the defer, Zustand's synchronous
+    // notify could trigger a tear-down render between the two
+    // setStates.
+    queueMicrotask(() => {
+      useBackgroundJobs.getState().remove(bgExpandRequest);
+      useBackgroundJobs.getState().clearExpandRequest();
+    });
   }, [bgExpandRequest, bgJobs, taskId]);
   // Plan-17 Phase 2 — opt-in post-processing for the SAM-text auto-
   // annotate output. SAM's auto-text produces polygons; the user can
@@ -457,21 +472,30 @@ export function AutoAnnotateDialog({
                     // v3.22 — minimize the dialog without canceling.
                     // Register the running job in the global background
                     // store so the floating <BackgroundJobsBar /> takes
-                    // over progress polling + cancel UX. The user can
-                    // expand back via the bar (see useEffect on
-                    // expandRequest below).
+                    // over progress polling + cancel UX.
                     const jobId = runningJobId!;
                     const cap = taskId;
-                    useBackgroundJobs.getState().add({
-                      jobId,
-                      taskId: cap,
-                      kind: "sam-auto-text",
-                      label: "SAM auto-annotate",
-                      startedAt: Date.now(),
-                      cancel: async () => {
-                        await samApi.autoTextBatchCancel(cap, jobId);
-                      },
-                    });
+                    // Only register the SAM batch if it's still running
+                    // — if we're already in post-process phase, the
+                    // polygon-convert job is in the store and the SAM
+                    // batch is done; re-registering would create a
+                    // bogus card.
+                    if (!samPostProgress) {
+                      useBackgroundJobs.getState().add({
+                        jobId,
+                        taskId: cap,
+                        kind: "sam-auto-text",
+                        label: "SAM auto-annotate",
+                        startedAt: Date.now(),
+                        cancel: async () => {
+                          await samApi.autoTextBatchCancel(cap, jobId);
+                        },
+                      });
+                    }
+                    // Reset stale state so the next time the dialog
+                    // opens (whether via Expand or a fresh run) it
+                    // doesn't render leftover post-process progress.
+                    setSamPostProgress(null);
                     setRunningJobId(null);
                     setOpen(false);
                     showToast("Running in background — progress shown bottom-right.", {

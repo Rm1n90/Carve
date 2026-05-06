@@ -61,6 +61,16 @@ const FRONTEND_KINDS: ReadonlySet<BackgroundJob["kind"]> = new Set([
   "sam-refine-batch",
 ]);
 
+// Kinds that have a corresponding dialog/overlay we can re-open via
+// expandRequest. Frontend-only kinds (polygon-convert, sam-refine-batch)
+// don't have a dedicated expanded view — they were the post-process
+// step inside another dialog. Hide the "Expand" button for those so
+// the operator doesn't get a non-functional control.
+const EXPANDABLE_KINDS: ReadonlySet<BackgroundJob["kind"]> = new Set([
+  "sam-auto-text",
+  "yolo-predict-batch",
+]);
+
 function usePollJob(job: BackgroundJob): PollResult {
   const setProgress = useBackgroundJobs((s) => s.setProgress);
   const isFrontend = FRONTEND_KINDS.has(job.kind);
@@ -247,16 +257,18 @@ function JobEntry({ job }: JobEntryProps) {
               <X className="h-3 w-3" aria-hidden />
               Cancel
             </button>
-            <button
-              type="button"
-              data-testid={`bg-job-expand-${job.jobId}`}
-              onClick={() => requestExpand(job.jobId)}
-              title="Expand to dialog"
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-[var(--radius-sm)] text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]"
-            >
-              <ChevronUp className="h-3 w-3" aria-hidden />
-              Expand
-            </button>
+            {EXPANDABLE_KINDS.has(job.kind) && (
+              <button
+                type="button"
+                data-testid={`bg-job-expand-${job.jobId}`}
+                onClick={() => requestExpand(job.jobId)}
+                title="Expand to dialog"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-[var(--radius-sm)] text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]"
+              >
+                <ChevronUp className="h-3 w-3" aria-hidden />
+                Expand
+              </button>
+            )}
           </>
         )}
         {!isRunning && (

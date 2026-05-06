@@ -425,8 +425,12 @@ const YoloPredictButton = forwardRef<
     if (!job || job.taskId !== taskId) return;
     if (job.kind !== "yolo-predict-batch") return;
     setBatchJobId(bgExpandRequest);
-    useBackgroundJobs.getState().remove(bgExpandRequest);
-    useBackgroundJobs.getState().clearExpandRequest();
+    // Defer the store cleanup so the React state commit completes
+    // before any subscriber sees the bgJobs change.
+    queueMicrotask(() => {
+      useBackgroundJobs.getState().remove(bgExpandRequest);
+      useBackgroundJobs.getState().clearExpandRequest();
+    });
   }, [bgExpandRequest, bgJobs, taskId]);
 
   // Persist confidence so the user's preferred threshold sticks across
