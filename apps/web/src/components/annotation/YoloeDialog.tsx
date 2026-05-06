@@ -284,14 +284,8 @@ export function YoloeDialog({
         const { [refId]: _drop, ...rest } = prev;
         return rest;
       }
-      const picked = Object.keys(prev).length;
-      if (picked >= 16) {
-        showToast("Up to 16 visual references per run.", {
-          variant: "info",
-          duration: 2500,
-        });
-        return prev;
-      }
+      // No client-side pick cap — YOLOE handles arbitrary numbers of
+      // visual prompts; Ultralytics caps were UI-protective only.
       // Pre-fill with the source annotation's project class when it
       // maps to one (i.e. the user clicked a bbox of class X — that
       // class becomes the target by default; one click less work).
@@ -334,11 +328,16 @@ export function YoloeDialog({
     [textRows],
   );
 
-  const visualGroupsCount = useMemo(
-    () =>
-      Object.values(visualAssign).filter((cid) => cid && cid.length > 0).length,
-    [visualAssign],
-  );
+  // Count DISTINCT project classes the picks resolve to — i.e. the
+  // number of YOLOE visual-prompt groups that will be sent. Picking
+  // 7 refs that all map to one class = 1 group, not 7.
+  const visualGroupsCount = useMemo(() => {
+    const distinct = new Set<string>();
+    for (const cid of Object.values(visualAssign)) {
+      if (cid && cid.length > 0) distinct.add(cid);
+    }
+    return distinct.size;
+  }, [visualAssign]);
 
   const canRun = useMemo(() => {
     if (!available) return false;
@@ -969,9 +968,11 @@ export function YoloeDialog({
                 )}
                 <p className="text-[10.5px] text-[color:var(--text-tertiary)]">
                   Pick one or more bbox/polygon refs and assign each to a
-                  project class. YOLOE finds visually similar objects across
-                  the target asset(s); refs sharing a class strengthen its
-                  visual signature.
+                  project class. Refs sharing a class strengthen its visual
+                  signature; YOLOE finds visually similar objects across the
+                  target asset(s). Picks come from <em>this asset only</em>{" "}
+                  — to mix references from several assets in one run, ask for
+                  multi-asset reference support.
                 </p>
               </div>
             )}

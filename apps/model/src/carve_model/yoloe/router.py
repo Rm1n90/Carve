@@ -48,9 +48,12 @@ class TextPredictIn(BaseModel):
 class VisualPredictIn(BaseModel):
     target_b64: str = Field(..., min_length=1)
     refer_b64: str = Field(..., min_length=1)
-    bboxes: list[list[float]] = Field(..., min_length=1, max_length=64)
-    cls: list[int] = Field(..., min_length=1, max_length=64)
-    class_names: list[str] = Field(default_factory=list, max_length=64)
+    # v3.23.7 — bumped from 64 to 256. YOLOE has no real limit on the
+    # number of visual prompts; the Pydantic cap is purely a guard
+    # against a runaway client and shouldn't bother legitimate use.
+    bboxes: list[list[float]] = Field(..., min_length=1, max_length=256)
+    cls: list[int] = Field(..., min_length=1, max_length=256)
+    class_names: list[str] = Field(default_factory=list, max_length=256)
     conf: float = Field(default=0.25, ge=0.0, le=1.0)
     iou: float = Field(default=0.7, ge=0.0, le=1.0)
 

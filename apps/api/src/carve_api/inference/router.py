@@ -1046,7 +1046,10 @@ class YoloeVisualGroupIn(BaseModel):
     """One (project class -> reference bbox(es)) group for visual mode."""
 
     class_id: uuid.UUID
-    bboxes: list[list[float]] = Field(..., min_length=1, max_length=32)
+    # 256 is comfortably above any realistic single-class reference
+    # count; the Pydantic cap exists only to guard against a runaway
+    # client. YOLOE itself has no fixed visual-prompt limit.
+    bboxes: list[list[float]] = Field(..., min_length=1, max_length=256)
 
 
 class YoloeVisualIn(BaseModel):
