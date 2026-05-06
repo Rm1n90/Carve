@@ -464,10 +464,10 @@ class YoloeBatchPayload:
     params: dict
     overwrite: bool = False
     min_confidence: float | None = None
-    # v3.23.3 — "bbox" or "polygon"; defaults to "polygon" so legacy
-    # pickled payloads (without this field) deserialise into the same
-    # behaviour the v3.23 batches used.
-    output_kind: str = "polygon"
+    # v3.23.4 — default flipped to "bbox" (previously "polygon"). Most
+    # flows commit boxes first and refine to polygons via SAM later.
+    # Older pickled payloads still deserialise via dataclass default.
+    output_kind: str = "bbox"
 
 
 def build_yoloe_payload(
@@ -478,7 +478,7 @@ def build_yoloe_payload(
     params: dict,
     overwrite: bool = False,
     min_confidence: float | None = None,
-    output_kind: str = "polygon",
+    output_kind: str = "bbox",
 ) -> YoloeBatchPayload:
     return YoloeBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -515,6 +515,8 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
         YoloeOutputKind,
         YoloePromptFreeParams,
         YoloeTextParams,
+        YoloeTextPrompt,
+        YoloeVisualGroup,
         YoloeVisualParams,
         apply_yoloe_to_asset,
     )
@@ -539,8 +541,26 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
     typed_params: YoloeTextParams | YoloeVisualParams | YoloePromptFreeParams
     try:
         if mode is YoloeMode.text:
+            # Each row is {"class_id": "<uuid>", "prompt": "<text>"}.
+            prompt_items = list(p.get("prompts") or [])
+            typed_prompts: list[YoloeTextPrompt] = []
+            for item in prompt_items:
+                if not isinstance(item, dict):
+                    continue
+                cid_raw = item.get("class_id")
+                pr = (item.get("prompt") or "").strip()
+                if not cid_raw or not pr:
+                    continue
+                typed_prompts.append(
+                    YoloeTextPrompt(class_id=uuid.UUID(str(cid_raw)), prompt=pr),
+                )
+            if not typed_prompts:
+                finalize_progress(
+                    redis_client, payload.job_id, status="failed",
+                )
+                return {"ok": False, "error": "prompts_empty"}
             typed_params = YoloeTextParams(
-                classes=list(p.get("classes") or []),
+                prompts=typed_prompts,
                 conf=float(p.get("conf", 0.25)),
                 iou=float(p.get("iou", 0.7)),
             )
@@ -572,12 +592,30 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                         refer_bytes_payload = _fetch(ra)
                     finally:
                         boot.close()
+            # Each row is {"class_id": "<uuid>", "bboxes": [[x1,y1,x2,y2], ...]}.
+            group_items = list(p.get("groups") or [])
+            typed_groups: list[YoloeVisualGroup] = []
+            for item in group_items:
+                if not isinstance(item, dict):
+                    continue
+                cid_raw = item.get("class_id")
+                bx = item.get("bboxes") or []
+                if not cid_raw or not bx:
+                    continue
+                typed_groups.append(
+                    YoloeVisualGroup(
+                        class_id=uuid.UUID(str(cid_raw)),
+                        bboxes=[list(b) for b in bx],
+                    ),
+                )
+            if not typed_groups:
+                finalize_progress(
+                    redis_client, payload.job_id, status="failed",
+                )
+                return {"ok": False, "error": "groups_empty"}
             typed_params = YoloeVisualParams(
+                groups=typed_groups,
                 refer_bytes=refer_bytes_payload,
-                bboxes=[list(b) for b in p.get("bboxes") or []],
-                cls_indices=list(p.get("cls_indices") or []),
-                class_names=list(p.get("class_names") or []),
-                annotate_as_class_id=uuid.UUID(p["annotate_as_class_id"]),
                 conf=float(p.get("conf", 0.25)),
                 iou=float(p.get("iou", 0.7)),
             )

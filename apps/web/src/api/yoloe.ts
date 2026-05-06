@@ -42,15 +42,32 @@ export interface YoloeAutoAnnotateResponse {
   overwrite_skipped: boolean;
 }
 
+export interface YoloeTextPromptItem {
+  class_id: string;
+  prompt: string;
+}
+
 export interface YoloeTextRequest {
-  classes: string[];
+  /** One row per (project class, prompt) pair. Multi-row lets the
+   *  user target several project classes in a single forward pass —
+   *  each detection is mapped back to its source class_id. */
+  prompts: YoloeTextPromptItem[];
   conf?: number;
   iou?: number;
   overwrite?: boolean;
   frame_id?: string | null;
-  /** "polygon" (default) commits instance masks; "bbox" commits boxes only.
-   *  YOLOE-seg returns both per detection; we keep one to avoid dupes. */
+  /** "bbox" (default) saves bounding boxes; "polygon" saves instance
+   *  masks. YOLOE-seg returns both per detection; we keep one to
+   *  avoid stacked-duplicate annotations. */
   output_kind?: YoloeOutputKind;
+}
+
+export interface YoloeVisualGroupItem {
+  /** Project class to attach every match found for this group. */
+  class_id: string;
+  /** xyxy bboxes inside the reference image. Multiple bboxes per
+   *  group strengthen the visual signature for that class. */
+  bboxes: [number, number, number, number][];
 }
 
 export interface YoloeVisualRequest {
@@ -59,10 +76,10 @@ export interface YoloeVisualRequest {
   /** Alternative to refer_b64: id of an asset whose bytes should be
    *  used as the reference image (the api fetches from MinIO). */
   refer_asset_id?: string;
-  bboxes: [number, number, number, number][];
-  cls_indices?: number[];
-  class_names?: string[];
-  annotate_as_class_id: string;
+  /** One group per project class. Within a group the user provides
+   *  1-N reference bboxes; YOLOE detects similar objects in the
+   *  target asset(s) and labels each match with the group's class_id. */
+  groups: YoloeVisualGroupItem[];
   conf?: number;
   iou?: number;
   overwrite?: boolean;

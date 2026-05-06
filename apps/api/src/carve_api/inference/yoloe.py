@@ -114,26 +114,62 @@ class YoloeBadRequest(AppError):
 
 
 @dataclass
+class YoloeTextPrompt:
+    """A single (project class -> text prompt) mapping for text mode.
+
+    The user picks a project class and writes a YOLOE text prompt that
+    describes what that class looks like. Multiple pairs per run let
+    the user target several project classes at once with one model
+    forward pass.
+    """
+
+    class_id: uuid.UUID
+    prompt: str
+
+
+@dataclass
 class YoloeTextParams:
-    classes: list[str]
+    """Text-prompt config — list of (class, prompt) entries.
+
+    The model service runs a single ``set_classes(unique_prompts)``
+    plus a single ``predict``. Detections come back tagged with the
+    prompt string, which the persistence layer maps back to the
+    project class via the prompt -> class_id table built here.
+    """
+
+    prompts: list[YoloeTextPrompt]
     conf: float = 0.25
     iou: float = 0.7
 
 
 @dataclass
-class YoloeVisualParams:
-    """Visual-prompt config.
+class YoloeVisualGroup:
+    """One (project class -> reference bbox(es)) group for visual mode.
 
-    ``refer_bytes`` is optional: when ``None`` (the v1 single-asset
-    flow), the target asset's own bytes are used as the reference. This
-    matches the Ultralytics "use the same image as reference" pattern
-    and saves the frontend a round-trip through MinIO.
+    The user picks 1-N reference bboxes from the source image and
+    assigns them to a project class. YOLOE finds visually similar
+    objects in the target image(s) and labels each match with the
+    group index. The persistence layer maps the group index back to
+    ``class_id``.
     """
 
-    bboxes: list[list[float]]
-    cls_indices: list[int]
-    class_names: list[str]
-    annotate_as_class_id: uuid.UUID
+    class_id: uuid.UUID
+    bboxes: list[list[float]]  # xyxy (image-space pixels)
+
+
+@dataclass
+class YoloeVisualParams:
+    """Visual-prompt config — list of class-keyed reference groups.
+
+    Multiple groups in a single run let the user say "objects that
+    look like THESE bboxes are class A; objects that look like THOSE
+    are class B" — YOLOE handles this via its ``cls`` index array.
+
+    ``refer_bytes`` is optional: when ``None`` (the v1 single-asset
+    flow), the target asset's own bytes are used as the reference.
+    """
+
+    groups: list[YoloeVisualGroup]
     refer_bytes: bytes | None = None
     conf: float = 0.25
     iou: float = 0.7
@@ -216,40 +252,79 @@ def predict_for_asset(
     image_b64 = _b64(image_bytes)
     if mode is YoloeMode.text:
         assert isinstance(params, YoloeTextParams)
-        cleaned = [c.strip() for c in params.classes if c and c.strip()]
-        if not cleaned:
-            raise YoloeBadRequest("classes_empty")
-        return _wrap_predict_errors(
+        # Dedupe prompts (case-sensitive) while remembering which
+        # project class each unique prompt came from. If the same
+        # prompt is supplied for two different classes (unusual but
+        # possible), the first wins — second is skipped at persist.
+        unique_prompts: list[str] = []
+        prompt_to_class_id: dict[str, uuid.UUID] = {}
+        for entry in params.prompts:
+            p = (entry.prompt or "").strip()
+            if not p:
+                continue
+            if p not in prompt_to_class_id:
+                unique_prompts.append(p)
+                prompt_to_class_id[p] = entry.class_id
+        if not unique_prompts:
+            raise YoloeBadRequest("prompts_empty")
+        result = _wrap_predict_errors(
             "yoloe/text-predict",
             lambda: yoloe_text_predict(
-                image_b64, cleaned, conf=params.conf, iou=params.iou,
+                image_b64, unique_prompts, conf=params.conf, iou=params.iou,
             ),
         )
+        # Stash the resolver into the dict so apply_yoloe_to_asset
+        # can map detection.class_name (= the prompt string) back to
+        # a project class id without re-deduping.
+        result["_prompt_to_class_id"] = prompt_to_class_id
+        return result
     if mode is YoloeMode.visual:
         assert isinstance(params, YoloeVisualParams)
-        if not params.bboxes:
+        if not params.groups or not any(g.bboxes for g in params.groups):
             raise YoloeBadRequest("bboxes_empty")
-        # When the caller didn't supply a separate reference image, use
-        # the target image as the reference. The model service's
-        # predict_visual now omits the ``refer_image`` kwarg when
-        # target == reference (Ultralytics canonical path).
         refer_bytes = (
             params.refer_bytes
             if params.refer_bytes is not None
             else image_bytes
         )
-        return _wrap_predict_errors(
+        # Flatten groups into the YOLOE wire shape: parallel bboxes /
+        # cls arrays, plus class_names indexed by group. We use the
+        # group's class_id (as a string) as the unique token so the
+        # persistence-layer resolver can look it up directly.
+        flat_bboxes: list[list[float]] = []
+        flat_cls: list[int] = []
+        class_name_tokens: list[str] = []
+        cls_index_to_class_id: dict[int, uuid.UUID] = {}
+        for group_idx, g in enumerate(params.groups):
+            if not g.bboxes:
+                continue
+            token = str(g.class_id)
+            class_name_tokens.append(token)
+            cls_index_to_class_id[group_idx] = g.class_id
+            for b in g.bboxes:
+                flat_bboxes.append(list(b))
+                flat_cls.append(group_idx)
+        if not flat_bboxes:
+            raise YoloeBadRequest("bboxes_empty")
+        result = _wrap_predict_errors(
             "yoloe/visual-predict",
             lambda: yoloe_visual_predict(
                 image_b64,
                 _b64(refer_bytes),
-                params.bboxes,
-                params.cls_indices,
-                params.class_names,
+                flat_bboxes,
+                flat_cls,
+                class_name_tokens,
                 conf=params.conf,
                 iou=params.iou,
             ),
         )
+        # Two equivalent resolvers — the persistence layer prefers
+        # the cls-index path (more robust than name-string parsing).
+        result["_cls_index_to_class_id"] = cls_index_to_class_id
+        result["_token_to_class_id"] = {
+            str(cid): cid for cid in cls_index_to_class_id.values()
+        }
+        return result
     if mode is YoloeMode.prompt_free:
         assert isinstance(params, YoloePromptFreeParams)
         return _wrap_predict_errors(
@@ -283,47 +358,62 @@ def _resolver_for_mode(
     mode: YoloeMode,
     params: YoloeTextParams | YoloeVisualParams | YoloePromptFreeParams,
     project_classes: list[Class],
-    class_overrides: dict[int, uuid.UUID | None] | None,
+    result: dict,
 ):
-    """Return a function that maps a YOLOE detection's class_name + index
-    to a project class id (or ``None`` to skip the detection)."""
-    classes_by_name = {c.name.lower(): c.id for c in project_classes}
-    valid_class_ids = {c.id for c in project_classes}
+    """Return a function that maps a YOLOE detection's class_name to a
+    project class id (or ``None`` to skip the detection).
 
-    overrides_by_idx: dict[int, uuid.UUID | None] = {}
-    if class_overrides:
-        for idx, cid in class_overrides.items():
-            if cid is not None and cid not in valid_class_ids:
-                continue
-            overrides_by_idx[idx] = cid
+    Each mode supplies its own resolver source built into ``result``
+    by ``predict_for_asset``:
+
+    * text mode: ``_prompt_to_class_id[detection.class_name]`` —
+      detection.class_name is exactly the prompt string we sent in
+      ``set_classes``.
+    * visual mode: ``_token_to_class_id[detection.class_name]`` —
+      detection.class_name is the str(class_id) token we wired
+      through ``class_names``.
+    * prompt-free mode: pinned to ``annotate_as_class_id`` if set,
+      else fall back to case-insensitive name-match against the
+      project's classes.
+    """
+    valid_class_ids = {c.id for c in project_classes}
+    classes_by_name = {c.name.lower(): c.id for c in project_classes}
+
+    if mode is YoloeMode.text:
+        prompt_to_class_id: dict[str, uuid.UUID] = result.get(
+            "_prompt_to_class_id", {},
+        )
+
+        def _text_resolver(class_name: str, _det_idx: int) -> uuid.UUID | None:
+            cid = prompt_to_class_id.get(class_name)
+            return cid if cid in valid_class_ids else None
+
+        return _text_resolver
 
     if mode is YoloeMode.visual:
-        assert isinstance(params, YoloeVisualParams)
-        target_id = params.annotate_as_class_id
+        token_to_class_id: dict[str, uuid.UUID] = result.get(
+            "_token_to_class_id", {},
+        )
 
-        # Visual mode pins every detection onto one project class.
-        def _visual_resolver(_class_name: str, _det_idx: int) -> uuid.UUID | None:
-            return target_id if target_id in valid_class_ids else None
+        def _visual_resolver(class_name: str, _det_idx: int) -> uuid.UUID | None:
+            cid = token_to_class_id.get(class_name)
+            return cid if cid in valid_class_ids else None
 
         return _visual_resolver
 
-    if mode is YoloeMode.prompt_free:
-        assert isinstance(params, YoloePromptFreeParams)
-        target_id = params.annotate_as_class_id
-        if target_id is not None:
-            def _pf_pinned(_class_name: str, _det_idx: int) -> uuid.UUID | None:
-                return target_id if target_id in valid_class_ids else None
+    # prompt_free
+    assert isinstance(params, YoloePromptFreeParams)
+    target_id = params.annotate_as_class_id
+    if target_id is not None:
+        def _pf_pinned(_class_name: str, _det_idx: int) -> uuid.UUID | None:
+            return target_id if target_id in valid_class_ids else None
 
-            return _pf_pinned
+        return _pf_pinned
 
-    # text mode (and prompt_free without a pinned class): name-match,
-    # honouring per-index overrides for text mode.
-    def _name_resolver(class_name: str, det_idx: int) -> uuid.UUID | None:
-        if det_idx in overrides_by_idx:
-            return overrides_by_idx[det_idx]
+    def _pf_name_resolver(class_name: str, _det_idx: int) -> uuid.UUID | None:
         return classes_by_name.get(class_name.lower())
 
-    return _name_resolver
+    return _pf_name_resolver
 
 
 def apply_yoloe_to_asset(
@@ -337,8 +427,7 @@ def apply_yoloe_to_asset(
     params: YoloeTextParams | YoloeVisualParams | YoloePromptFreeParams,
     overwrite: bool = False,
     min_confidence: float = 0.0,
-    class_overrides: dict[int, uuid.UUID | None] | None = None,
-    output_kind: YoloeOutputKind = YoloeOutputKind.polygon,
+    output_kind: YoloeOutputKind = YoloeOutputKind.bbox,
 ) -> AutoAnnotateResult:
     """Run YOLOE on a single asset and persist new annotations.
 
@@ -349,9 +438,9 @@ def apply_yoloe_to_asset(
     project_classes = list(
         session.execute(select(Class).where(Class.project_id == task.project_id)).scalars()
     )
-    resolve_class = _resolver_for_mode(mode, params, project_classes, class_overrides)
 
     result = predict_for_asset(image_bytes, mode, params)
+    resolve_class = _resolver_for_mode(mode, params, project_classes, result)
 
     frame_id = _resolve_frame_id(session, asset)
 

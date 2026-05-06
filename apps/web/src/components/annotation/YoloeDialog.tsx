@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Loader2,
+  Plus,
   ScanEye,
   Sparkles,
   Type,
@@ -101,6 +102,9 @@ interface VisualReference {
   xyxy: [number, number, number, number];
   /** Project class name attached to the source annotation, or "<unmapped>". */
   className: string;
+  /** Project class id of the source annotation (used as the default
+   *  "annotate matches as" pick when the user toggles the ref). */
+  sourceClassId: string;
   /** Project class color (CSS color string), or a neutral fallback. */
   color: string;
 }
@@ -137,16 +141,27 @@ export function YoloeDialog({
   const [mode, setMode] = useState<YoloeMode>("text");
   const [scope, setScope] = useState<Scope>("this");
 
-  // Text mode state
-  const [classChips, setClassChips] = useState<string[]>([]);
-  const [classInput, setClassInput] = useState("");
+  // Text mode state — list of (project class, prompt) rows. Default
+  // to a single empty row so the user immediately sees the shape of
+  // the input. Rows can be added / removed; each row's class can be
+  // re-picked independently of the prompt.
+  interface TextRow {
+    rid: string; // local React key
+    classId: string;
+    prompt: string;
+  }
+  const [textRows, setTextRows] = useState<TextRow[]>(() => [
+    { rid: `r-${Date.now()}`, classId: "", prompt: "" },
+  ]);
 
-  // Visual mode state — the user picks one or more existing annotations
-  // (bbox or polygon) as visual references; v1 supports up to 8 picks.
-  const [visualSelected, setVisualSelected] = useState<Set<string>>(
-    () => new Set(),
+  // Visual mode state — for each picked annotation reference, the user
+  // assigns a project class. The dialog auto-groups by class_id when
+  // building the YOLOE wire payload (one group per project class).
+  // Selection-set is implicit in this map's keys; null means "picked
+  // but no class chosen yet" → blocks Run.
+  const [visualAssign, setVisualAssign] = useState<Record<string, string>>(
+    () => ({}),
   );
-  const [visualClassId, setVisualClassId] = useState<string>("");
 
   // Prompt-free mode state
   const [pfClassId, setPfClassId] = useState<string>("");
@@ -158,10 +173,9 @@ export function YoloeDialog({
   const [overwrite, setOverwrite] = useState<boolean>(false);
   // YOLOE-seg always emits BOTH a bbox and a mask polygon for every
   // detection. Saving both produces stacked duplicates per object,
-  // so the user picks ONE shape to commit. Default to polygons since
-  // the user shipped the *-seg checkpoints (full instance masks);
-  // bboxes are still one click away for projects that prefer them.
-  const [outputKind, setOutputKind] = useState<YoloeOutputKind>("polygon");
+  // so the user picks ONE shape to commit. Default to bboxes — most
+  // workflows annotate boxes first and refine to polygons later.
+  const [outputKind, setOutputKind] = useState<YoloeOutputKind>("bbox");
 
   // Active batch tracking
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
@@ -188,6 +202,7 @@ export function YoloeDialog({
         sourceKind: a.kind as "bbox" | "polygon",
         xyxy,
         className: cls?.name ?? "<unmapped>",
+        sourceClassId: a.classId,
         color: cls?.color ?? "#9ca3af",
       });
     }
@@ -243,64 +258,102 @@ export function YoloeDialog({
     }
   }, [open, statusQ.data, mode, textAvailable, pfAvailable]);
 
-  function addChip(raw: string) {
-    const cleaned = raw.trim();
-    if (!cleaned) return;
-    setClassChips((prev) =>
-      prev.includes(cleaned) ? prev : [...prev, cleaned],
-    );
-    setClassInput("");
+  // Text mode row helpers
+  function addTextRow() {
+    setTextRows((prev) => [
+      ...prev,
+      { rid: `r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, classId: "", prompt: "" },
+    ]);
   }
-  function removeChip(c: string) {
-    setClassChips((prev) => prev.filter((x) => x !== c));
+  function removeTextRow(rid: string) {
+    setTextRows((prev) =>
+      prev.length === 1 ? prev : prev.filter((r) => r.rid !== rid),
+    );
+  }
+  function patchTextRow(rid: string, patch: Partial<TextRow>) {
+    setTextRows((prev) =>
+      prev.map((r) => (r.rid === rid ? { ...r, ...patch } : r)),
+    );
   }
 
-  function toggleVisual(id: string) {
-    setVisualSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else if (next.size < 8) {
-        next.add(id);
-      } else {
-        showToast("Up to 8 visual references per run.", {
+  // Visual selection helpers — toggle picked-state by adding/removing
+  // the ref id from the assignment map.
+  function toggleVisual(refId: string) {
+    setVisualAssign((prev) => {
+      if (refId in prev) {
+        const { [refId]: _drop, ...rest } = prev;
+        return rest;
+      }
+      const picked = Object.keys(prev).length;
+      if (picked >= 16) {
+        showToast("Up to 16 visual references per run.", {
           variant: "info",
           duration: 2500,
         });
+        return prev;
       }
-      return next;
+      // Pre-fill with the source annotation's project class when it
+      // maps to one (i.e. the user clicked a bbox of class X — that
+      // class becomes the target by default; one click less work).
+      const sourceClassId =
+        visualReferences.find((r) => r.id === refId)?.sourceClassId ?? "";
+      return { ...prev, [refId]: sourceClassId };
     });
   }
-
-  function buildVisualPayload(): {
-    bboxes: [number, number, number, number][];
-    cls_indices: number[];
-    class_names: string[];
-  } | null {
-    if (visualSelected.size === 0) return null;
-    const ordered = visualReferences.filter((r) => visualSelected.has(r.id));
-    if (ordered.length === 0) return null;
-    return {
-      bboxes: ordered.map((r) => r.xyxy),
-      // Sequential 0..N as Ultralytics requires.
-      cls_indices: ordered.map((_, i) => i),
-      class_names: ordered.map((r) => r.className),
-    };
+  function setVisualClass(refId: string, classId: string) {
+    setVisualAssign((prev) => ({ ...prev, [refId]: classId }));
   }
+
+  // Build the YOLOE wire payload: one group per distinct class_id,
+  // each group's bboxes drawn from every ref the user assigned to it.
+  function buildVisualGroups():
+    | { class_id: string; bboxes: [number, number, number, number][] }[]
+    | null {
+    const byClass = new Map<string, [number, number, number, number][]>();
+    for (const r of visualReferences) {
+      const cid = visualAssign[r.id];
+      if (!cid) continue;
+      const arr = byClass.get(cid) ?? [];
+      arr.push(r.xyxy);
+      byClass.set(cid, arr);
+    }
+    if (byClass.size === 0) return null;
+    return Array.from(byClass.entries()).map(([class_id, bboxes]) => ({
+      class_id,
+      bboxes,
+    }));
+  }
+
+  // Text rows are valid when at least one row has BOTH a class chosen
+  // AND a non-empty prompt. Empty rows below are silently dropped.
+  const textValidRows = useMemo(
+    () =>
+      textRows.filter(
+        (r) => r.classId && (r.prompt || "").trim().length > 0,
+      ),
+    [textRows],
+  );
+
+  const visualGroupsCount = useMemo(
+    () =>
+      Object.values(visualAssign).filter((cid) => cid && cid.length > 0).length,
+    [visualAssign],
+  );
 
   const canRun = useMemo(() => {
     if (!available) return false;
     if (scope === "all" && !taskId) return false;
     if (mode === "text") {
-      return textAvailable && classChips.length > 0;
+      return textAvailable && textValidRows.length > 0;
     }
     if (mode === "visual") {
-      return (
-        textAvailable &&
-        visualSelected.size > 0 &&
-        !!visualClassId &&
-        !!assetId
+      // Every picked ref must have a class assigned; at least one ref.
+      const picked = Object.keys(visualAssign);
+      if (picked.length === 0) return false;
+      const allAssigned = picked.every(
+        (rid) => (visualAssign[rid] || "").length > 0,
       );
+      return textAvailable && allAssigned && !!assetId;
     }
     return pfAvailable;
   }, [
@@ -310,9 +363,8 @@ export function YoloeDialog({
     mode,
     textAvailable,
     pfAvailable,
-    classChips.length,
-    visualSelected.size,
-    visualClassId,
+    textValidRows.length,
+    visualAssign,
     assetId,
   ]);
 
@@ -322,7 +374,10 @@ export function YoloeDialog({
         if (!assetId) throw new Error("no_asset");
         if (mode === "text") {
           return await yoloeApi.textPredict(assetId, {
-            classes: classChips,
+            prompts: textValidRows.map((r) => ({
+              class_id: r.classId,
+              prompt: r.prompt.trim(),
+            })),
             conf,
             iou,
             overwrite,
@@ -330,15 +385,12 @@ export function YoloeDialog({
           });
         }
         if (mode === "visual") {
-          const vp = buildVisualPayload();
-          if (!vp) throw new Error("no_visual_reference");
+          const groups = buildVisualGroups();
+          if (!groups) throw new Error("no_visual_reference");
           // refer_b64 omitted — api uses the target asset's bytes as
           // the reference (Ultralytics "same image as reference").
           return await yoloeApi.visualPredict(assetId, {
-            bboxes: vp.bboxes,
-            cls_indices: vp.cls_indices,
-            class_names: vp.class_names,
-            annotate_as_class_id: visualClassId,
+            groups,
             conf,
             iou,
             overwrite,
@@ -358,22 +410,24 @@ export function YoloeDialog({
       if (!taskId) throw new Error("no_task");
       let params: Record<string, unknown> = {};
       if (mode === "text") {
-        params = { classes: classChips, conf, iou };
+        params = {
+          prompts: textValidRows.map((r) => ({
+            class_id: r.classId,
+            prompt: r.prompt.trim(),
+          })),
+          conf,
+          iou,
+        };
       } else if (mode === "visual") {
-        const vp = buildVisualPayload();
-        if (!vp) throw new Error("no_visual_reference");
+        const groups = buildVisualGroups();
+        if (!groups) throw new Error("no_visual_reference");
         if (!assetId) throw new Error("no_asset");
-        // The user picked the bbox(es) on the current asset, so that
-        // asset is the reference. Send only its id — the worker
-        // fetches its bytes from MinIO once before the loop. Each
-        // target asset in the batch is paired with this single
-        // reference, matching Ultralytics' refer_image semantics.
+        // The user picked refs on the current asset, so that asset
+        // is the visual reference. Worker fetches its bytes from
+        // MinIO once before the per-asset loop.
         params = {
           refer_asset_id: assetId,
-          bboxes: vp.bboxes,
-          cls_indices: vp.cls_indices,
-          class_names: vp.class_names,
-          annotate_as_class_id: visualClassId,
+          groups,
           conf,
           iou,
         };
@@ -619,52 +673,108 @@ export function YoloeDialog({
             {/* Mode-specific body */}
             {mode === "text" && (
               <div className="grid gap-2">
-                <label className="text-[12px] font-medium text-[color:var(--text-primary)]">
-                  Class names
-                </label>
-                <div className="flex flex-wrap gap-1.5 p-2 rounded-[var(--radius-md)] border border-[var(--border-subtle)] min-h-[44px] bg-[var(--bg-elev)] focus-within:border-[color:var(--accent)] transition-colors">
-                  {classChips.map((c) => (
-                    <span
-                      key={c}
-                      className="inline-flex items-center gap-1 h-6 px-2 rounded-full bg-[var(--accent)]/15 text-[11.5px]"
-                    >
-                      {c}
-                      <button
-                        type="button"
-                        onClick={() => removeChip(c)}
-                        className="hover:opacity-70"
-                        aria-label={`Remove ${c}`}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-                  <input
-                    value={classInput}
-                    onChange={(e) => setClassInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === ",") {
-                        e.preventDefault();
-                        addChip(classInput);
-                      } else if (
-                        e.key === "Backspace" &&
-                        !classInput &&
-                        classChips.length
-                      ) {
-                        removeChip(classChips[classChips.length - 1]!);
-                      }
-                    }}
-                    onBlur={() => addChip(classInput)}
-                    placeholder={
-                      classChips.length ? "Add another…" : "person, bus, car…"
-                    }
-                    className="flex-1 min-w-[120px] bg-transparent outline-none text-[12px]"
-                    data-testid="yoloe-class-input"
-                  />
+                <div className="flex items-center justify-between">
+                  <label className="text-[12px] font-medium text-[color:var(--text-primary)]">
+                    Class &amp; prompt rows
+                  </label>
+                  <span className="text-[10.5px] text-[color:var(--text-tertiary)] font-mono tabular-nums">
+                    {textValidRows.length}/{textRows.length} ready
+                  </span>
                 </div>
+                <div className="grid gap-1.5">
+                  {textRows.map((row) => {
+                    const cls = classes.find((c) => c.id === row.classId);
+                    const ready = !!row.classId && row.prompt.trim().length > 0;
+                    return (
+                      <div
+                        key={row.rid}
+                        data-testid={`yoloe-text-row-${row.rid}`}
+                        className={cn(
+                          "grid grid-cols-[180px_1fr_28px] gap-1.5 items-center",
+                          "p-1.5 rounded-[var(--radius-md)] border bg-[var(--bg-elev)]",
+                          ready
+                            ? "border-[var(--border-subtle)]"
+                            : "border-[var(--border-subtle)]/60",
+                        )}
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className="h-2.5 w-2.5 rounded-sm shrink-0 ring-1 ring-black/10"
+                            style={{
+                              backgroundColor: cls?.color ?? "var(--bg-subtle)",
+                            }}
+                            aria-hidden
+                          />
+                          <select
+                            value={row.classId}
+                            onChange={(e) =>
+                              patchTextRow(row.rid, { classId: e.target.value })
+                            }
+                            data-testid={`yoloe-text-class-${row.rid}`}
+                            className="flex-1 min-w-0 h-8 px-2 rounded-[var(--radius-sm)] bg-transparent text-[12px] outline-none focus:bg-[var(--bg-hover)]"
+                          >
+                            <option value="">Pick class…</option>
+                            {classes.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <input
+                          value={row.prompt}
+                          onChange={(e) =>
+                            patchTextRow(row.rid, { prompt: e.target.value })
+                          }
+                          placeholder={
+                            cls
+                              ? `Describe a ${cls.name.toLowerCase()}…`
+                              : "Describe what to detect…"
+                          }
+                          data-testid={`yoloe-text-prompt-${row.rid}`}
+                          className="h-8 px-2.5 rounded-[var(--radius-sm)] bg-transparent text-[12px] outline-none focus:bg-[var(--bg-hover)] min-w-0"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeTextRow(row.rid)}
+                          disabled={textRows.length === 1}
+                          aria-label="Remove row"
+                          data-testid={`yoloe-text-remove-${row.rid}`}
+                          className={cn(
+                            "h-7 w-7 grid place-items-center rounded-[var(--radius-sm)]",
+                            "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]",
+                            "hover:bg-[var(--bg-hover)]",
+                            "disabled:opacity-30 disabled:cursor-not-allowed",
+                            "transition-colors duration-[140ms]",
+                          )}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={addTextRow}
+                  data-testid="yoloe-text-add-row"
+                  className={cn(
+                    "self-start inline-flex items-center gap-1 h-7 px-2 rounded-[var(--radius-sm)]",
+                    "text-[11.5px] text-[color:var(--accent)] font-medium",
+                    "border border-dashed border-[color:var(--accent)]/40",
+                    "transition-all duration-[160ms]",
+                    "hover:bg-[var(--accent)]/10 hover:border-[color:var(--accent)]",
+                  )}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Add another class + prompt
+                </button>
                 <p className="text-[10.5px] text-[color:var(--text-tertiary)]">
-                  Comma or Enter to add. Detected classes whose name matches a
-                  project class are auto-mapped; the rest are skipped.
+                  Pick a project class, then write a YOLOE prompt that describes
+                  it (e.g.{" "}
+                  <span className="font-mono">person wearing hard hat</span>).
+                  Each row targets one class — multiple rows run in a single
+                  pass.
                 </p>
               </div>
             )}
@@ -673,12 +783,13 @@ export function YoloeDialog({
               <div className="grid gap-2">
                 <div className="flex items-center justify-between">
                   <label className="text-[12px] font-medium text-[color:var(--text-primary)]">
-                    Pick reference{visualSelected.size > 1 ? "s" : ""} from
-                    this asset
+                    Pick reference{Object.keys(visualAssign).length === 1 ? "" : "s"}{" "}
+                    &amp; assign a class to each
                   </label>
                   <span className="text-[10.5px] text-[color:var(--text-tertiary)] font-mono tabular-nums">
-                    {visualSelected.size}/{Math.min(visualReferences.length, 8)}{" "}
-                    selected
+                    {Object.keys(visualAssign).length}/{visualReferences.length}{" "}
+                    picked · {visualGroupsCount} class
+                    {visualGroupsCount === 1 ? "" : "es"}
                   </span>
                 </div>
                 {visualReferences.length === 0 ? (
@@ -701,71 +812,124 @@ export function YoloeDialog({
                   </div>
                 ) : (
                   <div
-                    className="grid gap-1.5 max-h-[180px] overflow-y-auto p-1 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]"
+                    className="grid gap-1 max-h-[220px] overflow-y-auto p-1 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]"
                     data-testid="yoloe-visual-refs"
                   >
                     {visualReferences.map((r) => {
-                      const sel = visualSelected.has(r.id);
+                      const picked = r.id in visualAssign;
+                      const assignedCid = visualAssign[r.id] ?? "";
+                      const assignedCls = classes.find(
+                        (c) => c.id === assignedCid,
+                      );
                       const w = Math.round(r.xyxy[2] - r.xyxy[0]);
                       const h = Math.round(r.xyxy[3] - r.xyxy[1]);
                       return (
-                        <button
+                        <div
                           key={r.id}
-                          type="button"
-                          onClick={() => toggleVisual(r.id)}
                           data-testid={`yoloe-visual-ref-${r.id}`}
                           className={cn(
-                            "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-sm)]",
-                            "text-left transition-all duration-[140ms]",
-                            sel
-                              ? "bg-[var(--accent)]/10 shadow-[0_0_0_1px_var(--accent)]"
+                            "grid grid-cols-[20px_minmax(0,1fr)_minmax(0,180px)_auto] gap-2 items-center px-2 py-1.5 rounded-[var(--radius-sm)]",
+                            "transition-all duration-[140ms]",
+                            picked
+                              ? "bg-[var(--accent)]/8 shadow-[0_0_0_1px_var(--accent)]"
                               : "hover:bg-[var(--bg-hover)]",
                           )}
                         >
-                          <span
-                            className="h-3 w-3 rounded-sm shrink-0 ring-1 ring-black/10"
-                            style={{ backgroundColor: r.color }}
-                            aria-hidden
-                          />
-                          <span className="text-[12px] flex-1 truncate">
-                            {r.className}
-                          </span>
-                          <span className="text-[10.5px] font-mono text-[color:var(--text-tertiary)] tabular-nums">
-                            {r.sourceKind} · {w}×{h}
-                          </span>
-                          {sel && (
-                            <CheckCircle2 className="h-3.5 w-3.5 text-[color:var(--accent)]" />
+                          <button
+                            type="button"
+                            onClick={() => toggleVisual(r.id)}
+                            aria-pressed={picked}
+                            aria-label={picked ? "Unpick reference" : "Pick reference"}
+                            className={cn(
+                              "h-4 w-4 rounded-sm border grid place-items-center",
+                              "transition-all duration-[140ms]",
+                              picked
+                                ? "bg-[var(--accent)] border-[var(--accent)]"
+                                : "border-[var(--border-subtle)] hover:border-[color:var(--accent)]",
+                            )}
+                          >
+                            {picked && (
+                              <CheckCircle2
+                                className="h-3 w-3 text-white"
+                                strokeWidth={3}
+                              />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleVisual(r.id)}
+                            className="flex items-center gap-1.5 min-w-0 text-left"
+                          >
+                            <span
+                              className="h-2.5 w-2.5 rounded-sm shrink-0 ring-1 ring-black/10"
+                              style={{ backgroundColor: r.color }}
+                              aria-hidden
+                            />
+                            <span className="text-[12px] truncate">
+                              {r.className}
+                            </span>
+                            <span className="text-[10px] font-mono text-[color:var(--text-tertiary)] tabular-nums">
+                              {r.sourceKind} · {w}×{h}
+                            </span>
+                          </button>
+                          {picked ? (
+                            <div className="flex items-center gap-1 min-w-0">
+                              <span className="text-[10.5px] text-[color:var(--text-tertiary)] shrink-0">
+                                →
+                              </span>
+                              <select
+                                value={assignedCid}
+                                onChange={(e) =>
+                                  setVisualClass(r.id, e.target.value)
+                                }
+                                data-testid={`yoloe-visual-assign-${r.id}`}
+                                className={cn(
+                                  "flex-1 min-w-0 h-7 px-1.5 rounded-[var(--radius-sm)] text-[11.5px]",
+                                  "bg-transparent outline-none",
+                                  assignedCid
+                                    ? "text-[color:var(--text-primary)]"
+                                    : "text-[color:var(--danger,#d4504a)]",
+                                  "hover:bg-[var(--bg-hover)]",
+                                )}
+                              >
+                                <option value="">Pick class *</option>
+                                {classes.map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ) : (
+                            <span className="text-[10.5px] text-[color:var(--text-tertiary)] italic">
+                              not picked
+                            </span>
                           )}
-                        </button>
+                          <span
+                            className="h-2.5 w-2.5 rounded-full shrink-0"
+                            style={{
+                              backgroundColor: assignedCls?.color ?? "transparent",
+                              border: assignedCls
+                                ? "none"
+                                : "1px dashed var(--border-subtle)",
+                            }}
+                            aria-hidden
+                            title={
+                              assignedCls
+                                ? `Matches saved as ${assignedCls.name}`
+                                : "No class assigned yet"
+                            }
+                          />
+                        </div>
                       );
                     })}
                   </div>
                 )}
-                <label className="text-[12px] font-medium text-[color:var(--text-primary)] mt-1 flex items-center gap-1">
-                  Annotate matches as
-                  <span
-                    className="text-[color:var(--danger,#d4504a)]"
-                    aria-hidden
-                  >
-                    *
-                  </span>
-                </label>
-                <select
-                  value={visualClassId}
-                  onChange={(e) => setVisualClassId(e.target.value)}
-                  data-testid="yoloe-visual-class"
-                  className="h-9 px-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] text-[12px]"
-                >
-                  <option value="">Select project class…</option>
-                  {classes.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
                 <p className="text-[10.5px] text-[color:var(--text-tertiary)]">
-                  YOLOE finds objects that look like the picked reference(s).
-                  Every match is saved as the project class above.
+                  Pick one or more bbox/polygon refs and assign each to a
+                  project class. YOLOE finds visually similar objects across
+                  the target asset(s); refs sharing a class strengthen its
+                  visual signature.
                 </p>
               </div>
             )}
@@ -942,9 +1106,11 @@ export function YoloeDialog({
                 onClick={() => run.mutate()}
                 data-testid="yoloe-run"
                 title={
-                  !canRun && mode === "visual" && visualSelected.size > 0 && !visualClassId
-                    ? "Pick a project class to annotate matches as"
-                    : undefined
+                  !canRun && mode === "visual" && Object.keys(visualAssign).length > 0
+                    ? "Every picked reference needs a class assigned"
+                    : !canRun && mode === "text" && textValidRows.length === 0
+                      ? "Add at least one row with both a class and a prompt"
+                      : undefined
                 }
               >
                 {scope === "this" ? "Run" : "Run on all assets"}

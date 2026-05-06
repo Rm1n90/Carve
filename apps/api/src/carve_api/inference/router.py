@@ -1015,41 +1015,64 @@ def yoloe_status_endpoint(
     return YoloeStatusOut(**get_status())
 
 
+class YoloeTextPromptItem(BaseModel):
+    """One (project class -> text prompt) pair for text mode.
+
+    Multiple items per request let the caller target several project
+    classes in a single model forward pass: each detection's
+    ``class_name`` (which is the prompt string YOLOE was set up with)
+    is mapped back to the source ``class_id`` at persistence time.
+    """
+
+    class_id: uuid.UUID
+    prompt: str = Field(..., min_length=1, max_length=200)
+
+
 class YoloeTextIn(BaseModel):
-    classes: list[str] = Field(..., min_length=1, max_length=100)
+    prompts: list[YoloeTextPromptItem] = Field(
+        ..., min_length=1, max_length=100,
+    )
     conf: float = Field(default=0.25, ge=0.0, le=1.0)
     iou: float = Field(default=0.7, ge=0.0, le=1.0)
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     overwrite: bool = False
     frame_id: uuid.UUID | None = None
-    output_kind: str = Field(default="polygon", pattern="^(bbox|polygon)$")
+    # v3.23.4 — default flipped to "bbox" since most users start with
+    # boxes and convert to polygons later via the SAM-refine flow.
+    output_kind: str = Field(default="bbox", pattern="^(bbox|polygon)$")
+
+
+class YoloeVisualGroupIn(BaseModel):
+    """One (project class -> reference bbox(es)) group for visual mode."""
+
+    class_id: uuid.UUID
+    bboxes: list[list[float]] = Field(..., min_length=1, max_length=32)
 
 
 class YoloeVisualIn(BaseModel):
     """Visual-prompt body.
 
-    ``refer_b64`` is optional. When omitted (or empty), the api uses
-    the target asset's own bytes as the reference image, matching the
-    Ultralytics "same image as reference" pattern and saving the
-    frontend a MinIO round-trip.
+    The caller assigns each visual reference (bbox in xyxy pixels) to
+    a project class via ``groups``. Multiple groups in one request let
+    YOLOE find several distinct visual classes simultaneously.
+
+    ``refer_b64`` and ``refer_asset_id`` are optional ways to supply a
+    *separate* reference image; when both are unset the target asset
+    itself serves as the reference (Ultralytics "same image as
+    reference" canonical path).
     """
 
     refer_b64: str | None = Field(default=None)
-    # Alternative to refer_b64: caller specifies the reference asset by
-    # id and the api fetches its bytes from MinIO. Cheaper than the
-    # frontend round-tripping ~MB of base64 over the wire. When both
-    # are unset, the target asset itself serves as the reference.
     refer_asset_id: uuid.UUID | None = None
-    bboxes: list[list[float]] = Field(..., min_length=1, max_length=64)
-    cls_indices: list[int] = Field(default_factory=list)
-    class_names: list[str] = Field(default_factory=list, max_length=64)
-    annotate_as_class_id: uuid.UUID
+    groups: list[YoloeVisualGroupIn] = Field(
+        ..., min_length=1, max_length=32,
+    )
     conf: float = Field(default=0.25, ge=0.0, le=1.0)
     iou: float = Field(default=0.7, ge=0.0, le=1.0)
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     overwrite: bool = False
     frame_id: uuid.UUID | None = None
-    output_kind: str = Field(default="polygon", pattern="^(bbox|polygon)$")
+    output_kind: str = Field(default="bbox", pattern="^(bbox|polygon)$")
 
 
 class YoloePromptFreeIn(BaseModel):
@@ -1060,7 +1083,7 @@ class YoloePromptFreeIn(BaseModel):
     max_detections: int | None = Field(default=None, ge=1, le=1000)
     overwrite: bool = False
     frame_id: uuid.UUID | None = None
-    output_kind: str = Field(default="polygon", pattern="^(bbox|polygon)$")
+    output_kind: str = Field(default="bbox", pattern="^(bbox|polygon)$")
 
 
 def _resolve_yoloe_asset_bytes(
@@ -1107,6 +1130,7 @@ def yoloe_text_predict_endpoint(
         YoloeMode,
         YoloeOutputKind,
         YoloeTextParams,
+        YoloeTextPrompt,
         apply_yoloe_to_asset,
     )
 
@@ -1129,7 +1153,10 @@ def yoloe_text_predict_endpoint(
             image_bytes=image_bytes,
             mode=YoloeMode.text,
             params=YoloeTextParams(
-                classes=payload.classes,
+                prompts=[
+                    YoloeTextPrompt(class_id=p.class_id, prompt=p.prompt)
+                    for p in payload.prompts
+                ],
                 conf=payload.conf,
                 iou=payload.iou,
             ),
@@ -1154,6 +1181,7 @@ def yoloe_visual_predict_endpoint(
     from carve_api.inference.yoloe import (
         YoloeMode,
         YoloeOutputKind,
+        YoloeVisualGroup,
         YoloeVisualParams,
         apply_yoloe_to_asset,
     )
@@ -1167,11 +1195,7 @@ def yoloe_visual_predict_endpoint(
     except AppError as exc:
         raise _http(exc) from exc
 
-    if len(payload.cls_indices) and len(payload.cls_indices) != len(payload.bboxes):
-        raise HTTPException(status_code=422, detail="bboxes_cls_length_mismatch")
-    cls_indices = payload.cls_indices or [0] * len(payload.bboxes)
-
-    # Reference image resolution order:
+    # Reference image resolution order (unchanged from v3.23.2):
     #   1. ``refer_b64`` if explicitly supplied (legacy / advanced)
     #   2. ``refer_asset_id`` if supplied — fetch from MinIO
     #   3. otherwise omit; the apply layer reuses the target bytes
@@ -1201,11 +1225,14 @@ def yoloe_visual_predict_endpoint(
             image_bytes=image_bytes,
             mode=YoloeMode.visual,
             params=YoloeVisualParams(
+                groups=[
+                    YoloeVisualGroup(
+                        class_id=g.class_id,
+                        bboxes=[list(b) for b in g.bboxes],
+                    )
+                    for g in payload.groups
+                ],
                 refer_bytes=refer_bytes,
-                bboxes=payload.bboxes,
-                cls_indices=cls_indices,
-                class_names=payload.class_names,
-                annotate_as_class_id=payload.annotate_as_class_id,
                 conf=payload.conf,
                 iou=payload.iou,
             ),
