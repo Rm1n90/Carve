@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { TopBar } from "@/components/nav/TopBar";
 import { LeftNav } from "@/components/nav/LeftNav";
 import { Toaster } from "@/components/ui/Toaster";
+import { BackgroundJobsBar } from "@/components/BackgroundJobsBar";
 import { projectsApi } from "@/api/projects";
 
 /**
@@ -40,6 +41,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <TooltipProvider delayDuration={250}>
       <div className="flex h-screen flex-col bg-[var(--bg-app)] text-[color:var(--text-primary)]">
         <Toaster />
+        <BackgroundJobsBar />
         <TopBar crumbs={crumbs.length > 0 ? crumbs : undefined} />
         <div className="flex flex-1 min-h-0">
           <LeftNav />
@@ -61,6 +63,7 @@ export function AppShellBleed({ children }: { children: ReactNode }) {
     <TooltipProvider delayDuration={200}>
       <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-app)]">
         <Toaster />
+        <BackgroundJobsBar />
         {children}
       </div>
     </TooltipProvider>

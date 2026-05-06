@@ -56,6 +56,7 @@ import { useShortcutHandler } from "@/state/shortcuts";
 import { useResizableRightPanel } from "@/hooks/useResizableRightPanel";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { BackgroundJobsLeaveGuard } from "@/components/BackgroundJobsLeaveGuard";
 
 interface Props {
   projectId: string;
@@ -909,6 +910,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
 
   return (
     <TooltipProvider delayDuration={250}>
+    <BackgroundJobsLeaveGuard taskId={taskId} />
     <div className="flex h-screen flex-col bg-[var(--bg-app)] overflow-hidden">
       <TopBar breadcrumbSegments={breadcrumbSegments} rightAction={rightAction} />
 

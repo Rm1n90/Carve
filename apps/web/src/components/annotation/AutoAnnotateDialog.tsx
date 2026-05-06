@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { useBackgroundJobs } from "@/state/backgroundJobs";
 
 interface AutoAnnotateDialogProps {
   /** The asset currently open in the editor (sync run scope). */
@@ -82,6 +83,24 @@ export function AutoAnnotateDialog({
   // v3.8 Phase 3.5 — track an in-flight RQ batch so the dialog can
   // render a live progress overlay with Cancel.
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
+
+  // v3.22 — expand-from-bar handshake. When the operator clicks
+  // "Expand" on a backgrounded job in the floating bar, the bar
+  // sets ``expandRequest`` in the global store. We watch for our
+  // task's job id, re-open the dialog in progress mode, then clear
+  // the request and unregister the job from the bar (the dialog now
+  // owns the polling again).
+  const bgExpandRequest = useBackgroundJobs((s) => s.expandRequest);
+  const bgJobs = useBackgroundJobs((s) => s.jobs);
+  useEffect(() => {
+    if (!bgExpandRequest || !taskId) return;
+    const job = bgJobs[bgExpandRequest];
+    if (!job || job.taskId !== taskId) return;
+    setRunningJobId(bgExpandRequest);
+    setOpen(true);
+    useBackgroundJobs.getState().remove(bgExpandRequest);
+    useBackgroundJobs.getState().clearExpandRequest();
+  }, [bgExpandRequest, bgJobs, taskId]);
   // Plan-17 Phase 2 — opt-in post-processing for the SAM-text auto-
   // annotate output. SAM's auto-text produces polygons; the user can
   // optionally convert them to bboxes (instant, no SAM call) once
@@ -373,6 +392,36 @@ export function AutoAnnotateDialog({
               setOpen(false);
             }}
             postProgress={samPostProgress}
+            onBackground={
+              taskId
+                ? () => {
+                    // v3.22 — minimize the dialog without canceling.
+                    // Register the running job in the global background
+                    // store so the floating <BackgroundJobsBar /> takes
+                    // over progress polling + cancel UX. The user can
+                    // expand back via the bar (see useEffect on
+                    // expandRequest below).
+                    const jobId = runningJobId!;
+                    const cap = taskId;
+                    useBackgroundJobs.getState().add({
+                      jobId,
+                      taskId: cap,
+                      kind: "sam-auto-text",
+                      label: "SAM auto-annotate",
+                      startedAt: Date.now(),
+                      cancel: async () => {
+                        await samApi.autoTextBatchCancel(cap, jobId);
+                      },
+                    });
+                    setRunningJobId(null);
+                    setOpen(false);
+                    showToast("Running in background — progress shown bottom-right.", {
+                      variant: "info",
+                      duration: 3000,
+                    });
+                  }
+                : undefined
+            }
           />
         ) : (
           <>
@@ -665,6 +714,7 @@ function BatchProgressView({
   jobId,
   onDone,
   postProgress,
+  onBackground,
 }: {
   taskId: string;
   jobId: string;
@@ -674,6 +724,7 @@ function BatchProgressView({
     failed: number;
   } | null) => void;
   postProgress?: { done: number; total: number; failed: number } | null;
+  onBackground?: () => void;
 }) {
   const [canceling, setCanceling] = useState(false);
   // Plan-20.11 — was 1200 ms; reduced to 500 ms so the user sees
@@ -778,7 +829,17 @@ function BatchProgressView({
       <p className="text-[11px] text-[color:var(--text-tertiary)] italic">
         Annotations save per-asset, so cancelling keeps everything done so far.
       </p>
-      <DialogFooter>
+      <DialogFooter className="flex-row gap-2">
+        {onBackground && (
+          <Button
+            variant="ghost"
+            size="md"
+            onClick={onBackground}
+            data-testid="auto-annotate-batch-background"
+          >
+            Background
+          </Button>
+        )}
         <Button
           variant="danger"
           size="md"
