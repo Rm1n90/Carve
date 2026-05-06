@@ -66,6 +66,12 @@ export interface UnloadModelsResponse {
   sam_evicted: string[];
   sam_sessions_released: number;
   fo1_evicted: boolean;
+  // v3.22 — measured GPU MB freed (delta of torch.cuda.memory_reserved
+  // before/after). Null when CUDA isn't available. Surface this in the
+  // toast so the user gets a true number even when bookkeeping says
+  // "nothing was loaded".
+  sam_freed_mb?: number | null;
+  fo1_freed_mb?: number | null;
 }
 
 export const systemApi = {

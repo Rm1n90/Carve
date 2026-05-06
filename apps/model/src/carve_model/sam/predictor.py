@@ -510,28 +510,89 @@ def evict_predictor_if_idle() -> bool:
     return True
 
 
-def force_evict_predictor() -> bool:
-    """Unconditionally free the session + GPU memory.
+def _gpu_used_bytes() -> int | None:
+    """Best-effort current-process GPU memory (bytes), or None.
 
-    Returns ``True`` when something was actually evicted, ``False`` when
-    no session was loaded (idempotent — safe to call repeatedly). Drops
-    the predictor and the loaded-image hash + shape in one atomic step.
+    Uses ``torch.cuda.memory_reserved`` because that's what the caching
+    allocator actually holds from the driver — a much truer signal for
+    eviction effectiveness than ``memory_allocated``.
+    """
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.memory_reserved())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def force_evict_predictor() -> bool:
+    """Scorched-earth GPU cleanup. Returns True if anything was freed.
+
+    The original implementation only cleared ``_SESSION`` (the SAM image
+    predictor). v3.22+ also drops:
+
+      * ``_TEXT_PREDICTOR_FACTORY`` — closure-private ``Sam3Model`` /
+        ``Sam3Processor`` cached after the first /sam/text-prompt call.
+        Without dropping this the ~6 GB transformers SAM 3 weights stay
+        resident even after every other "unload" path runs.
+      * ``_BOX_PREDICTOR_FACTORY`` — same shape, used by /sam/box-prompt.
+      * The sam3.1 native module-level singleton
+        ``sam3p1_adapter._NATIVE_IMAGE_PREDICTOR`` — holds the multiplex
+        ~5 GB checkpoint after the first /sam/encode + /sam/text-prompt.
+
+    Then runs ``gc.collect()`` (forces Python to drop refs to the now-
+    orphaned closures), ``torch.cuda.empty_cache()`` (returns memory to
+    the allocator), and ``torch.cuda.ipc_collect()``. The next
+    prompt/encode call rebuilds lazily.
+
     Resets the load-state machine to ``idle`` so ``GET /sam/status``
     reflects the unload.
     """
+    import gc
+
+    something_freed = False
+
     with _PREDICTOR_LOCK:
-        global _SESSION
-        if _SESSION is None:
-            # Still honour an explicit unload of a "ready" state so the
-            # status endpoint flips to idle even when no real session
-            # was tracked (e.g. tests).
-            if _LOAD_STATE.kind == "ready":
-                _set_load_state()
-            return False
-        _SESSION = None
+        global _SESSION, _TEXT_PREDICTOR_FACTORY, _BOX_PREDICTOR_FACTORY
+        if _SESSION is not None:
+            _SESSION = None
+            something_freed = True
+        if _TEXT_PREDICTOR_FACTORY is not None:
+            _TEXT_PREDICTOR_FACTORY = None
+            something_freed = True
+        if _BOX_PREDICTOR_FACTORY is not None:
+            _BOX_PREDICTOR_FACTORY = None
+            something_freed = True
+
+    # Drop the sam3.1 native singleton too (held outside _PREDICTOR_LOCK
+    # by sam3p1_adapter — its own module-level state).
+    try:
+        from carve_model.sam.sam3p1_adapter import reset_native_image_predictor
+        if reset_native_image_predictor():
+            something_freed = True
+    except Exception:  # noqa: BLE001 — sam3p1 import optional in test env
+        pass
+
+    # Force Python to actually drop references to the now-orphaned
+    # closures so the underlying torch tensors become collectable.
+    gc.collect()
     _empty_cuda_cache()
-    _set_load_state()
-    return True
+
+    # ipc_collect closes any IPC handles; cheap when none exist.
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if torch.cuda.is_available():
+            torch.cuda.ipc_collect()
+    except Exception:  # noqa: BLE001
+        pass
+
+    if _LOAD_STATE.kind == "ready":
+        _set_load_state()
+
+    return something_freed
 
 
 # --- runtime variant switching --------------------------------------------

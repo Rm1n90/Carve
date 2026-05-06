@@ -248,11 +248,18 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
         raise HTTPException(status_code=409, detail="sam3_not_enabled")
     try:
         factory = get_text_predictor()
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="sam3_predictor_not_loaded",
-        ) from exc
+    except RuntimeError:
+        # v3.22 — predictor was force-evicted (e.g. via the System
+        # page's "Unload all models" button). Re-register lazily so
+        # this request rebuilds the model on demand instead of 503'ing.
+        try:
+            load_predictor(get_sam_model())
+            factory = get_text_predictor()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=503,
+                detail="sam3_predictor_not_loaded",
+            ) from exc
     # Forward use_vlm_fo1 only when the client opted in. Older factories
     # whose signature predates the kwarg keep working — they're called
     # exactly as before.
@@ -308,11 +315,16 @@ def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
         )
     try:
         factory = get_box_predictor()
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="sam3_box_predictor_not_loaded",
-        ) from exc
+    except RuntimeError:
+        # v3.22 — same lazy-rebuild as /sam/text-prompt above.
+        try:
+            load_predictor(get_sam_model())
+            factory = get_box_predictor()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=503,
+                detail="sam3_box_predictor_not_loaded",
+            ) from exc
     return factory(
         image_b64=payload.image_b64,
         boxes=payload.boxes,
@@ -335,11 +347,19 @@ class UnloadIn(BaseModel):
 class UnloadOut(BaseModel):
     evicted: list[str]
     sessions_released: int
+    # v3.22 — GPU bytes freed by this call (reserved-cache delta).
+    # ``None`` when CUDA isn't available. Useful when the in-memory
+    # bookkeeping says "nothing was loaded" but the GPU still shows
+    # memory in use — the delta is the truth.
+    gpu_freed_mb: int | None = None
 
 
 @router.post("/unload", response_model=UnloadOut)
 def unload(payload: UnloadIn = Body(default_factory=UnloadIn)) -> UnloadOut:
     """Force-unload SAM models from GPU memory. Idempotent."""
+    from carve_model.sam.predictor import _gpu_used_bytes
+
+    before = _gpu_used_bytes()
     evicted: list[str] = []
     sessions_released = 0
     if payload.which in ("image", "all"):
@@ -349,7 +369,20 @@ def unload(payload: UnloadIn = Body(default_factory=UnloadIn)) -> UnloadOut:
         sessions_released = force_evict_all_sessions()
         if sessions_released > 0:
             evicted.append("tracker")
-    return UnloadOut(evicted=evicted, sessions_released=sessions_released)
+    after = _gpu_used_bytes()
+    freed_mb: int | None = None
+    if before is not None and after is not None:
+        freed_mb = max(0, (before - after) // (1024 * 1024))
+        # If we measured a real drop but state-tracking thought nothing
+        # was loaded, surface it as an "image" eviction so the operator
+        # knows the closure-cached models were freed.
+        if freed_mb > 0 and not evicted:
+            evicted.append("image")
+    return UnloadOut(
+        evicted=evicted,
+        sessions_released=sessions_released,
+        gpu_freed_mb=freed_mb,
+    )
 
 
 # v3.22 — proxy endpoint so the API worker can free FO1 GPU memory at
@@ -357,10 +390,21 @@ def unload(payload: UnloadIn = Body(default_factory=UnloadIn)) -> UnloadOut:
 # model service already knows where the sidecar lives (via
 # VLM_FO1_SIDECAR_URL); this endpoint forwards the request.
 @router.post("/vlm-fo1/unload")
-def sam_vlm_fo1_unload() -> dict[str, bool]:
-    """Force-unload the FO1 weights on the sidecar. Best-effort, idempotent."""
+def sam_vlm_fo1_unload() -> dict[str, bool | int | None]:
+    """Force-unload the FO1 weights on the sidecar. Best-effort, idempotent.
+
+    Returns the sidecar's eviction flag and the GPU bytes it freed
+    (when reported). ``gpu_freed_mb`` is sidecar-side, not local.
+    """
     from carve_model.vlm_fo1.adapter import unload_sidecar
-    return {"evicted": unload_sidecar()}
+    result = unload_sidecar()
+    if isinstance(result, dict):
+        return {
+            "evicted": bool(result.get("evicted", False)),
+            "gpu_freed_mb": result.get("gpu_freed_mb"),
+        }
+    # Backwards-compat: helper used to return a bare bool.
+    return {"evicted": bool(result), "gpu_freed_mb": None}
 
 
 # --- /sam/status (load lifecycle inspection) --------------------------------

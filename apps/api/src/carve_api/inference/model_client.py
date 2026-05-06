@@ -255,15 +255,29 @@ def sam_vlm_fo1_unload() -> bool:
     drops its ~6 GB of GPU weights. Returns True when the sidecar
     actually evicted, False on no-op or any error.
     """
+    return bool(sam_vlm_fo1_unload_detailed().get("evicted"))
+
+
+def sam_vlm_fo1_unload_detailed() -> dict:
+    """POST /sam/vlm-fo1/unload — best-effort, never raises.
+
+    Returns the full response shape ``{"evicted": bool, "gpu_freed_mb":
+    int | None}`` so the System page can show a true freed-bytes
+    number even when the FO1 sidecar's bookkeeping thinks nothing was
+    loaded.
+    """
     try:
         with _client() as c:
             r = c.post("/sam/vlm-fo1/unload")
             if r.status_code >= 400:
-                return False
-            body = r.json()
-            return bool(body.get("evicted"))
+                return {"evicted": False, "gpu_freed_mb": None}
+            body = r.json() or {}
+            return {
+                "evicted": bool(body.get("evicted")),
+                "gpu_freed_mb": body.get("gpu_freed_mb"),
+            }
     except Exception:  # noqa: BLE001 — best-effort cleanup, never propagate
-        return False
+        return {"evicted": False, "gpu_freed_mb": None}
 
 
 def sam_box_prompt(

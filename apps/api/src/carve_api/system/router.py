@@ -678,6 +678,13 @@ class UnloadModelsResponse(BaseModel):
     sam_evicted: list[str]
     sam_sessions_released: int
     fo1_evicted: bool
+    # v3.22 — measured GPU MB freed (delta of memory_reserved before/after).
+    # ``None`` when CUDA isn't available on that side. Lets the System
+    # page show a true number even when in-memory bookkeeping thinks
+    # nothing was loaded but the GPU still held cached closure-private
+    # model weights.
+    sam_freed_mb: int | None = None
+    fo1_freed_mb: int | None = None
 
 
 @router.post("/unload-models", response_model=UnloadModelsResponse)
@@ -687,20 +694,24 @@ def unload_models_endpoint(
     """Force-free every model on the GPU. Idempotent.
 
     Calls the model service's ``/sam/unload?which=all`` (drops the
-    image predictor singleton and every tracker session) and
-    ``/sam/vlm-fo1/unload`` (drops the FO1 sidecar's ~6 GB Qwen2.5-VL-3B
-    weights). Both calls are best-effort; the response reflects what
-    each side reported as actually evicted.
+    image predictor + text + box predictor factories + sam3.1 native
+    singleton + tracker sessions) and ``/sam/vlm-fo1/unload`` (drops
+    the FO1 sidecar's Qwen2.5-VL-3B weights). Both calls are
+    best-effort; the response reflects what each side reported as
+    actually evicted plus a measured ``*_freed_mb`` from the GPU
+    allocator.
     """
     from carve_api.inference.model_client import (
         sam_unload,
-        sam_vlm_fo1_unload,
+        sam_vlm_fo1_unload_detailed,
     )
 
     sam_result = sam_unload(which="all")
-    fo1_evicted = sam_vlm_fo1_unload()
+    fo1_result = sam_vlm_fo1_unload_detailed()
     return UnloadModelsResponse(
         sam_evicted=list(sam_result.get("evicted", [])),
         sam_sessions_released=int(sam_result.get("sessions_released", 0)),
-        fo1_evicted=fo1_evicted,
+        fo1_evicted=bool(fo1_result.get("evicted")),
+        sam_freed_mb=sam_result.get("gpu_freed_mb"),
+        fo1_freed_mb=fo1_result.get("gpu_freed_mb"),
     )

@@ -489,19 +489,23 @@ function SkeletonCard({ className = "" }: { className?: string }) {
   );
 }
 
-// ---------------------------- Models card ----------------------------
+// ---------------------------- Header unload button ----------------------------
 //
 // v3.22 — admin button to manually unload every model from the GPU.
-// Frees the SAM image predictor + tracker sessions and the FO1
-// sidecar's Qwen2.5-VL-3B weights. Useful when the operator wants to
-// reclaim VRAM right away (e.g. before a heavy training run on the
-// same host) without waiting for the idle sweepers to fire.
+// Frees the SAM image predictor + text + box predictor closures + the
+// sam3.1 native singleton + tracker sessions, and the VLM-FO1 sidecar's
+// Qwen2.5-VL-3B weights. Reports MB actually freed (measured from the
+// torch CUDA caching allocator) so the operator gets a true number even
+// when the in-memory bookkeeping says "nothing was loaded" but the GPU
+// still showed memory in use.
 
-function ModelsCard() {
+function UnloadAllButton() {
   const qc = useQueryClient();
   const mutation = useMutation<UnloadModelsResponse, Error, void>({
     mutationFn: () => systemApi.unloadModels(),
     onSuccess: (data) => {
+      const totalFreedMb =
+        (data.sam_freed_mb ?? 0) + (data.fo1_freed_mb ?? 0);
       const fragments: string[] = [];
       if (data.sam_evicted.length > 0) {
         fragments.push(`SAM: ${data.sam_evicted.join(", ")}`);
@@ -514,11 +518,18 @@ function ModelsCard() {
         );
       }
       if (data.fo1_evicted) fragments.push("VLM-FO1");
-      const detail =
-        fragments.length > 0 ? fragments.join(" · ") : "nothing was loaded";
+      let detail: string;
+      if (totalFreedMb > 0) {
+        detail =
+          fragments.length > 0
+            ? `freed ${totalFreedMb} MB (${fragments.join(" · ")})`
+            : `freed ${totalFreedMb} MB from cached weights`;
+      } else if (fragments.length > 0) {
+        detail = fragments.join(" · ");
+      } else {
+        detail = "nothing was loaded";
+      }
       showToast(`Models unloaded — ${detail}`, { variant: "success" });
-      // Force the GPU stats card to refresh immediately so the user
-      // can see VRAM drop without waiting for the 5s polling tick.
       void qc.invalidateQueries({ queryKey: ["system", "info"] });
     },
     onError: (err) => {
@@ -532,34 +543,17 @@ function ModelsCard() {
   const busy = mutation.isPending;
 
   return (
-    <Card variant="surface" radius="lg" className="p-6 grid gap-4">
-      <div className="flex items-start gap-3">
-        <PowerOff className="h-5 w-5 text-[color:var(--text-tertiary)]" aria-hidden />
-        <div className="grid gap-1 min-w-0">
-          <SectionLabel>GPU controls</SectionLabel>
-          <h2 className="text-[14.5px] font-medium text-[color:var(--text-primary)]">
-            Unload all models
-          </h2>
-          <p className="text-[12.5px] text-[color:var(--text-secondary)] max-w-[52ch]">
-            Free every model from VRAM right now: SAM image predictor,
-            SAM tracker sessions, and the VLM-FO1 sidecar. Models reload
-            lazily on the next request. Admin only.
-          </p>
-        </div>
-      </div>
-      <div className="flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={() => mutation.mutate()}
-          disabled={busy}
-          data-testid="system-unload-models"
-          className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12.5px] font-medium text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          <PowerOff className="h-3.5 w-3.5" aria-hidden />
-          {busy ? "Unloading…" : "Unload all models"}
-        </button>
-      </div>
-    </Card>
+    <button
+      type="button"
+      onClick={() => mutation.mutate()}
+      disabled={busy}
+      data-testid="system-unload-models"
+      title="Free every model from GPU memory. SAM + sam3.1 + VLM-FO1 sidecar."
+      className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12.5px] font-medium text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+    >
+      <PowerOff className="h-3.5 w-3.5" aria-hidden />
+      {busy ? "Unloading…" : "Unload all models"}
+    </button>
   );
 }
 
@@ -597,23 +591,26 @@ export function SystemPage() {
             this Carve API instance.
           </p>
         </div>
-        <div className="flex items-center gap-2 text-[11.5px] text-[color:var(--text-tertiary)]">
-          <span
-            className="h-1.5 w-1.5 rounded-full"
-            style={{
-              backgroundColor: query.isFetching ? "var(--accent)" : "var(--success)",
-              transition: "background-color 200ms ease",
-            }}
-            aria-hidden
-          />
-          <Activity className="h-3.5 w-3.5" aria-hidden />
-          <span className="tabular-nums">
-            {data
-              ? `Updated ${formatRelative(data.collected_at, now)}`
-              : query.isError
-                ? "Update failed"
-                : "Loading…"}
-          </span>
+        <div className="flex items-center gap-3 flex-wrap">
+          <UnloadAllButton />
+          <div className="flex items-center gap-2 text-[11.5px] text-[color:var(--text-tertiary)]">
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                backgroundColor: query.isFetching ? "var(--accent)" : "var(--success)",
+                transition: "background-color 200ms ease",
+              }}
+              aria-hidden
+            />
+            <Activity className="h-3.5 w-3.5" aria-hidden />
+            <span className="tabular-nums">
+              {data
+                ? `Updated ${formatRelative(data.collected_at, now)}`
+                : query.isError
+                  ? "Update failed"
+                  : "Loading…"}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -665,7 +662,6 @@ export function SystemPage() {
                 {data.gpus.map((gpu) => (
                   <GpuCard key={gpu.index} gpu={gpu} />
                 ))}
-                <ModelsCard />
               </div>
             ) : (
               <NoGpuCard />

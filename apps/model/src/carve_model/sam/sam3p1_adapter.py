@@ -542,6 +542,35 @@ def _set_native_image_predictor_for_tests(adapter: Any) -> None:
     _NATIVE_IMAGE_PREDICTOR = adapter
 
 
+def reset_native_image_predictor() -> bool:
+    """Drop the module-level sam3.1 native image-predictor singleton.
+
+    Returns True if a singleton was actually present. Used by the
+    System page's force-unload path so the native sam3.1 model
+    (~5 GB on GPU) gets released alongside SAM 3 transformers
+    factories. The next text/box/point call rebuilds lazily.
+    """
+    global _NATIVE_IMAGE_PREDICTOR
+    if _NATIVE_IMAGE_PREDICTOR is None:
+        return False
+    adapter = _NATIVE_IMAGE_PREDICTOR
+    # Clear inner refs so the model + state dict become collectable.
+    try:
+        adapter._state = None  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        adapter._model = None  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        adapter._processor = None  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    _NATIVE_IMAGE_PREDICTOR = None
+    return True
+
+
 def _decode_image_b64_to_numpy(image_b64: str) -> Any:
     import base64
     from io import BytesIO

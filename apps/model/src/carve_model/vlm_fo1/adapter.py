@@ -90,13 +90,17 @@ def _resolve_sidecar_url() -> str:
     return (os.environ.get("VLM_FO1_SIDECAR_URL") or DEFAULT_SIDECAR_URL).rstrip("/")
 
 
-def unload_sidecar(*, timeout: float = 5.0) -> bool:
+def unload_sidecar(*, timeout: float = 5.0) -> dict[str, Any]:
     """POST ``/unload`` to the FO1 sidecar — best-effort.
 
-    Returns True when the sidecar reports it actually evicted weights,
-    False when nothing was loaded or the call failed. Never raises;
-    HTTP / connection errors are swallowed because the sidecar's own
-    idle sweeper is the safety net.
+    Returns ``{"evicted": bool, "gpu_freed_mb": int | None}``. Never
+    raises; HTTP / connection errors are swallowed because the
+    sidecar's own idle sweeper is the safety net.
+
+    The ``gpu_freed_mb`` field is sidecar-side (delta of
+    ``torch.cuda.memory_reserved`` before/after the eviction) and lets
+    the operator-facing UI report a true number even when the in-memory
+    bookkeeping incorrectly thinks nothing was loaded.
 
     Called from the API worker at the end of a batch auto-annotate
     that opted into FO1 so the 6 GB of GPU weights don't sit pinned
@@ -109,11 +113,14 @@ def unload_sidecar(*, timeout: float = 5.0) -> bool:
         with httpx.Client(timeout=timeout) as client:
             resp = client.post(f"{base}/unload")
             resp.raise_for_status()
-            body = resp.json()
-            return bool(body.get("evicted"))
+            body = resp.json() or {}
+            return {
+                "evicted": bool(body.get("evicted")),
+                "gpu_freed_mb": body.get("gpu_freed_mb"),
+            }
     except Exception as exc:  # noqa: BLE001
         logger.warning("vlm_fo1 sidecar /unload failed: %s", exc)
-        return False
+        return {"evicted": False, "gpu_freed_mb": None}
 
 
 def _encode_image_to_b64(image: Any) -> str:

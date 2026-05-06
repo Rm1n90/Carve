@@ -104,14 +104,27 @@ def filter_endpoint(req: FilterRequest) -> FilterResponse:
 
 
 @app.post("/unload")
-def unload_endpoint() -> dict[str, bool]:
+def unload_endpoint() -> dict[str, object]:
     """Free the loaded FO1 weights immediately.
 
     The API worker calls this at the end of an auto-annotate batch (or
     after a single-asset auto-annotate that opted into FO1) so the GPU
-    isn't pinned by a model nobody's actively using. Idempotent — safe
-    to call when nothing is loaded.
+    isn't pinned by a model nobody's actively using. The System page's
+    "Unload all models" button also reaches this via the model service.
+    Idempotent — safe to call when nothing is loaded.
+
+    v3.22 — also reports ``gpu_freed_mb`` (delta of
+    ``torch.cuda.memory_reserved`` before/after) so the operator UI
+    can show a true number even when the in-memory ``_state`` dict
+    bookkeeping says nothing was loaded.
     """
+    before = runner.gpu_used_bytes()
     evicted = runner.force_evict()
-    logger.info("/unload requested; evicted=%s", evicted)
-    return {"evicted": evicted}
+    after = runner.gpu_used_bytes()
+    freed_mb: int | None = None
+    if before is not None and after is not None:
+        freed_mb = max(0, (before - after) // (1024 * 1024))
+    logger.info(
+        "/unload requested; evicted=%s gpu_freed_mb=%s", evicted, freed_mb,
+    )
+    return {"evicted": evicted, "gpu_freed_mb": freed_mb}

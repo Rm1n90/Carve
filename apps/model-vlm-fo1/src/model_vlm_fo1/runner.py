@@ -91,14 +91,43 @@ def evict_if_idle() -> bool:
     return True
 
 
+def gpu_used_bytes() -> int | None:
+    """Best-effort current-process GPU memory (bytes), or None when no CUDA."""
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.memory_reserved())
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def force_evict() -> bool:
-    """Unconditionally free the cached model + GPU memory."""
+    """Unconditionally free the cached model + GPU memory.
+
+    v3.22 — runs ``gc.collect()`` AFTER clearing ``_state`` so Python
+    actually drops references to the model module before torch tries
+    to reclaim its tensors. Without the gc pass the cache call is a
+    no-op when ``_state`` was the only Python ref keeping the model
+    alive (the common case). Also adds ``ipc_collect`` for symmetry
+    with the model service's force_evict_predictor.
+    """
+    import gc
+
     with _load_lock:
-        if "model" not in _state:
-            return False
+        had_model = "model" in _state
         _state.clear()
+    gc.collect()
     _empty_cuda_cache()
-    return True
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if torch.cuda.is_available():
+            torch.cuda.ipc_collect()
+    except Exception:  # noqa: BLE001
+        pass
+    return had_model
 
 
 def _resolve_model_path() -> str:
