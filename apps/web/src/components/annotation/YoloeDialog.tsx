@@ -491,6 +491,34 @@ export function YoloeDialog({
     setRunningJobId(null);
   }
 
+  // Move an in-flight batch into the floating BackgroundJobsBar and
+  // close the dialog. Used by:
+  //   * the explicit ``Background`` button inside YoloeBatchProgress
+  //   * the outside-click / ESC / X guard on the Dialog primitive
+  //     (so a stray click never orphans a running job)
+  function sendToBackground() {
+    if (!runningJobId || !taskId) return false;
+    const cap = taskId;
+    const id = runningJobId;
+    useBackgroundJobs.getState().add({
+      jobId: id,
+      taskId: cap,
+      kind: "yoloe-batch",
+      label: `YOLOE ${mode.replace("_", "-")} (batch)`,
+      startedAt: Date.now(),
+      cancel: async () => {
+        await yoloeApi.cancelBatch(cap, id);
+      },
+    });
+    setRunningJobId(null);
+    setOpen(false);
+    showToast(
+      "Running in background — progress shown bottom-right.",
+      { variant: "info", duration: 3000 },
+    );
+    return true;
+  }
+
   const fallbackTrigger = (
     <button
       type="button"
@@ -534,6 +562,20 @@ export function YoloeDialog({
     <Dialog
       open={open}
       onOpenChange={(o) => {
+        // v3.23.6 — outside-click / ESC / X close while a batch is
+        // running must NOT orphan the job. The user has three
+        // legitimate intents at that point:
+        //   * Cancel the run     — explicit Cancel button
+        //   * Move it offscreen  — explicit Background button
+        //   * Close the dialog   — implicit (outside-click / ESC / X)
+        // The third case used to silently dismiss the dialog while
+        // the worker kept running; the user lost the polling overlay
+        // and had no way back to the job. Treat that case as
+        // "background" so the floating bar takes over progress.
+        if (!o && runningJobId && taskId) {
+          sendToBackground();
+          return;
+        }
         setOpen(o);
         if (!o) resetState();
       }}
@@ -621,26 +663,7 @@ export function YoloeDialog({
               qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
               setOpen(false);
             }}
-            onBackground={() => {
-              const cap = taskId;
-              const id = runningJobId;
-              useBackgroundJobs.getState().add({
-                jobId: id,
-                taskId: cap,
-                kind: "yoloe-batch",
-                label: `YOLOE ${mode.replace("_", "-")} (batch)`,
-                startedAt: Date.now(),
-                cancel: async () => {
-                  await yoloeApi.cancelBatch(cap, id);
-                },
-              });
-              setRunningJobId(null);
-              setOpen(false);
-              showToast(
-                "Running in background — progress shown bottom-right.",
-                { variant: "info", duration: 3000 },
-              );
-            }}
+            onBackground={sendToBackground}
           />
         ) : (
           <>
