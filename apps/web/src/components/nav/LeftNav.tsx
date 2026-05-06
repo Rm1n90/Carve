@@ -46,6 +46,8 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import * as Popover from "@radix-ui/react-popover";
+import { LayoutGroup, motion } from "framer-motion";
 import {
   Activity,
   ChevronDown,
@@ -55,6 +57,7 @@ import {
   Info,
   LogOut,
   Settings,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -64,6 +67,7 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 import { projectsApi, type Project } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
+import { useBackgroundJobs } from "@/state/backgroundJobs";
 
 const ANNOTATE_PROJECTS_LIMIT = 8;
 const ANNOTATE_TASKS_LIMIT = 5;
@@ -107,7 +111,7 @@ function NavRow({ active = false, indent = 0, children }: NavRowProps) {
   return (
     <span
       className={cn(
-        "relative flex items-center gap-2 mx-1.5 py-1.5 rounded-[var(--radius-sm)]",
+        "group/row relative flex items-center gap-2 mx-1.5 py-1.5 rounded-[var(--radius-sm)]",
         "text-[12.5px] tracking-tight transition-colors duration-[160ms] ease-out",
         indent === 0 ? "pl-3 pr-2" : "pl-6 pr-2",
         active
@@ -115,10 +119,39 @@ function NavRow({ active = false, indent = 0, children }: NavRowProps) {
           : "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]/40",
       )}
     >
-      {active && (
+      {/* Hover-preview beam: shows a faint accent stub on the left
+          edge while the row is hovered (tells the user "this is what
+          will become active"). Fades out on the active row because
+          the real beam takes over. */}
+      {!active && (
         <span
           aria-hidden
-          className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r-[2px] bg-[var(--accent)]"
+          className={cn(
+            "absolute left-0 top-2 bottom-2 w-[2px] rounded-r-[2px]",
+            "bg-[var(--accent)] opacity-0 group-hover/row:opacity-30",
+            "transition-opacity duration-[160ms] ease-out",
+          )}
+        />
+      )}
+      {/* Active beam — uses framer-motion's layoutId so when the user
+          navigates, the beam glides smoothly from the previous row's
+          position to the new one. Single signature element of the
+          rail's design language. */}
+      {active && (
+        <motion.span
+          aria-hidden
+          layoutId="leftnav-active-beam"
+          className={cn(
+            "absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r-[2px]",
+            "bg-[var(--accent)]",
+            "shadow-[0_0_12px_oklch(0.78_0.14_220_/_0.55)]",
+          )}
+          transition={{
+            type: "spring",
+            stiffness: 480,
+            damping: 38,
+            mass: 0.8,
+          }}
         />
       )}
       {children}
@@ -278,27 +311,138 @@ interface DockIconProps {
   icon: React.ReactNode;
   testId?: string;
 }
+/**
+ * Tooltipped dock icon for single-destination secondary nav. Active
+ * state uses a 1 px inset accent ring + a small floating dot directly
+ * underneath (macOS-dock style) so two visual cues confirm "you are
+ * here" without shouting.
+ */
 function DockIcon({ label, to, active, icon, testId }: DockIconProps) {
   const AnyLink = Link as unknown as React.FC<
     Record<string, unknown> & { children?: React.ReactNode }
   >;
   return (
     <Tooltip content={label}>
-      <AnyLink
-        to={to}
-        className={cn(
-          "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
-          "transition-colors duration-[160ms] ease-out",
-          active
-            ? "bg-[var(--bg-hover)]/60 text-[color:var(--accent)] shadow-[inset_0_0_0_1px_var(--accent)]"
-            : "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]/40",
+      <span className="relative">
+        <AnyLink
+          to={to}
+          className={cn(
+            "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
+            "transition-all duration-[160ms] ease-out",
+            active
+              ? "bg-[var(--bg-hover)]/60 text-[color:var(--accent)] shadow-[inset_0_0_0_1px_var(--accent)]"
+              : "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]/40 hover:-translate-y-px",
+          )}
+          aria-label={label}
+          data-testid={testId}
+        >
+          {icon}
+        </AnyLink>
+        {active && (
+          <motion.span
+            aria-hidden
+            layoutId="leftnav-dock-dot"
+            className={cn(
+              "absolute left-1/2 -translate-x-1/2 -bottom-1 h-[3px] w-[3px] rounded-full",
+              "bg-[var(--accent)] shadow-[0_0_6px_oklch(0.78_0.14_220_/_0.7)]",
+            )}
+            transition={{ type: "spring", stiffness: 480, damping: 38 }}
+          />
         )}
-        aria-label={label}
-        data-testid={testId}
-      >
-        {icon}
-      </AnyLink>
+      </span>
     </Tooltip>
+  );
+}
+
+/**
+ * v3.24.10 — Models dock entry is a popover (not a single link)
+ * because Models has two destinations (YOLO weights + SAM models)
+ * and surfacing both costs only a click+hover. Other dock items
+ * stay direct links because each is single-destination.
+ */
+function ModelsDockIcon({ active }: { active: boolean }) {
+  const path = useRouterState({ select: (s) => s.location.pathname });
+  const yoloActive = isActive(path, "/models/yolo", false);
+  const samActive = isActive(path, "/models/sam", false);
+  const AnyLink = Link as unknown as React.FC<
+    Record<string, unknown> & { children?: React.ReactNode }
+  >;
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <span className="relative">
+          <button
+            type="button"
+            aria-label="Models"
+            data-testid="leftnav-dock-models"
+            className={cn(
+              "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
+              "transition-all duration-[160ms] ease-out",
+              active
+                ? "bg-[var(--bg-hover)]/60 text-[color:var(--accent)] shadow-[inset_0_0_0_1px_var(--accent)]"
+                : "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]/40 hover:-translate-y-px",
+            )}
+          >
+            <Cpu className="h-3.5 w-3.5" />
+          </button>
+          {active && (
+            <motion.span
+              aria-hidden
+              layoutId="leftnav-dock-dot"
+              className={cn(
+                "absolute left-1/2 -translate-x-1/2 -bottom-1 h-[3px] w-[3px] rounded-full",
+                "bg-[var(--accent)] shadow-[0_0_6px_oklch(0.78_0.14_220_/_0.7)]",
+              )}
+              transition={{ type: "spring", stiffness: 480, damping: 38 }}
+            />
+          )}
+        </span>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="top"
+          align="start"
+          sideOffset={8}
+          className={cn(
+            "min-w-[160px] rounded-[var(--radius-6)] p-1 z-50",
+            "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+            "shadow-[var(--shadow-card)]",
+          )}
+        >
+          <div className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-[0.10em] font-medium text-[color:var(--text-tertiary)]">
+            Models
+          </div>
+          <AnyLink
+            to="/models/yolo"
+            data-testid="leftnav-dock-models-yolo"
+            className={cn(
+              "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
+              "text-[12.5px] tracking-tight cursor-pointer outline-none",
+              yoloActive
+                ? "text-[color:var(--accent)] bg-[var(--accent-bg)]"
+                : "text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            <Cpu className="h-3.5 w-3.5" />
+            <span className="flex-1">YOLO weights</span>
+          </AnyLink>
+          <AnyLink
+            to="/models/sam"
+            data-testid="leftnav-dock-models-sam"
+            className={cn(
+              "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
+              "text-[12.5px] tracking-tight cursor-pointer outline-none",
+              samActive
+                ? "text-[color:var(--accent)] bg-[var(--accent-bg)]"
+                : "text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            <span className="flex-1">SAM models</span>
+          </AnyLink>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -362,6 +506,13 @@ export function LeftNav() {
     }
   }
 
+  // v3.24.10 — silent activity indicator on the avatar. When any
+  // background batch (YOLOE / Auto-annotate / Predict / etc.) is
+  // running, the avatar gets a thin pulsing accent ring. No badge,
+  // no count, no toast — just a quiet "something is alive" signal.
+  const activeJobs = useBackgroundJobs((s) => Object.keys(s.jobs).length);
+  const hasActiveJobs = activeJobs > 0;
+
   return (
     <aside
       aria-label="Primary navigation"
@@ -372,65 +523,107 @@ export function LeftNav() {
         "border-r border-[var(--glass-border)]",
       )}
     >
-      {/* Brand mark — minimal. The diamond glyph is a small accent
-          element so the wordmark feels intentional, not generic. */}
+      {/* Brand mark — gradient diamond with a one-shot scan pulse on
+          mount (a 600 ms vertical sweep across the glyph). The diamond
+          rotates on hover and the wordmark gets a subtle letter-
+          spacing tightening to feel tactile. */}
       <Link to="/" className="block">
-        <div className="px-3 pt-3.5 pb-3 flex items-center gap-2 group">
+        <div className="px-3 pt-3.5 pb-3 flex items-center gap-2.5 group">
+          <span aria-hidden className="relative h-4 w-4">
+            <span
+              className={cn(
+                "absolute inset-0 rotate-45 rounded-[2px]",
+                "bg-gradient-to-br from-[var(--accent)] to-[oklch(0.62_0.20_240)]",
+                "shadow-[0_0_10px_oklch(0.78_0.14_220_/_0.45)]",
+                "transition-transform duration-[500ms] ease-out group-hover:rotate-[225deg]",
+              )}
+            />
+            <motion.span
+              className="absolute inset-0 rotate-45 rounded-[2px] overflow-hidden"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: [0, 1, 0] }}
+              transition={{ duration: 1.2, ease: "easeInOut" }}
+            >
+              <span
+                className={cn(
+                  "absolute -inset-y-2 w-[3px]",
+                  "bg-gradient-to-b from-transparent via-white/60 to-transparent",
+                )}
+                style={{
+                  animation: "leftnav-scan 1.2s ease-in-out 1",
+                }}
+              />
+            </motion.span>
+          </span>
           <span
-            aria-hidden
             className={cn(
-              "h-4 w-4 rotate-45 rounded-[2px] bg-[var(--accent)]",
-              "shadow-[0_0_8px_oklch(0.78_0.14_220_/_0.35)]",
-              "transition-transform duration-[400ms] ease-out group-hover:rotate-[225deg]",
+              "text-[14px] font-medium text-[color:var(--text-primary)]",
+              "tracking-tight transition-[letter-spacing] duration-[300ms]",
+              "group-hover:tracking-[-0.005em]",
             )}
-          />
-          <span className="text-[14px] font-medium tracking-tight text-[color:var(--text-primary)]">
+          >
             Carve
           </span>
         </div>
       </Link>
+
+      {/* One-shot scan keyframe — defined inline so the rail file
+          stays self-contained. */}
+      <style>{`
+        @keyframes leftnav-scan {
+          0% { transform: translateX(-200%); }
+          100% { transform: translateX(800%); }
+        }
+      `}</style>
 
       {/* Projects (primary IA — projects list IS the nav, no Section
           wrapper, no chevron, just a typography label + the list). */}
       <SectionLabel count={projectList.length}>Projects</SectionLabel>
 
       <nav className="relative flex-1 min-h-0 overflow-y-auto pb-1">
-        <ul className="grid gap-0.5">
-          {projectsQ.isLoading && (
-            <li
-              className="px-4 py-1.5 text-[11.5px] text-[color:var(--text-tertiary)]"
-              data-testid="leftnav-projects-loading"
-            >
-              Loading…
-            </li>
-          )}
-          {!projectsQ.isLoading &&
-            visibleProjects.map((p) => (
-              <ProjectNavItem
-                key={p.id}
-                project={p}
-                path={path}
-                expanded={expandedProjects.has(p.id)}
-                onToggle={toggleProject}
+        {/* LayoutGroup unifies every motion.span with
+            ``layoutId="leftnav-active-beam"`` across the rail, so when
+            the user navigates between rows the beam glides smoothly
+            from old to new position instead of cutting. Single shared
+            element of design language. */}
+        <LayoutGroup id="leftnav-rows">
+          <ul className="grid gap-0.5">
+            {projectsQ.isLoading && (
+              <li
+                className="px-4 py-1.5 text-[11.5px] text-[color:var(--text-tertiary)]"
+                data-testid="leftnav-projects-loading"
+              >
+                Loading…
+              </li>
+            )}
+            {!projectsQ.isLoading &&
+              visibleProjects.map((p) => (
+                <ProjectNavItem
+                  key={p.id}
+                  project={p}
+                  path={path}
+                  expanded={expandedProjects.has(p.id)}
+                  onToggle={toggleProject}
+                />
+              ))}
+            {!projectsQ.isLoading && overflowCount > 0 && (
+              <NavItem
+                label={`See all ${projectList.length} projects`}
+                to="/projects"
+                testId="leftnav-projects-show-all"
+                trailing="→"
               />
-            ))}
-          {!projectsQ.isLoading && overflowCount > 0 && (
-            <NavItem
-              label={`See all ${projectList.length} projects`}
-              to="/projects"
-              testId="leftnav-projects-show-all"
-              trailing="→"
-            />
-          )}
-          {!projectsQ.isLoading && projectList.length === 0 && (
-            <NavItem
-              label="All projects"
-              to="/projects"
-              active={path === "/projects"}
-              testId="leftnav-all-projects"
-            />
-          )}
-        </ul>
+            )}
+            {!projectsQ.isLoading && projectList.length === 0 && (
+              <NavItem
+                label="All projects"
+                to="/projects"
+                active={path === "/projects"}
+                testId="leftnav-all-projects"
+              />
+            )}
+          </ul>
+        </LayoutGroup>
       </nav>
 
       {/* Icon dock — collapses Models / System / Settings / Trash /
@@ -444,13 +637,7 @@ export function LeftNav() {
           "border-t border-[var(--glass-border)]",
         )}
       >
-        <DockIcon
-          label="Models"
-          to="/models/yolo"
-          active={isActive(path, "/models", false)}
-          icon={<Cpu className="h-3.5 w-3.5" />}
-          testId="leftnav-dock-models"
-        />
+        <ModelsDockIcon active={isActive(path, "/models", false)} />
         <DockIcon
           label="System"
           to="/system"
@@ -496,14 +683,32 @@ export function LeftNav() {
                 )}
                 aria-label="Account menu"
               >
-                <span
-                  className="grid h-6 w-6 place-items-center rounded-full text-[10px] font-medium shrink-0"
-                  style={{
-                    background: "var(--accent-bg)",
-                    color: "var(--accent)",
-                  }}
-                >
-                  {userInitial}
+                <span className="relative shrink-0">
+                  <span
+                    className="grid h-6 w-6 place-items-center rounded-full text-[10px] font-medium"
+                    style={{
+                      background: "var(--accent-bg)",
+                      color: "var(--accent)",
+                    }}
+                  >
+                    {userInitial}
+                  </span>
+                  {/* Silent activity ring — pulses while any
+                      background batch is running. No badge / no count
+                      / no toast; just a quiet "something's alive"
+                      cue. Disappears when the queue empties. */}
+                  {hasActiveJobs && (
+                    <motion.span
+                      aria-hidden
+                      className="absolute -inset-[2px] rounded-full ring-2 ring-[color:var(--accent)]"
+                      animate={{ opacity: [0.35, 0.85, 0.35] }}
+                      transition={{
+                        duration: 1.6,
+                        repeat: Infinity,
+                        ease: "easeInOut",
+                      }}
+                    />
+                  )}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-[11.5px] tracking-tight truncate text-[color:var(--text-primary)]">
