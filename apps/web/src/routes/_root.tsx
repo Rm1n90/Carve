@@ -2,6 +2,7 @@
 import { Outlet, createRootRoute, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { AppShell, AppShellBleed } from "@/components/AppShell";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useAuth } from "@/auth/store";
 import { bootstrapStatus } from "@/auth/api";
 import { FirstRunWizard } from "@/pages/FirstRunWizard";
@@ -22,7 +23,10 @@ function RootComponent() {
   });
 
   if (bs.isLoading) {
-    return <p className="p-6 text-[color:var(--text-tertiary)] text-[13px]">Loading…</p>;
+    // v3.24.6 — unified loading surface. Same Skeleton component
+    // used by Suspense fallbacks and AnnotateAssetPage so refresh
+    // never flashes three different fonts/layouts.
+    return <Skeleton fullScreen />;
   }
   if (bs.data && !bs.data.users_exist) {
     return <FirstRunWizard onSuccess={() => bs.refetch()} />;

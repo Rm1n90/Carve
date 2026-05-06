@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Tabs } from "@/components/ui/Tabs";
 import { Input } from "@/components/ui/Input";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   AlertCircle,
@@ -879,14 +880,10 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // back `undefined` from `taskClassesQ.data?.classes`, which would
   // otherwise unmount the canvas (and the user's zoom + Pixi state).
   if (!assetQ.data || taskClassesQ.isLoading) {
-    return (
-      <div className="grid h-screen place-items-center">
-        <div className="flex items-center gap-2 text-[color:var(--text-tertiary)] text-[13px]">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading…
-        </div>
-      </div>
-    );
+    // v3.24.6 — unified loading surface. Same Skeleton component the
+    // root auth gate and Suspense fallbacks use, so refresh shows
+    // ONE typography + spinner identity across all three phases.
+    return <Skeleton fullScreen label="Loading editor…" />;
   }
   if (assetQ.error || !assetQ.data) {
     return (
