@@ -229,12 +229,26 @@ def decode(payload: DecodeIn) -> DecodeOut:
         try:
             shape = tuple(low_res_all.shape)
             if len(shape) == 5:
-                # Sam2 transformers: [1, 1, K, 256, 256]
-                chosen_low_res = low_res_all[:, :, best : best + 1, :, :]
+                # Sam2 / Sam3 transformers: [B=1, num_obj=1, K, H, W].
+                # ``input_masks`` flows into ``mask_embed`` (a Conv2d)
+                # which expects 4D [B, 1, H, W]. Slice the chosen K
+                # channel and squeeze it out so the result is 4D.
+                #
+                # Pre-fix shape was 5D [1, 1, 1, H, W] which crashed
+                # with "Expected 3D or 4D input to conv2d, but got
+                # input of size: [1, 1, 1, H, W]".
+                sliced = low_res_all[:, :, best : best + 1, :, :]
+                # squeeze(2) drops the K=1 dim. Result: [1, 1, H, W].
+                chosen_low_res = sliced.squeeze(2)
                 if hasattr(chosen_low_res, "detach"):
                     chosen_low_res = chosen_low_res.detach()
+                if hasattr(chosen_low_res, "contiguous"):
+                    chosen_low_res = chosen_low_res.contiguous()
             elif len(shape) == 3:
-                # sam3.1 native: (K, 256, 256)
+                # sam3.1 native predictor: (K, H, W). The native
+                # SAM2 InteractivePredictor.predict accepts
+                # mask_input shape (1, H, W) — slice to a single
+                # K=1 channel.
                 chosen_low_res = low_res_all[best : best + 1]
         except Exception:  # noqa: BLE001 — best-effort; absence is OK
             chosen_low_res = None
