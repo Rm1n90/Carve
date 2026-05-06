@@ -309,8 +309,17 @@ def enqueue_batch_auto_annotate(
             q = Queue("default", connection=client)
             # plan-09 task-09 — predict batches can run long; bump
             # job_timeout to 2h so RQ doesn't reap the worker mid-batch.
+            # v3.22 — pin RQ's job_id to our progress key so the cancel
+            # endpoint can ``send_stop_job_command`` and free the
+            # single-worker queue immediately, instead of waiting for
+            # the in-flight asset's HTTP call to the model service to
+            # return at the next per-asset cancel checkpoint.
             enqueue_with_defaults(
-                q, run_batch_auto_annotate, payload, job_timeout=2 * 3600
+                q,
+                run_batch_auto_annotate,
+                payload,
+                job_id=payload.job_id,
+                job_timeout=2 * 3600,
             )
     except Exception:
         pass
@@ -419,7 +428,14 @@ def enqueue_sam_auto_text_batch(
         client = _redis_client_or_none()
         if client is not None:
             q = Queue("default", connection=client)
-            enqueue_with_defaults(q, run_auto_text_batch, job_payload)
+            # v3.22 — pin RQ's job_id (see YOLO enqueue above) so cancel
+            # can ``send_stop_job_command`` and free the worker.
+            enqueue_with_defaults(
+                q,
+                run_auto_text_batch,
+                job_payload,
+                job_id=job_payload.job_id,
+            )
     except Exception:
         pass
     return {"job_id": job_payload.job_id}
@@ -469,6 +485,13 @@ def cancel_auto_annotate_batch(
         client.hset(progress_key(job_id), "status", "canceled")
     except Exception:
         raise HTTPException(status_code=502, detail="cancel_failed") from None
+    # v3.22.1 — also send the SIGRTMIN-based stop command so the worker
+    # exits the in-flight asset's HTTP call to the model service
+    # immediately rather than waiting at the next per-asset checkpoint.
+    # Without this, a follow-up Predict click sits in the RQ queue for
+    # the remainder of the in-flight asset (often 10-30s) before the
+    # single worker is free to pick up the new job.
+    _try_send_stop(client, job_id)
     return {"job_id": job_id, "status": "canceled"}
 
 
@@ -498,7 +521,30 @@ def cancel_sam_auto_text_batch(
         client.hset(progress_key(job_id), "status", "canceled")
     except Exception:
         raise HTTPException(status_code=502, detail="cancel_failed") from None
+    _try_send_stop(client, job_id)
     return {"job_id": job_id, "status": "canceled"}
+
+
+def _try_send_stop(client, rq_job_id: str) -> None:
+    """v3.22.1 — best-effort ``rq.command.send_stop_job_command``.
+
+    The cooperative Redis flag is the source of truth for "this batch
+    was canceled — keep already-committed annotations". The stop
+    command is purely a latency optimization: it interrupts the
+    worker's in-flight HTTP call to the model service so a follow-up
+    Predict can start immediately on the same single worker.
+
+    Tolerates: missing job (already finished), worker not listening,
+    older RQ versions without ``send_stop_job_command``.
+    """
+    try:
+        from rq.command import send_stop_job_command  # type: ignore
+        send_stop_job_command(client, rq_job_id)
+    except Exception:  # noqa: BLE001
+        # Job may have already finished, or the worker isn't running
+        # this job_id, or the RQ version doesn't expose the command.
+        # The Redis ``canceled`` flag still wins at the next checkpoint.
+        pass
 
 
 class SamDecodeIn(BaseModel):
