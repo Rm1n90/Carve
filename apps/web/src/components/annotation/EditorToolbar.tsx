@@ -1526,11 +1526,50 @@ const YoloPredictButton = forwardRef<
                 selectedWeight?.task_kind === "detect" ? "to-polygon" : "refine";
               setBatchPostProgress({ done: 0, total: created, failed: 0 });
               batchRunStartIsoRef.current = null;
+              // v3.22 — register the post-process as a backgroundable
+              // job. AbortController makes Cancel actually stop;
+              // setProgress feeds the floating bar.
+              const ppJobId =
+                typeof crypto !== "undefined" && crypto.randomUUID
+                  ? crypto.randomUUID()
+                  : `pp-${Date.now()}-${Math.random()}`;
+              const ppController = new AbortController();
+              const ppKind: "polygon-convert" | "sam-refine-batch" =
+                mode === "to-polygon" ? "polygon-convert" : "sam-refine-batch";
+              const ppLabel =
+                mode === "to-polygon"
+                  ? "Convert YOLO boxes → polygons"
+                  : "Refine YOLO boxes with SAM";
+              useBackgroundJobs.getState().add({
+                jobId: ppJobId,
+                taskId: taskId!,
+                kind: ppKind,
+                label: ppLabel,
+                startedAt: Date.now(),
+                cancel: async () => {
+                  ppController.abort();
+                },
+              });
+              useBackgroundJobs.getState().setProgress(ppJobId, {
+                status: "running",
+                done: 0,
+                total: created,
+                failed: 0,
+              });
               void runBatchTaskPostProcess({
                 taskId,
                 sinceIso: startIso!,
                 mode,
-                onProgress: setBatchPostProgress,
+                signal: ppController.signal,
+                onProgress: (p) => {
+                  setBatchPostProgress(p);
+                  useBackgroundJobs.getState().setProgress(ppJobId, {
+                    status: "running",
+                    done: p.done,
+                    total: p.total,
+                    failed: p.failed,
+                  });
+                },
               })
                 .then((res) => {
                   const skippedTail = res.failed > 0
@@ -1550,11 +1589,27 @@ const YoloPredictButton = forwardRef<
                       { variant: "warning", duration: 6000 },
                     );
                   }
-                })
-                .catch(() => {
-                  showToast("Batch post-process failed.", {
-                    variant: "error",
+                  useBackgroundJobs.getState().setProgress(ppJobId, {
+                    status: "completed",
+                    done: res.succeeded + res.failed,
+                    total: res.succeeded + res.failed,
+                    failed: res.failed,
                   });
+                })
+                .catch((err) => {
+                  if (ppController.signal.aborted) {
+                    useBackgroundJobs.getState().setProgress(ppJobId, {
+                      status: "canceled",
+                    });
+                  } else {
+                    showToast("Batch post-process failed.", {
+                      variant: "error",
+                    });
+                    useBackgroundJobs.getState().setProgress(ppJobId, {
+                      status: "failed",
+                      message: String(err),
+                    });
+                  }
                 })
                 .finally(() => {
                   setBatchPostProgress(null);

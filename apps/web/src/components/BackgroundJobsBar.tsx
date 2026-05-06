@@ -52,8 +52,18 @@ interface PollResult {
   raw?: BackgroundJobProgress;
 }
 
+// Frontend-driven kinds (the runner is a Promise in this tab, not an
+// RQ worker). The runner pushes progress directly into the store via
+// ``setProgress``; the bar entry just reads it back from the store
+// instead of issuing an HTTP poll.
+const FRONTEND_KINDS: ReadonlySet<BackgroundJob["kind"]> = new Set([
+  "polygon-convert",
+  "sam-refine-batch",
+]);
+
 function usePollJob(job: BackgroundJob): PollResult {
   const setProgress = useBackgroundJobs((s) => s.setProgress);
+  const isFrontend = FRONTEND_KINDS.has(job.kind);
 
   const queryKey = useMemo(
     () => ["bg-job", job.kind, job.taskId, job.jobId] as const,
@@ -72,6 +82,7 @@ function usePollJob(job: BackgroundJob): PollResult {
     }
   }, [job.kind, job.taskId, job.jobId]);
 
+
   const q = useQuery({
     queryKey,
     queryFn,
@@ -84,23 +95,39 @@ function usePollJob(job: BackgroundJob): PollResult {
   });
 
   const data = q.data as Record<string, unknown> | null | undefined;
-  const status = ((data?.status as string) ?? "unknown") as Status;
-  const done = Number(data?.done ?? 0);
-  const total = Number(data?.total ?? 0);
-  const failed = Number(data?.failed ?? 0);
+  // For frontend-driven kinds, skip the HTTP-derived ``data`` and
+  // read the progress the runner pushed to the store directly.
+  const fePr = isFrontend ? job.progress : undefined;
+  const status = (
+    isFrontend
+      ? ((fePr?.status as Status) ?? "running")
+      : ((data?.status as string) ?? "unknown")
+  ) as Status;
+  const done = Number((isFrontend ? fePr?.done : data?.done) ?? 0);
+  const total = Number((isFrontend ? fePr?.total : data?.total) ?? 0);
+  const failed = Number((isFrontend ? fePr?.failed : data?.failed) ?? 0);
 
   useEffect(() => {
-    if (data) {
+    if (!isFrontend && data) {
       setProgress(job.jobId, { status, done, total, failed });
     }
-  }, [data, status, done, total, failed, setProgress, job.jobId]);
+  }, [
+    isFrontend,
+    data,
+    status,
+    done,
+    total,
+    failed,
+    setProgress,
+    job.jobId,
+  ]);
 
   return {
     status,
     done,
     total,
     failed,
-    raw: data as BackgroundJobProgress | undefined,
+    raw: (isFrontend ? fePr : (data as BackgroundJobProgress | undefined)),
   };
 }
 

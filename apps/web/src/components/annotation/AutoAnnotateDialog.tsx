@@ -83,6 +83,11 @@ export function AutoAnnotateDialog({
   // v3.8 Phase 3.5 — track an in-flight RQ batch so the dialog can
   // render a live progress overlay with Cancel.
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
+  // v3.22 — refs for the post-process AbortController + job_id so the
+  // BatchProgressView's Cancel/Background buttons can address the
+  // post-process phase (Promise-based, frontend-driven runner).
+  const postAbortRef = useRef<AbortController | null>(null);
+  const postJobIdRef = useRef<string | null>(null);
 
   // v3.22 — expand-from-bar handshake. When the operator clicks
   // "Expand" on a backgrounded job in the floating bar, the bar
@@ -356,12 +361,48 @@ export function AutoAnnotateDialog({
                 const startIso = runStartIsoRef.current;
                 runStartIsoRef.current = null;
                 setSamPostProgress({ done: 0, total: created, failed: 0 });
+                // v3.22 — register the post-process as a backgroundable
+                // job. The runner is frontend-driven (a Promise in this
+                // tab) so cancel = abort controller; the bar reads
+                // progress from the store via setProgress.
+                const ppJobId =
+                  typeof crypto !== "undefined" && crypto.randomUUID
+                    ? crypto.randomUUID()
+                    : `pp-${Date.now()}-${Math.random()}`;
+                const ppController = new AbortController();
+                postAbortRef.current = ppController;
+                postJobIdRef.current = ppJobId;
+                useBackgroundJobs.getState().add({
+                  jobId: ppJobId,
+                  taskId,
+                  kind: "polygon-convert",
+                  label: "Convert polygons → bboxes",
+                  startedAt: Date.now(),
+                  cancel: async () => {
+                    ppController.abort();
+                  },
+                });
+                useBackgroundJobs.getState().setProgress(ppJobId, {
+                  status: "running",
+                  done: 0,
+                  total: created,
+                  failed: 0,
+                });
                 void runBatchTaskPostProcess({
                   taskId,
                   sinceIso: startIso,
                   classIds: selectedClassIds,
                   mode: samPostMode as PostProcessMode,
-                  onProgress: setSamPostProgress,
+                  signal: ppController.signal,
+                  onProgress: (p) => {
+                    setSamPostProgress(p);
+                    useBackgroundJobs.getState().setProgress(ppJobId, {
+                      status: "running",
+                      done: p.done,
+                      total: p.total,
+                      failed: p.failed,
+                    });
+                  },
                 })
                   .then((res) => {
                     if (res.succeeded > 0) {
@@ -373,11 +414,27 @@ export function AutoAnnotateDialog({
                         },
                       );
                     }
-                  })
-                  .catch(() => {
-                    showToast("Batch post-process failed.", {
-                      variant: "error",
+                    useBackgroundJobs.getState().setProgress(ppJobId, {
+                      status: "completed",
+                      done: res.succeeded + res.failed,
+                      total: res.succeeded + res.failed,
+                      failed: res.failed,
                     });
+                  })
+                  .catch((err) => {
+                    if (ppController.signal.aborted) {
+                      useBackgroundJobs.getState().setProgress(ppJobId, {
+                        status: "canceled",
+                      });
+                    } else {
+                      showToast("Batch post-process failed.", {
+                        variant: "error",
+                      });
+                      useBackgroundJobs.getState().setProgress(ppJobId, {
+                        status: "failed",
+                        message: String(err),
+                      });
+                    }
                   })
                   .finally(() => {
                     setSamPostProgress(null);
@@ -385,6 +442,8 @@ export function AutoAnnotateDialog({
                     qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
                     setRunningJobId(null);
                     setOpen(false);
+                    postAbortRef.current = null;
+                    postJobIdRef.current = null;
                   });
                 return;
               }
