@@ -576,18 +576,43 @@ def force_evict_predictor() -> bool:
         pass
 
     # Force Python to actually drop references to the now-orphaned
-    # closures so the underlying torch tensors become collectable.
-    gc.collect()
-    _empty_cuda_cache()
-
-    # ipc_collect closes any IPC handles; cheap when none exist.
+    # closures so the underlying torch tensors become collectable. The
+    # caching allocator sometimes needs multiple cycles to release a
+    # segment back to the driver — circular refs (closure ↔ state-dict)
+    # need a second gc pass, and the allocator's per-stream pools
+    # benefit from a synchronize before each empty_cache so in-flight
+    # kernels don't pin memory we just dropped.
     try:
         import torch  # type: ignore[import-not-found]
-
-        if torch.cuda.is_available():
-            torch.cuda.ipc_collect()
+        cuda_available = torch.cuda.is_available()
     except Exception:  # noqa: BLE001
-        pass
+        torch = None  # type: ignore[assignment]
+        cuda_available = False
+
+    for _ in range(3):
+        gc.collect()
+        if cuda_available and torch is not None:
+            try:
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # Release any compile / dynamo caches the previous variant set up.
+    # No-op when ``torch._dynamo`` isn't loaded (e.g. SAM_COMPILE=false).
+    if torch is not None:
+        try:
+            import torch._dynamo  # type: ignore[import-not-found]
+            torch._dynamo.reset()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ipc_collect closes any IPC handles; cheap when none exist.
+    if cuda_available and torch is not None:
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:  # noqa: BLE001
+            pass
 
     if _LOAD_STATE.kind == "ready":
         _set_load_state()
@@ -661,11 +686,18 @@ def load_predictor(variant: str) -> None:
                 loaded_at=datetime.now(timezone.utc).isoformat(),
             )
             return
-        # Drop the existing session (predictor + loaded_hash together).
-        _SESSION = None
 
-    # Free GPU memory outside the lock so other threads can read state.
-    _empty_cuda_cache()
+    # v3.22 — variant change: scorched-earth eviction of the OLD variant
+    # before bringing the new one up. Without this, switching sam3 →
+    # sam3.1 left the sam3 transformers Sam3Model (~6 GB) cached in the
+    # text-predictor closure AND loaded the sam3.1 multiplex (~5 GB) on
+    # top, OOM-ing a 24 GB card with FO1 also resident.
+    #
+    # Two SAM variants must NEVER coexist on the GPU. ``force_evict_predictor``
+    # drops _SESSION + _TEXT_PREDICTOR_FACTORY + _BOX_PREDICTOR_FACTORY +
+    # the sam3.1 native module-level singleton, then runs gc.collect() +
+    # empty_cache() + ipc_collect().
+    force_evict_predictor()
 
     # Update the env so ``_default_factory()`` and ``get_sam_model()``
     # reflect the new variant on subsequent calls. Legacy ``SAM_VARIANT``

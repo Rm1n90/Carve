@@ -428,6 +428,14 @@ class StatusOut(BaseModel):
     # registered a filter and the per-request ``use_vlm_fo1`` flag will
     # be honored. The editor toggle hides itself when this is False.
     vlm_fo1_available: bool = False
+    # v3.22 — diagnostic GPU memory readouts for the model service
+    # process. ``gpu_allocated_mb`` is the truly in-use bytes (active
+    # model weights + activations); ``gpu_reserved_mb`` is what the
+    # CUDA caching allocator holds from the driver (≥ allocated). The
+    # delta is allocator cache that ``empty_cache`` will return on
+    # idle-eviction. Both ``None`` when CUDA isn't available.
+    gpu_allocated_mb: int | None = None
+    gpu_reserved_mb: int | None = None
 
 
 @router.get("/status", response_model=StatusOut)
@@ -443,6 +451,20 @@ def sam_status() -> StatusOut:
     from carve_model.sam.predictor import get_vlm_fo1_filter
 
     state = get_load_state()
+    # In-process GPU memory readout — uses memory_allocated (truly
+    # in-use) so the editor / System page can verify that exactly one
+    # variant's weights are resident after a /sam/switch.
+    gpu_allocated_mb: int | None = None
+    gpu_reserved_mb: int | None = None
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if torch.cuda.is_available():
+            gpu_allocated_mb = int(torch.cuda.memory_allocated() // (1024 * 1024))
+            gpu_reserved_mb = int(torch.cuda.memory_reserved() // (1024 * 1024))
+    except Exception:  # noqa: BLE001
+        pass
+
     # If the state machine has never been touched but the env already
     # names a variant (e.g. operator preset SAM_MODEL but nobody hit
     # encode yet), fall back to that name so the response is informative.
@@ -455,6 +477,8 @@ def sam_status() -> StatusOut:
         error=state.error,
         job_id=state.job_id,
         vlm_fo1_available=get_vlm_fo1_filter() is not None,
+        gpu_allocated_mb=gpu_allocated_mb,
+        gpu_reserved_mb=gpu_reserved_mb,
     )
 
 
