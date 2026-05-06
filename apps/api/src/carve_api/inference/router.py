@@ -1403,7 +1403,24 @@ def cancel_yoloe_batch(
     try:
         from carve_api.inference.batch import progress_key
 
+        # v3.23.5 — don't trample a terminal status. A stale cancel
+        # click (e.g. after the job already finished or was already
+        # canceled) shouldn't overwrite the real outcome — the user
+        # would see "canceled" with the previously-created counts and
+        # think their work was lost.
+        cur = client.hget(progress_key(job_id), "status")
+        if isinstance(cur, bytes):
+            cur = cur.decode("utf-8", errors="ignore")
+        if cur in (
+            "completed",
+            "completed_with_errors",
+            "failed",
+            "canceled",
+        ):
+            return {"job_id": job_id, "status": cur or "canceled"}
         client.hset(progress_key(job_id), "status", "canceled")
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=502, detail="cancel_failed") from None
     _try_send_stop(client, job_id)

@@ -587,15 +587,34 @@ export function YoloeDialog({
             onClose={(final) => {
               setRunningJobId(null);
               const created = final?.total_annotations_created ?? 0;
+              const failed = final?.failed ?? 0;
               const skipped = final?.total_skipped_detections ?? 0;
+              const status = final?.status ?? "completed";
               const tail = skipped > 0 ? ` · skipped ${skipped}` : "";
-              showToast(
-                `YOLOE batch created ${created} annotation${created === 1 ? "" : "s"}${tail}.`,
-                {
-                  variant: created > 0 ? "success" : "warning",
-                  duration: 6000,
-                },
-              );
+              if (status === "canceled") {
+                showToast(
+                  `YOLOE batch canceled. Kept ${created} annotation${created === 1 ? "" : "s"} created so far${tail}.`,
+                  { variant: "warning", duration: 5000 },
+                );
+              } else if (status === "failed") {
+                showToast(
+                  `YOLOE batch failed${created > 0 ? ` after creating ${created} annotation${created === 1 ? "" : "s"}` : ""}.`,
+                  { variant: "error", duration: 5000 },
+                );
+              } else if (status === "completed_with_errors") {
+                showToast(
+                  `YOLOE batch finished with errors. Created ${created} annotation${created === 1 ? "" : "s"}; ${failed} asset${failed === 1 ? "" : "s"} failed${tail}.`,
+                  { variant: "warning", duration: 6000 },
+                );
+              } else {
+                showToast(
+                  `YOLOE batch created ${created} annotation${created === 1 ? "" : "s"}${tail}.`,
+                  {
+                    variant: created > 0 ? "success" : "warning",
+                    duration: 6000,
+                  },
+                );
+              }
               onSuccess?.(created);
               qc.invalidateQueries({ queryKey: ["annotations"] });
               qc.invalidateQueries({ queryKey: ["task-annotations", taskId] });
@@ -1141,6 +1160,16 @@ function YoloeBatchProgress({
   onBackground: () => void;
 }) {
   const [canceling, setCanceling] = useState(false);
+  // Track when the dialog opened so we can flag a stuck-pending state.
+  // The poll re-renders ~600 ms; ``Date.now() - openedAt`` becomes
+  // accurate by simply re-deriving on each render.
+  const [openedAt] = useState(() => Date.now());
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  void tick; // tick exists only to force re-renders for elapsed math
   const POLL_MS = 600;
   const q = useQuery({
     queryKey: ["yoloe-batch", taskId, jobId],
@@ -1171,6 +1200,14 @@ function YoloeBatchProgress({
     status === "failed" ||
     status === "canceled";
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  // Stuck-pending heuristic: if the worker hasn't bumped ``total``
+  // off zero and 15 s have passed, surface a hint. Init_progress
+  // (worker side) sets ``total`` within ~1 s of pickup, so 15 s
+  // means the worker is dead, the rq queue is full, or the model
+  // service is hosed.
+  const elapsedMs = Date.now() - openedAt;
+  const isStuck =
+    !isTerminal && total === 0 && status === "pending" && elapsedMs > 15000;
 
   return (
     <div
@@ -1206,6 +1243,20 @@ function YoloeBatchProgress({
           style={{ width: `${pct}%` }}
         />
       </div>
+      {isStuck && (
+        <div
+          data-testid="yoloe-batch-stuck-hint"
+          className="flex items-start gap-1.5 text-[10.5px] text-[color:var(--warning,#d49a4a)]"
+        >
+          <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" aria-hidden />
+          <span>
+            Worker hasn't started yet. Confirm the worker container is
+            up and hasn't crashed (
+            <span className="font-mono">docker compose logs worker</span>
+            ); cancel here is safe.
+          </span>
+        </div>
+      )}
       <div className="flex items-center justify-end gap-2">
         {!isTerminal && (
           <Button
@@ -1226,9 +1277,29 @@ function YoloeBatchProgress({
               setCanceling(true);
               try {
                 await yoloeApi.cancelBatch(taskId, jobId);
-              } finally {
+              } catch (err) {
                 setCanceling(false);
+                showToast(
+                  `Cancel failed: ${
+                    err instanceof Error ? err.message : "unknown"
+                  }. Retry?`,
+                  { variant: "error", duration: 4000 },
+                );
+                return;
               }
+              // v3.23.5 — optimistic close. The server has been told
+              // to cancel; the worker (if running) will break out
+              // between assets and finalize as canceled. Don't make
+              // the user click Done after Cancel — close immediately
+              // with whatever counts the last poll captured.
+              onClose({
+                total_annotations_created:
+                  data?.total_annotations_created ?? 0,
+                total_skipped_detections:
+                  data?.total_skipped_detections ?? 0,
+                failed: data?.failed ?? 0,
+                status: "canceled",
+              });
             }}
             data-testid="yoloe-batch-cancel"
           >

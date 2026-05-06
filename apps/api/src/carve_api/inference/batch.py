@@ -656,6 +656,35 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
             finalize_progress(redis_client, payload.job_id, status="failed")
             return {"ok": False, "error": "missing_actor_or_task"}
 
+        # v3.23.5 — pre-init cancel race. If the user already pressed
+        # Cancel while the job was sitting in the RQ queue (worker not
+        # yet picked it up), the cancel endpoint wrote
+        # ``status=canceled`` to the Redis hash. ``init_progress``
+        # below would unconditionally overwrite it to ``running``,
+        # making the user's cancel a no-op. Peek first; if canceled,
+        # bail out cleanly without touching the hash beyond a
+        # finalize for symmetry.
+        if redis_client is not None:
+            try:
+                cur = redis_client.hget(progress_key(payload.job_id), "status")
+                if isinstance(cur, bytes):
+                    cur = cur.decode("utf-8", errors="ignore")
+                if cur == "canceled":
+                    finalize_progress(
+                        redis_client, payload.job_id, status="canceled",
+                    )
+                    return {
+                        "ok": True,
+                        "canceled": True,
+                        "done": 0,
+                        "failed": 0,
+                        "total_annotations_created": 0,
+                        "total_skipped_detections": 0,
+                        "skipped_by_class": {},
+                    }
+            except Exception:  # noqa: BLE001 — best-effort peek
+                pass
+
         assets = _list_assets_for_task(session, task_uuid)
         init_progress(redis_client, payload.job_id, total=len(assets))
 
