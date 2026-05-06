@@ -1,7 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Sparkles, X } from "lucide-react";
+import { Loader2, Sparkles, Wand2, X } from "lucide-react";
 
 import { samApi } from "@/api/sam";
 import { modelsApi } from "@/api/phase2";
@@ -325,10 +325,10 @@ export function AutoAnnotateDialog({
               "active:opacity-60 active:scale-100",
               "disabled:bg-[var(--bg-subtle)] disabled:border-[var(--border-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none",
             )}
-            title="Auto-annotate (SAM 3 text prompts)"
+            title="Detect every project class that has a text description"
           >
-            <Sparkles className="h-3.5 w-3.5" />
-            Auto
+            <Wand2 className="h-3.5 w-3.5" />
+            Auto-Annotate
           </button>
         )}
       </DialogTrigger>

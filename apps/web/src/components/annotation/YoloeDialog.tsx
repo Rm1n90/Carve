@@ -756,7 +756,7 @@ export function YoloeDialog({
       )}
     >
       <ScanEye className="h-3.5 w-3.5 text-[color:var(--accent)]" />
-      <span>YOLOE</span>
+      <span>Smart Find</span>
     </button>
   );
 
@@ -810,14 +810,15 @@ export function YoloeDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ScanEye className="h-4 w-4 text-[color:var(--accent)]" />
-            YOLOE
+            Smart Find
             <span className="text-[11px] font-normal text-[color:var(--text-tertiary)]">
-              Real-Time Seeing Anything
+              YOLOE — Real-Time Seeing Anything
             </span>
           </DialogTitle>
           <DialogDescription>
-            Detect &amp; segment open-vocabulary objects via text, visual
-            examples, or YOLOE&#39;s 4585-class auto-vocabulary.
+            Find anything by text, visual example, or just look — open-vocab
+            detection &amp; segmentation across this asset or every asset in
+            the task.
           </DialogDescription>
         </DialogHeader>
 

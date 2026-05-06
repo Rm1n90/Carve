@@ -36,6 +36,7 @@ import {
   MoreHorizontal,
   Keyboard,
   Info,
+  Crosshair,
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
@@ -997,8 +998,8 @@ const YoloPredictButton = forwardRef<
         <button
           type="button"
           data-testid="yolo-predict-trigger"
-          aria-label="Open YOLO predict"
-          title="Predict with YOLO weight"
+          aria-label="Open My Model predict"
+          title="Run your uploaded YOLO weight"
           disabled={disabled || isPredicting}
           className={cn(
             // DESIGN.md §4 — primary CTA carries the full PS hover signature.
@@ -1018,9 +1019,9 @@ const YoloPredictButton = forwardRef<
           {isPredicting ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
-            <Sparkles className="h-3.5 w-3.5" />
+            <Crosshair className="h-3.5 w-3.5" />
           )}
-          {isPredicting ? "Predicting…" : "Predict"}
+          {isPredicting ? "Running…" : "My Model"}
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="min-w-[320px] p-2">
