@@ -535,3 +535,61 @@ def _safe_json(r: httpx.Response) -> Any:
         return r.json()
     except ValueError:
         return r.text
+
+
+# ---- v3.27 SAM 3.1 multiplex track ---------------------------------------
+
+
+def track_open_session(
+    frame_urls: list[str], image_size: tuple[int, int], asset_hash: str,
+) -> dict:
+    body = {
+        "frame_urls": frame_urls,
+        "image_size": [int(image_size[0]), int(image_size[1])],
+        "asset_hash": asset_hash,
+    }
+    with _wrap_unreachable("track_open_session"), _client() as c:
+        r = c.post("/track/sessions", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def track_add_prompt(sid: str, body: dict) -> dict:
+    with _wrap_unreachable("track_add_prompt"), _client() as c:
+        r = c.post(f"/track/sessions/{sid}/prompts", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def track_propagate(
+    sid: str, start_frame: int | None, end_frame: int | None,
+) -> dict:
+    body = {"start_frame": start_frame, "end_frame": end_frame}
+    with _wrap_unreachable("track_propagate"), _client() as c:
+        r = c.post(f"/track/sessions/{sid}/propagate", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
+def track_remove_object(sid: str, obj_id: int) -> None:
+    with _wrap_unreachable("track_remove_object"), _client() as c:
+        r = c.delete(f"/track/sessions/{sid}/objects/{obj_id}")
+        if r.status_code not in (204, 404):
+            raise ModelServiceError(r.status_code, _safe_json(r))
+
+
+def track_reset_prompts(sid: str) -> None:
+    with _wrap_unreachable("track_reset_prompts"), _client() as c:
+        r = c.delete(f"/track/sessions/{sid}/prompts")
+        if r.status_code not in (204, 404):
+            raise ModelServiceError(r.status_code, _safe_json(r))
+
+
+def track_close_session(sid: str) -> None:
+    with _wrap_unreachable("track_close_session"), _client() as c:
+        r = c.delete(f"/track/sessions/{sid}")
+        if r.status_code not in (204, 404):
+            raise ModelServiceError(r.status_code, _safe_json(r))
