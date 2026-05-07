@@ -385,10 +385,26 @@ def propagate(
     sess = get_session(session_id)
     if sess is None:
         raise LookupError("session_not_found")
-    stream = _get_predictor().handle_stream_request({
+    # v3.27 fix — forward start_frame as ``start_frame_index`` so the
+    # multiplex predictor doesn't try to auto-derive it from
+    # ``previous_stages_out`` (which is the SAM3 text-prompt state).
+    # SAM2 point/box prompts live in ``tracker_metadata`` instead, so
+    # without an explicit start_frame_index the predictor raises:
+    #   RuntimeError: No prompts are received on any frames.
+    # We keep ``propagation_direction='both'`` (the predictor default)
+    # so a prompt at frame F propagates both forward and backward.
+    request: dict[str, Any] = {
         "type": "propagate_in_video",
         "session_id": sess.native_session_id,
-    })
+    }
+    if start_frame is not None:
+        request["start_frame_index"] = int(start_frame)
+    if end_frame is not None and start_frame is not None:
+        # max_frame_num_to_track is a count, not an upper-bound idx.
+        request["max_frame_num_to_track"] = max(
+            1, int(end_frame) - int(start_frame) + 1,
+        )
+    stream = _get_predictor().handle_stream_request(request)
     out: list[dict] = []
     for resp in stream:
         f = int(resp.get("frame_index", 0))
