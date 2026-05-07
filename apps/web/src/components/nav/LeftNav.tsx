@@ -67,6 +67,7 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
 import { projectsApi, type Project } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
+import { workspaceApi } from "@/api/workspace";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
 
 const ANNOTATE_PROJECTS_LIMIT = 8;
@@ -327,7 +328,7 @@ function DockIcon({ label, to, active, icon, testId }: DockIconProps) {
         <AnyLink
           to={to}
           className={cn(
-            "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
+            "grid h-9 w-9 place-items-center rounded-[var(--radius-sm)]",
             "transition-all duration-[160ms] ease-out",
             active
               ? "bg-[var(--bg-hover)]/60 text-[color:var(--accent)] shadow-[inset_0_0_0_1px_var(--accent)]"
@@ -376,14 +377,14 @@ function ModelsDockIcon({ active }: { active: boolean }) {
             aria-label="Models"
             data-testid="leftnav-dock-models"
             className={cn(
-              "grid h-8 w-8 place-items-center rounded-[var(--radius-sm)]",
+              "grid h-9 w-9 place-items-center rounded-[var(--radius-sm)]",
               "transition-all duration-[160ms] ease-out",
               active
                 ? "bg-[var(--bg-hover)]/60 text-[color:var(--accent)] shadow-[inset_0_0_0_1px_var(--accent)]"
                 : "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]/40 hover:-translate-y-px",
             )}
           >
-            <Cpu className="h-3.5 w-3.5" />
+            <Cpu className="h-4 w-4" />
           </button>
           {active && (
             <motion.span
@@ -412,34 +413,41 @@ function ModelsDockIcon({ active }: { active: boolean }) {
           <div className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-[0.10em] font-medium text-[color:var(--text-tertiary)]">
             Models
           </div>
-          <AnyLink
-            to="/models/yolo"
-            data-testid="leftnav-dock-models-yolo"
-            className={cn(
-              "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
-              "text-[12.5px] tracking-tight cursor-pointer outline-none",
-              yoloActive
-                ? "text-[color:var(--accent)] bg-[var(--accent-bg)]"
-                : "text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
-            )}
-          >
-            <Cpu className="h-3.5 w-3.5" />
-            <span className="flex-1">YOLO weights</span>
-          </AnyLink>
-          <AnyLink
-            to="/models/sam"
-            data-testid="leftnav-dock-models-sam"
-            className={cn(
-              "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
-              "text-[12.5px] tracking-tight cursor-pointer outline-none",
-              samActive
-                ? "text-[color:var(--accent)] bg-[var(--accent-bg)]"
-                : "text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
-            )}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            <span className="flex-1">SAM models</span>
-          </AnyLink>
+          {/* v3.24.11 — wrap each menu item with Popover.Close so a
+              click both navigates AND dismisses the popover. Without
+              this the menu would stay open behind the new page. */}
+          <Popover.Close asChild>
+            <AnyLink
+              to="/models/yolo"
+              data-testid="leftnav-dock-models-yolo"
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
+                "text-[12.5px] tracking-tight cursor-pointer outline-none",
+                yoloActive
+                  ? "text-[color:var(--accent)] bg-[var(--accent-bg)]"
+                  : "text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+              )}
+            >
+              <Cpu className="h-3.5 w-3.5" />
+              <span className="flex-1">YOLO weights</span>
+            </AnyLink>
+          </Popover.Close>
+          <Popover.Close asChild>
+            <AnyLink
+              to="/models/sam"
+              data-testid="leftnav-dock-models-sam"
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
+                "text-[12.5px] tracking-tight cursor-pointer outline-none",
+                samActive
+                  ? "text-[color:var(--accent)] bg-[var(--accent-bg)]"
+                  : "text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+              )}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span className="flex-1">SAM models</span>
+            </AnyLink>
+          </Popover.Close>
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
@@ -513,6 +521,17 @@ export function LeftNav() {
   const activeJobs = useBackgroundJobs((s) => Object.keys(s.jobs).length);
   const hasActiveJobs = activeJobs > 0;
 
+  // v3.24.11 — wire the brand wordmark to the live workspace name so
+  // editing it in /settings/workspace flows through to the rail
+  // instantly. Settings page invalidates ``["workspace"]`` on save
+  // (SettingsPages.tsx:1074), so this query refetches automatically.
+  const workspaceQ = useQuery({
+    queryKey: ["workspace"],
+    queryFn: workspaceApi.get,
+    staleTime: 60_000,
+  });
+  const workspaceName = workspaceQ.data?.name ?? "Carve";
+
   return (
     <aside
       aria-label="Primary navigation"
@@ -559,10 +578,11 @@ export function LeftNav() {
             className={cn(
               "text-[14px] font-medium text-[color:var(--text-primary)]",
               "tracking-tight transition-[letter-spacing] duration-[300ms]",
-              "group-hover:tracking-[-0.005em]",
+              "group-hover:tracking-[-0.005em] truncate",
             )}
+            data-testid="leftnav-workspace-name"
           >
-            Carve
+            {workspaceName}
           </span>
         </div>
       </Link>
@@ -642,30 +662,26 @@ export function LeftNav() {
           label="System"
           to="/system"
           active={isActive(path, "/system", false)}
-          icon={<Activity className="h-3.5 w-3.5" />}
+          icon={<Activity className="h-4 w-4" />}
           testId="leftnav-dock-system"
         />
         <DockIcon
           label="Settings"
           to="/settings/profile"
           active={isActive(path, "/settings", false)}
-          icon={<Settings className="h-3.5 w-3.5" />}
+          icon={<Settings className="h-4 w-4" />}
           testId="leftnav-dock-settings"
         />
         <DockIcon
           label="Trash"
           to="/trash"
           active={isActive(path, "/trash", false)}
-          icon={<Trash2 className="h-3.5 w-3.5" />}
+          icon={<Trash2 className="h-4 w-4" />}
           testId="leftnav-dock-trash"
         />
-        <DockIcon
-          label="About"
-          to="/about"
-          active={isActive(path, "/about", false)}
-          icon={<HelpCircle className="h-3.5 w-3.5" />}
-          testId="leftnav-dock-about"
-        />
+        {/* v3.24.11 — About moved into the user-footer dropdown only.
+            Five icons in a 220 px rail crowded the dock; About is rare
+            enough that the dropdown surface is the right home. */}
       </div>
 
       {/* Slim user footer — single 36-px row. */}

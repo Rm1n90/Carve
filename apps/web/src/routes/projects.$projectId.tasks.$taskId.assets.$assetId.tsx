@@ -19,7 +19,11 @@ function AnnotateRoute() {
   });
   return (
     <RequireAuth>
-      <Suspense fallback={<Skeleton label="Loading editor…" />}>
+      {/* v3.24.11 — fullScreen so the Suspense fallback and the
+          AnnotateAssetPage data-loading fallback are the EXACT same
+          size + same Skeleton component. Refresh now reads as ONE
+          loading surface instead of a 60vh → 100vh size jump. */}
+      <Suspense fallback={<Skeleton fullScreen label="Loading editor…" />}>
         <AnnotateAssetPage
           projectId={projectId}
           taskId={taskId}
