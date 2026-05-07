@@ -14,11 +14,15 @@ import {
   DialogTrigger,
 } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
+import {
+  VideoExtractPanel,
+  DEFAULT_EXTRACT_STRATEGY,
+  type ExtractStrategy,
+} from "@/components/annotation/VideoExtractPanel";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
-type Strategy = "auto" | "all" | "every_nth" | "count";
+type Strategy = ExtractStrategy["strategy"];
 
 interface FrameExtractDialogProps {
   /** v3.8 Phase 4-video step E -- when set, the dialog re-extracts the
@@ -51,11 +55,8 @@ interface FrameExtractDialogProps {
  *  2. AssetUploadDialog after a video file is selected (controlled
  *     open + onSubmit callback; assetId omitted)
  *
- * Strategies (mirror the worker):
- *  - auto       -- worker decides; cap ~500 frames
- *  - all        -- every frame
- *  - every_nth  -- every Nth (user picks N)
- *  - count      -- exactly K frames evenly spaced (user picks K)
+ * v3.26 — body delegated to VideoExtractPanel. The dialog only owns
+ * the modal chrome, the mutation, and the submit wiring.
  */
 export function FrameExtractDialog({
   assetId,
@@ -69,9 +70,9 @@ export function FrameExtractDialog({
   const open = openProp ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
 
-  const [strategy, setStrategy] = useState<Strategy>("count");
-  const [nValue, setNValue] = useState<number>(500);
-  const [quality, setQuality] = useState<number>(75);
+  const [picker, setPicker] = useState<ExtractStrategy>(
+    DEFAULT_EXTRACT_STRATEGY,
+  );
 
   const reextract = useMutation({
     mutationFn: (body: {
@@ -92,12 +93,13 @@ export function FrameExtractDialog({
     },
   });
 
-  const needsN = strategy === "every_nth" || strategy === "count";
   const submit = () => {
+    const needsN =
+      picker.strategy === "every_nth" || picker.strategy === "count";
     const body = {
-      strategy,
-      n: needsN ? Math.max(1, nValue) : null,
-      quality,
+      strategy: picker.strategy,
+      n: needsN ? Math.max(1, picker.n ?? 1) : null,
+      quality: picker.quality,
     };
     if (assetId) {
       reextract.mutate(body);
@@ -140,115 +142,11 @@ export function FrameExtractDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-2 mt-1">
-          {(
-            [
-              {
-                key: "auto" as const,
-                title: "Auto",
-                desc: "Caps at ~500 frames; downsamples long videos.",
-              },
-              {
-                key: "all" as const,
-                title: "All frames",
-                desc: "Every frame. Most accurate; biggest storage.",
-              },
-              {
-                key: "every_nth" as const,
-                title: "Every N-th frame",
-                desc: "Skip in steps. Good for high-fps videos.",
-              },
-              {
-                key: "count" as const,
-                title: "Total of K frames (smart)",
-                desc: "Evenly spaced K frames across the video. If the video has fewer than K, all are kept.",
-              },
-            ] as const
-          ).map((opt) => {
-            const active = strategy === opt.key;
-            return (
-              <label
-                key={opt.key}
-                data-testid={`frame-extract-strategy-${opt.key}`}
-                className={cn(
-                  "flex items-start gap-2.5 px-3 py-2 cursor-pointer",
-                  "rounded-[var(--radius-sm)] border transition-colors",
-                  active
-                    ? "border-[var(--accent)] bg-[var(--accent-bg)]"
-                    : "border-[var(--border-subtle)] hover:bg-[var(--bg-hover)]",
-                )}
-              >
-                <input
-                  type="radio"
-                  name="frame-extract-strategy"
-                  checked={active}
-                  onChange={() => setStrategy(opt.key)}
-                  className="mt-0.5"
-                />
-                <div className="grid gap-0.5">
-                  <div className="text-[13px] text-[color:var(--text-primary)]">
-                    {opt.title}
-                  </div>
-                  <div className="text-[11.5px] text-[color:var(--text-tertiary)]">
-                    {opt.desc}
-                  </div>
-                </div>
-              </label>
-            );
-          })}
-        </div>
-
-        {needsN && (
-          <div className="flex items-center gap-2 mt-3">
-            <label
-              htmlFor="frame-extract-n"
-              className="text-[12px] text-[color:var(--text-secondary)]"
-            >
-              {strategy === "every_nth" ? "N (step):" : "K (total frames):"}
-            </label>
-            <Input
-              id="frame-extract-n"
-              type="number"
-              min={1}
-              max={100000}
-              value={nValue}
-              onChange={(e) =>
-                setNValue(Math.max(1, parseInt(e.target.value, 10) || 1))
-              }
-              data-testid="frame-extract-n"
-              className="w-24"
-            />
-          </div>
-        )}
-
-        {/* v3.8 Phase 4-video step F2 — JPEG quality 0..100. */}
-        <div className="grid gap-1.5 mt-3">
-          <div className="flex items-center justify-between">
-            <label
-              htmlFor="frame-extract-quality"
-              className="text-[12px] text-[color:var(--text-secondary)]"
-            >
-              Quality
-            </label>
-            <span className="font-mono text-[11.5px] text-[color:var(--text-tertiary)] tabular-nums">
-              {quality} / 100
-            </span>
-          </div>
-          <input
-            id="frame-extract-quality"
-            type="range"
-            min={0}
-            max={100}
-            step={5}
-            value={quality}
-            onChange={(e) => setQuality(parseInt(e.target.value, 10) || 0)}
-            data-testid="frame-extract-quality"
-          />
-          <p className="text-[11px] italic text-[color:var(--text-tertiary)]">
-            Higher = sharper frames + more storage. 75 is balanced; 90+
-            for downstream model accuracy on small objects.
-          </p>
-        </div>
+        <VideoExtractPanel
+          videoCount={1}
+          value={picker}
+          onChange={setPicker}
+        />
 
         <p className="text-[11px] italic text-[color:var(--text-tertiary)] mt-3">
           The original video file is kept after extraction so SAM video
