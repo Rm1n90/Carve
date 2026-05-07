@@ -1,0 +1,224 @@
+// Armin Mehri — mehri.armin@gmail.com
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, Play, Trash2, X } from "lucide-react";
+
+import type { ClassRow } from "@/api/classes";
+import { TrackTool } from "@/canvas/tools/TrackTool";
+import { useTool } from "@/state/tool";
+import { useTrackBridge } from "@/state/trackBridge";
+import { showToast } from "@/lib/toast";
+import { Input } from "@/components/ui/Input";
+import { cn } from "@/lib/cn";
+
+interface TrackPanelProps {
+  assetId: string;
+  currentFrameIdx: number;
+  totalFrames: number;
+  classes: ClassRow[];
+  frameIdxToFrameId: Record<number, string>;
+}
+
+export function TrackPanel({
+  assetId, currentFrameIdx, totalFrames, classes,
+}: TrackPanelProps) {
+  const activeClassId = useTool((s) => s.activeClassId);
+  const setActiveClassId = useTool((s) => s.setActiveClassId);
+  const status = useTrackBridge((s) => s.status);
+  const objects = useTrackBridge((s) => s.objects);
+  const framesPropagated = useTrackBridge((s) => s.framesPropagated);
+
+  const [textValue, setTextValue] = useState("");
+  const [running, setRunning] = useState(false);
+
+  const toolRef = useRef<TrackTool | null>(null);
+  if (toolRef.current === null) {
+    toolRef.current = new TrackTool(
+      assetId, () => useTool.getState().activeClassId,
+    );
+  }
+
+  useEffect(() => {
+    return () => {
+      void toolRef.current?.closeSession();
+    };
+  }, []);
+
+  const objectList = useMemo(
+    () => Array.from(objects.values()).sort((a, b) => a.objId - b.objId),
+    [objects],
+  );
+
+  async function onTextSubmit() {
+    const text = textValue.trim();
+    if (!text) return;
+    if (!activeClassId && classes.length > 0) setActiveClassId(classes[0].id);
+    try {
+      await toolRef.current!.addText({ frameIdx: currentFrameIdx, text });
+      setTextValue("");
+    } catch (err) {
+      showToast(`Track text failed: ${(err as Error).message}`, {
+        variant: "error",
+      });
+    }
+  }
+
+  async function onRunFull() {
+    setRunning(true);
+    try {
+      await toolRef.current!.runFullTrack();
+      showToast(
+        `Tracked ${useTrackBridge.getState().framesPropagated} frames.`,
+        { variant: "success" },
+      );
+    } catch (err) {
+      showToast(`Tracking failed: ${(err as Error).message}`, {
+        variant: "error",
+      });
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function onDiscard() {
+    try {
+      await toolRef.current!.discard();
+    } catch (err) {
+      showToast(`Discard failed: ${(err as Error).message}`, {
+        variant: "error",
+      });
+    }
+  }
+
+  const progressPct =
+    totalFrames > 0
+      ? Math.min(100, Math.round((framesPropagated / totalFrames) * 100))
+      : 0;
+
+  return (
+    <aside
+      role="complementary"
+      aria-label="SAM 3.1 video tracking"
+      data-testid="track-panel"
+      className={cn(
+        "flex flex-col gap-3 p-3 border-t border-[var(--glass-border)]",
+        "glass-surface text-[12.5px]",
+      )}
+    >
+      <header className="flex items-center justify-between">
+        <span className="font-medium">Track</span>
+        <span className="font-mono tabular-nums text-[10.5px] text-[color:var(--text-tertiary)]">
+          Frame {currentFrameIdx + 1} / {totalFrames}
+        </span>
+      </header>
+
+      {objectList.length === 0 && (
+        <p className="text-[11px] text-[color:var(--text-secondary)]">
+          Click on canvas to seed an object. Click on an existing mask to
+          refine that object. Alt-click for negative.
+        </p>
+      )}
+
+      {objectList.length > 0 && (
+        <ul data-testid="track-object-list" className="grid gap-1">
+          {objectList.map((o) => {
+            const cls = classes.find((c) => c.id === o.classId);
+            return (
+              <li
+                key={o.objId}
+                data-testid={`track-object-${o.objId}`}
+                className="flex items-center gap-1.5 text-[11.5px]"
+              >
+                <span className="font-mono text-[10.5px] text-[color:var(--text-tertiary)] w-5">
+                  #{o.objId}
+                </span>
+                <span
+                  aria-hidden
+                  className="h-2.5 w-2.5 rounded-full"
+                  style={{ background: cls?.color ?? "#888" }}
+                />
+                <span className="flex-1 truncate">{cls?.name ?? o.classId}</span>
+                <span className="text-[10px] text-[color:var(--text-tertiary)]">
+                  ▸ frame {o.seedFrame}
+                </span>
+                <button
+                  type="button"
+                  data-testid={`track-remove-${o.objId}`}
+                  onClick={() => void toolRef.current!.removeObject(o.objId)}
+                  className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded hover:bg-[var(--bg-hover)]"
+                  aria-label={`Remove object ${o.objId}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <div className="flex items-center gap-1.5">
+        <Input
+          type="text"
+          data-testid="track-text-input"
+          placeholder='Type a concept (e.g. "person")…'
+          value={textValue}
+          onChange={(e) => setTextValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void onTextSubmit();
+            }
+          }}
+        />
+        <button
+          type="button"
+          data-testid="track-text-submit"
+          disabled={textValue.trim().length === 0}
+          onClick={() => void onTextSubmit()}
+          className="h-7 px-2 rounded bg-[var(--bg-subtle)] hover:bg-[var(--bg-hover)] text-[11px] disabled:opacity-50"
+        >
+          Add
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          data-testid="track-run"
+          disabled={objects.size === 0 || running}
+          onClick={() => void onRunFull()}
+          className={cn(
+            "inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full",
+            "bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium",
+            "disabled:bg-[var(--bg-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed",
+          )}
+        >
+          {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+          Run full track
+        </button>
+        <button
+          type="button"
+          data-testid="track-discard"
+          disabled={objects.size === 0 && status === "idle"}
+          onClick={() => void onDiscard()}
+          className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full bg-[var(--bg-subtle)] hover:bg-[var(--bg-hover)] text-[11.5px] disabled:opacity-50"
+        >
+          <Trash2 className="h-3.5 w-3.5" /> Discard
+        </button>
+      </div>
+
+      {(status === "running" || framesPropagated > 0) && (
+        <div className="grid gap-1">
+          <div className="h-2 rounded-full bg-[var(--bg-sunken)] overflow-hidden">
+            <div
+              className="h-full bg-[var(--accent)] transition-[width] duration-200"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <p className="text-[11px] text-[color:var(--text-tertiary)] tabular-nums">
+            Tracked {framesPropagated} / {totalFrames} ({progressPct}%)
+          </p>
+        </div>
+      )}
+    </aside>
+  );
+}
