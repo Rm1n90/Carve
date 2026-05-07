@@ -98,7 +98,16 @@ def _get_predictor() -> Any:
         from sam3.model_builder import (  # type: ignore[import-not-found]
             build_sam3_multiplex_video_predictor,
         )
-        _PREDICTOR = build_sam3_multiplex_video_predictor()
+        # v3.27 fix — upstream defaults use_fa3=True (FlashAttention 3
+        # via the optional ``flash_attn_interface`` package). Our model
+        # image doesn't include flash_attn_interface (it's a heavy GPU-
+        # only optional dep tied to specific CUDA/PyTorch versions);
+        # without it every forward pass raises:
+        #   ModuleNotFoundError: No module named 'flash_attn_interface'
+        # surfaced as ``add_prompt_failed`` / 502 to the UI.
+        # Disable FA3 — sam3's vitdet falls back to PyTorch SDPA which
+        # is fast enough for interactive editing on a single GPU.
+        _PREDICTOR = build_sam3_multiplex_video_predictor(use_fa3=False)
 
         # v3.27 fix — upstream sam3 base predictor's ``start_session``
         # always passes ``offload_state_to_cpu`` to ``model.init_state``,
