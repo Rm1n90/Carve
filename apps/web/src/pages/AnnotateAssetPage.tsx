@@ -1337,15 +1337,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                       ]?.frame_id ?? frameId)
                     : frameId
                 }
-                // SAM Track talks to the model service in RAW VIDEO
-                // FRAME INDICES, not list-positions. Convert here.
-                currentFrameIdx={
-                  isVideo
-                    ? ((framesQ.data ?? [])[
-                        Math.min(currentFrameIdx, (framesQ.data ?? []).length - 1)
-                      ]?.idx ?? 0)
-                    : currentFrameIdx
-                }
+                // v3.27.6 — SAM 3.1 multiplex iterates the cached JPEG
+                // sequence and emits POSITIONAL frame indices (0..N-1),
+                // matching ``frameIdxToFrameId`` (also keyed by list
+                // position). The earlier code converted to raw
+                // ``frame.idx`` (0,5,10,…) here on the way IN to the
+                // tool, breaking the seed-frame the model received and
+                // the per-frame remove lookup. Pass the positional id
+                // through unchanged.
+                currentFrameIdx={currentFrameIdx}
                 totalFrames={asset.frames}
                 isVideo={isVideo}
                 frameIdxToFrameId={frameIdxToFrameId}
