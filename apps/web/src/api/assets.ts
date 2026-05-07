@@ -141,6 +141,7 @@ export const assetsApi = {
     expected: number;
     uploaded: number;
     message: string | null;
+    job_id: string | null;
   }> =>
     (
       await api.get<{
@@ -150,6 +151,7 @@ export const assetsApi = {
         expected: number;
         uploaded: number;
         message: string | null;
+        job_id: string | null;
       }>(`/assets/${assetId}/frames/extract/status`)
     ).data,
   count: async (taskId: string): Promise<AssetCountResponse> =>

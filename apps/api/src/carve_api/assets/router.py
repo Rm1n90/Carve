@@ -389,6 +389,10 @@ class FrameExtractStatusOut(BaseModel):
     expected: int
     uploaded: int
     message: str | None = None
+    # v3.26 — surfaces the RQ job id so the client poller can correlate
+    # to a registered background job. None when there is no in-flight
+    # extract for this asset.
+    job_id: str | None = None
 
 
 @asset_router.get(
@@ -429,6 +433,7 @@ def frame_extract_status(
         expected=int(h.get("expected") or 0),
         uploaded=int(h.get("uploaded") or 0),
         message=h.get("message"),
+        job_id=h.get("job_id") or None,
     )
 
 

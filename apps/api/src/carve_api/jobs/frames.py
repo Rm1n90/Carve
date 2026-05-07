@@ -174,6 +174,16 @@ def extract_frames_for_video(
 
     progress_key = f"frame-extract:{asset_id}"
     expected = max(1, math.ceil(total_frames / step))
+
+    # v3.26 — record the RQ job id so the status endpoint can return it
+    # and the client poller can correlate the job in its store.
+    try:
+        from rq import get_current_job as _get_current_job
+        _current_job = _get_current_job()
+        _current_job_id = _current_job.id if _current_job is not None else ""
+    except Exception:  # noqa: BLE001
+        _current_job_id = ""
+
     try:
         _r = _redis.Redis(
             host=_os.environ.get("REDIS_HOST", "redis"),
@@ -191,6 +201,7 @@ def extract_frames_for_video(
                 "step": str(step),
                 "fps": str(fps),
                 "started_at": str(int(__import__('time').time())),
+                "job_id": _current_job_id,
             },
         )
         _r.expire(progress_key, 3600)
