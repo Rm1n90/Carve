@@ -4,7 +4,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from carve_api.assets.models import AssetKind
@@ -610,3 +610,58 @@ def track_close_endpoint(
     except AppError as exc:
         raise _http(exc) from exc
     return _Response(status_code=204)
+
+
+# ---- v3.27 — Track panel Discard wipes everything by track_id ------------
+
+
+class BulkDeleteByTrackIn(BaseModel):
+    track_ids: list[str] = Field(min_length=1, max_length=512)
+
+
+def _bulk_delete_by_track_ids_impl(
+    db: Session, *, asset_id: str, track_ids: list[str],
+) -> int:
+    """Delete annotations matching any of ``track_ids`` whose frame belongs
+    to ``asset_id``. The annotations table has no direct asset_id column;
+    we constrain via the frame_id subquery so a Discard from one asset
+    can't accidentally wipe another asset's annotations sharing a track_id."""
+    from carve_api.annotations.models import Annotation
+    from carve_api.assets.models import Frame
+    from sqlalchemy import select
+    import uuid as _uuid
+
+    aid = _uuid.UUID(asset_id) if isinstance(asset_id, str) else asset_id
+    track_uuids = [_uuid.UUID(t) for t in track_ids]
+    frame_subquery = select(Frame.id).where(Frame.asset_id == aid)
+    res = db.execute(
+        Annotation.__table__.delete().where(
+            Annotation.frame_id.in_(frame_subquery),
+            Annotation.track_id.in_(track_uuids),
+        ),
+    )
+    db.commit()
+    return int(getattr(res, "rowcount", 0) or 0)
+
+
+@asset_router.delete("/{asset_id}/annotations:by-track-ids", status_code=200)
+def bulk_delete_annotations_by_track_ids(
+    asset_id: uuid.UUID,
+    payload: BulkDeleteByTrackIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from carve_api.assets.models import Asset
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    deleted = _bulk_delete_by_track_ids_impl(
+        db, asset_id=str(asset_id), track_ids=payload.track_ids,
+    )
+    return {"deleted": deleted}
