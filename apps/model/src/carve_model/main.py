@@ -8,9 +8,8 @@ from carve_model.devices_router import router as devices_router
 from carve_model.gpu import get_device
 from carve_model.sam.predictor import evict_predictor_if_idle
 from carve_model.sam.router import router as sam_router
-from carve_model.sam.track_router import router as sam_track_router
-from carve_model.sam.track_router_v2 import router as track_router_v2
-from carve_model.sam.tracker import evict_idle_sessions
+# v3.27 — legacy /sam-track/* track_router + tracker.py removed.
+from carve_model.sam.track_router import router as track_router
 from carve_model.yolo.router import router as yolo_router
 from carve_model.yoloe.registry import REGISTRY as _YOLOE_REGISTRY
 from carve_model.yoloe.router import router as yoloe_router
@@ -29,7 +28,8 @@ def _sweep_loop() -> None:
     while not _SWEEPER_STOP.wait(_SWEEP_INTERVAL_S):
         try:
             evict_predictor_if_idle()
-            evict_idle_sessions()
+            from carve_model.sam.track_session import evict_idle_sessions as _evict_track_sessions
+            _evict_track_sessions()
             # v3.23 — also free idle YOLOE checkpoints. Both the
             # text+visual model (yoloe-26l-seg.pt) and the prompt-free
             # model (yoloe-26l-seg-pf.pt) hold ~1 GB of GPU weights
@@ -293,8 +293,7 @@ def create_app() -> FastAPI:
     app.include_router(yolo_router)
     app.include_router(yoloe_router)
     app.include_router(sam_router)
-    app.include_router(sam_track_router)
-    app.include_router(track_router_v2)
+    app.include_router(track_router)
     # v3.25 — central device manager (probe + per-model preference +
     # validated SAM reload).
     app.include_router(devices_router)

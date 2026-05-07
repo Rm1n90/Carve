@@ -121,6 +121,21 @@ def evict_idle_sessions() -> list[str]:
     return evicted
 
 
+def force_evict_all_sessions() -> int:
+    """Forcibly close every track session. Returns the number released.
+
+    Called by /sam/clear when the operator chooses to free GPU/track state
+    immediately. Replaces the legacy tracker.force_evict_all_sessions().
+    """
+    with _LOCK:
+        sids = list(_SESSIONS.keys())
+    n = 0
+    for sid in sids:
+        if close_session(sid):
+            n += 1
+    return n
+
+
 # ---- T3: add_prompt -------------------------------------------------------
 import numpy as np
 

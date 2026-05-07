@@ -1,445 +1,192 @@
-"""SAM 2 / SAM 3 video-tracker HTTP endpoints.
+# Armin Mehri — mehri.armin@gmail.com
+"""SAM 3.1 multiplex track HTTP endpoints (request-style API).
 
-POST /sam-track/start                 — open a session (optionally seed obj_id=1)
-POST /sam-track/{session}/objects     — add a new object's prompt at any frame
-POST /sam-track/{session}/step?frames=N — propagate N frames; per-object masks
-DELETE /sam-track/{session}           — release a session
+Mirrors the native multiplex predictor's verbs:
+    POST   /track/sessions                          — start_session
+    POST   /track/sessions/{sid}/prompts            — add_prompt
+    POST   /track/sessions/{sid}/propagate          — propagate_in_video (chunked)
+    DELETE /track/sessions/{sid}/objects/{obj_id}   — remove_object
+    DELETE /track/sessions/{sid}/prompts            — reset_session
+    DELETE /track/sessions/{sid}                    — close_session
 """
+from __future__ import annotations
 
 import logging
 from typing import Any
 
-import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger(__name__)
-
+from carve_model.sam import track_session as ts
 from carve_model.sam.codec import encode_mask_rle
 from carve_model.sam.polygonize import mask_to_polygon
-from carve_model.sam.predictor import autocast_ctx, get_sam_model
-from carve_model.sam.sam3_adapter import ConceptModeError
-from carve_model.sam.tracker import (
-    TrackerSession,
-    add_object_to_session,
-    get_session,
-    release_session,
-    remove_object_from_session,
-    reset_session_text,
-    start_session,
-    touch_session,
-)
 
-router = APIRouter(prefix="/sam-track", tags=["sam-track"])
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/track", tags=["track"])
 
 
-class StartIn(BaseModel):
-    # v3.8 Phase 4-video step F6 -- ``video_url`` is now optional. When
-    # ``frame_urls`` is non-empty, the router downloads each URL to a
-    # temp dir and uses that as the tracker's init_state path. This is
-    # how post-extract video assets (whose mp4 has been deleted) get
-    # tracked: the API supplies the per-frame JPEG URLs.
-    video_url: str = ""
-    frame_urls: list[str] = Field(default_factory=list)
-    frame_idx: int = Field(default=0, ge=0)
-    # ``points``/``labels`` are required for the SAM 2 click-based tracker
-    # but unused for SAM 3 (concept tracking via ``text``). Both default to
-    # empty lists so SAM 3 callers can omit them; the handler validates
-    # the right combination based on the configured SAM model.
-    # v1.4: empty points + empty text is also OK — callers can add objects
-    # one at a time via /sam-track/{sid}/objects.
-    points: list[list[int]] = Field(default_factory=list)
-    labels: list[int] = Field(default_factory=list)
-    text: str | None = Field(default=None, max_length=200)
+# ---- request / response models --------------------------------------------
 
 
-class StartOut(BaseModel):
+class OpenSessionIn(BaseModel):
+    frame_urls: list[str] = Field(min_length=1)
+    image_size: list[int] = Field(min_length=2, max_length=2)
+    asset_hash: str = Field(min_length=1, max_length=64)
+
+
+class OpenSessionOut(BaseModel):
     session_id: str
-    mask_at_start: dict
+    frame_count: int
 
 
-class AddObjectIn(BaseModel):
+class PromptIn(BaseModel):
     frame_idx: int = Field(ge=0)
-    # Cap obj_id at 256: tracking that many distinct objects in a single
-    # video session is already unusual, and the bound prevents a buggy or
-    # malicious caller from triggering unbounded dict growth in the
-    # tracker's per-session state.
-    obj_id: int = Field(default=1, ge=1, le=256)
-    points: list[list[int]] = Field(default_factory=list)
-    labels: list[int] = Field(default_factory=list)
-    boxes: list[list[float]] = Field(default_factory=list)
-    # Plan 11 Task 4 — multiplex text prompt. When provided, the router
-    # invokes the adapter's ``add_text_prompt`` (multiplex auto-creates
-    # obj_ids per detection) and returns ``{obj_ids: [...], frame_idx}``.
+    obj_id: int | None = Field(default=None, ge=1, le=256)
     text: str | None = Field(default=None, max_length=200)
+    points: list[list[float]] = Field(default_factory=list)
+    labels: list[int] = Field(default_factory=list)
+    box: list[float] | None = None  # [x1, y1, x2, y2]
 
 
-class AddObjectOut(BaseModel):
-    obj_id: int
-    frame_idx: int
-
-
-class AddObjectTextOut(BaseModel):
-    """Response shape when a text prompt is supplied. Multiplex auto-creates
-    obj_ids per detection so we return the list rather than a single id."""
-
-    obj_ids: list[int]
-    frame_idx: int
-
-
-class StepObjectEntry(BaseModel):
-    obj_id: int
+class MaskOut(BaseModel):
     counts: str
     size: list[int]
-    score: float
-    # v3.8 Phase 4.1 — Douglas-Peucker simplified outer contour so the
-    # client commits editable polygon annotations (matches the Phase 1
-    # commit contract). Empty when the mask had no usable contour;
-    # client falls back to ``counts`` (mask_rle) in that case.
-    polygon: list[list[float]] = []
+    polygon: list[list[float]]
 
 
-class StepFrameEntry(BaseModel):
+class FrameMasksOut(BaseModel):
     frame_idx: int
-    objects: list[StepObjectEntry]
+    masks: dict[int, MaskOut]
 
 
-class StepOut(BaseModel):
-    steps: list[StepFrameEntry]
+class PropagateIn(BaseModel):
+    start_frame: int | None = Field(default=None, ge=0)
+    end_frame: int | None = Field(default=None, ge=0)
 
 
-@router.post("/start", response_model=StartOut)
-def start(payload: StartIn) -> StartOut:
-    # v3.8 Phase 4-video step F6 -- prefer the per-frame URL list when
-    # provided. Download each to a temp dir; the tracker's init_state
-    # treats a directory of JPEGs as a frame sequence. Falls back to
-    # the single-video path for legacy callers / image-only assets.
-    import urllib.parse
+class PropagateOut(BaseModel):
+    frames: list[FrameMasksOut]
 
-    init_path: str
-    tmpdir: str | None = None
-    if payload.frame_urls:
-        import os
-        import tempfile
 
-        import httpx
+# ---- helpers --------------------------------------------------------------
 
-        # Reject non-http(s) URLs to block file:// / ftp:// SSRF abuse.
-        for url in payload.frame_urls:
-            parsed = urllib.parse.urlparse(url)
-            if parsed.scheme not in ("http", "https"):
-                raise HTTPException(
-                    status_code=422,
-                    detail="frame_url_scheme_not_allowed",
-                )
-        tmpdir = tempfile.mkdtemp(prefix="track-")
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                for i, url in enumerate(payload.frame_urls):
-                    r = client.get(url)
-                    r.raise_for_status()
-                    with open(
-                        os.path.join(tmpdir, f"{i:06d}.jpg"), "wb"
-                    ) as f:
-                        f.write(r.content)
-        except Exception as exc:  # noqa: BLE001
-            import shutil
-            shutil.rmtree(tmpdir, ignore_errors=True)
-            raise HTTPException(
-                status_code=502,
-                detail=f"frame_download_failed: {exc!r}",
-            ) from exc
 
-        # v3.8 Phase 4-video step F6 — transformers' Sam2VideoModel /
-        # Sam3VideoModel init_state goes through ``load_video``, which
-        # only accepts a video URL or a local video file path (NOT a
-        # directory of JPEGs, despite the upstream README implying so).
-        # Stitch the downloaded frames into a temp mp4 here so
-        # init_state has the format it expects.
-        try:
-            import ffmpeg as _ff
+def _encode_masks(masks: dict[int, Any]) -> dict[int, MaskOut]:
+    out: dict[int, MaskOut] = {}
+    for obj_id, mask in masks.items():
+        counts, size = encode_mask_rle(mask)
+        polygon = mask_to_polygon(mask)
+        out[int(obj_id)] = MaskOut(counts=counts, size=size, polygon=polygon)
+    return out
 
-            video_path = os.path.join(tmpdir, "__video.mp4")
-            (
-                _ff.input(
-                    os.path.join(tmpdir, "%06d.jpg"),
-                    framerate=30,
-                    pattern_type="sequence",
-                )
-                .output(video_path, vcodec="libx264", pix_fmt="yuv420p")
-                .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
-            )
-        except _ff.Error as exc:  # type: ignore[name-defined]
-            import shutil
 
-            err = (exc.stderr or b"").decode("utf-8", errors="replace")
-            shutil.rmtree(tmpdir, ignore_errors=True)
-            raise HTTPException(
-                status_code=502,
-                detail=f"frames_to_video_failed: {err[-300:]}",
-            ) from exc
-        init_path = video_path
-    else:
-        # Legacy single-video path (image asset at idx=0, or pre-extract
-        # video). Reject non-http(s) schemes first (block file:// /
-        # ftp:// SSRF-style abuse).
-        parsed = urllib.parse.urlparse(payload.video_url)
-        if parsed.scheme not in ("http", "https"):
-            raise HTTPException(status_code=422, detail="video_url_scheme_not_allowed")
-        init_path = payload.video_url
+# ---- endpoints ------------------------------------------------------------
 
-    # SAM 3 supports BOTH point-based and text-based video tracking via a
-    # dispatcher adapter (Sam3VideoDispatcherAdapter). The dispatcher routes:
-    #   - string prompts → Sam3VideoModel.add_text_prompt (concept tracking)
-    #   - numeric points → Sam3TrackerVideoModel.add_inputs_to_inference_session
-    # When SAM_MODEL=sam3, the router accepts EITHER text OR points (or both;
-    # text wins when present and points are otherwise absent). When
-    # SAM_MODEL=sam2.x (default), only numeric points are accepted.
-    forwarded_points: list
-    forwarded_labels: list
-    if get_sam_model() == "sam3":
-        if payload.text and not payload.points:
-            forwarded_points = [payload.text]
-            forwarded_labels = []
-        elif payload.points:
-            if len(payload.points) != len(payload.labels):
-                raise HTTPException(status_code=422, detail="points and labels must have equal length")
-            forwarded_points = payload.points
-            forwarded_labels = payload.labels
-        else:
-            # v1.4: empty prompts → defer object creation to /objects.
-            forwarded_points = []
-            forwarded_labels = []
-    else:
-        if payload.points:
-            if len(payload.points) != len(payload.labels):
-                raise HTTPException(status_code=422, detail="points and labels must have equal length")
-            forwarded_points = payload.points
-            forwarded_labels = payload.labels
-        else:
-            forwarded_points = []
-            forwarded_labels = []
 
+@router.post("/sessions", response_model=OpenSessionOut)
+def open_session(payload: OpenSessionIn) -> OpenSessionOut:
+    h, w = int(payload.image_size[0]), int(payload.image_size[1])
+    if h <= 0 or w <= 0:
+        raise HTTPException(status_code=422, detail="invalid_image_size")
     try:
-        session = start_session(
-            video_url=init_path,
-            tmpdir=tmpdir,
-            frame_idx=payload.frame_idx,
-            points=forwarded_points,
-            labels=forwarded_labels,
+        sess = ts.open_session(
+            frame_urls=payload.frame_urls,
+            image_size=(h, w),
+            asset_hash=payload.asset_hash,
         )
-    except Exception as exc:  # noqa: BLE001 — wrap upstream init failure
-        # v3.8 Phase 4-video step F6 — clean up the downloaded frames
-        # if init_state failed; otherwise the tmpdir leaks until pod
-        # restart.
-        if tmpdir is not None:
-            import shutil as _sh
-            _sh.rmtree(tmpdir, ignore_errors=True)
-        logger.exception("tracker_init_failed")
-        raise HTTPException(status_code=502, detail=f"tracker_init_failed: {exc!r}") from exc
-
-    # The seed mask is the result of the add_new_points / add_inputs_at_frame
-    # call. Some predictor implementations expose this via the inference_state
-    # directly; for v1 we return an empty mask placeholder and rely on /step
-    # to start streaming.
-    seed_mask = _seed_mask_for(session)
-    return StartOut(session_id=session.session_id, mask_at_start=seed_mask)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return OpenSessionOut(
+        session_id=sess.session_id, frame_count=sess.frame_count,
+    )
 
 
-@router.post("/{session_id}/objects")
-def add_object(session_id: str, payload: AddObjectIn) -> Any:
-    session = get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="session_not_found")
-    touch_session(session_id)
-
-    # Plan 11 Task 4 — multiplex text prompt. When ``text`` is supplied the
-    # adapter routes to ``add_text_prompt``; multiplex auto-creates obj_ids.
-    # Response shape changes to ``{obj_ids: [...], frame_idx}``.
-    if payload.text is not None and payload.text != "":
-        if not hasattr(session.tracker, "add_text_prompt"):
-            raise HTTPException(
-                status_code=422,
-                detail="adapter_not_multiplex",
-            )
-        try:
-            resp = session.tracker.add_text_prompt(
-                session.inference_state,
-                frame_idx=payload.frame_idx,
-                text=payload.text,
-            )
-        except Exception as exc:  # noqa: BLE001 — wrap upstream failure
-            logger.exception(
-                "add_text_prompt_failed sid=%s text=%r", session_id, payload.text,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=f"add_text_prompt_failed: {exc!r}",
-            ) from exc
-        # Best-effort obj_id extraction from the multiplex predictor
-        # response. Fakes / production both expose ``outputs: {obj_id: ...}``;
-        # fall back to an empty list when the response shape is unfamiliar.
-        obj_ids: list[int] = []
-        if isinstance(resp, dict):
-            outputs = resp.get("outputs") or {}
-            if isinstance(outputs, dict):
-                obj_ids = sorted(int(k) for k in outputs.keys())
-            if not obj_ids and isinstance(resp.get("obj_ids"), list):
-                obj_ids = [int(x) for x in resp["obj_ids"]]
-        return AddObjectTextOut(obj_ids=obj_ids, frame_idx=payload.frame_idx)
-
-    if not payload.points and not payload.boxes:
-        raise HTTPException(status_code=422, detail="object_requires_points_or_boxes")
-    if payload.points and len(payload.points) != len(payload.labels):
-        raise HTTPException(status_code=422, detail="points and labels must have equal length")
-    if payload.points and any(label not in (0, 1) for label in payload.labels):
-        raise HTTPException(status_code=422, detail="labels must be 0 or 1")
+@router.post("/sessions/{sid}/prompts", response_model=FrameMasksOut)
+def add_prompt(sid: str, payload: PromptIn) -> FrameMasksOut:
+    points: list[tuple[float, float]] | None = None
+    if payload.points:
+        points = [(float(p[0]), float(p[1])) for p in payload.points]
+    box: tuple[float, float, float, float] | None = None
+    if payload.box is not None:
+        if len(payload.box) != 4:
+            raise HTTPException(status_code=422, detail="box_shape_invalid")
+        box = (float(payload.box[0]), float(payload.box[1]),
+               float(payload.box[2]), float(payload.box[3]))
     try:
-        add_object_to_session(
-            session,
+        masks = ts.add_prompt(
+            sid,
             frame_idx=payload.frame_idx,
             obj_id=payload.obj_id,
-            points=payload.points or None,
+            text=payload.text,
+            points=points,
             labels=payload.labels or None,
-            boxes=payload.boxes or None,
+            box=box,
         )
-    except ConceptModeError as exc:
-        # The session was started in SAM 3 concept (text) mode; /objects
-        # is unsupported there. Map to 422 so the client knows the request
-        # is structurally invalid (vs. a 502 transient upstream error).
-        raise HTTPException(
-            status_code=422,
-            detail="add_object_unsupported_in_concept_mode",
-        ) from exc
-    except Exception as exc:  # noqa: BLE001 — wrap upstream failure
-        logger.exception("add_object_failed sid=%s obj_id=%s", session_id, payload.obj_id)
-        raise HTTPException(status_code=502, detail=f"add_object_failed: {exc!r}") from exc
-    return AddObjectOut(obj_id=payload.obj_id, frame_idx=payload.frame_idx)
-
-
-@router.delete("/{session_id}/objects/{obj_id}", status_code=204)
-def remove_object_endpoint(session_id: str, obj_id: int) -> None:
-    """Plan 11 Task 4 — remove a tracked object from a multiplex session."""
-    session = get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="session_not_found")
-    touch_session(session_id)
-    try:
-        remove_object_from_session(session, obj_id=obj_id)
-    except NotImplementedError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="adapter_not_multiplex",
-        ) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("remove_object_failed sid=%s obj_id=%s", session_id, obj_id)
+        logger.exception("add_prompt_failed sid=%s", sid)
         raise HTTPException(
-            status_code=502,
-            detail=f"remove_object_failed: {exc!r}",
+            status_code=502, detail=f"add_prompt_failed: {exc!r}",
         ) from exc
+    return FrameMasksOut(frame_idx=payload.frame_idx, masks=_encode_masks(masks))
 
 
-@router.post("/{session_id}/reset", status_code=204)
-def reset_session_endpoint(session_id: str) -> None:
-    """Plan 11 Task 4 — reset text-prompt state on a multiplex session."""
-    session = get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="session_not_found")
-    touch_session(session_id)
+@router.post("/sessions/{sid}/propagate", response_model=PropagateOut)
+def propagate(sid: str, payload: PropagateIn) -> PropagateOut:
     try:
-        reset_session_text(session)
-    except NotImplementedError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="adapter_not_multiplex",
-        ) from exc
+        frames = ts.propagate(
+            sid, start_frame=payload.start_frame, end_frame=payload.end_frame,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("reset_session_failed sid=%s", session_id)
+        logger.exception("propagate_failed sid=%s", sid)
         raise HTTPException(
-            status_code=502,
-            detail=f"reset_session_failed: {exc!r}",
+            status_code=502, detail=f"propagate_failed: {exc!r}",
         ) from exc
+    return PropagateOut(
+        frames=[
+            FrameMasksOut(frame_idx=f["frame_idx"], masks=_encode_masks(f["masks"]))
+            for f in frames
+        ],
+    )
 
 
-@router.post("/{session_id}/step", response_model=StepOut)
-def step(session_id: str, frames: int = 1) -> StepOut:
-    if frames < 1 or frames > 1000:
-        raise HTTPException(status_code=422, detail="frames must be in [1, 1000]")
-    session = get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="session_not_found")
-    touch_session(session_id)
+@router.delete("/sessions/{sid}/objects/{obj_id}")
+def remove_object(sid: str, obj_id: int):
     try:
-        with autocast_ctx():
-            if session.propagation_iter is None:
-                session.propagation_iter = iter(
-                    session.tracker.propagate_in_video(session.inference_state),
-                )
-            out: list[StepFrameEntry] = []
-            for _ in range(frames):
-                try:
-                    frame_idx, masks_per_obj = next(session.propagation_iter)
-                except StopIteration:
-                    break
-                # Backward-compat: legacy fakes / single-object trackers yield
-                # ``(frame_idx, single_mask)``. Wrap as ``{1: mask}`` so
-                # downstream emits a valid per-object response.
-                if not isinstance(masks_per_obj, dict):
-                    masks_per_obj = {1: masks_per_obj}
-                obj_entries: list[StepObjectEntry] = []
-                for obj_id, mask in masks_per_obj.items():
-                    mask_np = _to_numpy(mask)
-                    counts, size = encode_mask_rle(mask_np)
-                    polygon = mask_to_polygon(mask_np)
-                    obj_entries.append(StepObjectEntry(
-                        obj_id=int(obj_id),
-                        counts=counts,
-                        size=size,
-                        score=1.0,
-                        polygon=polygon,
-                    ))
-                out.append(StepFrameEntry(
-                    frame_idx=int(frame_idx),
-                    objects=obj_entries,
-                ))
-                session.last_frame_idx = int(frame_idx)
-        return StepOut(steps=out)
-    except HTTPException:
-        raise
+        ts.remove_object(sid, obj_id=obj_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("tracker_step_failed sid=%s frames=%s", session_id, frames)
-        raise HTTPException(status_code=502, detail=f"tracker_step_failed: {exc!r}") from exc
+        logger.exception("remove_object_failed sid=%s obj_id=%s", sid, obj_id)
+        raise HTTPException(
+            status_code=502, detail=f"remove_object_failed: {exc!r}",
+        ) from exc
+    return Response(status_code=204)
 
 
-@router.delete("/{session_id}", status_code=204)
-def release(session_id: str) -> None:
-    if not release_session(session_id):
+@router.delete("/sessions/{sid}/prompts")
+def reset_prompts(sid: str):
+    try:
+        ts.reset_prompts(sid)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("reset_prompts_failed sid=%s", sid)
+        raise HTTPException(
+            status_code=502, detail=f"reset_prompts_failed: {exc!r}",
+        ) from exc
+    return Response(status_code=204)
+
+
+@router.delete("/sessions/{sid}")
+def close_session(sid: str):
+    if not ts.close_session(sid):
         raise HTTPException(status_code=404, detail="session_not_found")
-
-
-def _seed_mask_for(session: TrackerSession) -> dict:
-    """Return a placeholder seed mask. Real predictors expose the seed-frame
-    mask directly; for v1 we emit an empty 1x1 zero mask so callers know the
-    session is alive. The client typically calls /step to start receiving
-    real masks anyway.
-    """
-    return {"counts": "1", "size": [1, 1], "score": 1.0}
-
-
-def _to_numpy(arr: Any) -> np.ndarray:
-    """Convert a torch tensor (or array-like) to numpy.
-
-    v3.8 Phase 4.1 -- bfloat16 / float16 tensors raise ``TypeError: Got
-    unsupported ScalarType BFloat16`` on ``.numpy()``. Cast to float32
-    first. Mirrors the same fix in ``sam/router.py`` and the SAM 3
-    factories.
-    """
-    if hasattr(arr, "cpu"):
-        cpu_arr = arr.cpu()
-        dtype = getattr(cpu_arr, "dtype", None)
-        if dtype is not None and hasattr(cpu_arr, "float"):
-            dname = str(dtype)
-            if "bfloat16" in dname or "float16" in dname:
-                cpu_arr = cpu_arr.float()
-        return cpu_arr.numpy()
-    return np.asarray(arr)
+    return Response(status_code=204)

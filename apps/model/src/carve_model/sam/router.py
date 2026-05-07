@@ -61,7 +61,7 @@ from carve_model.sam.predictor import (
     set_loaded_image,
     set_prev_logits,
 )
-from carve_model.sam.tracker import force_evict_all_sessions
+from carve_model.sam.track_session import force_evict_all_sessions
 
 router = APIRouter(prefix="/sam", tags=["sam"])
 
