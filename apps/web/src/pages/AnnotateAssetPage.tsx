@@ -332,6 +332,34 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     refetchInterval: isVideoAsset && noFramesYet ? 800 : false,
     refetchIntervalInBackground: false,
   });
+
+  // v3.26 — defense-in-depth guard. If the user lands here on a video
+  // whose frames haven't been extracted AND there is no in-flight
+  // extract job, send them back to the task page with an info toast.
+  // Normal flow blocks the click via the AssetGrid card overlay; this
+  // catches stale URLs / direct-paste navigation.
+  useEffect(() => {
+    if (!isVideoAsset || !noFramesYet) return;
+    const status = extractStatusQ.data?.status;
+    // Wait for first poll resolution; only redirect when we've confirmed
+    // there is no in-flight extract (idle/completed/failed all mean the
+    // user shouldn't be sitting on an empty editor).
+    if (status === undefined || status === "running") return;
+    showToast("Frames still extracting — opening when ready", {
+      variant: "info",
+    });
+    void navigate({
+      to: "/projects/$projectId/tasks/$taskId",
+      params: { projectId, taskId },
+    });
+  }, [
+    isVideoAsset,
+    noFramesYet,
+    extractStatusQ.data?.status,
+    navigate,
+    projectId,
+    taskId,
+  ]);
   // v3.1 Issue 3 (Option A) — the editor consumes the *task-effective*
   // class list. When the task has no subset configured (allowed_class_ids
   // is null) the backend returns the full project list, preserving the
