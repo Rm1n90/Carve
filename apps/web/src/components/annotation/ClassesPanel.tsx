@@ -221,16 +221,14 @@ function AnnotationRow({
       <button
         type="button"
         aria-label="Delete annotation"
-        onClick={async (e) => {
-          // v2.9 P1-11 — confirm before destroying.
+        title="Delete annotation (Cmd+Z to undo)"
+        onClick={(e) => {
+          // v3.27.9 — single-click delete (no confirm dialog).
+          // Cmd+Z still restores the annotation; the original
+          // confirm step was friction the user explicitly asked
+          // to remove.
           e.stopPropagation();
-          const ok = await confirm({
-            title: "Delete annotation?",
-            description: "Press Cmd+Z to undo, or click Delete to remove.",
-            confirmLabel: "Delete",
-            variant: "danger",
-          });
-          if (ok) remove(ann.tempId);
+          remove(ann.tempId);
         }}
         className="grid h-5 w-5 place-items-center text-[color:var(--text-tertiary)] hover:text-[color:var(--danger)] opacity-0 group-hover:opacity-100"
       >

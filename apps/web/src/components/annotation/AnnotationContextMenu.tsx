@@ -513,13 +513,17 @@ export function AnnotationContextMenu({
     if (!host) return;
     function onContextMenu(e: Event) {
       const me = e as MouseEvent;
-      // Plan-20.11 — when the user is in the Smart (SAM) tool's
-      // point mode, right-click is reserved as a *negative* point.
-      // The SAM tool handles the click itself; suppressing the menu
-      // here keeps the canvas clean instead of flashing both the
-      // negative-point overlay AND the context menu.
+      // Plan-20.11 / v3.27.9 — when the user is in the Smart (SAM)
+      // tool's POINT or TRACK mode, right-click is reserved as a
+      // *negative* point prompt. The SAM tool handles the click
+      // itself; suppressing the menu here keeps the canvas clean
+      // instead of flashing both the negative-point overlay AND the
+      // context menu.
       const toolState = useTool.getState();
-      if (toolState.active === "sam" && toolState.samMode === "point") {
+      if (
+        toolState.active === "sam"
+        && (toolState.samMode === "point" || toolState.samMode === "track")
+      ) {
         me.preventDefault();
         return;
       }

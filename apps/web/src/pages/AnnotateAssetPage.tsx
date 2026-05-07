@@ -36,6 +36,7 @@ import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
 import { ReviewPanel } from "@/components/annotation/ReviewPanel";
 import { AppearancePanel } from "@/components/annotation/AppearancePanel";
 import { TrackPanel } from "@/components/annotation/TrackPanel";
+import { TrackProgressBadge } from "@/components/annotation/TrackProgressBadge";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { SelectionCountBadge } from "@/components/annotation/SelectionCountBadge";
@@ -1176,6 +1177,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   the cheat-sheet dialog here without its own button so
                   ``carve:open-cheat-sheet`` events still toggle it. */}
               <KeyboardCheatSheet hideTrigger />
+              {/* v3.27.9 — fixed progress chip that survives tool
+                  switches. <SamTrackModeGate> below only mounts the
+                  full TrackPanel while SAM Track is active; this badge
+                  reads useTrackBridge directly so the user sees the
+                  propagation tick even after switching to Drag/Bbox/etc. */}
+              <TrackProgressBadge />
             </main>
 
             <div
