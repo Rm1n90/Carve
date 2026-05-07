@@ -144,16 +144,29 @@ services:
     restart: unless-stopped
     profiles:
       - inference
-    # v3.7.8 — pass through all NVIDIA GPUs to the model container.
+    # v3.7.8 — pass through NVIDIA GPU(s) to the model container.
     # Without this the YOLO + SAM models fall back to CPU which is
     # ~30-40x slower (yolov8n at ~2.7s/asset CPU vs ~70ms/asset GPU).
     # Requires nvidia-container-toolkit on the host.
+    #
+    # v3.27.1 — restrict to a single GPU. SAM 3.1 multiplex video
+    # tracking (`forward_video_grounding_multigpu`) computes
+    # `world_size = torch.cuda.device_count()` at module load; with
+    # two GPUs visible it tries to shard the language-feature buffer
+    # across both, which trips
+    #   RuntimeError: indices should be either on cpu or on the same
+    #   device as the indexed tensor (cuda:1)
+    # because `txt_ids` lives on cuda:0 and `language_features` on
+    # cuda:1. Pinning to one device drops world_size to 1 and the
+    # multigpu code path collapses into the single-GPU fast path. Pick
+    # the device via SAM_GPU_ID (default `1` — the higher-memory 3090
+    # on this host).
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${SAM_GPU_ID:-1}"]
               capabilities: [gpu]
     environment:
       MODEL_HOST: 0.0.0.0
