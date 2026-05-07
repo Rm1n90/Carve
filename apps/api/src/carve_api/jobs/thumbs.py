@@ -146,40 +146,7 @@ def probe_video_metadata(asset_id: str, asset_hash: str, ext: str) -> None:
         # Failure here is non-fatal; the UI falls back to the video icon tile.
         pass
 
-    # v3.8 Phase 4-video step B -- enqueue per-frame extraction so the
-    # editor can show every frame as a still image. ``auto`` caps to
-    # ~500 frames; users can re-extract with a different strategy via
-    # the editor's "Re-extract frames" button (Phase 4-video step D).
-    # Best-effort: if Redis/RQ are unreachable, the asset still works
-    # with just the poster frame and the user can hit Re-extract later.
-    try:
-        import os as _os
-
-        import redis as _redis
-        from rq import Queue as _Queue
-
-        from carve_api.jobs.frames import extract_frames_for_video
-        from carve_api.jobs.queue import enqueue_with_defaults
-
-        _client = _redis.Redis(
-            host=_os.environ.get("REDIS_HOST", "redis"),
-            port=int(_os.environ.get("REDIS_PORT", "6379")),
-            decode_responses=True,
-        )
-        _q = _Queue("default", connection=_client)
-        # plan-09 task-09 — frame extraction is bounded by ffmpeg; 30
-        # minutes covers worst-case re-extracts of long videos.
-        enqueue_with_defaults(
-            _q,
-            extract_frames_for_video,
-            asset_id,
-            "auto",
-            None,
-            job_timeout=30 * 60,
-        )
-    except Exception:
-        import logging as _log
-        _log.getLogger(__name__).warning(
-            "probe_video_metadata: failed to enqueue frame extraction for %s; user can Re-extract manually",
-            asset_id,
-        )
+    # v3.26 — frame extraction is no longer auto-enqueued at upload time.
+    # The client always supplies a strategy via POST /assets/{id}/frames/extract,
+    # so the implicit "auto" run that used to live here was racing the user's
+    # explicit choice. See docs/superpowers/specs/2026-05-07-video-upload-extract-flow-design.md.

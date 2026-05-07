@@ -86,10 +86,17 @@ def engine():
 
 @pytest.fixture(autouse=True)
 def _reset_limiter() -> Generator[None, None, None]:
-    # The slowapi Limiter is a module-level singleton with in-memory storage that
-    # persists across tests; reset it so existing tests aren't accidentally throttled
-    # and rate-limit tests start from a clean state.
-    from carve_api.ratelimit import limiter
+    # The slowapi Limiter was a module-level singleton with in-memory storage
+    # that persisted across tests. After the limiter was removed from the API
+    # (only noqa references remain in src/), the import here started raising
+    # ModuleNotFoundError on collection. Tolerate the missing module so the
+    # rest of the suite still loads — this fixture becomes a no-op until the
+    # limiter is re-introduced.
+    try:
+        from carve_api.ratelimit import limiter  # type: ignore[import-not-found]
+    except ModuleNotFoundError:
+        yield
+        return
 
     limiter.reset()
     yield
