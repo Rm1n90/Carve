@@ -56,6 +56,35 @@ def _device_ctx():
     return torch.cuda.device(_CUDA_DEVICE_INDEX)
 
 
+def _autocast_ctx():
+    """v3.27.8 — bf16 autocast wrapper for upstream forward passes.
+
+    Both ``add_prompt`` and ``propagate_in_video`` in the multiplex
+    predictor consume cached backbone features that were produced in
+    bfloat16 (the base predictor's ``add_prompt`` body wraps its single
+    forward pass in ``torch.autocast(device_type="cuda", dtype=bf16)``).
+    The cached features are then re-read by ``run_backbone_and_detection``
+    during propagation; that path is **not** wrapped upstream, so a
+    Conv2d (e.g. ``interaction_sam_mask_decoder.conv_s0``) ends up with
+    a bfloat16 input but its float32 ``bias`` parameter:
+
+        RuntimeError: Input type (c10::BFloat16) and bias type
+        (float) should be the same
+
+    Wrapping our own propagate / add_prompt calls in autocast lets
+    PyTorch cast the conv bias to bfloat16 on the fly, eliminating the
+    mismatch without touching the model weights.
+
+    Returns a no-op context on CPU / MPS / un-built so unit tests don't
+    pull in ``torch.autocast``.
+    """
+    if _CUDA_DEVICE_INDEX is None:
+        from contextlib import nullcontext
+        return nullcontext()
+    import torch  # type: ignore[import-not-found]
+    return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+
+
 def _set_predictor_for_test(predictor: Any | None) -> None:
     """Inject a fake multiplex predictor for unit tests."""
     global _TEST_PREDICTOR
@@ -436,7 +465,7 @@ def add_prompt(
             request["bounding_boxes"] = [rel_xywh]
             request["bounding_box_labels"] = [1]
 
-    with _device_ctx():
+    with _device_ctx(), _autocast_ctx():
         predictor = _get_predictor()
         # SAM 3.1 multiplex gate: ``_build_sam2_output`` returns ``{}``
         # whenever ``inference_state["cached_frame_outputs"][frame_idx]``
@@ -497,7 +526,7 @@ def propagate_stream(
         request["max_frame_num_to_track"] = max(
             1, int(end_frame) - int(start_frame) + 1,
         )
-    with _device_ctx():
+    with _device_ctx(), _autocast_ctx():
         predictor = _get_predictor()
         # Same cache-gate workaround as the non-streaming path.
         try:
@@ -568,7 +597,7 @@ def propagate(
         request["max_frame_num_to_track"] = max(
             1, int(end_frame) - int(start_frame) + 1,
         )
-    with _device_ctx():
+    with _device_ctx(), _autocast_ctx():
         predictor = _get_predictor()
         # v3.27.3 — same cache-gate as add_prompt: ``_build_sam2_output``
         # returns ``{}`` when ``cached_frame_outputs[frame_idx]`` is
