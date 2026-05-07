@@ -456,3 +456,157 @@ def delete_asset(
         raise _http(NotProjectOwner("only owner or admin can delete an asset"))
     AssetService(db).delete(asset=a)
     db.commit()
+
+
+# ============================================================================
+# v3.27 SAM 3.1 multiplex track surface (replaces /sam-track/*)
+# ============================================================================
+# Kept alongside the legacy /sam-track/* endpoints during migration. Legacy
+# router is removed in the final cleanup task.
+
+from carve_api.inference import track as track_proxy
+
+
+class TrackOpenOut(BaseModel):
+    session_id: str
+    frame_count: int
+
+
+@asset_router.post("/{asset_id}/track/sessions", response_model=TrackOpenOut)
+def track_open(
+    asset_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TrackOpenOut:
+    from carve_api.assets.models import Asset
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        body = track_proxy.open_session(a)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return TrackOpenOut(**body)
+
+
+@asset_router.post("/{asset_id}/track/sessions/{sid}/prompts")
+def track_prompt(
+    asset_id: uuid.UUID, sid: str, payload: dict,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from carve_api.assets.models import Asset
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        return track_proxy.add_prompt(sid, payload)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@asset_router.post("/{asset_id}/track/sessions/{sid}/propagate")
+def track_propagate_endpoint(
+    asset_id: uuid.UUID,
+    sid: str,
+    payload: dict | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from carve_api.assets.models import Asset
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    p = payload or {}
+    try:
+        return track_proxy.propagate(
+            sid,
+            start_frame=p.get("start_frame"),
+            end_frame=p.get("end_frame"),
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+@asset_router.delete("/{asset_id}/track/sessions/{sid}/objects/{obj_id}")
+def track_remove_object_endpoint(
+    asset_id: uuid.UUID, sid: str, obj_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from carve_api.assets.models import Asset
+    from fastapi import Response as _Response
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        track_proxy.remove_object(sid, obj_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return _Response(status_code=204)
+
+
+@asset_router.delete("/{asset_id}/track/sessions/{sid}/prompts")
+def track_reset_prompts_endpoint(
+    asset_id: uuid.UUID, sid: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from carve_api.assets.models import Asset
+    from fastapi import Response as _Response
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        track_proxy.reset_prompts(sid)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return _Response(status_code=204)
+
+
+@asset_router.delete("/{asset_id}/track/sessions/{sid}")
+def track_close_endpoint(
+    asset_id: uuid.UUID, sid: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from carve_api.assets.models import Asset
+    from fastapi import Response as _Response
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        track_proxy.close_session(sid)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return _Response(status_code=204)
