@@ -445,6 +445,14 @@ def add_prompt(
         else:
             request["points"] = rel
             request["point_labels"] = [int(label) for label in (labels or [])]
+        # v3.27.12 — accumulate point prompts across calls instead of
+        # replacing them. The base predictor defaults
+        # ``clear_old_points=True``, which wipes prior positives the
+        # moment the user right-clicks for a negative refinement, so
+        # the SAM2 tracker only sees the lone negative point and the
+        # mask collapses. SAM 3.1 / SAM 2 demos all assume additive
+        # refinement (each click is a new constraint, not a reset).
+        request["clear_old_points"] = False
     elif has_box:
         # The base predictor's handle_request reads ``bounding_boxes`` /
         # ``bounding_box_labels`` and forwards as ``boxes_xywh`` /

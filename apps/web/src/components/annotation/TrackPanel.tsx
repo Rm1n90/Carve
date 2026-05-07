@@ -61,6 +61,19 @@ export function TrackPanel({
   // method calls. The "alt" arg comes from the canvas pointerup event.
   useEffect(() => {
     const bridge = useSamTrackBridge.getState();
+    // v3.27.12 — silence cancellation errors. Even with the AbortSignal
+    // gone from TrackTool, axios may surface ERR_CANCELED when a request
+    // races a route change or session reset. Showing those as red toasts
+    // taught the user to mistrust every click.
+    const isCanceled = (err: unknown): boolean => {
+      const e = err as { name?: string; code?: string; message?: string };
+      return (
+        e?.name === "AbortError"
+        || e?.name === "CanceledError"
+        || e?.code === "ERR_CANCELED"
+        || (typeof e?.message === "string" && /cancel/i.test(e.message))
+      );
+    };
     bridge.setHandler((point, negative) => {
       const tool = toolRef.current;
       if (!tool) return;
@@ -70,6 +83,7 @@ export function TrackPanel({
         y: point[1],
         negative: negative ?? false,
       }).catch((err) => {
+        if (isCanceled(err)) return;
         showToast(`Track click failed: ${(err as Error).message}`, {
           variant: "error",
         });
@@ -82,6 +96,7 @@ export function TrackPanel({
         frameIdx: currentFrameIdxRef.current,
         box,
       }).catch((err) => {
+        if (isCanceled(err)) return;
         showToast(`Track box failed: ${(err as Error).message}`, {
           variant: "error",
         });
@@ -151,6 +166,11 @@ export function TrackPanel({
       className={cn(
         "flex flex-col gap-3 p-3 border-t border-[var(--glass-border)]",
         "glass-surface text-[12.5px]",
+        // v3.27.12 — clamp panel height so a multi-object track doesn't
+        // push the textbox / Run button off-screen. The object list
+        // inside has its own max-height + scroll already; this is the
+        // outer guard against the whole panel exceeding the right rail.
+        "max-h-[60vh] overflow-y-auto shrink-0",
       )}
     >
       <header className="flex items-center justify-between">
@@ -168,7 +188,10 @@ export function TrackPanel({
       )}
 
       {objectList.length > 0 && (
-        <ul data-testid="track-object-list" className="grid gap-1">
+        <ul
+          data-testid="track-object-list"
+          className="grid gap-1 max-h-[180px] overflow-y-auto pr-1 -mr-1"
+        >
           {objectList.map((o) => {
             const cls = classes.find((c) => c.id === o.classId);
             const currentFrameId = frameIdxToFrameId[currentFrameIdx];

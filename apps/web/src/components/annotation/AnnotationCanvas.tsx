@@ -404,6 +404,15 @@ export function AnnotationCanvas({
 
   // Subscribe to bridge marker changes so the canvas re-paints whenever
   // <SamTrackPanel> publishes a new markers array (after addObjectAtFrame).
+  // v3.27.12 — also re-paint on every ``frameId`` change so the green/red
+  // dot overlay filters to the user's active frame instead of carrying
+  // stale dots across the timeline.
+  useEffect(() => {
+    if (useTool.getState().samMode === "track") {
+      void drawSamTrackMarkers();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frameId]);
   useEffect(() => {
     const unsub = useSamTrackBridge.subscribe((s, prev) => {
       if (s.markers === prev.markers) return;
@@ -1975,7 +1984,14 @@ export function AnnotationCanvas({
       return;
     }
     if (!pixi || !pixi.Graphics || !pixi.Container || !pixi.Text) return;
-    const markers = useSamTrackBridge.getState().markers;
+    const allMarkers = useSamTrackBridge.getState().markers;
+    // v3.27.12 — only render markers whose frameId matches the active
+    // frame. Off-frame prompts shouldn't pollute the overlay (each
+    // frame's mask is the single source of truth for what's there now).
+    const markers = allMarkers.filter((m) =>
+      // Treat null frameId as "always show" so legacy callers still work.
+      m.frameId == null || m.frameId === frameId,
+    );
     // Tear down any existing markers — we re-render the full set on
     // every change rather than diffing. The list is small (<10 typical).
     for (const c of samTrackMarkersGfxRef.current) {
@@ -1988,43 +2004,41 @@ export function AnnotationCanvas({
       }
     }
     samTrackMarkersGfxRef.current = [];
-    const PALETTE = [
-      0x3b82f6, // blue
-      0xf59e0b, // amber
-      0x10b981, // emerald
-      0xec4899, // pink
-      0x8b5cf6, // violet
-      0xef4444, // red
-    ];
-    const radius = 10;
+    // v3.27.12 — green for positive (label=1), red for negative
+    // (label=0). Matches the SAM-2 demo and CVAT conventions so the
+    // user immediately recognises which prompt they just placed.
+    const POSITIVE_COLOR = 0x10b981; // emerald-500
+    const NEGATIVE_COLOR = 0xef4444; // red-500
+    const radius = 8;
     for (const m of markers as SamTrackMarker[]) {
-      const color = PALETTE[(m.objId - 1) % PALETTE.length];
+      const isNegative = m.label === 0;
+      const color = isNegative ? NEGATIVE_COLOR : POSITIVE_COLOR;
       try {
         const container = new pixi.Container();
         const circle = new pixi.Graphics();
         circle.circle(m.x, m.y, radius);
-        circle.fill({ color, alpha: 1 });
+        circle.fill({ color, alpha: 0.9 });
         circle.circle(m.x, m.y, radius);
         circle.stroke({ color: 0xffffff, width: 1.5, alpha: 1 });
-        const label = new pixi.Text({
-          text: String(m.objId),
+        // Inner mark: + for positive, − for negative.
+        const glyph = new pixi.Text({
+          text: isNegative ? "−" : "+",
           style: {
             fontFamily: "Geist Variable, ui-sans-serif, system-ui, sans-serif",
-            fontSize: 11,
+            fontSize: 12,
             fill: 0xffffff,
-            fontWeight: "600",
+            fontWeight: "700",
           },
         });
-        // Center the label over the circle.
-        const lw = (label as { width: number }).width || 6;
-        const lh = (label as { height: number }).height || 12;
-        (label as { x: number }).x = m.x - lw / 2;
-        (label as { y: number }).y = m.y - lh / 2;
+        const gw = (glyph as { width: number }).width || 6;
+        const gh = (glyph as { height: number }).height || 12;
+        (glyph as { x: number }).x = m.x - gw / 2;
+        (glyph as { y: number }).y = m.y - gh / 2;
         (container as unknown as { addChild: (c: never) => unknown }).addChild(
           circle as never,
         );
         (container as unknown as { addChild: (c: never) => unknown }).addChild(
-          label as never,
+          glyph as never,
         );
         (app.overlayLayer as unknown as { addChild: (c: never) => unknown }).addChild(
           container as never,

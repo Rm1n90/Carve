@@ -2,6 +2,7 @@
 import { trackApi, type FrameMasks, type PromptIn } from "@/api/track";
 import { useTrackBridge } from "@/state/trackBridge";
 import { useAnnotations } from "@/state/annotations";
+import { useSamTrackBridge } from "@/state/samTrackBridge";
 
 export interface ClickArgs {
   frameIdx: number;
@@ -25,10 +26,12 @@ export interface TextArgs {
 }
 
 // (auto-preview removed; see clickAt for rationale)
+// v3.27.12 — the makePromptSignal abort helper was removed too; rapid
+// clicks were canceling the previous in-flight prompt and surfacing
+// "track click failed: cancel" toasts. Each prompt is now an
+// independent request.
 
 export class TrackTool {
-  private previewAbort: AbortController | null = null;
-
   constructor(
     private assetId: string,
     private getActiveClassId: () => string | null,
@@ -56,7 +59,9 @@ export class TrackTool {
     try {
       await trackApi.close(this.assetId, sid);
     } finally {
-      this.previewAbort?.abort();
+      // v3.27.12 — also wipe the visual marker dots so they don't
+      // linger after the user discards the session.
+      useSamTrackBridge.getState().setMarkers([]);
       useTrackBridge.getState().reset();
     }
   }
@@ -110,9 +115,26 @@ export class TrackTool {
       labels: [label],
     };
 
-    const resp = await trackApi.prompt(
-      this.assetId, sid, body, this.makePromptSignal(),
-    );
+    // v3.27.12 — paint the green/red dot BEFORE awaiting the network
+    // round-trip so the user sees instant feedback. If the request
+    // later fails the marker stays (the user can right-click again to
+    // subtract or remove the object); we DON'T roll it back because a
+    // missing dot would look like the click was ignored.
+    const frameId = this.getFrameId(args.frameIdx);
+    useSamTrackBridge.getState().pushMarker({
+      objId: targetObjId,
+      x: args.x,
+      y: args.y,
+      label: label as 0 | 1,
+      frameId,
+    });
+
+    // v3.27.12 — no abort signal. The previous makePromptSignal() abort
+    // was a leftover from the removed auto-preview path; under rapid
+    // clicks it canceled the previous request and surfaced
+    // "track click failed: cancel" toasts. Each click is now self-
+    // contained, so consecutive clicks just queue at the server.
+    const resp = await trackApi.prompt(this.assetId, sid, body);
     this.applyMasks(resp);
     // v3.27 — auto-preview removed. The native multiplex predictor's
     // ``propagate_in_video_preflight`` raises an AssertionError when
@@ -144,7 +166,7 @@ export class TrackTool {
       frame_idx: args.frameIdx,
       obj_id: targetObjId,
       box: args.box,
-    }, this.makePromptSignal());
+    });
     this.applyMasks(resp);
     // v3.27 — auto-preview removed. The native multiplex predictor's
     // ``propagate_in_video_preflight`` raises an AssertionError when
@@ -163,7 +185,7 @@ export class TrackTool {
     if (classId === null) throw new Error("track_tool_no_active_class");
     const resp = await trackApi.prompt(this.assetId, sid, {
       frame_idx: args.frameIdx, text: args.text,
-    }, this.makePromptSignal());
+    });
     this.applyMasks(resp);
     for (const k of Object.keys(resp.masks)) {
       const objId = Number(k);
@@ -318,13 +340,6 @@ export class TrackTool {
         });
       }
     }
-  }
-
-  private makePromptSignal(): AbortSignal {
-    this.previewAbort?.abort();
-    const ac = new AbortController();
-    this.previewAbort = ac;
-    return ac.signal;
   }
 
 }
