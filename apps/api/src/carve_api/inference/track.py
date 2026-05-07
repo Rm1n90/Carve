@@ -21,6 +21,7 @@ from carve_api.inference.model_client import (
     track_close_session as _track_close_session,
     track_open_session as _track_open_session,
     track_propagate as _track_propagate,
+    track_propagate_stream as _track_propagate_stream,
     track_remove_object as _track_remove_object,
     track_reset_prompts as _track_reset_prompts,
 )
@@ -116,6 +117,27 @@ def propagate(
         return _track_propagate(sid, start_frame, end_frame)
     except ModelServiceError as exc:
         raise _wrap(exc, "propagate") from exc
+
+
+def propagate_stream(
+    sid: str, start_frame: int | None = None, end_frame: int | None = None,
+):
+    """Yield NDJSON bytes from the model service. The caller (FastAPI
+    route) wraps this in a ``StreamingResponse`` so the browser sees
+    each per-frame record arrive in real time. Errors that occur AFTER
+    the first byte show up as ``__error__`` lines in the stream rather
+    than HTTP error status codes — the model service emits them, and
+    if the api itself fails (model unreachable, etc) we synthesize the
+    same shape so the client always sees a terminating record."""
+    import json as _json
+    try:
+        yield from _track_propagate_stream(sid, start_frame, end_frame)
+    except ModelServiceError as exc:
+        wrapped = _wrap(exc, "propagate_stream")
+        yield (_json.dumps({
+            "__error__": str(wrapped),
+            "code": wrapped.http_status,
+        }) + "\n").encode()
 
 
 def remove_object(sid: str, obj_id: int) -> None:

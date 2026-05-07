@@ -14,7 +14,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import json
+
 from fastapi import APIRouter, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from carve_model.sam import track_session as ts
@@ -155,6 +158,47 @@ def propagate(sid: str, payload: PropagateIn) -> PropagateOut:
             for f in frames
         ],
     )
+
+
+@router.post("/sessions/{sid}/propagate/stream")
+def propagate_stream(sid: str, payload: PropagateIn) -> StreamingResponse:
+    """NDJSON streaming variant — one ``{"frame_idx", "masks"}`` JSON
+    object per line as soon as the multiplex predictor yields it.
+
+    Lets the browser drive a real progress bar (per-frame ticks) instead
+    of buffering the entire 446-frame mask payload before any UI update.
+    Each line ends in ``\n``; clients should split on newline and parse
+    each non-empty line as one JSON record. The final ``200`` only
+    arrives once the stream closes; HTTP-level errors that fire AFTER
+    the headers are sent show up as a ``__error__`` line and a closed
+    connection.
+    """
+    def gen():
+        try:
+            for entry in ts.propagate_stream(
+                sid,
+                start_frame=payload.start_frame,
+                end_frame=payload.end_frame,
+            ):
+                encoded = _encode_masks(entry["masks"])
+                line = {
+                    "frame_idx": entry["frame_idx"],
+                    "masks": {
+                        str(oid): {
+                            "counts": v.counts,
+                            "size": v.size,
+                            "polygon": v.polygon,
+                        }
+                        for oid, v in encoded.items()
+                    },
+                }
+                yield (json.dumps(line) + "\n").encode()
+        except LookupError as exc:
+            yield (json.dumps({"__error__": str(exc), "code": 404}) + "\n").encode()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("propagate_stream_failed sid=%s", sid)
+            yield (json.dumps({"__error__": repr(exc), "code": 502}) + "\n").encode()
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.delete("/sessions/{sid}/objects/{obj_id}")

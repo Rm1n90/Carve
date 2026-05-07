@@ -7,7 +7,11 @@ export interface ClickArgs {
   frameIdx: number;
   x: number;
   y: number;
-  alt: boolean;
+  /** True for a NEGATIVE refinement click (right-click on canvas).
+   *  Mapped to label=0 in the SAM 3.1 prompt body. Left-click → false
+   *  → label=1 (positive). v3.27.5 swapped the gesture from alt-click
+   *  to right-click. */
+  negative: boolean;
 }
 
 export interface BoxArgs {
@@ -61,8 +65,12 @@ export class TrackTool {
     await this.ensureSession();
     const sid = useTrackBridge.getState().sessionId!;
     const hitId = useTrackBridge.getState().hitTest(args.frameIdx, args.x, args.y);
-    const isRefine = hitId !== null;
-    const label = args.alt ? 0 : 1;
+    // Right-click anywhere = negative refinement. If the click lands on
+    // an existing mask, refine that obj_id; otherwise auto-route to the
+    // most recently seeded obj on this frame so the user doesn't need
+    // to manually select a target before negative-clicking.
+    const isRefine = hitId !== null || args.negative;
+    const label = args.negative ? 0 : 1;
 
     // v3.27 fix — native SAM 3.1 multiplex requires obj_id to be EXPLICIT
     // for point/box prompts (only text auto-allocates per detection).
@@ -71,8 +79,18 @@ export class TrackTool {
     // Allocate the next free id client-side BEFORE the request so the
     // response masks land in the right bridge slot.
     let targetObjId: number;
-    if (isRefine) {
-      targetObjId = hitId!;
+    if (hitId !== null) {
+      // Click landed on an existing mask — refine that obj_id.
+      targetObjId = hitId;
+    } else if (args.negative) {
+      // Negative click on empty canvas — refine the most recently
+      // registered object so the click can subtract from its mask
+      // without forcing the user to first select the target.
+      const objs = Array.from(useTrackBridge.getState().objects.values());
+      if (objs.length === 0) {
+        throw new Error("track_tool_negative_without_object");
+      }
+      targetObjId = objs[objs.length - 1].objId;
     } else {
       const classId = this.getActiveClassId();
       if (classId === null) throw new Error("track_tool_no_active_class");
@@ -172,41 +190,43 @@ export class TrackTool {
     useTrackBridge.getState().removeObject(objId);
   }
 
-  /** v3.27.3 — single propagate call, then iterate the response. The
-   *  native multiplex predictor's ``propagate_in_video`` only runs SAM2
-   *  propagation once per session call and emits all frames; chunking
-   *  the call window kills propagation past the first chunk because
-   *  upstream falls back to "fetch existing VG predictions" (empty for
-   *  point/box prompts). The progress bar therefore jumps from 0 to
-   *  100% — that's a UX cost we accept for correctness. */
+  /** v3.27.5 — NDJSON streaming. The model's
+   *  ``propagate_in_video`` runs SAM2 across every frame in one
+   *  upstream call, but emits per-frame outputs as it goes; the
+   *  /propagate/stream endpoint forwards each frame as a JSON line so
+   *  the browser can call applyMasks + tick the progress bar in real
+   *  time instead of waiting ~90s for one giant blob. */
   async runFullTrack(): Promise<void> {
     const sid = useTrackBridge.getState().sessionId;
     if (!sid) throw new Error("track_tool_no_session");
     const bridge = useTrackBridge.getState();
-    const total = bridge.totalFrames ?? 0;
     // The native multiplex predictor needs ``start_frame_index`` to
     // locate prompts in tracker_metadata for point/box obj_ids; without
     // it, propagation raises "No prompts are received on any frames".
-    // Use the earliest seed frame across all registered objects.
     const objs = Array.from(bridge.objects.values());
     const startFrame = objs.length > 0
       ? Math.min(...objs.map((o) => o.seedFrame))
       : 0;
     bridge.setStatus("running");
     bridge.setFramesPropagated(0);
-    const r = await trackApi.propagate(this.assetId, sid, {
-      start_frame: startFrame,
-    });
+    let processed = 0;
     let committed = 0;
-    for (const f of r.frames) {
-      if (Object.keys(f.masks ?? {}).length > 0) committed += 1;
-      this.applyMasks(f);
-    }
-    useTrackBridge.getState().setFramesPropagated(r.frames.length);
+    await trackApi.propagateStream(
+      this.assetId,
+      sid,
+      { start_frame: startFrame },
+      (frame) => {
+        if (Object.keys(frame.masks ?? {}).length > 0) committed += 1;
+        this.applyMasks(frame);
+        processed += 1;
+        // Tick after every frame so the progress bar stays live; React
+        // batches the re-render anyway.
+        useTrackBridge.getState().setFramesPropagated(processed);
+      },
+    );
     // eslint-disable-next-line no-console
     console.debug(
-      `[track] runFullTrack: ${committed}/${r.frames.length} frames had masks`
-      + (total ? ` (asset has ${total} frames)` : ""),
+      `[track] runFullTrack stream done: ${committed}/${processed} frames had masks`,
     );
     useTrackBridge.getState().setStatus("done");
   }

@@ -1,12 +1,13 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Play, Trash2, X } from "lucide-react";
+import { Eraser, Loader2, Play, Trash2, X } from "lucide-react";
 
 import type { ClassRow } from "@/api/classes";
 import { TrackTool } from "@/canvas/tools/TrackTool";
 import { useTool } from "@/state/tool";
 import { useTrackBridge } from "@/state/trackBridge";
 import { useSamTrackBridge } from "@/state/samTrackBridge";
+import { useAnnotations } from "@/state/annotations";
 import { showToast } from "@/lib/toast";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
@@ -60,14 +61,14 @@ export function TrackPanel({
   // method calls. The "alt" arg comes from the canvas pointerup event.
   useEffect(() => {
     const bridge = useSamTrackBridge.getState();
-    bridge.setHandler((point, alt) => {
+    bridge.setHandler((point, negative) => {
       const tool = toolRef.current;
       if (!tool) return;
       void tool.clickAt({
         frameIdx: currentFrameIdxRef.current,
         x: point[0],
         y: point[1],
-        alt: alt ?? false,
+        negative: negative ?? false,
       }).catch((err) => {
         showToast(`Track click failed: ${(err as Error).message}`, {
           variant: "error",
@@ -161,8 +162,8 @@ export function TrackPanel({
 
       {objectList.length === 0 && (
         <p className="text-[11px] text-[color:var(--text-secondary)]">
-          Click on canvas to seed an object. Click on an existing mask to
-          refine that object. Alt-click for negative.
+          Left-click on canvas to seed. Click an existing mask to refine.
+          Right-click for negative.
         </p>
       )}
 
@@ -170,6 +171,13 @@ export function TrackPanel({
         <ul data-testid="track-object-list" className="grid gap-1">
           {objectList.map((o) => {
             const cls = classes.find((c) => c.id === o.classId);
+            const currentFrameId = frameIdxToFrameId[currentFrameIdx];
+            const tempIdOnFrame = currentFrameId
+              ? `track:${useTrackBridge.getState().trackIds.get(o.objId)}:${currentFrameId}`
+              : null;
+            const hasMaskOnCurrentFrame = tempIdOnFrame
+              ? !!useAnnotations.getState().byId[tempIdOnFrame]
+              : false;
             return (
               <li
                 key={o.objId}
@@ -188,12 +196,32 @@ export function TrackPanel({
                 <span className="text-[10px] text-[color:var(--text-tertiary)]">
                   ▸ frame {o.seedFrame}
                 </span>
+                {/* v3.27.5 — per-frame remove. Drops the polygon for
+                    this obj on the CURRENT frame only; the obj stays
+                    registered so propagation / refinement on other
+                    frames is preserved. The X button below still
+                    removes the obj across the whole video. */}
+                <button
+                  type="button"
+                  data-testid={`track-remove-on-frame-${o.objId}`}
+                  disabled={!hasMaskOnCurrentFrame}
+                  onClick={() => {
+                    if (!tempIdOnFrame) return;
+                    useAnnotations.getState().remove(tempIdOnFrame);
+                  }}
+                  className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded hover:bg-[var(--bg-hover)] disabled:opacity-30 disabled:cursor-not-allowed"
+                  aria-label={`Remove object ${o.objId} on frame ${currentFrameIdx + 1}`}
+                  title={`Remove from frame ${currentFrameIdx + 1}`}
+                >
+                  <Eraser className="h-3 w-3" />
+                </button>
                 <button
                   type="button"
                   data-testid={`track-remove-${o.objId}`}
                   onClick={() => void toolRef.current!.removeObject(o.objId)}
-                  className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded hover:bg-[var(--bg-hover)]"
-                  aria-label={`Remove object ${o.objId}`}
+                  className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-[var(--bg-hover)]"
+                  aria-label={`Remove object ${o.objId} entirely`}
+                  title="Remove from all frames"
                 >
                   <X className="h-3 w-3" />
                 </button>

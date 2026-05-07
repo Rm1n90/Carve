@@ -7,6 +7,7 @@ enough that a sync round-trip per call is fine. This keeps the wiring simple
 and tests trivial via ``httpx.MockTransport``.
 """
 
+import json
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -464,6 +465,50 @@ def track_add_prompt(sid: str, body: dict) -> dict:
         if r.status_code >= 400:
             raise ModelServiceError(r.status_code, _safe_json(r))
         return r.json()
+
+
+def track_propagate_stream(
+    sid: str, start_frame: int | None, end_frame: int | None,
+) -> Iterator[bytes]:
+    """Yield NDJSON bytes from the model service streaming endpoint as
+    they arrive. Used by the per-frame progress UX in Run-full-track.
+
+    The 600s timeout matches ``track_propagate`` so a full 446-frame
+    sweep can complete without httpx truncating mid-stream.
+    """
+    body = {"start_frame": start_frame, "end_frame": end_frame}
+    s = get_settings()
+    timeout = max(float(s.model_timeout_seconds), 600.0)
+    client = httpx.Client(
+        base_url=s.model_base_url,
+        timeout=timeout,
+        transport=_TEST_TRANSPORT,
+    )
+    try:
+        with client.stream(
+            "POST", f"/track/sessions/{sid}/propagate/stream", json=body,
+        ) as r:
+            if r.status_code >= 400:
+                # Drain so the connection can be returned to the pool,
+                # then surface the upstream error in the legacy shape.
+                raw = b"".join(r.iter_bytes())
+                try:
+                    detail = json.loads(raw or b"{}")
+                except Exception:  # noqa: BLE001
+                    detail = {"raw": raw.decode(errors="replace")}
+                raise ModelServiceError(r.status_code, detail)
+            for chunk in r.iter_bytes():
+                if chunk:
+                    yield chunk
+    except (
+        httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
+    ) as exc:
+        raise ModelServiceError(
+            503, {"error": "model_service_unreachable",
+                  "detail": f"track_propagate_stream: {exc.__class__.__name__}: {exc}"},
+        ) from exc
+    finally:
+        client.close()
 
 
 def track_propagate(

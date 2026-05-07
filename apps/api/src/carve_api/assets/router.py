@@ -3,7 +3,7 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -541,6 +541,41 @@ def track_propagate_endpoint(
         )
     except AppError as exc:
         raise _http(exc) from exc
+
+
+@asset_router.post("/{asset_id}/track/sessions/{sid}/propagate/stream")
+def track_propagate_stream_endpoint(
+    asset_id: uuid.UUID,
+    sid: str,
+    payload: dict | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """v3.27.5 — NDJSON streaming proxy for Run-full-track. Each line
+    is one ``{"frame_idx": N, "masks": {<obj_id>: {counts, size, polygon}}}``
+    record emitted by the model service as soon as the multiplex
+    predictor yields it. The browser parses lines incrementally so the
+    progress bar ticks per frame instead of jumping from 0% → 100%.
+    """
+    from carve_api.assets.models import Asset
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_visible_task(db, user, a.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    p = payload or {}
+    try:
+        gen = track_proxy.propagate_stream(
+            sid,
+            start_frame=p.get("start_frame"),
+            end_frame=p.get("end_frame"),
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    return StreamingResponse(gen, media_type="application/x-ndjson")
 
 
 @asset_router.delete("/{asset_id}/track/sessions/{sid}/objects/{obj_id}")

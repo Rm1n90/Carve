@@ -33,12 +33,13 @@ export interface SamTrackMarker {
   y: number;
 }
 
-// v3.27 — second arg ``alt`` carries the AltKey modifier from the canvas
-// pointerup event so handlers can route Alt-click to a NEGATIVE point
-// prompt (label=0). Optional for backward compat with legacy registrants.
+// v3.27.5 — second arg ``negative`` flags right-click as a NEGATIVE
+// point prompt (label=0). Renamed from the prior ``alt``-keyed convention
+// because right-click is the standard segmentation tool gesture for
+// negative refinement (CVAT, SAM-2 demo UI, COCO Annotator).
 export type SamTrackClickHandler = (
   point: [number, number],
-  alt?: boolean,
+  negative?: boolean,
 ) => void;
 /** v3.8 Phase 4-video step F7 — bbox seed in track mode. The canvas
  * publishes the drag rectangle (image-space xyxy) and the panel calls

@@ -469,6 +469,70 @@ def add_prompt(
 # ---- T4: propagate --------------------------------------------------------
 
 
+def propagate_stream(
+    session_id: str,
+    *,
+    start_frame: int | None = None,
+    end_frame: int | None = None,
+):
+    """Streaming version of :func:`propagate` — yields per-frame dicts as
+    the multiplex predictor produces them.
+
+    Same upstream call shape as ``propagate``; instead of materializing
+    the whole list before returning, this function yields each
+    ``{"frame_idx", "masks"}`` as soon as it lands. The HTTP layer wraps
+    the iterator into NDJSON so the browser can update progress without
+    waiting for the full sweep to finish.
+    """
+    sess = get_session(session_id)
+    if sess is None:
+        raise LookupError("session_not_found")
+    request: dict[str, Any] = {
+        "type": "propagate_in_video",
+        "session_id": sess.native_session_id,
+    }
+    if start_frame is not None:
+        request["start_frame_index"] = int(start_frame)
+    if end_frame is not None and start_frame is not None:
+        request["max_frame_num_to_track"] = max(
+            1, int(end_frame) - int(start_frame) + 1,
+        )
+    with _device_ctx():
+        predictor = _get_predictor()
+        # Same cache-gate workaround as the non-streaming path.
+        try:
+            inf_state = predictor._all_inference_states[
+                sess.native_session_id
+            ]["state"]
+            inf_state.setdefault("cached_frame_outputs", {})
+            for i in range(int(sess.frame_count)):
+                inf_state["cached_frame_outputs"].setdefault(i, {})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "track_session.propagate_stream: cache preseed skipped: %s",
+                exc,
+            )
+        stream = predictor.handle_stream_request(request)
+        with_masks = 0
+        total = 0
+        for resp in stream:
+            f = int(resp.get("frame_index", 0))
+            if start_frame is not None and f < start_frame:
+                continue
+            if end_frame is not None and f > end_frame:
+                break
+            masks = _extract_masks(resp)
+            total += 1
+            if masks:
+                with_masks += 1
+            yield {"frame_idx": f, "masks": masks}
+        logger.warning(
+            "track_session.propagate_stream sid=%s start=%s end=%s "
+            "yielded=%d with_masks=%d",
+            session_id, start_frame, end_frame, total, with_masks,
+        )
+
+
 def propagate(
     session_id: str,
     *,

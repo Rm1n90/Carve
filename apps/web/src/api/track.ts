@@ -67,6 +67,75 @@ export const trackApi = {
       )
     ).data,
 
+  /** v3.27.5 — NDJSON streaming variant. Calls the per-frame stream
+   *  endpoint and invokes ``onFrame`` as each line arrives so the
+   *  caller can update progress without waiting for the full sweep
+   *  to finish. The returned promise resolves once the stream closes
+   *  (server emits a final ``__error__`` line on failure, in which
+   *  case it rejects with that error). */
+  propagateStream: async (
+    assetId: string,
+    sid: string,
+    opts: PropagateOpts,
+    onFrame: (frame: FrameMasks) => void,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const baseURL = (import.meta.env.VITE_API_BASE ?? "/api") as string;
+    const token = localStorage.getItem("vaa.accessToken");
+    const r = await fetch(
+      `${baseURL}/assets/${assetId}/track/sessions/${sid}/propagate/stream`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(opts ?? {}),
+        signal,
+      },
+    );
+    if (!r.ok || !r.body) {
+      const text = await r.text().catch(() => "");
+      throw new Error(`propagate_stream HTTP ${r.status}: ${text}`);
+    }
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // NDJSON: parse every newline-terminated record; keep the
+        // unterminated tail in the buffer.
+        let nl = buffer.indexOf("\n");
+        while (nl !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (line.length > 0) {
+            const obj = JSON.parse(line);
+            if (obj.__error__) {
+              throw new Error(`propagate_stream: ${obj.__error__}`);
+            }
+            onFrame(obj as FrameMasks);
+          }
+          nl = buffer.indexOf("\n");
+        }
+      }
+      // Flush any trailing record without a newline.
+      const tail = buffer.trim();
+      if (tail.length > 0) {
+        const obj = JSON.parse(tail);
+        if (obj.__error__) {
+          throw new Error(`propagate_stream: ${obj.__error__}`);
+        }
+        onFrame(obj as FrameMasks);
+      }
+    } finally {
+      try { reader.releaseLock(); } catch { /* noop */ }
+    }
+  },
+
   removeObject: async (
     assetId: string, sid: string, objId: number,
   ): Promise<void> => {

@@ -2464,7 +2464,18 @@ export function AnnotationCanvas({
         // box/track" and accidentally consuming a right-click on an
         // existing annotation would lose the user's chance to
         // right-click into the context menu.
-        if (!isPointMode && (e.button === 0 || e.button === 2)) {
+        // v3.27.5 — Track mode bypasses the selection short-circuit:
+        // right-click is a NEGATIVE point prompt and must always reach
+        // the track dispatch path even when an auto-committed mask is
+        // selected. Without this exception the user's first click
+        // selects the seed mask, then every subsequent right-click is
+        // swallowed by the "hasSelection" guard below.
+        const samModeNow = useTool.getState().samMode;
+        if (
+          !isPointMode
+          && samModeNow !== "track"
+          && (e.button === 0 || e.button === 2)
+        ) {
           const hit = hitTest(p);
           const sel = useAnnotations.getState();
           const hasSelection =
@@ -2831,9 +2842,11 @@ export function AnnotationCanvas({
           const handler = useSamTrackBridge.getState().onCanvasClick;
           if (handler) {
             try {
-              // v3.27 — pass altKey so Track-mode handlers can route
-              // Alt-click as a NEGATIVE point prompt (label=0).
-              handler([clamped.x, clamped.y], e.altKey);
+              // v3.27.5 — right-click (button===2) is the negative point
+              // prompt (label=0); left click is positive (label=1). The
+              // contextmenu handler below is also pinned to no-op in
+              // track mode so the browser menu doesn't pop instead.
+              handler([clamped.x, clamped.y], e.button === 2);
             } catch {
               /* handler errors surface as toasts in the panel */
             }
@@ -2999,7 +3012,18 @@ export function AnnotationCanvas({
       // if the user has already selected the annotation they want, a
       // right-click anywhere should reach the Convert menu instead of
       // adding a stray SAM point.
+      //
+      // v3.27.5 — Track mode is a special case: every right-click MUST
+      // become a negative point prompt for the active obj_id. Auto-
+      // committed track polygons are always selected after the seed
+      // click, so the legacy hit/selection guard would block negative
+      // refinement entirely. Suppress the menu unconditionally in track.
       if (tool !== "sam") return;
+      const samMode = useTool.getState().samMode;
+      if (samMode === "track") {
+        e.preventDefault();
+        return;
+      }
       const hit = hitTestClient(e.clientX, e.clientY);
       const hasSelection =
         useAnnotations.getState().selectedIds.length > 0 ||
