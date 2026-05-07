@@ -42,19 +42,6 @@ function clamp(value: number, lo: number, hi: number): number {
   return value;
 }
 
-/**
- * Clamp a point to the image bounds. When `size` is null we leave the
- * point untouched — the tool then falls back to the bound-agnostic path
- * used before v2.5.2.
- */
-function clampToImage(p: Point, size: ImageSize | null): Point {
-  if (!size) return p;
-  return {
-    x: clamp(p.x, 0, size.w),
-    y: clamp(p.y, 0, size.h),
-  };
-}
-
 export class BboxTool {
   private anchor: Point | null = null;
   private current: Point | null = null;
@@ -83,27 +70,30 @@ export class BboxTool {
   }
 
   onPointerDown(p: Point): void {
-    const clamped = clampToImage(p, this.resolveImageSize());
-    this.anchor = clamped;
-    this.current = clamped;
+    // v3.24.13 — anchor stays at the raw cursor (no clamp) so the user
+    // can begin a draw outside the image. The geometry is clamped to
+    // the image only on commit, in onPointerUp.
+    this.anchor = p;
+    this.current = p;
   }
 
   onPointerMove(p: Point): { preview: { x: number; y: number; w: number; h: number } } | null {
     if (!this.anchor) return null;
-    const clamped = clampToImage(p, this.resolveImageSize());
-    this.current = clamped;
-    const x = Math.min(this.anchor.x, clamped.x);
-    const y = Math.min(this.anchor.y, clamped.y);
-    const w = Math.abs(this.anchor.x - clamped.x);
-    const h = Math.abs(this.anchor.y - clamped.y);
+    // v3.24.13 — render the live preview at the raw cursor so the user
+    // sees the rectangle they're drawing even when the cursor is
+    // outside the image. The clamp lands on commit (onPointerUp).
+    this.current = p;
+    const x = Math.min(this.anchor.x, p.x);
+    const y = Math.min(this.anchor.y, p.y);
+    const w = Math.abs(this.anchor.x - p.x);
+    const h = Math.abs(this.anchor.y - p.y);
     return { preview: { x, y, w, h } };
   }
 
   onPointerUp(p: Point): boolean {
     if (!this.anchor) return false;
-    const clamped = clampToImage(p, this.resolveImageSize());
-    const dx = clamped.x - this.anchor.x;
-    const dy = clamped.y - this.anchor.y;
+    const dx = p.x - this.anchor.x;
+    const dy = p.y - this.anchor.y;
     const distSq = dx * dx + dy * dy;
     const classId = this.getActiveClassId();
     // Tiny drags are noise — silently discard.
@@ -118,13 +108,32 @@ export class BboxTool {
       this.reset();
       return false;
     }
-    const x = Math.min(this.anchor.x, clamped.x);
-    const y = Math.min(this.anchor.y, clamped.y);
-    const w = Math.abs(dx);
-    const h = Math.abs(dy);
+    // v3.24.13 — clamp the final rect to the image on commit. The rest
+    // of the draw (anchor + live preview) ran on raw cursor coordinates
+    // so the user can extend past the image edge and the rectangle
+    // snaps to the boundary on release.
+    const rawX = Math.min(this.anchor.x, p.x);
+    const rawY = Math.min(this.anchor.y, p.y);
+    const rawW = Math.abs(dx);
+    const rawH = Math.abs(dy);
+    const size = this.resolveImageSize();
+    let x = rawX;
+    let y = rawY;
+    let w = rawW;
+    let h = rawH;
+    if (size) {
+      const x1 = clamp(rawX, 0, size.w);
+      const y1 = clamp(rawY, 0, size.h);
+      const x2 = clamp(rawX + rawW, 0, size.w);
+      const y2 = clamp(rawY + rawH, 0, size.h);
+      x = x1;
+      y = y1;
+      w = x2 - x1;
+      h = y2 - y1;
+    }
     // After clamping, the rectangle may have collapsed (e.g. user dragged
     // entirely outside the image). Reject anything below the minimum edge
-    // size so we never store a degenerate / off-topic geometry. v2.5.2.
+    // size so we never store a degenerate / off-topic geometry.
     if (w < MIN_BBOX_SIZE || h < MIN_BBOX_SIZE) {
       this.reset();
       return false;

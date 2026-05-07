@@ -27,11 +27,13 @@ import {
 import {
   applyResize,
   applyTranslate,
+  clampBboxToBounds,
   hitTestHandle,
   pointInsideBbox,
 } from "@/canvas/bboxEdit";
 import {
   applyVertexTranslate,
+  clampPolygonToBounds,
   hitTestEdge,
   hitTestVertex,
   insertVertex,
@@ -539,10 +541,11 @@ export function AnnotationCanvas({
         try {
           const smooth = useEditorSettings.getState().smoothImage;
           const mode = smooth ? "linear" : "nearest";
+          // Pixi v8 — `texture.source` is the canonical accessor.
+          // (The legacy `texture.baseTexture` alias still resolves but
+          // emits a deprecation warning each time.)
           const source = (tex as { source?: { scaleMode?: string } }).source;
           if (source) source.scaleMode = mode;
-          const baseTex = (tex as { baseTexture?: { scaleMode?: string } }).baseTexture;
-          if (baseTex) baseTex.scaleMode = mode;
         } catch {
           /* best-effort */
         }
@@ -628,7 +631,13 @@ export function AnnotationCanvas({
       }
       for (const entry of labelMap.values()) {
         try {
+          const c = entry.container as {
+            visible?: boolean;
+            destroy?: (opts: { children: boolean }) => void;
+          };
+          c.visible = false;
           app.shapeLayer.removeChild(entry.container as never);
+          c.destroy?.({ children: true });
         } catch {
           /* ignore */
         }
@@ -658,11 +667,10 @@ export function AnnotationCanvas({
       try {
         const layer = app.imageLayer as { children?: unknown[] };
         const sprite = layer.children?.[0] as
-          | { texture?: { source?: { scaleMode?: string }; baseTexture?: { scaleMode?: string } } }
+          | { texture?: { source?: { scaleMode?: string } } }
           | undefined;
         if (!sprite || !sprite.texture) return;
         if (sprite.texture.source) sprite.texture.source.scaleMode = mode;
-        if (sprite.texture.baseTexture) sprite.texture.baseTexture.scaleMode = mode;
       } catch {
         /* best-effort */
       }
@@ -1274,12 +1282,28 @@ export function AnnotationCanvas({
         seen.add(id);
       }
       // Remove labels for drafts that aren't visible / weren't seen.
+      // v3.24.15 — also hide-then-destroy the container so the next
+      // render frame can't redraw a stale chip. Just calling
+      // `removeChild` left Pixi v8's text-glyph cache and Graphics
+      // geometry alive long enough that, when many labels were
+      // removed at once (multi-select delete), the chips appeared to
+      // linger for ~1s before the GC pass. Belt-and-suspenders:
+      //   1) flip `visible = false` so the very next frame skips it
+      //   2) `removeChild` to detach from the scene graph
+      //   3) `destroy({ children: true })` to release the bg / text /
+      //      check sub-resources owned by the container
       for (const id of Array.from(labelMap.keys())) {
         if (!seenLabels.has(id)) {
           const entry = labelMap.get(id);
           if (entry) {
             try {
+              const c = entry.container as {
+                visible?: boolean;
+                destroy?: (opts: { children: boolean }) => void;
+              };
+              c.visible = false;
               app.shapeLayer.removeChild(entry.container as never);
+              c.destroy?.({ children: true });
             } catch {
               /* ignore */
             }
@@ -1438,8 +1462,14 @@ export function AnnotationCanvas({
     }
 
     void reconcile(useAnnotations.getState());
-    const unsubA = useAnnotations.subscribe((state) => {
-      void reconcile(state);
+    const unsubA = useAnnotations.subscribe(() => {
+      // v3.24.15 — read fresh state on each fire instead of using the
+      // snapshot Zustand passes to the listener. `reconcile` is async
+      // (awaits the Pixi import); if multiple state changes land in
+      // quick succession the closure'd snapshot can be older than
+      // what's on disk by the time the await resolves, causing
+      // already-removed labels to be re-rendered into shapeLayer.
+      void reconcile(useAnnotations.getState());
     });
     const unsubT = useTool.subscribe(() => {
       void reconcile(useAnnotations.getState());
@@ -2675,27 +2705,27 @@ export function AnnotationCanvas({
         }
         const drag = dragRef.current;
         if (drag) {
-          // Active drag — translate or resize the selected bbox, or move
-          // a polygon vertex (Phase A core 3). Pass the live image size so
-          // the geometry can never escape the image (v2.5.2). When the
-          // image hasn't loaded yet (size 1×1 sentinel from initial state)
-          // we still pass it — clamping a 1×1 bound just keeps everything
-          // sane until the texture lands.
-          const bounds = imageSize.w > 1 && imageSize.h > 1 ? imageSize : null;
+          // v3.24.13 — pass `null` for bounds during the live drag so
+          // the user can move/resize past the image edge in any
+          // direction. The final geometry is clipped to the image in
+          // the cursor-tool branch of the pointerup handler below
+          // (clampBboxToBounds / clampPolygonToBounds). Keeping the
+          // anti-inversion `MIN_BBOX_SIZE` clamp inside applyResize is
+          // still desirable; that's separate from bounds-clamping.
           if (drag.mode === "translate") {
             const next = applyTranslate(
               drag.original,
               p.x - drag.offset.x,
               p.y - drag.offset.y,
-              bounds,
+              null,
             );
             useAnnotations.getState().update(drag.id, { geometry: next });
           } else if (drag.mode === "resize") {
-            const next = applyResize(drag.original, drag.handle, p, bounds);
+            const next = applyResize(drag.original, drag.handle, p, null);
             useAnnotations.getState().update(drag.id, { geometry: next });
           } else {
             // mode === "vertex"
-            const next = applyVertexTranslate(drag.original, drag.index, p, bounds);
+            const next = applyVertexTranslate(drag.original, drag.index, p, null);
             useAnnotations.getState().update(drag.id, { geometry: next });
           }
           return;
@@ -2917,6 +2947,35 @@ export function AnnotationCanvas({
           return;
         }
         if (dragRef.current) {
+          // v3.24.13 — drag let the geometry travel past the image
+          // during the move (issue #2: edit handles in any direction;
+          // issue #3: free draw past frame). On release, snap the
+          // final geometry to the image bounds. Skip when bounds aren't
+          // known yet (texture not loaded) to keep behavior identical
+          // to the bound-agnostic fallback path.
+          const dragId = dragRef.current.id;
+          const bounds =
+            imageSize.w > 1 && imageSize.h > 1 ? imageSize : null;
+          if (bounds) {
+            const ann = useAnnotations.getState().byId[dragId];
+            if (ann) {
+              if (ann.geometry.kind === "bbox") {
+                const clamped = clampBboxToBounds(ann.geometry, bounds);
+                if (clamped) {
+                  useAnnotations
+                    .getState()
+                    .update(dragId, { geometry: clamped });
+                }
+              } else if (ann.geometry.kind === "polygon") {
+                const clamped = clampPolygonToBounds(ann.geometry, bounds);
+                if (clamped) {
+                  useAnnotations
+                    .getState()
+                    .update(dragId, { geometry: clamped });
+                }
+              }
+            }
+          }
           dragRef.current = null;
           setDragCursor(null);
           try {
@@ -3044,7 +3103,9 @@ export function AnnotationCanvas({
         if (ids.length > 0) {
           e.preventDefault();
           e.stopImmediatePropagation();
-          for (const id of ids) state.remove(id);
+          // v3.24.14 — single bulk delete; one history push + one
+          // re-render instead of N (last shape no longer "lingers").
+          state.removeMany(ids);
           return;
         }
       }

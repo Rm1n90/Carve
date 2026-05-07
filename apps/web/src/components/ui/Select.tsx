@@ -122,6 +122,9 @@ interface SelectItemProps {
   children: ReactNode;
   className?: string;
   "data-testid"?: string;
+  // v3.25 — Radix Select supports per-item disabling; pass-through.
+  disabled?: boolean;
+  title?: string;
 }
 
 const SelectItem = forwardRef<HTMLDivElement, SelectItemProps>(

@@ -1003,9 +1003,12 @@ const YoloPredictButton = forwardRef<
           disabled={disabled || isPredicting}
           className={cn(
             // DESIGN.md §4 — primary CTA carries the full PS hover signature.
-            // Predict button sits next to Save in the toolbar so it gets the
-            // same treatment, with a green resting fill.
-            "inline-flex h-8 items-center gap-1.5 px-3 rounded-[var(--radius-pill)]",
+            // v3.24.12 — `whitespace-nowrap shrink-0` keeps the label on one
+            // line and stops the pill being squished by the SAM controls
+            // when the SAM tool is active. The label collapses to icon-only
+            // below 1440px so the trio (My Model / Auto-Annotate / Smart
+            // Find) never wraps or runs into the right-side chrome.
+            "inline-flex h-8 shrink-0 items-center gap-1.5 px-3 rounded-[var(--radius-pill)] whitespace-nowrap",
             "bg-[var(--success)] text-white text-[12.5px] font-medium tracking-tight",
             "border border-[var(--success)]",
             "transition-all duration-[180ms] ease-out",
@@ -1021,7 +1024,9 @@ const YoloPredictButton = forwardRef<
           ) : (
             <Crosshair className="h-3.5 w-3.5" />
           )}
-          {isPredicting ? "Running…" : "My Model"}
+          <span className="hidden min-[1440px]:inline">
+            {isPredicting ? "Running…" : "My Model"}
+          </span>
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="min-w-[320px] p-2">
@@ -2803,6 +2808,7 @@ export function EditorToolbar({
       <FilterBuilderDialog
         open={filterDialogOpen}
         onOpenChange={setFilterDialogOpen}
+        classes={classesProp ?? []}
       />
 
       {!isNarrow && (

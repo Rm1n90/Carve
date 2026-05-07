@@ -746,14 +746,17 @@ export function YoloeDialog({
       type="button"
       data-testid="yoloe-open"
       title="Find anything by text, visual example, or just look"
+      aria-label="Smart Find"
       className={cn(
         // v3.24.5 — Smart Find pill matches the My Model (green) and
         // Auto-Annotate (blue) primary CTAs in shape (h-8 px-3, full
-        // hover signature) so the three buttons read as a coherent
-        // set. Purple distinguishes it as the "open / explore /
-        // anything" tool. Tones are violet-500 / violet-600 — sit
-        // well with the PS Blue accent without clashing.
-        "inline-flex h-8 items-center gap-1.5 px-3 rounded-[var(--radius-pill)]",
+        // hover signature). Purple distinguishes it as the "open /
+        // explore / anything" tool.
+        // v3.24.12 — whitespace-nowrap + shrink-0 + label-collapse
+        // mirrors the My Model and Auto-Annotate pills so the trio
+        // never wraps mid-pill when the SAM controls or narrow
+        // viewports squeeze the toolbar.
+        "inline-flex h-8 shrink-0 items-center gap-1.5 px-3 rounded-[var(--radius-pill)] whitespace-nowrap",
         "bg-[#8b5cf6] text-white text-[12.5px] font-medium tracking-[0.2px]",
         "border border-[#8b5cf6]",
         "transition-all duration-[180ms] ease-out",
@@ -763,7 +766,7 @@ export function YoloeDialog({
       )}
     >
       <ScanEye className="h-3.5 w-3.5" />
-      <span>Smart Find</span>
+      <span className="hidden min-[1440px]:inline">Smart Find</span>
     </button>
   );
 

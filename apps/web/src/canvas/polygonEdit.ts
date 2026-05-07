@@ -74,6 +74,29 @@ export function applyVertexTranslate(
 }
 
 /**
+ * Clip every polygon vertex into image bounds. Used by the cursor-tool
+ * drag-end handler and by the polygon draw tool's commit step so the
+ * user can drag past the image edge during interaction (v3.24.13) and
+ * the polygon snaps to the image only on release.
+ *
+ * Returns `null` when fewer than `POLY_MIN_VERTICES` survive the
+ * clamp (degenerate polygon — typically the user dragged the entire
+ * shape outside the image).
+ */
+export function clampPolygonToBounds(
+  poly: Polygon,
+  bounds: ImageBounds | null,
+): Polygon | null {
+  if (!bounds) return poly;
+  const next = poly.points.map(
+    ([x, y]) =>
+      [clamp(x, 0, bounds.w), clamp(y, 0, bounds.h)] as [number, number],
+  );
+  if (next.length < POLY_MIN_VERTICES) return null;
+  return { kind: "polygon", points: next };
+}
+
+/**
  * Tolerance (image-space pixels) for hit-testing a polygon edge. Mirrors
  * ``POLY_VERTEX_HIT_HALO`` so edge hits and vertex hits feel consistent.
  * Plan-09 Phase 5 Task 12.

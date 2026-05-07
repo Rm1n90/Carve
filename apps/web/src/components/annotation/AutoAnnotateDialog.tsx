@@ -313,10 +313,12 @@ export function AutoAnnotateDialog({
             data-testid="auto-annotate-trigger"
             disabled={!assetId}
             className={cn(
-              // DESIGN.md §4 — primary CTA pill: PS Blue at rest, full
-              // hover signature (cyan fill + white border + blue ring +
-              // 1.05× lift, 180ms ease).
-              "inline-flex h-8 items-center gap-1.5 px-3 rounded-[var(--radius-pill)]",
+              // DESIGN.md §4 — primary CTA pill: PS Blue at rest.
+              // v3.24.12 — whitespace-nowrap + shrink-0 + label-collapse
+              // mirrors the My Model and Smart Find pills so the three
+              // primary CTAs degrade together when the toolbar is tight
+              // (SAM controls active, narrow viewport).
+              "inline-flex h-8 shrink-0 items-center gap-1.5 px-3 rounded-[var(--radius-pill)] whitespace-nowrap",
               "bg-[var(--accent)] text-white text-[12.5px] font-medium tracking-[0.4px]",
               "border border-[var(--accent)]",
               "transition-all duration-[180ms] ease-out",
@@ -326,9 +328,10 @@ export function AutoAnnotateDialog({
               "disabled:bg-[var(--bg-subtle)] disabled:border-[var(--border-subtle)] disabled:text-[color:var(--text-tertiary)] disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none",
             )}
             title="Detect every project class that has a text description"
+            aria-label="Auto-Annotate"
           >
             <Wand2 className="h-3.5 w-3.5" />
-            Auto-Annotate
+            <span className="hidden min-[1440px]:inline">Auto-Annotate</span>
           </button>
         )}
       </DialogTrigger>

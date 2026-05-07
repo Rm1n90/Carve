@@ -109,6 +109,13 @@ interface State {
   add: (a: AnnotationDraft) => void;
   update: (id: string, patch: Partial<AnnotationDraft>) => void;
   remove: (id: string) => void;
+  /**
+   * v3.24.14 — bulk delete. Drops every annotation in `ids` in a
+   * single `set()` so multi-select delete only triggers one history
+   * push + one canvas re-render instead of N (which made the last
+   * shape appear to "linger" before being removed).
+   */
+  removeMany: (ids: string[]) => void;
   select: (id: string | null) => void;
   toggleSelect: (id: string) => void;
   selectMany: (ids: string[]) => void;
@@ -300,6 +307,35 @@ export const useAnnotations = create<State>((set, get) => ({
         pendingDeletes: cur.serverId
           ? [...s.pendingDeletes, cur.serverId]
           : s.pendingDeletes,
+        history: pushPast(s),
+        lastEditMeta: null,
+      };
+    }),
+  removeMany: (ids) =>
+    set((s) => {
+      if (ids.length === 0) return s;
+      const drop = new Set(ids);
+      const nextById: typeof s.byId = {};
+      const newPendingServerIds: string[] = [];
+      let removed = 0;
+      for (const [k, v] of Object.entries(s.byId)) {
+        if (drop.has(k)) {
+          if (v.serverId) newPendingServerIds.push(v.serverId);
+          removed++;
+          continue;
+        }
+        nextById[k] = v;
+      }
+      // Nothing actually matched — bail without churning history.
+      if (removed === 0) return s;
+      return {
+        byId: nextById,
+        selectedId: s.selectedId && drop.has(s.selectedId) ? null : s.selectedId,
+        selectedIds: s.selectedIds.filter((x) => !drop.has(x)),
+        pendingDeletes:
+          newPendingServerIds.length > 0
+            ? [...s.pendingDeletes, ...newPendingServerIds]
+            : s.pendingDeletes,
         history: pushPast(s),
         lastEditMeta: null,
       };

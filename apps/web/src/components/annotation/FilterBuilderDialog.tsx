@@ -47,9 +47,28 @@ const OP_OPTIONS: { value: FilterOp; label: string }[] = [
 
 const NUMERIC_FIELDS: ReadonlySet<FilterField> = new Set(["width", "height"]);
 
+/**
+ * v3.24.13 — annotation kinds known to the filter evaluator. Mirrors
+ * `getFieldValue` in `lib/annotation-filter.ts`. The dialog renders a
+ * Select with these values when the user picks the "Type" field so the
+ * value comes from a known set instead of free-form text.
+ */
+const KIND_OPTIONS: { value: string; label: string }[] = [
+  { value: "bbox", label: "Bbox" },
+  { value: "polygon", label: "Polygon" },
+  { value: "mask_rle", label: "Mask" },
+  { value: "tag", label: "Tag" },
+];
+
 interface FilterBuilderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * v3.24.13 — when provided, the "Label" field renders as a Select
+   * populated with these class names instead of a free-text input.
+   * Optional so older callers (and tests) still work without changes.
+   */
+  classes?: { id: string; name: string }[];
 }
 
 /**
@@ -186,12 +205,25 @@ interface RuleRowProps {
   path: number[];
   onChange: (path: number[], next: FilterRule) => void;
   onRemove: (path: number[]) => void;
+  /**
+   * v3.24.13 — list of project classes used to populate the "Label"
+   * value dropdown. When empty/undefined the row falls back to a
+   * free-text input.
+   */
+  labelOptions?: { value: string; label: string }[];
 }
 
-function RuleRow({ rule, path, onChange, onRemove }: RuleRowProps) {
+function RuleRow({ rule, path, onChange, onRemove, labelOptions }: RuleRowProps) {
   const isNumeric = NUMERIC_FIELDS.has(rule.field);
   const valueAsString =
     typeof rule.value === "number" ? String(rule.value) : (rule.value ?? "");
+  // v3.24.13 — categorical fields render a Select instead of a text
+  // input so the user picks from existing values rather than retyping
+  // them. `label` is gated on a non-empty `labelOptions` so the
+  // free-text fallback still works for callers (and tests) that don't
+  // pass classes.
+  const useLabelSelect = rule.field === "label" && (labelOptions?.length ?? 0) > 0;
+  const useKindSelect = rule.field === "kind";
 
   return (
     <div
@@ -260,22 +292,46 @@ function RuleRow({ rule, path, onChange, onRemove }: RuleRowProps) {
         </Select.Content>
       </Select>
 
-      <Input
-        aria-label="Value"
-        data-testid="filter-rule-value"
-        type={isNumeric ? "number" : "text"}
-        value={valueAsString}
-        placeholder={isNumeric ? "0" : "value"}
-        onChange={(e) => {
-          const v = e.target.value;
-          const next: FilterRule = {
-            ...rule,
-            value: isNumeric && v !== "" ? Number(v) : v,
-          };
-          onChange(path, next);
-        }}
-        className="h-7 flex-1 min-w-0 text-[12px]"
-      />
+      {useLabelSelect || useKindSelect ? (
+        <Select
+          value={typeof rule.value === "string" ? rule.value : ""}
+          onValueChange={(v) => onChange(path, { ...rule, value: v })}
+        >
+          <Select.Trigger
+            aria-label="Value"
+            data-testid="filter-rule-value"
+            className="h-7 flex-1 min-w-0 text-[12px]"
+          >
+            <Select.Value
+              placeholder={useLabelSelect ? "Pick a label" : "Pick a type"}
+            />
+          </Select.Trigger>
+          <Select.Content>
+            {(useLabelSelect ? labelOptions! : KIND_OPTIONS).map((o) => (
+              <Select.Item key={o.value} value={o.value}>
+                {o.label}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select>
+      ) : (
+        <Input
+          aria-label="Value"
+          data-testid="filter-rule-value"
+          type={isNumeric ? "number" : "text"}
+          value={valueAsString}
+          placeholder={isNumeric ? "0" : "value"}
+          onChange={(e) => {
+            const v = e.target.value;
+            const next: FilterRule = {
+              ...rule,
+              value: isNumeric && v !== "" ? Number(v) : v,
+            };
+            onChange(path, next);
+          }}
+          className="h-7 flex-1 min-w-0 text-[12px]"
+        />
+      )}
 
       <button
         type="button"
@@ -301,6 +357,11 @@ interface GroupSectionProps {
   onAppend: (path: number[], child: FilterRule | FilterGroup) => void;
   onRemove: (path: number[]) => void;
   onRuleChange: (path: number[], next: FilterRule) => void;
+  /**
+   * v3.24.13 — passed through to nested `RuleRow`s so the "Label"
+   * value field can render as a Select of project class names.
+   */
+  labelOptions?: { value: string; label: string }[];
 }
 
 function GroupSection({
@@ -311,6 +372,7 @@ function GroupSection({
   onAppend,
   onRemove,
   onRuleChange,
+  labelOptions,
 }: GroupSectionProps) {
   const isRoot = depth === 0;
   return (
@@ -381,6 +443,7 @@ function GroupSection({
                 onAppend={onAppend}
                 onRemove={onRemove}
                 onRuleChange={onRuleChange}
+                labelOptions={labelOptions}
               />
             );
           }
@@ -391,6 +454,7 @@ function GroupSection({
               path={childPath}
               onChange={onRuleChange}
               onRemove={onRemove}
+              labelOptions={labelOptions}
             />
           );
         })}
@@ -423,10 +487,22 @@ function GroupSection({
 export function FilterBuilderDialog({
   open,
   onOpenChange,
+  classes,
 }: FilterBuilderDialogProps) {
   const setFilter = useFilter((s) => s.setFilter);
   const clearFilter = useFilter((s) => s.clearFilter);
   const activeFilter = useFilter((s) => s.filter);
+
+  // v3.24.13 — derive the Label dropdown options from the project's
+  // class catalog. Sorted alphabetically for predictable scanning.
+  // Memoised so the underlying GroupSection / RuleRow trees don't
+  // re-render on unrelated state changes.
+  const labelOptions = useMemo(() => {
+    if (!classes || classes.length === 0) return undefined;
+    return [...classes]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((c) => ({ value: c.name, label: c.name }));
+  }, [classes]);
 
   const [tree, setTree] = useState<FilterGroup>(() => makeEmptyGroup());
   const [recent, setRecent] = useState<FilterGroup[]>(() => loadRecent());
@@ -554,6 +630,7 @@ export function FilterBuilderDialog({
             onAppend={handleAppend}
             onRemove={handleRemove}
             onRuleChange={handleRuleChange}
+            labelOptions={labelOptions}
           />
         </div>
 

@@ -119,7 +119,10 @@ describe("PolygonTool", () => {
       expect(g.points[2]).toEqual([80, 80]);
     });
 
-    it("clamps the rubber-band cursor preview", () => {
+    it("returns the raw cursor for the rubber-band preview (v3.24.13)", () => {
+      // v3.24.13 — the live preview now follows the raw cursor so the
+      // user can extend the polygon past the image edge. The clamp
+      // moved from onPointerMove to commit() (see test below).
       const tool = new PolygonTool(
         () => "c-1",
         () => null,
@@ -129,7 +132,31 @@ describe("PolygonTool", () => {
       tool.onPointerDown({ x: 10, y: 10 });
       const r = tool.onPointerMove({ x: 1000, y: -50 });
       expect(r).not.toBeNull();
-      expect(r?.cursor).toEqual({ x: 100, y: 0 });
+      expect(r?.cursor).toEqual({ x: 1000, y: -50 });
+    });
+
+    it("clamps every committed vertex to the image bounds on close (v3.24.13)", () => {
+      let n = 0;
+      const tool = new PolygonTool(
+        () => "c-1",
+        () => null,
+        () => `t-${++n}`,
+        () => ({ w: 100, h: 80 }),
+      );
+      // Place three vertices, two of which sit outside the 100x80
+      // image. Press Enter to commit. Each vertex must be clipped
+      // to the image rectangle.
+      tool.onPointerDown({ x: -50, y: -50 });
+      tool.onPointerDown({ x: 200, y: 40 });
+      tool.onPointerDown({ x: 50, y: 200 });
+      tool.onKeyDown("Enter");
+      const g = Object.values(useAnnotations.getState().byId)[0]
+        .geometry as { points: [number, number][] };
+      expect(g.points).toEqual([
+        [0, 0],
+        [100, 40],
+        [50, 80],
+      ]);
     });
 
     it("falls back to bound-agnostic behaviour when imageSize is null", () => {

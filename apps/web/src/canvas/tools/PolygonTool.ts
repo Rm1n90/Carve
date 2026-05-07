@@ -16,19 +16,6 @@ function clamp(value: number, lo: number, hi: number): number {
   return value;
 }
 
-/**
- * Clamp a point to image bounds. When `size` is null we leave the point
- * untouched (e.g. for tests that don't care, or before the image loads).
- * Mirrors the helper in BboxTool to keep the tools self-contained. v2.5.2.
- */
-function clampToImage(p: Point, size: ImageSize | null): Point {
-  if (!size) return p;
-  return {
-    x: clamp(p.x, 0, size.w),
-    y: clamp(p.y, 0, size.h),
-  };
-}
-
 export class PolygonTool {
   private vertices: Point[] = [];
   private cursor: Point | null = null;
@@ -57,18 +44,20 @@ export class PolygonTool {
   }
 
   onPointerDown(p: Point): { committed: boolean } {
-    const clamped = clampToImage(p, this.resolveImageSize());
+    // v3.24.13 — vertices are stored at the raw cursor so the user can
+    // drop points outside the image. Each vertex is clamped to the
+    // image boundary inside `commit()` on close.
     // Click on first vertex closes polygon when >= 3 vertices placed
     if (this.vertices.length >= 3) {
       const first = this.vertices[0];
-      const dx = clamped.x - first.x;
-      const dy = clamped.y - first.y;
+      const dx = p.x - first.x;
+      const dy = p.y - first.y;
       if (dx * dx + dy * dy <= CLOSE_RADIUS_PX * CLOSE_RADIUS_PX) {
         this.commit();
         return { committed: true };
       }
     }
-    this.vertices.push(clamped);
+    this.vertices.push(p);
     return { committed: false };
   }
 
@@ -83,16 +72,17 @@ export class PolygonTool {
     closeHint: boolean;
   } | null {
     if (this.vertices.length === 0) return null;
-    const clamped = clampToImage(p, this.resolveImageSize());
-    this.cursor = clamped;
+    // v3.24.13 — preview cursor follows raw input so the rubber-band
+    // segment can extend past the image edge during draw.
+    this.cursor = p;
     let closeHint = false;
     if (this.vertices.length >= 3) {
       const first = this.vertices[0];
-      const dx = clamped.x - first.x;
-      const dy = clamped.y - first.y;
+      const dx = p.x - first.x;
+      const dy = p.y - first.y;
       closeHint = dx * dx + dy * dy <= CLOSE_RADIUS_PX * CLOSE_RADIUS_PX;
     }
-    return { vertices: this.vertices, cursor: clamped, closeHint };
+    return { vertices: this.vertices, cursor: p, closeHint };
   }
 
   /** Most recent cursor position (used by the live preview). */
@@ -136,13 +126,24 @@ export class PolygonTool {
       this.cancel();
       return false;
     }
+    // v3.24.13 — clamp every vertex to the image boundary on commit. The
+    // draw itself ran on raw cursor positions so the user could place
+    // vertices outside the frame; on release the polygon snaps to the
+    // image edges so the persisted geometry stays inside.
+    const size = this.resolveImageSize();
+    const points = this.vertices.map(
+      (v) =>
+        size
+          ? ([clamp(v.x, 0, size.w), clamp(v.y, 0, size.h)] as [number, number])
+          : ([v.x, v.y] as [number, number]),
+    );
     useAnnotations.getState().add({
       tempId: this.generateTempId(),
       classId,
       kind: "polygon",
       geometry: {
         kind: "polygon",
-        points: this.vertices.map((v) => [v.x, v.y]),
+        points,
       },
       frameId: this.getFrameId(),
       serverId: null,

@@ -705,12 +705,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     saveNowRef.current();
   });
   useShortcutHandler("delete_annotation", () => {
+    // v3.24.14 — single bulk delete instead of N synchronous remove()
+    // calls. The old loop pushed one history entry per annotation and
+    // queued one re-render per dispatch, which made the last selected
+    // shape appear to "linger" for ~1s before being dropped.
     const ids = useAnnotations.getState().selectedIds;
-    if (ids.length > 0) {
-      for (const id of ids) {
-        useAnnotations.getState().remove(id);
-      }
-    }
+    if (ids.length === 0) return;
+    useAnnotations.getState().removeMany(ids);
   });
 
   // v3.20 -- customizable shortcuts. Every action below is editable in

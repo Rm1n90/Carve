@@ -805,12 +805,15 @@ export function ClassesPanel({
     });
     if (!ok) return;
     const store = useAnnotations.getState();
-    const targets = Object.values(store.byId).filter(
-      (a) => a.frameId === currentFrameId && a.classId === classId,
-    );
-    for (const t of targets) {
-      useAnnotations.getState().remove(t.tempId);
-    }
+    const ids = Object.values(store.byId)
+      .filter(
+        (a) => a.frameId === currentFrameId && a.classId === classId,
+      )
+      .map((a) => a.tempId);
+    // v3.24.14 — single bulk delete instead of N synchronous remove()
+    // calls. Avoids the "last shape lingers for ~1s" re-render cascade
+    // when clearing a heavily-populated class.
+    if (ids.length > 0) useAnnotations.getState().removeMany(ids);
   };
 
   const annotationsByClass = useMemo(() => {

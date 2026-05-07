@@ -193,3 +193,29 @@ export function pointInsideBbox(
     cursor.y <= b.y + b.h
   );
 }
+
+/**
+ * Clip a bbox to image bounds by intersecting its xyxy rect with
+ * `[0, bounds.w] x [0, bounds.h]`, then enforcing `MIN_BBOX_SIZE`. Used
+ * by the cursor-tool drag-end handler and by the bbox draw tool's
+ * commit step so the user can drag/resize past the image edge during
+ * interaction (v3.24.13) and the geometry snaps to the image only on
+ * release.
+ *
+ * Returns `null` when the rect is entirely outside the image (no
+ * geometry to commit). Otherwise returns a fresh bbox.
+ */
+export function clampBboxToBounds(
+  b: Bbox,
+  bounds: ImageBounds | null,
+): Bbox | null {
+  if (!bounds) return b;
+  const x1 = clamp(b.x, 0, bounds.w);
+  const y1 = clamp(b.y, 0, bounds.h);
+  const x2 = clamp(b.x + b.w, 0, bounds.w);
+  const y2 = clamp(b.y + b.h, 0, bounds.h);
+  const w = x2 - x1;
+  const h = y2 - y1;
+  if (w < MIN_BBOX_SIZE || h < MIN_BBOX_SIZE) return null;
+  return { kind: "bbox", x: x1, y: y1, w, h };
+}
