@@ -207,6 +207,33 @@ export class TrackTool {
     const startFrame = objs.length > 0
       ? Math.min(...objs.map((o) => o.seedFrame))
       : 0;
+    // v3.27.10 — drop every auto-committed seed-click draft for the
+    // tracked obj_ids before propagation re-creates them. Without this
+    // the user sees TWO polygons on the seed frame: one from the
+    // initial click's add_prompt response, one from the propagation
+    // stream's frame=seedFrame entry. The deterministic tempId
+    // ``track:{trackId}:{frameId}`` is supposed to dedupe via
+    // ``annotations.update``, but in practice the seed draft can land
+    // in byId under a different key once the save flow assigns a
+    // serverId, breaking the lookup. Sweep them up explicitly so the
+    // propagation's polygons land cleanly.
+    const annotations = useAnnotations.getState();
+    const trackIdsToWipe = new Set<string>();
+    for (const o of objs) {
+      const tid = bridge.trackIds.get(o.objId);
+      if (tid) trackIdsToWipe.add(tid);
+    }
+    if (trackIdsToWipe.size > 0) {
+      const drop: string[] = [];
+      for (const a of Object.values(annotations.byId)) {
+        if (a.trackId && trackIdsToWipe.has(a.trackId)) drop.push(a.tempId);
+      }
+      if (drop.length > 0) {
+        const removeMany = (annotations as { removeMany?: (ids: string[]) => void }).removeMany;
+        if (typeof removeMany === "function") removeMany(drop);
+        else for (const id of drop) annotations.remove?.(id);
+      }
+    }
     bridge.setStatus("running");
     bridge.setFramesPropagated(0);
     let processed = 0;
