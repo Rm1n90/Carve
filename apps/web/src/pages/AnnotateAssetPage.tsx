@@ -1260,7 +1260,21 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 >
                   <ClassesPanel
                     classes={classesQ.data ?? []}
-                    currentFrameId={frameId}
+                    // v3.27.7 — pass the LIVE active frame id (not the
+                    // asset's primary_frame_id from assetQ, which never
+                    // changes when the user navigates the timeline).
+                    // For image assets there is only one frame so the
+                    // primary frame id IS the active frame id.
+                    currentFrameId={
+                      isVideo
+                        ? ((framesQ.data ?? [])[
+                            Math.min(
+                              currentFrameIdx,
+                              (framesQ.data?.length ?? 1) - 1,
+                            )
+                          ]?.frame_id ?? frameId)
+                        : frameId
+                    }
                     onCreateClass={(name, color) => {
                       const list = classesQ.data ?? [];
                       const nextIdx = list.reduce(
