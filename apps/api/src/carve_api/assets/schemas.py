@@ -22,6 +22,10 @@ class AssetOut(BaseModel):
     # so the user can see how each image is classified without opening
     # the editor.
     tag_class_ids: list[str] = []
+    # v3.26 — true when the client should kick POST /frames/extract before
+    # the editor can open this asset. Always false for images and for
+    # videos that already have frames extracted.
+    extract_required: bool = False
 
     @classmethod
     def from_orm_asset(
@@ -36,6 +40,7 @@ class AssetOut(BaseModel):
             frames=a.frames, original_name=a.original_name, created_at=a.created_at,
             thumbnail_url=thumbnail_url,
             tag_class_ids=tag_class_ids or [],
+            extract_required=(a.kind == AssetKind.video and (a.frames or 0) == 0),
         )
 
 

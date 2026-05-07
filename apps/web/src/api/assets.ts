@@ -20,6 +20,9 @@ export interface Asset {
   /** Plan-18 — class ids of tag annotations on this asset. The grid
    *  renders these as small color dots on each thumbnail. */
   tag_class_ids?: string[];
+  /** v3.26 — true when the client should kick POST /frames/extract
+   *  before the editor can open this asset. Always false for images. */
+  extract_required?: boolean;
 }
 
 export interface AssetWithUrl {
