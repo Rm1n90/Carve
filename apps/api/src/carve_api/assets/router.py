@@ -331,19 +331,35 @@ def reextract_frames(
     if a.kind != AssetKind.video:
         raise HTTPException(status_code=422, detail="asset_not_video")
 
-    try:
-        import os as _os
+    import os as _os
 
-        import redis as _redis
-        from rq import Queue as _Queue
+    import redis as _redis
+    from rq import Queue as _Queue
 
-        from carve_api.jobs.frames import extract_frames_for_video
+    from carve_api.assets.extract_guard import check_extract_idempotency
+    from carve_api.jobs.frames import extract_frames_for_video
 
-        client = _redis.Redis(
-            host=_os.environ.get("REDIS_HOST", "redis"),
-            port=int(_os.environ.get("REDIS_PORT", "6379")),
-            decode_responses=True,
+    client = _redis.Redis(
+        host=_os.environ.get("REDIS_HOST", "redis"),
+        port=int(_os.environ.get("REDIS_PORT", "6379")),
+        decode_responses=True,
+    )
+
+    # v3.26 — idempotency. If a previous extract is still running, attach
+    # the caller to it (return 409 with the existing job_id) instead of
+    # racing a second worker against the same MinIO prefix. Stale markers
+    # (worker died) are cleared inside the helper.
+    existing_job_id = check_extract_idempotency(client, str(a.id))
+    if existing_job_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "extract_in_progress",
+                "job_id": existing_job_id,
+            },
         )
+
+    try:
         q = _Queue("default", connection=client)
         job = q.enqueue(
             extract_frames_for_video,
@@ -352,6 +368,8 @@ def reextract_frames(
             payload.n,
             payload.quality,
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=503, detail="enqueue_failed"
