@@ -14,11 +14,12 @@
  *    dialog and removes the entry on success.
  */
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, ChevronUp, Loader2, X, AlertTriangle } from "lucide-react";
 import { samApi } from "@/api/sam";
 import { inferenceApi } from "@/api/phase2";
 import { yoloeApi } from "@/api/yoloe";
+import { assetsApi } from "@/api/assets";
 import { showToast } from "@/lib/toast";
 import {
   useBackgroundJobs,
@@ -90,11 +91,18 @@ function usePollJob(job: BackgroundJob): PollResult {
         return () => inferenceApi.pollBatchProgress(job.taskId, job.jobId);
       case "yoloe-batch":
         return () => yoloeApi.pollBatch(job.taskId, job.jobId);
+      case "frame-extract":
+        // v3.26 — assetId is required for frame-extract. The dialog
+        // that registers the job always sets it; defensively skip the
+        // poll if it's somehow missing.
+        return job.assetId
+          ? () => assetsApi.frameExtractStatus(job.assetId!)
+          : async () => null;
       // Other kinds wire their own endpoint when they integrate.
       default:
         return async () => null;
     }
-  }, [job.kind, job.taskId, job.jobId]);
+  }, [job.kind, job.taskId, job.jobId, job.assetId]);
 
 
   const q = useQuery({
@@ -112,28 +120,66 @@ function usePollJob(job: BackgroundJob): PollResult {
   // For frontend-driven kinds, skip the HTTP-derived ``data`` and
   // read the progress the runner pushed to the store directly.
   const fePr = isFrontend ? job.progress : undefined;
+  const isExtract = job.kind === "frame-extract";
+  // v3.26 — frame-extract returns decoded/expected, not done/total.
+  // Map to done/total so the existing pct math stays consistent and
+  // also pass through phase/decoded/expected/uploaded for the bar
+  // and useAssetExtractStatus to read.
   const status = (
     isFrontend
       ? ((fePr?.status as Status) ?? "running")
       : ((data?.status as string) ?? "unknown")
   ) as Status;
-  const done = Number((isFrontend ? fePr?.done : data?.done) ?? 0);
-  const total = Number((isFrontend ? fePr?.total : data?.total) ?? 0);
+  const done = Number(
+    (isFrontend ? fePr?.done : isExtract ? data?.decoded : data?.done) ?? 0,
+  );
+  const total = Number(
+    (isFrontend ? fePr?.total : isExtract ? data?.expected : data?.total) ?? 0,
+  );
   const failed = Number((isFrontend ? fePr?.failed : data?.failed) ?? 0);
 
+  const qc = useQueryClient();
+
   useEffect(() => {
-    if (!isFrontend && data) {
+    if (isFrontend || !data) return;
+    if (isExtract) {
+      setProgress(job.jobId, {
+        status,
+        done,
+        total,
+        failed,
+        phase: data.phase as BackgroundJobProgress["phase"],
+        decoded: Number(data.decoded ?? 0),
+        expected: Number(data.expected ?? 0),
+        uploaded: Number(data.uploaded ?? 0),
+        message:
+          typeof data.message === "string" ? data.message : undefined,
+      });
+      // On terminal status, invalidate the asset-list and per-frame
+      // queries so the asset card unlocks and the editor can open.
+      if (status === "completed" || status === "failed") {
+        qc.invalidateQueries({ queryKey: ["task-assets", job.taskId] });
+        qc.invalidateQueries({ queryKey: ["task-assets-count", job.taskId] });
+        if (job.assetId) {
+          qc.invalidateQueries({ queryKey: ["frames", job.assetId] });
+        }
+      }
+    } else {
       setProgress(job.jobId, { status, done, total, failed });
     }
   }, [
     isFrontend,
+    isExtract,
     data,
     status,
     done,
     total,
     failed,
     setProgress,
+    qc,
     job.jobId,
+    job.taskId,
+    job.assetId,
   ]);
 
   return {
