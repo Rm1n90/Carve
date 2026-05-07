@@ -35,7 +35,7 @@ import { InfoDialog } from "@/components/annotation/InfoDialog";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
 import { ReviewPanel } from "@/components/annotation/ReviewPanel";
 import { AppearancePanel } from "@/components/annotation/AppearancePanel";
-import { SamTrackPanel } from "@/components/annotation/SamTrackPanel";
+import { TrackPanel } from "@/components/annotation/TrackPanel";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { SelectionCountBadge } from "@/components/annotation/SelectionCountBadge";
@@ -132,13 +132,12 @@ function SamTrackModeGate({
   if (activeTool !== "sam") return null;
   if (samMode !== "track") return null;
   return (
-    <SamTrackPanel
+    <TrackPanel
       assetId={assetId}
-      frameId={frameId}
       currentFrameIdx={currentFrameIdx}
       totalFrames={totalFrames}
-      frameIdxToFrameId={frameIdxToFrameId}
-      classes={classes}
+      frameIdxToFrameId={frameIdxToFrameId ?? {}}
+      classes={classes ?? []}
     />
   );
 }
