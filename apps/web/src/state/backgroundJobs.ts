@@ -46,6 +46,13 @@ export interface BackgroundJobProgress {
   total?: number;
   failed?: number;
   message?: string;
+  // v3.26 — frame-extract specifics. Optional so other kinds ignore them.
+  // The bar's frame-extract poller writes these via setProgress; readers
+  // for other job kinds (auto-annotate, retrain, etc.) safely skip them.
+  phase?: "decoding" | "uploading" | "done" | "idle";
+  decoded?: number;
+  expected?: number;
+  uploaded?: number;
 }
 
 export interface BackgroundJob {
@@ -54,6 +61,10 @@ export interface BackgroundJob {
   kind: BackgroundJobKind;
   label: string; // e.g. "SAM auto-annotate"
   startedAt: number;
+  // v3.26 — when set, the bar can match a job to a specific asset for
+  // per-card overlays in AssetGrid. Required for kind:"frame-extract";
+  // optional elsewhere.
+  assetId?: string;
   // Async cancel — the dialog supplies this when registering. Returns
   // when the server has acknowledged the cancel request (the worker
   // typically stops within ~1 asset). Errors are surfaced as a toast
