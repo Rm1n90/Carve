@@ -95,8 +95,17 @@ function usePollJob(job: BackgroundJob): PollResult {
         // v3.26 — assetId is required for frame-extract. The dialog
         // that registers the job always sets it; defensively skip the
         // poll if it's somehow missing.
+        //
+        // The frame-extract response shape differs from the batch-job
+        // shape (decoded/expected vs done/total). Cast to the lenient
+        // record so the queryFn's union return type stays compatible
+        // across kinds; per-shape mapping happens in the setProgress
+        // effect below.
         return job.assetId
-          ? () => assetsApi.frameExtractStatus(job.assetId!)
+          ? async () =>
+              (await assetsApi.frameExtractStatus(
+                job.assetId!,
+              )) as unknown as Record<string, unknown>
           : async () => null;
       // Other kinds wire their own endpoint when they integrate.
       default:
