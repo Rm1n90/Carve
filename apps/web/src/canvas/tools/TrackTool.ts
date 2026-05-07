@@ -20,7 +20,7 @@ export interface TextArgs {
   text: string;
 }
 
-const PREVIEW_WINDOW = 5;
+// (auto-preview removed; see clickAt for rationale)
 
 export class TrackTool {
   private previewAbort: AbortController | null = null;
@@ -96,7 +96,14 @@ export class TrackTool {
       this.assetId, sid, body, this.makePromptSignal(),
     );
     this.applyMasks(resp);
-    void this.firePreview(args.frameIdx);
+    // v3.27 — auto-preview removed. The native multiplex predictor's
+    // ``propagate_in_video_preflight`` raises an AssertionError when
+    // propagate is called twice in close succession (the second call's
+    // input frame indices disagree with the first call's consolidated
+    // ones). The notebook's intended workflow is: add prompts → run
+    // propagate ONCE on Run Full Track. The mask returned by add_prompt
+    // already renders on the canvas via applyMasks, so the user sees
+    // immediate feedback on the prompted frame without needing preview.
   }
 
   async dragBox(args: BoxArgs): Promise<void> {
@@ -121,7 +128,14 @@ export class TrackTool {
       box: args.box,
     }, this.makePromptSignal());
     this.applyMasks(resp);
-    void this.firePreview(args.frameIdx);
+    // v3.27 — auto-preview removed. The native multiplex predictor's
+    // ``propagate_in_video_preflight`` raises an AssertionError when
+    // propagate is called twice in close succession (the second call's
+    // input frame indices disagree with the first call's consolidated
+    // ones). The notebook's intended workflow is: add prompts → run
+    // propagate ONCE on Run Full Track. The mask returned by add_prompt
+    // already renders on the canvas via applyMasks, so the user sees
+    // immediate feedback on the prompted frame without needing preview.
   }
 
   async addText(args: TextArgs): Promise<void> {
@@ -141,7 +155,14 @@ export class TrackTool {
         });
       }
     }
-    void this.firePreview(args.frameIdx);
+    // v3.27 — auto-preview removed. The native multiplex predictor's
+    // ``propagate_in_video_preflight`` raises an AssertionError when
+    // propagate is called twice in close succession (the second call's
+    // input frame indices disagree with the first call's consolidated
+    // ones). The notebook's intended workflow is: add prompts → run
+    // propagate ONCE on Run Full Track. The mask returned by add_prompt
+    // already renders on the canvas via applyMasks, so the user sees
+    // immediate feedback on the prompted frame without needing preview.
   }
 
   async removeObject(objId: number): Promise<void> {
@@ -239,25 +260,6 @@ export class TrackTool {
     return ac.signal;
   }
 
-  private async firePreview(frameIdx: number): Promise<void> {
-    const sid = useTrackBridge.getState().sessionId;
-    const total = useTrackBridge.getState().totalFrames;
-    if (!sid) return;
-    useTrackBridge.getState().setStatus("previewing");
-    try {
-      const r = await trackApi.propagate(this.assetId, sid, {
-        start_frame: Math.max(0, frameIdx - PREVIEW_WINDOW),
-        end_frame: Math.min(total - 1, frameIdx + PREVIEW_WINDOW),
-      }, this.makePromptSignal());
-      for (const f of r.frames) this.applyMasks(f);
-    } catch {
-      // aborted by next click — fine
-    } finally {
-      if (useTrackBridge.getState().status === "previewing") {
-        useTrackBridge.getState().setStatus("seeding");
-      }
-    }
-  }
 }
 
 function nextFreeObjId(): number {

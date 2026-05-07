@@ -38,6 +38,22 @@ _LOCK = threading.Lock()
 _PREDICTOR: Any | None = None
 _TEST_PREDICTOR: Any | None = None
 _IDLE_TIMEOUT_S = 600.0  # 10 min
+_CUDA_DEVICE_INDEX: int | None = None  # set by _get_predictor when on cuda:N
+
+
+def _device_ctx():
+    """Per-call CUDA device pin so any FastAPI worker thread (or RQ worker)
+    runs upstream forward passes on the GPU the predictor weights live on,
+    not whatever the thread's default happened to be.
+
+    Returns a context manager — use as ``with _device_ctx(): ...``. When
+    we're on CPU / MPS / not yet built, returns a null context.
+    """
+    if _CUDA_DEVICE_INDEX is None:
+        from contextlib import nullcontext
+        return nullcontext()
+    import torch  # type: ignore[import-not-found]
+    return torch.cuda.device(_CUDA_DEVICE_INDEX)
 
 
 def _set_predictor_for_test(predictor: Any | None) -> None:
@@ -49,7 +65,7 @@ def _set_predictor_for_test(predictor: Any | None) -> None:
 def _get_predictor() -> Any:
     if _TEST_PREDICTOR is not None:
         return _TEST_PREDICTOR
-    global _PREDICTOR
+    global _PREDICTOR, _CUDA_DEVICE_INDEX
     if _PREDICTOR is None:
         # v3.27 fix — match the v3.25.3 device dance from predictor.py.
         # The native multiplex video predictor calls ``.cuda()`` /
@@ -84,6 +100,7 @@ def _get_predictor() -> Any:
 
                 idx = int(resolved.split(":", 1)[1])
                 torch.cuda.set_device(idx)
+                _CUDA_DEVICE_INDEX = idx
                 logger.info(
                     "track_session: pinned default CUDA device to %d "
                     "before building multiplex video predictor",
@@ -94,6 +111,13 @@ def _get_predictor() -> Any:
                     "track_session: could not set CUDA index from %s: %s",
                     resolved, exc,
                 )
+        elif resolved == "cuda":
+            try:
+                import torch  # type: ignore[import-not-found]
+
+                _CUDA_DEVICE_INDEX = torch.cuda.current_device()
+            except Exception:  # noqa: BLE001
+                pass
 
         from sam3.model_builder import (  # type: ignore[import-not-found]
             build_sam3_multiplex_video_predictor,
@@ -176,10 +200,11 @@ def open_session(
 ) -> TrackSession:
     frame_dir = ensure_cached(asset_hash=asset_hash, frame_urls=frame_urls)
     predictor = _get_predictor()
-    resp = predictor.handle_request({
-        "type": "start_session",
-        "resource_path": str(frame_dir),
-    })
+    with _device_ctx():
+        resp = predictor.handle_request({
+            "type": "start_session",
+            "resource_path": str(frame_dir),
+        })
     if not isinstance(resp, dict) or "session_id" not in resp:
         raise RuntimeError(
             f"start_session_unexpected_response: {resp!r}",
@@ -211,10 +236,11 @@ def close_session(session_id: str) -> bool:
     if sess is None:
         return False
     try:
-        _get_predictor().handle_request({
-            "type": "close_session",
-            "session_id": sess.native_session_id,
-        })
+        with _device_ctx():
+            _get_predictor().handle_request({
+                "type": "close_session",
+                "session_id": sess.native_session_id,
+            })
     except Exception as exc:  # noqa: BLE001
         logger.warning("close_session best-effort failed: %s", exc)
     return True
@@ -362,7 +388,8 @@ def add_prompt(
         else:
             request["box"] = rel
 
-    resp = _get_predictor().handle_request(request)
+    with _device_ctx():
+        resp = _get_predictor().handle_request(request)
     return _extract_masks(resp)
 
 
@@ -404,18 +431,19 @@ def propagate(
         request["max_frame_num_to_track"] = max(
             1, int(end_frame) - int(start_frame) + 1,
         )
-    stream = _get_predictor().handle_stream_request(request)
-    out: list[dict] = []
-    for resp in stream:
-        f = int(resp.get("frame_index", 0))
-        if start_frame is not None and f < start_frame:
-            continue
-        if end_frame is not None and f > end_frame:
-            break
-        out.append({
-            "frame_idx": f,
-            "masks": _extract_masks(resp),
-        })
+    with _device_ctx():
+        stream = _get_predictor().handle_stream_request(request)
+        out: list[dict] = []
+        for resp in stream:
+            f = int(resp.get("frame_index", 0))
+            if start_frame is not None and f < start_frame:
+                continue
+            if end_frame is not None and f > end_frame:
+                break
+            out.append({
+                "frame_idx": f,
+                "masks": _extract_masks(resp),
+            })
     return out
 
 
@@ -426,11 +454,12 @@ def remove_object(session_id: str, *, obj_id: int) -> None:
     sess = get_session(session_id)
     if sess is None:
         raise LookupError("session_not_found")
-    _get_predictor().handle_request({
-        "type": "remove_object",
-        "session_id": sess.native_session_id,
-        "obj_id": int(obj_id),
-    })
+    with _device_ctx():
+        _get_predictor().handle_request({
+            "type": "remove_object",
+            "session_id": sess.native_session_id,
+            "obj_id": int(obj_id),
+        })
     sess.obj_classes.pop(obj_id, None)
 
 
@@ -438,8 +467,9 @@ def reset_prompts(session_id: str) -> None:
     sess = get_session(session_id)
     if sess is None:
         raise LookupError("session_not_found")
-    _get_predictor().handle_request({
-        "type": "reset_session",
-        "session_id": sess.native_session_id,
-    })
+    with _device_ctx():
+        _get_predictor().handle_request({
+            "type": "reset_session",
+            "session_id": sess.native_session_id,
+        })
     sess.obj_classes.clear()
