@@ -51,11 +51,67 @@ def _get_predictor() -> Any:
         return _TEST_PREDICTOR
     global _PREDICTOR
     if _PREDICTOR is None:
+        # v3.27 fix — match the v3.25.3 device dance from predictor.py.
+        # The native multiplex video predictor calls ``.cuda()`` /
+        # ``device="cuda"`` internally with no per-instance device kwarg.
+        # If the SAM image predictor lives on cuda:1 (operator preference)
+        # and the multiplex predictor lands on cuda:0, the shared
+        # ``vl_combiner.forward_image`` path mismatches devices and a
+        # convolution raises ``RuntimeError: Expected all tensors to be
+        # on the same device, but found at least two devices, cuda:0
+        # and cuda:1!`` (surfaced as ``sam_model_failed`` to the UI).
+        #
+        # Resolve the SAM preference (same source as the image predictor),
+        # call ``torch.cuda.set_device(N)`` so all subsequent ``.cuda()``
+        # calls land on the right index, then build the predictor.
+        try:
+            from carve_model import device_prefs
+            from carve_model.devices import (
+                MIN_FREE_MB_DEFAULTS,
+                resolve_device,
+            )
+
+            pref = device_prefs.get_pref("sam")
+            resolved = resolve_device(
+                pref, min_free_mb=MIN_FREE_MB_DEFAULTS["sam"]
+            ).device
+        except Exception:  # noqa: BLE001
+            resolved = None
+
+        if isinstance(resolved, str) and resolved.startswith("cuda:"):
+            try:
+                import torch  # type: ignore[import-not-found]
+
+                idx = int(resolved.split(":", 1)[1])
+                torch.cuda.set_device(idx)
+                logger.info(
+                    "track_session: pinned default CUDA device to %d "
+                    "before building multiplex video predictor",
+                    idx,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "track_session: could not set CUDA index from %s: %s",
+                    resolved, exc,
+                )
+
         from sam3.model_builder import (  # type: ignore[import-not-found]
             build_sam3_multiplex_video_predictor,
         )
         _PREDICTOR = build_sam3_multiplex_video_predictor()
     return _PREDICTOR
+
+
+def _force_rebuild_predictor() -> None:
+    """v3.27 — drop the cached multiplex video predictor.
+
+    Called by /devices/sam/reload so the operator's new device preference
+    takes effect on the NEXT track session. The current predictor's GPU
+    memory is released by the next ``torch.cuda.empty_cache()`` after the
+    reference is dropped.
+    """
+    global _PREDICTOR
+    _PREDICTOR = None
 
 
 def open_session(
