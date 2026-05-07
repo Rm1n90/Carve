@@ -99,6 +99,51 @@ def _get_predictor() -> Any:
             build_sam3_multiplex_video_predictor,
         )
         _PREDICTOR = build_sam3_multiplex_video_predictor()
+
+        # v3.27 fix — upstream sam3 base predictor's ``start_session``
+        # always passes ``offload_state_to_cpu`` to ``model.init_state``,
+        # but the multiplex tracking model's ``init_state`` only accepts
+        # ``offload_video_to_cpu`` (and a few other kwargs). The mismatch
+        # raises ``TypeError: ... got an unexpected keyword argument
+        # 'offload_state_to_cpu'`` on every start_session call (surfaced
+        # as ``sam_model_failed`` to the UI).
+        #
+        # Wrap ``model.init_state`` so it accepts but silently ignores any
+        # kwargs the underlying signature doesn't actually take. The
+        # filtered call still receives the kwargs the multiplex model does
+        # accept (resource_path, offload_video_to_cpu, async_loading_frames,
+        # use_torchcodec, use_cv2, input_is_mp4).
+        try:
+            import inspect
+
+            _model = getattr(_PREDICTOR, "model", None)
+            _orig_init_state = getattr(_model, "init_state", None) if _model else None
+            if _orig_init_state is not None:
+                _accepted = set(
+                    inspect.signature(_orig_init_state).parameters.keys()
+                )
+
+                def _safe_init_state(*args, **kwargs):
+                    filtered = {k: v for k, v in kwargs.items() if k in _accepted}
+                    dropped = set(kwargs) - set(filtered)
+                    if dropped:
+                        logger.debug(
+                            "track_session: dropped unsupported init_state "
+                            "kwargs %s (multiplex model only accepts %s)",
+                            sorted(dropped), sorted(_accepted),
+                        )
+                    return _orig_init_state(*args, **filtered)
+
+                _model.init_state = _safe_init_state  # type: ignore[assignment]
+                logger.info(
+                    "track_session: wrapped multiplex model.init_state to "
+                    "filter unsupported kwargs from base start_session",
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "track_session: could not patch init_state kwargs filter: %s",
+                exc,
+            )
     return _PREDICTOR
 
 
