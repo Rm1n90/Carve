@@ -64,31 +64,38 @@ export class TrackTool {
     const isRefine = hitId !== null;
     const label = args.alt ? 0 : 1;
 
+    // v3.27 fix — native SAM 3.1 multiplex requires obj_id to be EXPLICIT
+    // for point/box prompts (only text auto-allocates per detection).
+    // Omitting obj_id raised:
+    //   AssertionError: When points are provided, obj_id must be provided.
+    // Allocate the next free id client-side BEFORE the request so the
+    // response masks land in the right bridge slot.
+    let targetObjId: number;
+    if (isRefine) {
+      targetObjId = hitId!;
+    } else {
+      const classId = this.getActiveClassId();
+      if (classId === null) throw new Error("track_tool_no_active_class");
+      targetObjId = nextFreeObjId();
+      useTrackBridge.getState().registerObject({
+        objId: targetObjId,
+        classId,
+        seedFrame: args.frameIdx,
+        seedKind: "click",
+      });
+    }
+
     const body: PromptIn = {
       frame_idx: args.frameIdx,
+      obj_id: targetObjId,
       points: [[args.x, args.y]],
       labels: [label],
     };
-    if (isRefine) body.obj_id = hitId!;
 
     const resp = await trackApi.prompt(
       this.assetId, sid, body, this.makePromptSignal(),
     );
     this.applyMasks(resp);
-
-    if (!isRefine) {
-      const classId = this.getActiveClassId();
-      if (classId === null) {
-        throw new Error("track_tool_no_active_class");
-      }
-      const newId = inferNewObjId(resp);
-      if (newId !== null) {
-        useTrackBridge.getState().registerObject({
-          objId: newId, classId, seedFrame: args.frameIdx, seedKind: "click",
-        });
-      }
-    }
-
     void this.firePreview(args.frameIdx);
   }
 
@@ -97,16 +104,23 @@ export class TrackTool {
     const sid = useTrackBridge.getState().sessionId!;
     const classId = this.getActiveClassId();
     if (classId === null) throw new Error("track_tool_no_active_class");
+
+    // Boxes always seed a new object (don't refine). Allocate id +
+    // register BEFORE the request so the mask lands in the right slot.
+    const targetObjId = nextFreeObjId();
+    useTrackBridge.getState().registerObject({
+      objId: targetObjId,
+      classId,
+      seedFrame: args.frameIdx,
+      seedKind: "box",
+    });
+
     const resp = await trackApi.prompt(this.assetId, sid, {
-      frame_idx: args.frameIdx, box: args.box,
+      frame_idx: args.frameIdx,
+      obj_id: targetObjId,
+      box: args.box,
     }, this.makePromptSignal());
     this.applyMasks(resp);
-    const newId = inferNewObjId(resp);
-    if (newId !== null) {
-      useTrackBridge.getState().registerObject({
-        objId: newId, classId, seedFrame: args.frameIdx, seedKind: "box",
-      });
-    }
     void this.firePreview(args.frameIdx);
   }
 
@@ -246,12 +260,13 @@ export class TrackTool {
   }
 }
 
-function inferNewObjId(resp: FrameMasks): number | null {
-  const ids = Object.keys(resp.masks).map(Number).filter(Number.isFinite);
-  if (ids.length === 0) return null;
+function nextFreeObjId(): number {
+  // Native SAM 3.1 multiplex caps obj_id at 256 (server-side). Pick the
+  // smallest positive integer not yet registered in the bridge so removed
+  // ids can be reused, and refines never collide with seeds.
   const known = useTrackBridge.getState().objects;
-  for (const id of ids) {
-    if (!known.has(id)) return id;
+  for (let i = 1; i <= 256; i++) {
+    if (!known.has(i)) return i;
   }
-  return null;
+  throw new Error("track_tool_obj_id_exhausted");
 }
