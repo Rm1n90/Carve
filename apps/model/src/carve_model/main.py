@@ -9,6 +9,7 @@ from carve_model.gpu import get_device
 from carve_model.sam.predictor import evict_predictor_if_idle
 from carve_model.sam.router import router as sam_router
 from carve_model.sam.track_router import router as sam_track_router
+from carve_model.sam.track_router_v2 import router as track_router_v2
 from carve_model.sam.tracker import evict_idle_sessions
 from carve_model.yolo.router import router as yolo_router
 from carve_model.yoloe.registry import REGISTRY as _YOLOE_REGISTRY
@@ -293,6 +294,7 @@ def create_app() -> FastAPI:
     app.include_router(yoloe_router)
     app.include_router(sam_router)
     app.include_router(sam_track_router)
+    app.include_router(track_router_v2)
     # v3.25 — central device manager (probe + per-model preference +
     # validated SAM reload).
     app.include_router(devices_router)
