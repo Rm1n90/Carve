@@ -6,6 +6,7 @@ import type { ClassRow } from "@/api/classes";
 import { TrackTool } from "@/canvas/tools/TrackTool";
 import { useTool } from "@/state/tool";
 import { useTrackBridge } from "@/state/trackBridge";
+import { useSamTrackBridge } from "@/state/samTrackBridge";
 import { showToast } from "@/lib/toast";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
@@ -19,7 +20,7 @@ interface TrackPanelProps {
 }
 
 export function TrackPanel({
-  assetId, currentFrameIdx, totalFrames, classes,
+  assetId, currentFrameIdx, totalFrames, classes, frameIdxToFrameId,
 }: TrackPanelProps) {
   const activeClassId = useTool((s) => s.activeClassId);
   const setActiveClassId = useTool((s) => s.setActiveClassId);
@@ -30,16 +31,63 @@ export function TrackPanel({
   const [textValue, setTextValue] = useState("");
   const [running, setRunning] = useState(false);
 
+  // Live ref to the latest frame-idx → frame-id map so the tool's mask
+  // commits always look up against the current map (the prop reference
+  // changes when the frames query refetches).
+  const frameMapRef = useRef(frameIdxToFrameId);
+  frameMapRef.current = frameIdxToFrameId;
+  const currentFrameIdxRef = useRef(currentFrameIdx);
+  currentFrameIdxRef.current = currentFrameIdx;
+
   const toolRef = useRef<TrackTool | null>(null);
   if (toolRef.current === null) {
     toolRef.current = new TrackTool(
-      assetId, () => useTool.getState().activeClassId,
+      assetId,
+      () => useTool.getState().activeClassId,
+      (frameIdx) => frameMapRef.current[frameIdx] ?? null,
     );
   }
 
   useEffect(() => {
     return () => {
       void toolRef.current?.closeSession();
+    };
+  }, []);
+
+  // v3.27 — register the canvas → TrackTool dispatch via samTrackBridge.
+  // AnnotationCanvas reads onCanvasClick / onCanvasBox from this bridge in
+  // pointerup. The handlers translate pixel coords + altKey into TrackTool
+  // method calls. The "alt" arg comes from the canvas pointerup event.
+  useEffect(() => {
+    const bridge = useSamTrackBridge.getState();
+    bridge.setHandler((point, alt) => {
+      const tool = toolRef.current;
+      if (!tool) return;
+      void tool.clickAt({
+        frameIdx: currentFrameIdxRef.current,
+        x: point[0],
+        y: point[1],
+        alt: alt ?? false,
+      }).catch((err) => {
+        showToast(`Track click failed: ${(err as Error).message}`, {
+          variant: "error",
+        });
+      });
+    });
+    bridge.setBoxHandler((box) => {
+      const tool = toolRef.current;
+      if (!tool) return;
+      void tool.dragBox({
+        frameIdx: currentFrameIdxRef.current,
+        box,
+      }).catch((err) => {
+        showToast(`Track box failed: ${(err as Error).message}`, {
+          variant: "error",
+        });
+      });
+    });
+    return () => {
+      useSamTrackBridge.getState().clear();
     };
   }, []);
 

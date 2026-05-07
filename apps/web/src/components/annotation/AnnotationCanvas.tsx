@@ -2831,7 +2831,9 @@ export function AnnotationCanvas({
           const handler = useSamTrackBridge.getState().onCanvasClick;
           if (handler) {
             try {
-              handler([clamped.x, clamped.y]);
+              // v3.27 — pass altKey so Track-mode handlers can route
+              // Alt-click as a NEGATIVE point prompt (label=0).
+              handler([clamped.x, clamped.y], e.altKey);
             } catch {
               /* handler errors surface as toasts in the panel */
             }

@@ -33,7 +33,13 @@ export interface SamTrackMarker {
   y: number;
 }
 
-export type SamTrackClickHandler = (point: [number, number]) => void;
+// v3.27 — second arg ``alt`` carries the AltKey modifier from the canvas
+// pointerup event so handlers can route Alt-click to a NEGATIVE point
+// prompt (label=0). Optional for backward compat with legacy registrants.
+export type SamTrackClickHandler = (
+  point: [number, number],
+  alt?: boolean,
+) => void;
 /** v3.8 Phase 4-video step F7 — bbox seed in track mode. The canvas
  * publishes the drag rectangle (image-space xyxy) and the panel calls
  * ``addObjectAtFrame`` with ``boxes=[[x1,y1,x2,y2]]`` and empty points. */

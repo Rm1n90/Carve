@@ -28,6 +28,12 @@ export class TrackTool {
   constructor(
     private assetId: string,
     private getActiveClassId: () => string | null,
+    /** v3.27 — maps a SAM 3.1 frame_idx to the DB Frame row's id so masks
+     *  arriving from add_prompt / propagate can be auto-committed as
+     *  annotation drafts. Returning ``null`` means "frame_id unknown" —
+     *  the mask is still kept in bridge.masksByFrame but no annotation
+     *  is upserted (the draft would be unanchored). */
+    private getFrameId: (frameIdx: number) => string | null = () => null,
   ) {}
 
   isActive(): boolean {
@@ -171,7 +177,45 @@ export class TrackTool {
   }
 
   private applyMasks(resp: FrameMasks): void {
-    useTrackBridge.getState().mergeMasks(resp.frame_idx, resp.masks);
+    const bridge = useTrackBridge.getState();
+    bridge.mergeMasks(resp.frame_idx, resp.masks);
+
+    // v3.27 — auto-commit each obj_id's mask as an annotation draft so
+    // the canvas renders the segmentation immediately after a click /
+    // box / text prompt. The deterministic tempId
+    // ``track:{trackId}:{frameId}`` makes re-running the same prompt
+    // idempotent (overwrites the prior draft for the same obj_id+frame).
+    const frameId = this.getFrameId(resp.frame_idx);
+    if (!frameId) return;
+    const annotations = useAnnotations.getState();
+    for (const [k, mask] of Object.entries(resp.masks)) {
+      const objId = Number(k);
+      if (!Number.isFinite(objId)) continue;
+      const obj = bridge.objects.get(objId);
+      const trackId = bridge.trackIds.get(objId);
+      if (!obj || !trackId) continue;
+      if (!mask.polygon || mask.polygon.length < 3) continue;
+      const tempId = `track:${trackId}:${frameId}`;
+      const existing = annotations.byId[tempId];
+      if (existing) {
+        // Refining an existing obj_id's mask — patch geometry.
+        annotations.update?.(tempId, {
+          geometry: { kind: "polygon", points: mask.polygon },
+          dirty: true,
+        });
+      } else {
+        annotations.add?.({
+          tempId,
+          classId: obj.classId,
+          kind: "polygon",
+          geometry: { kind: "polygon", points: mask.polygon },
+          frameId,
+          serverId: null,
+          dirty: true,
+          trackId,
+        });
+      }
+    }
   }
 
   private makePromptSignal(): AbortSignal {
