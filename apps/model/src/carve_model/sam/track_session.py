@@ -486,7 +486,26 @@ def propagate(
             1, int(end_frame) - int(start_frame) + 1,
         )
     with _device_ctx():
-        stream = _get_predictor().handle_stream_request(request)
+        predictor = _get_predictor()
+        # v3.27.3 — same cache-gate as add_prompt: ``_build_sam2_output``
+        # returns ``{}`` when ``cached_frame_outputs[frame_idx]`` is
+        # missing, dropping every propagated mask. The detector path
+        # populates the cache as a side-effect; the SAM2 propagation
+        # path does NOT — so without pre-seeding, only the prompt frame
+        # ever yields a mask. Seed every frame in the session to ``{}``
+        # so the merge branch fires for each propagated frame.
+        try:
+            inf_state = predictor._all_inference_states[
+                sess.native_session_id
+            ]["state"]
+            inf_state.setdefault("cached_frame_outputs", {})
+            for i in range(int(sess.frame_count)):
+                inf_state["cached_frame_outputs"].setdefault(i, {})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "track_session.propagate: cache preseed skipped: %s", exc,
+            )
+        stream = predictor.handle_stream_request(request)
         out: list[dict] = []
         for resp in stream:
             f = int(resp.get("frame_index", 0))
@@ -498,6 +517,18 @@ def propagate(
                 "frame_idx": f,
                 "masks": _extract_masks(resp),
             })
+    # v3.27.3 diagnostic — log per-window mask coverage so we can see
+    # whether the upstream tracker is producing masks for this chunk.
+    if out:
+        with_masks = sum(1 for f in out if f["masks"])
+        # WARNING level so the diagnostic surfaces past the default
+        # uvicorn root WARNING threshold without re-tuning logging config.
+        logger.warning(
+            "track_session.propagate sid=%s start=%s end=%s yielded=%d "
+            "with_masks=%d first_obj_ids=%s",
+            session_id, start_frame, end_frame, len(out), with_masks,
+            list(out[0]["masks"].keys()) if out[0]["masks"] else [],
+        )
     return out
 
 

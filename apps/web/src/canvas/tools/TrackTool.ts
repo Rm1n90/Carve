@@ -172,22 +172,42 @@ export class TrackTool {
     useTrackBridge.getState().removeObject(objId);
   }
 
+  /** v3.27.3 — single propagate call, then iterate the response. The
+   *  native multiplex predictor's ``propagate_in_video`` only runs SAM2
+   *  propagation once per session call and emits all frames; chunking
+   *  the call window kills propagation past the first chunk because
+   *  upstream falls back to "fetch existing VG predictions" (empty for
+   *  point/box prompts). The progress bar therefore jumps from 0 to
+   *  100% — that's a UX cost we accept for correctness. */
   async runFullTrack(): Promise<void> {
     const sid = useTrackBridge.getState().sessionId;
     if (!sid) throw new Error("track_tool_no_session");
-    useTrackBridge.getState().setStatus("running");
-    let cursor = 0;
-    while (true) {
-      const r = await trackApi.propagate(
-        this.assetId, sid, { start_frame: cursor },
-      );
-      if (r.frames.length === 0) break;
-      for (const f of r.frames) {
-        this.applyMasks(f);
-        cursor = f.frame_idx + 1;
-      }
-      useTrackBridge.getState().setFramesPropagated(cursor);
+    const bridge = useTrackBridge.getState();
+    const total = bridge.totalFrames ?? 0;
+    // The native multiplex predictor needs ``start_frame_index`` to
+    // locate prompts in tracker_metadata for point/box obj_ids; without
+    // it, propagation raises "No prompts are received on any frames".
+    // Use the earliest seed frame across all registered objects.
+    const objs = Array.from(bridge.objects.values());
+    const startFrame = objs.length > 0
+      ? Math.min(...objs.map((o) => o.seedFrame))
+      : 0;
+    bridge.setStatus("running");
+    bridge.setFramesPropagated(0);
+    const r = await trackApi.propagate(this.assetId, sid, {
+      start_frame: startFrame,
+    });
+    let committed = 0;
+    for (const f of r.frames) {
+      if (Object.keys(f.masks ?? {}).length > 0) committed += 1;
+      this.applyMasks(f);
     }
+    useTrackBridge.getState().setFramesPropagated(r.frames.length);
+    // eslint-disable-next-line no-console
+    console.debug(
+      `[track] runFullTrack: ${committed}/${r.frames.length} frames had masks`
+      + (total ? ` (asset has ${total} frames)` : ""),
+    );
     useTrackBridge.getState().setStatus("done");
   }
 

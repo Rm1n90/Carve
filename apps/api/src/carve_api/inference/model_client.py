@@ -470,7 +470,19 @@ def track_propagate(
     sid: str, start_frame: int | None, end_frame: int | None,
 ) -> dict:
     body = {"start_frame": start_frame, "end_frame": end_frame}
-    with _wrap_unreachable("track_propagate"), _client() as c:
+    # v3.27.3 — propagation is the only track call that runs SAM2
+    # over the entire video and serializes 100s of mask polygons.
+    # On a 446-frame clip it takes ~90s of compute plus 5–15s of JSON
+    # serialization; the default 120s client timeout truncates with a
+    # ReadTimeout that the api translates into a 503. Override the
+    # timeout for this single call so a full-video sweep can land.
+    s = get_settings()
+    timeout = max(float(s.model_timeout_seconds), 600.0)
+    with _wrap_unreachable("track_propagate"), httpx.Client(
+        base_url=s.model_base_url,
+        timeout=timeout,
+        transport=_TEST_TRANSPORT,
+    ) as c:
         r = c.post(f"/track/sessions/{sid}/propagate", json=body)
         if r.status_code >= 400:
             raise ModelServiceError(r.status_code, _safe_json(r))
