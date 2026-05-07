@@ -2386,7 +2386,11 @@ export function AnnotationCanvas({
         // 2. No drag intent → fall through to selection (existing behaviour).
         const hit = hitTest(p);
         if (hit) {
-          if (e.shiftKey) {
+          // v3.27.11 — Cmd/Ctrl-click is the macOS / Windows convention
+          // for "extend selection". Treat the same as Shift+click so the
+          // user can build up a multi-selection without learning a
+          // canvas-only modifier.
+          if (e.shiftKey || e.metaKey || e.ctrlKey) {
             useAnnotations.getState().toggleSelect(hit);
           } else {
             useAnnotations.getState().select(hit);

@@ -167,9 +167,18 @@ function AnnotationRow({
   const Icon = KIND_ICON[ann.kind] ?? Square;
   const setHover = useTool((s) => s.setHoveredAnnotationId);
   const select = useAnnotations((s) => s.select);
+  const toggleSelect = useAnnotations((s) => s.toggleSelect);
   const remove = useAnnotations((s) => s.remove);
   const setHiddenAnn = useAnnotations((s) => s.setHiddenForAnnotation);
-  const confirm = useConfirm();
+  // v3.27.11 — Shift/Cmd/Ctrl-click extend the selection (toggle in/out
+  // of the selectedIds set) just like the canvas pointerdown handler
+  // does. Plain click still replaces the selection. Without this, the
+  // expansion list was a single-select-only surface — users couldn't
+  // build a multi-selection from the right rail.
+  const handleSelect = (e: React.MouseEvent | React.KeyboardEvent) => {
+    if (e.shiftKey || e.metaKey || e.ctrlKey) toggleSelect(ann.tempId);
+    else select(ann.tempId);
+  };
 
   return (
     // v2.9 P1-18 — keyboard parity with mouse-click selection.
@@ -183,13 +192,13 @@ function AnnotationRow({
       onMouseLeave={() => setHover(null)}
       onClick={(e) => {
         e.stopPropagation();
-        select(ann.tempId);
+        handleSelect(e);
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           e.stopPropagation();
-          select(ann.tempId);
+          handleSelect(e);
         }
       }}
       className={cn(

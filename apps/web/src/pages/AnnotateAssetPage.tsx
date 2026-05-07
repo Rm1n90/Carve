@@ -1049,7 +1049,22 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 classNameMap={classNameMap}
                 classes={classesQ.data ?? []}
               />
-              <SelectionCountBadge />
+              <SelectionCountBadge
+                // v3.27.11 — pass the LIVE active frame id so the badge
+                // can split a multi-selection into "here" vs "elsewhere"
+                // when the user has built it across frames. Mirrors the
+                // expression used by <ClassesPanel currentFrameId>.
+                frameId={
+                  isVideo
+                    ? ((framesQ.data ?? [])[
+                        Math.min(
+                          currentFrameIdx,
+                          (framesQ.data?.length ?? 1) - 1,
+                        )
+                      ]?.frame_id ?? frameId)
+                    : frameId
+                }
+              />
               {/* v3.8 Phase 4-video step E — extraction-status overlay
                   for video assets that don't have per-frame JPEGs yet.
                   Replaces the misleading "Failed to load image" overlay
