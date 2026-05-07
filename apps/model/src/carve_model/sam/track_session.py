@@ -198,6 +198,25 @@ def open_session(
     image_size: tuple[int, int],
     asset_hash: str,
 ) -> TrackSession:
+    # v3.27.4 — single-session policy. The SAM 3.1 multiplex inference
+    # state grows to ~10 GB per asset (446-frame clip) once SAM2
+    # propagation has run; on a single 24 GB GPU two concurrent
+    # sessions reliably trip
+    #   torch.OutOfMemoryError: CUDA out of memory.
+    # Evict every prior session before starting a new one and ask the
+    # CUDA allocator to release fragmented blocks back to the driver
+    # so the new session has a clean budget.
+    with _LOCK:
+        prior = list(_SESSIONS.keys())
+    for sid in prior:
+        close_session(sid)
+    if prior:
+        try:
+            import torch  # type: ignore[import-not-found]
+            torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
+
     frame_dir = ensure_cached(asset_hash=asset_hash, frame_urls=frame_urls)
     predictor = _get_predictor()
     with _device_ctx():
