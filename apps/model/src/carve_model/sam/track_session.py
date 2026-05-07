@@ -119,3 +119,123 @@ def evict_idle_sessions() -> list[str]:
                 _SESSIONS.pop(sid, None)
                 evicted.append(sid)
     return evicted
+
+
+# ---- T3: add_prompt -------------------------------------------------------
+import numpy as np
+
+
+def _abs_to_rel_points(
+    points: list[tuple[float, float]], image_size: tuple[int, int],
+) -> list[list[float]]:
+    h, w = image_size
+    if h <= 0 or w <= 0:
+        raise RuntimeError(f"invalid_image_size: {image_size}")
+    return [[float(x) / float(w), float(y) / float(h)] for x, y in points]
+
+
+def _abs_to_rel_box(
+    box: tuple[float, float, float, float], image_size: tuple[int, int],
+) -> list[float]:
+    h, w = image_size
+    x1, y1, x2, y2 = box
+    return [
+        float(x1) / float(w),
+        float(y1) / float(h),
+        float(x2) / float(w),
+        float(y2) / float(h),
+    ]
+
+
+def _torch_available() -> bool:
+    try:
+        import torch  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _extract_masks(resp: Any) -> dict[int, np.ndarray]:
+    """Pull ``{obj_id: mask}`` out of a native multiplex response.
+
+    Native shape: ``{outputs: {<obj_id>: {"mask": tensor|ndarray, ...}}}``.
+    """
+    if not isinstance(resp, dict):
+        return {}
+    outputs = resp.get("outputs") or {}
+    if not isinstance(outputs, dict):
+        return {}
+    masks: dict[int, np.ndarray] = {}
+    for k, v in outputs.items():
+        if not isinstance(v, dict):
+            continue
+        m = v.get("mask")
+        if m is None:
+            continue
+        if hasattr(m, "cpu"):
+            arr = m.cpu()
+            if hasattr(arr, "dtype") and "float" in str(arr.dtype):
+                arr = arr.float()
+            arr = arr.numpy()
+        else:
+            arr = np.asarray(m)
+        masks[int(k)] = arr
+    return masks
+
+
+def add_prompt(
+    session_id: str,
+    *,
+    frame_idx: int,
+    obj_id: int | None = None,
+    text: str | None = None,
+    points: list[tuple[float, float]] | None = None,
+    labels: list[int] | None = None,
+    box: tuple[float, float, float, float] | None = None,
+) -> dict[int, np.ndarray]:
+    """Add a prompt to a session and return masks for the prompted frame."""
+    sess = get_session(session_id)
+    if sess is None:
+        raise LookupError("session_not_found")
+
+    has_text = bool(text)
+    has_points = bool(points)
+    has_box = box is not None
+
+    n_modes = sum([has_text, has_points, has_box])
+    if n_modes == 0:
+        raise ValueError("prompt_required")
+    if n_modes > 1:
+        raise ValueError("exclusive_prompt_modes")
+
+    request: dict[str, Any] = {
+        "type": "add_prompt",
+        "session_id": sess.native_session_id,
+        "frame_index": int(frame_idx),
+    }
+    if obj_id is not None:
+        request["obj_id"] = int(obj_id)
+
+    if has_text:
+        request["text"] = str(text)
+    elif has_points:
+        rel = _abs_to_rel_points(points or [], sess.image_size)
+        if _torch_available():
+            import torch  # type: ignore[import-not-found]
+            request["points"] = torch.tensor(rel, dtype=torch.float32)
+            request["point_labels"] = torch.tensor(
+                [int(label) for label in (labels or [])], dtype=torch.int32,
+            )
+        else:
+            request["points"] = rel
+            request["point_labels"] = [int(label) for label in (labels or [])]
+    elif has_box:
+        rel = _abs_to_rel_box(box, sess.image_size)
+        if _torch_available():
+            import torch  # type: ignore[import-not-found]
+            request["box"] = torch.tensor(rel, dtype=torch.float32)
+        else:
+            request["box"] = rel
+
+    resp = _get_predictor().handle_request(request)
+    return _extract_masks(resp)
