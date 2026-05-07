@@ -285,17 +285,23 @@ def _abs_to_rel_points(
     return [[float(x) / float(w), float(y) / float(h)] for x, y in points]
 
 
-def _abs_to_rel_box(
+def _abs_xyxy_to_rel_xywh(
     box: tuple[float, float, float, float], image_size: tuple[int, int],
 ) -> list[float]:
+    """Convert canvas xyxy (px) → SAM 3.1's expected xywh (relative).
+
+    The notebook's ``abs_to_rel_coords(..., coord_type="box")`` helper
+    uses ``[x, y, w, h]`` — the multiplex predictor's ``boxes_xywh``
+    parameter expects exactly this. We receive xyxy from the canvas;
+    convert here.
+    """
     h, w = image_size
     x1, y1, x2, y2 = box
-    return [
-        float(x1) / float(w),
-        float(y1) / float(h),
-        float(x2) / float(w),
-        float(y2) / float(h),
-    ]
+    bx = min(float(x1), float(x2))
+    by = min(float(y1), float(y2))
+    bw = abs(float(x2) - float(x1))
+    bh = abs(float(y2) - float(y1))
+    return [bx / float(w), by / float(h), bw / float(w), bh / float(h)]
 
 
 def _torch_available() -> bool:
@@ -381,12 +387,24 @@ def add_prompt(
             request["points"] = rel
             request["point_labels"] = [int(label) for label in (labels or [])]
     elif has_box:
-        rel = _abs_to_rel_box(box, sess.image_size)
+        # The base predictor's handle_request reads ``bounding_boxes`` /
+        # ``bounding_box_labels`` and forwards as ``boxes_xywh`` /
+        # ``box_labels`` to the multiplex model. Format must be xywh
+        # (relative), not xyxy.
+        rel_xywh = _abs_xyxy_to_rel_xywh(box, sess.image_size)
         if _torch_available():
             import torch  # type: ignore[import-not-found]
-            request["box"] = torch.tensor(rel, dtype=torch.float32)
+            # Single positive box per call. Shape: (1, 4) for the box,
+            # (1,) for labels=1.
+            request["bounding_boxes"] = torch.tensor(
+                [rel_xywh], dtype=torch.float32,
+            )
+            request["bounding_box_labels"] = torch.tensor(
+                [1], dtype=torch.int32,
+            )
         else:
-            request["box"] = rel
+            request["bounding_boxes"] = [rel_xywh]
+            request["bounding_box_labels"] = [1]
 
     with _device_ctx():
         resp = _get_predictor().handle_request(request)
