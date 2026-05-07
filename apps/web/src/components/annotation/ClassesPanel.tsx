@@ -816,15 +816,21 @@ export function ClassesPanel({
     if (ids.length > 0) useAnnotations.getState().removeMany(ids);
   };
 
+  // v3.27.7 — class-row expansion now lists only the annotations whose
+  // frameId matches the active frame so the user sees a "what's drawn on
+  // THIS frame" view instead of a flat dump of every polygon across the
+  // whole video. For image assets there's only one frame_id (the asset's
+  // primary frame), so this is a no-op — filtering keeps every entry.
   const annotationsByClass = useMemo(() => {
     const m: Record<string, { tempId: string; kind: keyof typeof KIND_ICON }[]> = {};
     for (const a of Object.values(byId)) {
+      if (currentFrameId != null && a.frameId !== currentFrameId) continue;
       const list = m[a.classId] ?? [];
       list.push({ tempId: a.tempId, kind: a.kind as keyof typeof KIND_ICON });
       m[a.classId] = list;
     }
     return m;
-  }, [byId]);
+  }, [byId, currentFrameId]);
 
   useEffect(() => {
     if (!hoveredAnnotationId) return;
