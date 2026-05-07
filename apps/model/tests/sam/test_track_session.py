@@ -154,3 +154,81 @@ def test_add_prompt_point_and_box_raises(tmp_path):
 def test_add_prompt_session_not_found():
     with pytest.raises(LookupError, match="session_not_found"):
         ts.add_prompt("nope", frame_idx=0, text="cat")
+
+
+# ---- T4: propagate --------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_propagate_streams_per_frame_masks(tmp_path):
+    fake = MagicMock()
+    sess = _open_session_with_fake_predictor(tmp_path, fake)
+
+    def _stream(_request):
+        for f in (0, 1, 2):
+            yield {
+                "frame_index": f,
+                "outputs": {1: {"mask": np.ones((10, 10), dtype=bool)}},
+            }
+    fake.handle_stream_request.side_effect = _stream
+
+    chunk = ts.propagate(sess.session_id)
+    assert [f["frame_idx"] for f in chunk] == [0, 1, 2]
+    assert all(set(f["masks"].keys()) == {1} for f in chunk)
+
+
+@pytest.mark.unit
+def test_propagate_respects_start_and_end_frame(tmp_path):
+    fake = MagicMock()
+    sess = _open_session_with_fake_predictor(tmp_path, fake)
+
+    def _stream(_request):
+        for f in range(10):
+            yield {
+                "frame_index": f,
+                "outputs": {1: {"mask": np.ones((4, 4), dtype=bool)}},
+            }
+    fake.handle_stream_request.side_effect = _stream
+
+    chunk = ts.propagate(sess.session_id, start_frame=3, end_frame=5)
+    assert [f["frame_idx"] for f in chunk] == [3, 4, 5]
+
+
+@pytest.mark.unit
+def test_propagate_session_not_found():
+    with pytest.raises(LookupError, match="session_not_found"):
+        ts.propagate("nope")
+
+
+# ---- T5: remove_object + reset_prompts ------------------------------------
+
+
+@pytest.mark.unit
+def test_remove_object_calls_predictor(tmp_path):
+    fake = MagicMock()
+    sess = _open_session_with_fake_predictor(tmp_path, fake)
+
+    ts.remove_object(sess.session_id, obj_id=2)
+    fake.handle_request.assert_any_call({
+        "type": "remove_object",
+        "session_id": "native-sid",
+        "obj_id": 2,
+    })
+
+
+@pytest.mark.unit
+def test_reset_prompts_calls_predictor(tmp_path):
+    fake = MagicMock()
+    sess = _open_session_with_fake_predictor(tmp_path, fake)
+
+    ts.reset_prompts(sess.session_id)
+    fake.handle_request.assert_any_call({
+        "type": "reset_session",
+        "session_id": "native-sid",
+    })
+
+
+@pytest.mark.unit
+def test_remove_object_session_not_found():
+    with pytest.raises(LookupError, match="session_not_found"):
+        ts.remove_object("nope", obj_id=1)

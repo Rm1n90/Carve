@@ -239,3 +239,66 @@ def add_prompt(
 
     resp = _get_predictor().handle_request(request)
     return _extract_masks(resp)
+
+
+# ---- T4: propagate --------------------------------------------------------
+
+
+def propagate(
+    session_id: str,
+    *,
+    start_frame: int | None = None,
+    end_frame: int | None = None,
+) -> list[dict]:
+    """Run propagation and return frames in ``[start_frame, end_frame]``.
+
+    Returns ``[{"frame_idx": int, "masks": {obj_id: mask}}, ...]``. The
+    server-side filter is post-fetch (the native API streams everything;
+    we slice). For chunked clients use ``start_frame=last+1`` until the
+    response is empty.
+    """
+    sess = get_session(session_id)
+    if sess is None:
+        raise LookupError("session_not_found")
+    stream = _get_predictor().handle_stream_request({
+        "type": "propagate_in_video",
+        "session_id": sess.native_session_id,
+    })
+    out: list[dict] = []
+    for resp in stream:
+        f = int(resp.get("frame_index", 0))
+        if start_frame is not None and f < start_frame:
+            continue
+        if end_frame is not None and f > end_frame:
+            break
+        out.append({
+            "frame_idx": f,
+            "masks": _extract_masks(resp),
+        })
+    return out
+
+
+# ---- T5: remove_object + reset_prompts ------------------------------------
+
+
+def remove_object(session_id: str, *, obj_id: int) -> None:
+    sess = get_session(session_id)
+    if sess is None:
+        raise LookupError("session_not_found")
+    _get_predictor().handle_request({
+        "type": "remove_object",
+        "session_id": sess.native_session_id,
+        "obj_id": int(obj_id),
+    })
+    sess.obj_classes.pop(obj_id, None)
+
+
+def reset_prompts(session_id: str) -> None:
+    sess = get_session(session_id)
+    if sess is None:
+        raise LookupError("session_not_found")
+    _get_predictor().handle_request({
+        "type": "reset_session",
+        "session_id": sess.native_session_id,
+    })
+    sess.obj_classes.clear()
