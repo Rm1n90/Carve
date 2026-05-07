@@ -315,28 +315,39 @@ def _torch_available() -> bool:
 def _extract_masks(resp: Any) -> dict[int, np.ndarray]:
     """Pull ``{obj_id: mask}`` out of a native multiplex response.
 
-    Native shape: ``{outputs: {<obj_id>: {"mask": tensor|ndarray, ...}}}``.
+    Native multiplex ``add_prompt`` / ``propagate_in_video`` returns
+    ``{"frame_index": int, "outputs": {...}}`` where ``outputs`` is the
+    dict produced by ``_postprocess_output``:
+
+        {
+          "out_obj_ids":     np.ndarray int64    shape (N,)
+          "out_probs":       np.ndarray float32  shape (N,)
+          "out_boxes_xywh":  np.ndarray float32  shape (N, 4)
+          "out_binary_masks":np.ndarray bool     shape (N, H, W)
+          "frame_stats":     ...
+        }
+
+    Zip ``out_obj_ids[i]`` with ``out_binary_masks[i]`` to produce the
+    ``{obj_id: 2D bool mask}`` dict the rest of the system expects.
     """
     if not isinstance(resp, dict):
         return {}
-    outputs = resp.get("outputs") or {}
+    outputs = resp.get("outputs")
     if not isinstance(outputs, dict):
         return {}
+    obj_ids = outputs.get("out_obj_ids")
+    binary_masks = outputs.get("out_binary_masks")
+    if obj_ids is None or binary_masks is None:
+        return {}
+    obj_ids = np.asarray(obj_ids)
+    binary_masks = np.asarray(binary_masks)
+    if obj_ids.size == 0 or binary_masks.size == 0:
+        return {}
+    if obj_ids.shape[0] != binary_masks.shape[0]:
+        return {}
     masks: dict[int, np.ndarray] = {}
-    for k, v in outputs.items():
-        if not isinstance(v, dict):
-            continue
-        m = v.get("mask")
-        if m is None:
-            continue
-        if hasattr(m, "cpu"):
-            arr = m.cpu()
-            if hasattr(arr, "dtype") and "float" in str(arr.dtype):
-                arr = arr.float()
-            arr = arr.numpy()
-        else:
-            arr = np.asarray(m)
-        masks[int(k)] = arr
+    for i, oid in enumerate(obj_ids.tolist()):
+        masks[int(oid)] = np.asarray(binary_masks[i], dtype=bool)
     return masks
 
 
@@ -407,7 +418,32 @@ def add_prompt(
             request["bounding_box_labels"] = [1]
 
     with _device_ctx():
-        resp = _get_predictor().handle_request(request)
+        predictor = _get_predictor()
+        # SAM 3.1 multiplex gate: ``_build_sam2_output`` returns ``{}``
+        # whenever ``inference_state["cached_frame_outputs"][frame_idx]``
+        # is missing. The detector path (text/box) seeds the cache as a
+        # side-effect; the point path does not. Point prompts on a fresh
+        # frame therefore silently return zero masks even though
+        # ``add_sam2_new_points`` produced a valid mask. Pre-seeding the
+        # cache to ``{}`` makes ``_build_sam2_output`` enter the merge
+        # branch and return ``{obj_id: new_mask_data}``.
+        # Box prompts route through the SAM3 detector branch which seeds
+        # the cache itself, so we only preseed for point prompts.
+        if has_points:
+            try:
+                inf_state = predictor._all_inference_states[
+                    sess.native_session_id
+                ]["state"]
+                inf_state.setdefault("cached_frame_outputs", {})
+                inf_state["cached_frame_outputs"].setdefault(
+                    int(frame_idx), {},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "track_session: cached_frame_outputs preseed skipped: %s",
+                    exc,
+                )
+        resp = predictor.handle_request(request)
     return _extract_masks(resp)
 
 
