@@ -116,6 +116,10 @@ interface State {
    * shape appear to "linger" before being removed).
    */
   removeMany: (ids: string[]) => void;
+  /** v3.27 — wipe all annotations whose ``trackId`` is in the given list.
+   *  Used by the SAM 3.1 Track Discard flow to undo a tracking session
+   *  in one shot without iterating individual ids. */
+  removeManyByTrackIds: (trackIds: string[]) => void;
   select: (id: string | null) => void;
   toggleSelect: (id: string) => void;
   selectMany: (ids: string[]) => void;
@@ -332,6 +336,37 @@ export const useAnnotations = create<State>((set, get) => ({
         byId: nextById,
         selectedId: s.selectedId && drop.has(s.selectedId) ? null : s.selectedId,
         selectedIds: s.selectedIds.filter((x) => !drop.has(x)),
+        pendingDeletes:
+          newPendingServerIds.length > 0
+            ? [...s.pendingDeletes, ...newPendingServerIds]
+            : s.pendingDeletes,
+        history: pushPast(s),
+        lastEditMeta: null,
+      };
+    }),
+  removeManyByTrackIds: (trackIds) =>
+    set((s) => {
+      if (trackIds.length === 0) return s;
+      const drop = new Set(trackIds);
+      const nextById: typeof s.byId = {};
+      const newPendingServerIds: string[] = [];
+      let removed = 0;
+      const removedKeys = new Set<string>();
+      for (const [k, v] of Object.entries(s.byId)) {
+        if (v.trackId && drop.has(v.trackId)) {
+          if (v.serverId) newPendingServerIds.push(v.serverId);
+          removed++;
+          removedKeys.add(k);
+          continue;
+        }
+        nextById[k] = v;
+      }
+      if (removed === 0) return s;
+      return {
+        byId: nextById,
+        selectedId:
+          s.selectedId && removedKeys.has(s.selectedId) ? null : s.selectedId,
+        selectedIds: s.selectedIds.filter((x) => !removedKeys.has(x)),
         pendingDeletes:
           newPendingServerIds.length > 0
             ? [...s.pendingDeletes, ...newPendingServerIds]
