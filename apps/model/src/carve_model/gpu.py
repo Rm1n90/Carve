@@ -1,34 +1,18 @@
-"""GPU detection helpers for the model service.
+"""Backward-compat shim for ``carve_model.gpu``.
 
-We import torch lazily inside each function so the module is importable on a
-CPU-only dev box where torch is not installed. ``get_device()`` falls back to
-"cpu" cleanly when CUDA (or torch itself) is unavailable.
+The real device-detection logic now lives in ``carve_model.devices``
+(v3.25) — that module probes CUDA + MPS + CPU, reports per-device
+memory, and resolves a user preference into a validated device id.
+
+We re-export the legacy three names so older import sites keep
+working while the codebase migrates. New code should import from
+``carve_model.devices`` directly to access ``probe_devices``,
+``resolve_device``, ``DeviceInfo``, etc.
 """
 
-from typing import Literal
+from carve_model.devices import (
+    get_device,  # noqa: F401 — re-exported for backward compat
+    has_cuda,  # noqa: F401
+    vram_free_mb,  # noqa: F401
+)
 
-DeviceName = Literal["cuda:0", "cpu"]
-
-
-def get_device() -> DeviceName:
-    try:
-        import torch  # type: ignore[import-not-found]
-    except ImportError:
-        return "cpu"
-    return "cuda:0" if torch.cuda.is_available() else "cpu"
-
-
-def vram_free_mb() -> int:
-    """Free VRAM in MiB on the active CUDA device, or 0 when no CUDA."""
-    try:
-        import torch  # type: ignore[import-not-found]
-    except ImportError:
-        return 0
-    if not torch.cuda.is_available():
-        return 0
-    free, _total = torch.cuda.mem_get_info()
-    return int(free // (1024 * 1024))
-
-
-def has_cuda() -> bool:
-    return get_device() == "cuda:0"

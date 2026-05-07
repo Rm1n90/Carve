@@ -34,8 +34,21 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from carve_model import device_prefs
+from carve_model.devices import MIN_FREE_MB_DEFAULTS, resolve_device
 from carve_model.yolo.predict import predict_image
 from carve_model.yolo.registry import REGISTRY
+
+
+def _resolve_yolo_device() -> str:
+    """Resolve YOLO inference device from preference + live probe.
+
+    Returns a concrete device id; falls back transparently when the
+    preferred device is missing or OOM (explanation surfaces via
+    ``/devices/status``).
+    """
+    pref = device_prefs.get_pref("yolo")
+    return resolve_device(pref, min_free_mb=MIN_FREE_MB_DEFAULTS["yolo"]).device
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +154,7 @@ def predict(payload: PredictIn) -> dict:
         conf=payload.conf,
         iou=payload.iou,
         half=half,
+        device=_resolve_yolo_device(),
     )
 
 

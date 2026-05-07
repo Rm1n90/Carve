@@ -21,4 +21,7 @@ def test_capabilities_reports_models_and_device() -> None:
     assert r.status_code == 200
     body = r.json()
     assert "yolo" in body["models"]
-    assert body["device"] in ("cpu", "cuda:0")
+    # v3.25 — resolver returns the highest-free CUDA device on multi-GPU
+    # hosts (or "mps"/"cpu" elsewhere). Accept any well-formed device id.
+    dev = body["device"]
+    assert dev == "cpu" or dev == "mps" or dev.startswith("cuda:"), dev

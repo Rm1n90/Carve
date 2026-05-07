@@ -77,6 +77,12 @@ def create_app() -> FastAPI:
     from carve_api.inference.router import router as inference_router
     app.include_router(inference_router)
 
+    # v3.25 — central compute device manager (CUDA + MPS + CPU). Proxies
+    # the model service's /devices/* routes so the editor can switch
+    # SAM/YOLO/YOLOE between devices with smart-fallback feedback.
+    from carve_api.devices.router import router as devices_router
+    app.include_router(devices_router)
+
     from carve_api.inference.router import task_inference_router
     app.include_router(task_inference_router)
 

@@ -220,6 +220,11 @@ services:
       # avoids baking ~150 MB into the image. Read-only so the runtime
       # can't accidentally mutate the operator-supplied weights.
       - ./weights/yoloe:/app/weights/yoloe:ro
+      # v3.25.1 — device-preference persistence. The model service
+      # writes /app/state/device_prefs.json on every preference change
+      # so per-model device picks (sam/yolo/yoloe) survive container
+      # rebuilds. Read-write so the service can update the file.
+      - ./state:/app/state
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health').read()"]
       interval: 10s

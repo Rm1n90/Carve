@@ -22,16 +22,27 @@ def predict_image(
     conf: float = 0.25,
     iou: float = 0.7,
     half: bool = True,
+    device: str | None = None,
 ) -> dict:
     """Run YOLO predict on a single image.
 
     v3.7.5 — ``half=True`` enables FP16 inference on CUDA (typically ~2x
-    faster). Ultralytics auto-falls-back to FP32 on CPU, so the default
-    is safe for both deployment shapes. Callers can pass ``half=False``
-    to force FP32 (e.g. when comparing accuracy against an FP32 baseline).
+    faster). Ultralytics auto-falls-back to FP32 on CPU.
+    v3.25 — ``device`` is forwarded to ``model.predict`` when set so the
+    central device manager can route inference. ``None`` keeps Ultralytics'
+    default (the model's loaded device). FP16 is silently turned off when
+    running on CPU or MPS — half precision only matters on CUDA and the
+    Ultralytics warning would otherwise leak through to the user.
     """
     img = np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
-    results = model.predict(img, conf=conf, iou=iou, half=half, verbose=False)[0]
+    kwargs: dict[str, Any] = {"conf": conf, "iou": iou, "verbose": False}
+    if device and not device.startswith("cuda"):
+        kwargs["half"] = False
+    else:
+        kwargs["half"] = half
+    if device:
+        kwargs["device"] = device
+    results = model.predict(img, **kwargs)[0]
 
     detections: list[dict] = []
     polygons: list[dict] = []

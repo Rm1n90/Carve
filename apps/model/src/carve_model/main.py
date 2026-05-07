@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from carve_model.devices_router import router as devices_router
 from carve_model.gpu import get_device
 from carve_model.sam.predictor import evict_predictor_if_idle
 from carve_model.sam.router import router as sam_router
@@ -292,6 +293,9 @@ def create_app() -> FastAPI:
     app.include_router(yoloe_router)
     app.include_router(sam_router)
     app.include_router(sam_track_router)
+    # v3.25 — central device manager (probe + per-model preference +
+    # validated SAM reload).
+    app.include_router(devices_router)
     return app
 
 

@@ -94,28 +94,29 @@ def predict_text(
     *,
     conf: float = 0.25,
     iou: float = 0.7,
+    device: str | None = None,
 ) -> dict:
     """Run YOLOE in text-prompt mode.
 
     ``classes`` is the user-supplied vocabulary (e.g. ``["person", "bus"]``).
     Empty / whitespace-only entries are dropped before ``set_classes``.
+    ``device`` (v3.25) is forwarded to ``model.predict`` when set so the
+    central device manager can route inference to a chosen device. ``None``
+    keeps Ultralytics' default (the model's loaded device).
     """
     cleaned = [c.strip() for c in classes if isinstance(c, str) and c.strip()]
     if not cleaned:
         raise ValueError("classes_empty")
     img = _bytes_to_rgb(image_bytes)
-    # v3.23.3 — defensive: Ultralytics' YOLOE.set_classes does
-    # ``sorted(list(self.model.names.values()))`` to compare current
-    # vs requested vocab. After a previous set_classes that very same
-    # ``self.model.names`` may have been overwritten as a list, which
-    # makes ``.values()`` raise AttributeError on the next call. Coerce
-    # to a dict here so the second-and-later calls always succeed.
     inner = getattr(model, "model", None)
     inner_names = getattr(inner, "names", None) if inner is not None else None
     if inner is not None and isinstance(inner_names, (list, tuple)):
         inner.names = {i: str(n) for i, n in enumerate(inner_names)}
     model.set_classes(cleaned)
-    results = model.predict(img, conf=conf, iou=iou, verbose=False)[0]
+    kwargs: dict[str, Any] = {"conf": conf, "iou": iou, "verbose": False}
+    if device:
+        kwargs["device"] = device
+    results = model.predict(img, **kwargs)[0]
     return _shape_results(results)
 
 
@@ -145,6 +146,7 @@ def predict_visual(
     *,
     conf: float = 0.25,
     iou: float = 0.7,
+    device: str | None = None,
 ) -> dict:
     """Run YOLOE in visual-prompt mode.
 
@@ -185,6 +187,8 @@ def predict_visual(
     }
     if not same_image:
         kwargs["refer_image"] = _bytes_to_rgb(refer_bytes)
+    if device:
+        kwargs["device"] = device
     results = model.predict(target, **kwargs)[0]
     if class_names:
         names_map = {i: str(n) for i, n in enumerate(class_names)}
@@ -202,15 +206,19 @@ def predict_prompt_free(
     conf: float = 0.25,
     iou: float = 0.7,
     max_detections: int | None = None,
+    device: str | None = None,
 ) -> dict:
     """Run YOLOE-PF over the image with its 4585-class RAM++ vocabulary.
 
     ``max_detections`` caps the per-image output via Ultralytics'
-    ``max_det`` arg. ``None`` keeps the default (300).
+    ``max_det`` arg. ``None`` keeps the default (300). ``device``
+    (v3.25) is forwarded to ``model.predict`` for inference routing.
     """
     img = _bytes_to_rgb(image_bytes)
     kwargs: dict[str, Any] = {"conf": conf, "iou": iou, "verbose": False}
     if max_detections is not None and max_detections > 0:
         kwargs["max_det"] = int(max_detections)
+    if device:
+        kwargs["device"] = device
     results = model.predict(img, **kwargs)[0]
     return _shape_results(results)

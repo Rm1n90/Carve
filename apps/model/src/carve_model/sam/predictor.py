@@ -790,26 +790,59 @@ def _default_factory() -> SamPredictor:
     """Production factory: load the configured SAM image predictor.
 
     Imports torch + transformers lazily so the test path stays
-    import-free. Pulls the HF repo id from ``get_sam_model()``. When
-    ``SAM_MODEL=sam3`` is selected, builds the SAM 3 adapter via
-    ``carve_model.sam.sam3_adapter`` and (as a side effect) registers the
-    SAM 3 text predictor for ``/sam/text-prompt`` if the operator has not
-    already supplied a custom one.
+    import-free. Pulls the HF repo id from ``get_sam_model()``.
 
-    For SAM 2.x variants the predictor is built via
-    ``carve_model.sam.sam2_adapter`` on top of Hugging Face transformers
-    (``Sam2Model`` + ``Sam2Processor``). The legacy upstream ``sam2`` git
-    package path was removed in v3.4 commit 6.
+    v3.25 — the device passed to each adapter comes from the central
+    device manager: it reads the user's SAM preference (or "auto") and
+    resolves it against the live probe so OOM / unavailable devices
+    fall back transparently. Calling ``/devices/sam/reload`` after
+    changing the preference triggers a fresh build on the new device.
     """
+    # Lazy-import the device manager so the test path (no torch installed)
+    # stays cheap; ``resolve_device`` itself degrades to "cpu" when torch
+    # is absent.
+    try:
+        from carve_model import device_prefs
+        from carve_model.devices import MIN_FREE_MB_DEFAULTS, resolve_device
+
+        pref = device_prefs.get_pref("sam")
+        resolved = resolve_device(
+            pref, min_free_mb=MIN_FREE_MB_DEFAULTS["sam"]
+        ).device
+    except Exception:  # noqa: BLE001 — never block model load on resolver
+        resolved = None
+
+    # v3.25.3 — the SAM adapters (sam2, sam3, sam3p1 native) compare
+    # ``self._device == "cuda"`` to gate the bf16 autocast block, AND
+    # the native sam3 package's ``build_sam3_image_model(device=...)``
+    # accepts plain "cuda" / "cpu" rather than "cuda:N". To honour a
+    # ``cuda:1`` preference without touching every adapter, we:
+    #   1) set the default CUDA device to N via ``torch.cuda.set_device``
+    #      so all subsequent ``.cuda()`` calls and ``device="cuda"``
+    #      strings land on cuda:N
+    #   2) hand the adapters the bare "cuda" string they expect.
+    # A "cpu" / "mps" / None pref passes through unchanged.
+    sam_device: str | None = resolved
+    if isinstance(resolved, str) and resolved.startswith("cuda:"):
+        try:
+            import torch  # type: ignore[import-not-found]
+
+            idx = int(resolved.split(":", 1)[1])
+            torch.cuda.set_device(idx)
+            sam_device = "cuda"
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "sam: could not set CUDA index from %s; passing through",
+                resolved,
+            )
+            sam_device = resolved
+
     model = get_sam_model()
     if model == "sam3.1":
         # Plan 12: native sam3 image predictor (point + box + text).
-        # Re-register text/box unconditionally so a prior variant's
-        # predictor (e.g. transformers SAM 3) doesn't shadow the
-        # native sam3.1 implementation after /sam/switch.
         from carve_model.sam import sam3p1_adapter
 
-        adapter = sam3p1_adapter.build_sam3p1_image_predictor()
+        adapter = sam3p1_adapter.build_sam3p1_image_predictor(device=sam_device)
         set_text_predictor(sam3p1_adapter.make_sam3p1_text_predictor())
         set_box_predictor(sam3p1_adapter.make_sam3p1_box_predictor())
         return adapter
@@ -817,10 +850,7 @@ def _default_factory() -> SamPredictor:
     if model == "sam3":
         from carve_model.sam import sam3_adapter
 
-        adapter = sam3_adapter.build_sam3_image_predictor()
-        # Re-register text/box unconditionally on every variant load
-        # so a prior sam3.1 native predictor (or other) doesn't leak
-        # into the SAM 3 transformers path.
+        adapter = sam3_adapter.build_sam3_image_predictor(device=sam_device)
         set_text_predictor(sam3_adapter.make_sam3_text_predictor())
         set_box_predictor(sam3_adapter.make_sam3_box_predictor())
         return adapter
@@ -828,7 +858,7 @@ def _default_factory() -> SamPredictor:
     if model.startswith("sam2"):
         from carve_model.sam import sam2_adapter
 
-        return sam2_adapter.build_sam2_image_predictor(model)
+        return sam2_adapter.build_sam2_image_predictor(model, device=sam_device)
 
     raise ValueError(
         f"unknown SAM model {model!r}; "

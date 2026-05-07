@@ -20,13 +20,25 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from carve_model.gpu import get_device
+from carve_model import device_prefs
+from carve_model.devices import MIN_FREE_MB_DEFAULTS, resolve_device
 from carve_model.yoloe.predict import (
     predict_prompt_free,
     predict_text,
     predict_visual,
 )
 from carve_model.yoloe.registry import REGISTRY, YoloeKey
+
+
+def _resolve_yoloe_device() -> str:
+    """Resolve the YOLOE device from the user preference + live probe.
+
+    Returns a concrete device id (e.g. ``cuda:0``, ``mps``, ``cpu``).
+    Falls back transparently when the preferred device is missing or
+    OOM — the explanation reaches the frontend via ``/devices/status``.
+    """
+    pref = device_prefs.get_pref("yoloe")
+    return resolve_device(pref, min_free_mb=MIN_FREE_MB_DEFAULTS["yoloe"]).device
 
 log = logging.getLogger(__name__)
 
@@ -126,7 +138,7 @@ def status() -> StatusOut:
         pf_available=pf_avail,
         text_loaded=REGISTRY.is_loaded("text"),
         pf_loaded=REGISTRY.is_loaded("pf"),
-        device=get_device(),
+        device=_resolve_yoloe_device(),
     )
 
 
@@ -141,6 +153,7 @@ def text_predict(payload: TextPredictIn) -> dict:
             payload.classes,
             conf=payload.conf,
             iou=payload.iou,
+            device=_resolve_yoloe_device(),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -163,6 +176,7 @@ def visual_predict(payload: VisualPredictIn) -> dict:
             payload.class_names,
             conf=payload.conf,
             iou=payload.iou,
+            device=_resolve_yoloe_device(),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -178,6 +192,7 @@ def prompt_free_predict(payload: PromptFreePredictIn) -> dict:
         conf=payload.conf,
         iou=payload.iou,
         max_detections=payload.max_detections,
+        device=_resolve_yoloe_device(),
     )
 
 

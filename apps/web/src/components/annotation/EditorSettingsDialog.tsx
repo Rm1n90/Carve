@@ -14,6 +14,7 @@ import { Checkbox as UiCheckbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Select as UiSelect } from "@/components/ui/Select";
 import { Tabs } from "@/components/ui/Tabs";
+import { DevicePanel } from "@/components/annotation/DevicePanel";
 import {
   useEditorSettings,
   type CanvasPattern,
@@ -260,7 +261,7 @@ function DeferredCheckbox({
 
 export function EditorSettingsDialog({ open, onOpenChange }: Props) {
   const s = useEditorSettings();
-  const [activeTab, setActiveTab] = useState<"player" | "workspace">("player");
+  const [activeTab, setActiveTab] = useState<"player" | "workspace" | "compute">("player");
 
   if (!open) return null;
 
@@ -278,7 +279,7 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
 
         <Tabs
           value={activeTab}
-          onValueChange={(v) => setActiveTab(v as "player" | "workspace")}
+          onValueChange={(v) => setActiveTab(v as "player" | "workspace" | "compute")}
           data-testid="editor-settings-tabs"
           variant="underline"
         >
@@ -287,6 +288,7 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
               [
                 { value: "player", label: "Player" },
                 { value: "workspace", label: "Workspace" },
+                { value: "compute", label: "Compute" },
               ] as const
             ).map((t) => (
               <Tabs.Trigger
@@ -542,6 +544,18 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
                 deferred)" group. Those toggles required underlying
                 engines (interpolation, AAM, polygon helpers) that
                 Carve does not implement, so they were inert. */}
+          </Tabs.Content>
+
+          {/* v3.25 — compute device picker (CUDA + MPS + CPU) with
+              smart guardrails. Lazy-mounted via the activeTab guard so
+              the device probe only runs when the user opens this tab. */}
+          <Tabs.Content
+            value="compute"
+            forceMount
+            hidden={activeTab !== "compute"}
+            className="grid gap-4"
+          >
+            <DevicePanel />
           </Tabs.Content>
         </Tabs>
 
