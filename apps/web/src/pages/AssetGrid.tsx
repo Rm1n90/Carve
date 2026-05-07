@@ -18,6 +18,7 @@ import { classesApi, type ClassRow } from "@/api/classes";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 import { useShortcutHandler } from "@/state/shortcuts";
+import { useAssetExtractStatus } from "@/state/useAssetExtractStatus";
 
 const PAGE_SIZE = 100;
 // Tile size is purely CSS-driven via `auto-fill, minmax(...)` so the layout is
@@ -56,7 +57,27 @@ function AssetTile({
   onSelect,
   classColorById,
 }: AssetTileProps) {
+  // v3.26 — block navigation while a video's frames are still being
+  // extracted. Reads from the same Zustand store the BackgroundJobsBar
+  // polls into, so we never spawn a per-card poller.
+  const extractStatus = useAssetExtractStatus(
+    asset.kind === "video" ? asset.id : undefined,
+  );
+  const isExtracting = !!extractStatus && extractStatus.status === "running";
+  const extractPct =
+    extractStatus && extractStatus.expected > 0
+      ? Math.min(
+          100,
+          (extractStatus.decoded / extractStatus.expected) * 100,
+        )
+      : 0;
+
   const interceptNav = (e: React.MouseEvent) => {
+    if (isExtracting) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (!selectMode) return;
     e.preventDefault();
     e.stopPropagation();
@@ -118,9 +139,12 @@ function AssetTile({
       to="/projects/$projectId/tasks/$taskId/assets/$assetId"
       params={{ projectId, taskId, assetId: asset.id }}
       onClick={interceptNav}
+      aria-disabled={isExtracting || undefined}
+      title={isExtracting ? "Extracting frames…" : undefined}
       className={cn(
         "group block",
         selected && "outline outline-2 outline-[var(--accent)] rounded-[var(--radius-md)]",
+        isExtracting && "pointer-events-none opacity-70 cursor-not-allowed",
       )}
       data-testid={`asset-tile-${asset.id}`}
     >
@@ -176,6 +200,22 @@ function AssetTile({
         >
           {asset.original_name}
         </div>
+        {isExtracting && extractStatus && (
+          <div
+            data-testid={`asset-tile-extracting-${asset.id}`}
+            className="absolute inset-x-0 bottom-9 grid gap-1 px-2 py-1.5 bg-[oklch(0.06_0.012_240_/_0.85)] backdrop-blur-md"
+          >
+            <div className="h-1 rounded-full bg-[oklch(1_0_0_/_0.10)] overflow-hidden">
+              <div
+                className="h-full bg-[var(--accent)] transition-[width] duration-300"
+                style={{ width: `${extractPct}%` }}
+              />
+            </div>
+            <p className="text-[10.5px] text-[color:var(--text-tertiary)] tabular-nums">
+              {extractStatus.decoded} / {extractStatus.expected} frames ({extractStatus.phase})
+            </p>
+          </div>
+        )}
       </div>
     </Link>
     </div>
