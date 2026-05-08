@@ -27,7 +27,6 @@ import {
   ScanEye,
   Sparkles,
   Type,
-  Wand2,
   X,
 } from "lucide-react";
 
@@ -52,7 +51,10 @@ import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
 import { useAnnotations } from "@/state/annotations";
-import type { AnnotationDraft } from "@/state/annotations";
+import {
+  VisualReferencePicker,
+  type VisualPick,
+} from "@/components/annotation/VisualReferencePicker";
 
 type YoloeMode = "text" | "visual" | "prompt_free";
 type Scope = "this" | "all";
@@ -96,42 +98,6 @@ const MODE_TABS: {
     icon: <Sparkles className="h-4 w-4" />,
   },
 ];
-
-interface VisualReference {
-  /** Source annotation id — used as the React key. */
-  id: string;
-  /** Source kind label for the chip ("bbox" or "polygon"). */
-  sourceKind: "bbox" | "polygon";
-  /** xyxy in image-space pixels. Polygons are converted to enclosing bbox. */
-  xyxy: [number, number, number, number];
-  /** Project class name attached to the source annotation, or "<unmapped>". */
-  className: string;
-  /** Project class id of the source annotation (used as the default
-   *  "annotate matches as" pick when the user toggles the ref). */
-  sourceClassId: string;
-  /** Project class color (CSS color string), or a neutral fallback. */
-  color: string;
-}
-
-function geometryToXyxy(
-  geom: AnnotationDraft["geometry"],
-): [number, number, number, number] | null {
-  if (geom.kind === "bbox") {
-    return [geom.x, geom.y, geom.x + geom.w, geom.y + geom.h];
-  }
-  if (geom.kind === "polygon" && geom.points.length > 0) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const [x, y] of geom.points) {
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
-    if (maxX <= minX || maxY <= minY) return null;
-    return [minX, minY, maxX, maxY];
-  }
-  return null;
-}
 
 export function YoloeDialog({
   assetId,
@@ -193,26 +159,10 @@ export function YoloeDialog({
 
   // Visual mode state (v3.24 multi-source) — picks are keyed by
   // ``${assetId}:${annotationId}`` so refs from different source
-  // assets coexist. Each pick carries the source coords + class
-  // assignment so the run-payload builder can group them by source
-  // asset → list of class-keyed bbox groups without re-fetching.
-  interface VisualPick {
-    assetId: string;
-    annotationId: string;
-    classId: string;
-    xyxy: [number, number, number, number];
-    className: string;
-    color: string;
-    sourceKind: "bbox" | "polygon";
-  }
+  // assets coexist. The shared VisualReferencePicker owns toggle /
+  // class-assign logic; YoloeDialog only owns the picks map and
+  // converts it to the YOLOE wire payload.
   const [picks, setPicks] = useState<Record<string, VisualPick>>(() => ({}));
-  // The thumbnail strip selects which source asset's refs are
-  // currently being browsed/picked. Default to the asset the editor
-  // is viewing; falls back to first pickable asset on mount when the
-  // current asset has no annotations.
-  const [activeSourceAssetId, setActiveSourceAssetId] = useState<string | null>(
-    assetId ?? null,
-  );
 
   // Prompt-free mode state
   const [pfClassId, setPfClassId] = useState<string>("");
@@ -226,13 +176,9 @@ export function YoloeDialog({
 
   // Visual picker — read existing annotations from the editor's store.
   // The store is implicitly scoped to whichever frame the canvas is
-  // currently rendering. Filter to bbox + polygon kinds.
+  // currently rendering. Passed through to VisualReferencePicker so
+  // the user's unsaved draws on the current asset show up immediately.
   const annotationsById = useAnnotations((s) => s.byId);
-  const classesById = useMemo(() => {
-    const m = new Map<string, ClassRow>();
-    for (const c of classes) m.set(c.id, c);
-    return m;
-  }, [classes]);
 
   // v3.24 — task-wide visual prompt picker. We need:
   //   * the list of assets in the task (for the thumbnail strip)
@@ -299,81 +245,6 @@ export function YoloeDialog({
     return out;
   }, [taskAssetsQ.data, annotationsByAssetId, assetId]);
 
-  // If the active source isn't pickable, fall back to current asset
-  // (if pickable) or the first pickable.
-  useEffect(() => {
-    if (mode !== "visual" || !open) return;
-    if (pickableAssets.length === 0) {
-      if (activeSourceAssetId !== null) setActiveSourceAssetId(null);
-      return;
-    }
-    if (
-      !activeSourceAssetId ||
-      !pickableAssets.some((a) => a.id === activeSourceAssetId)
-    ) {
-      const fallback =
-        pickableAssets.find((a) => a.id === assetId) ?? pickableAssets[0];
-      setActiveSourceAssetId(fallback ? fallback.id : null);
-    }
-  }, [mode, open, pickableAssets, activeSourceAssetId, assetId]);
-
-  // References shown in the picker for the *active* source asset.
-  //   * Current asset → prefer the editor's live store (in-flight
-  //                     bboxes the user just drew show up immediately).
-  //   * Other asset   → use the task-wide fetch (read-only).
-  const visualReferences = useMemo<VisualReference[]>(() => {
-    if (!activeSourceAssetId) return [];
-    const out: VisualReference[] = [];
-    if (activeSourceAssetId === assetId) {
-      // Current asset path — use the live editor store so unsaved
-      // bboxes are visible.
-      for (const [tempId, a] of Object.entries(annotationsById)) {
-        if (a.kind !== "bbox" && a.kind !== "polygon") continue;
-        const xyxy = geometryToXyxy(a.geometry);
-        if (!xyxy) continue;
-        const cls = classesById.get(a.classId);
-        out.push({
-          id: a.serverId ?? tempId,
-          sourceKind: a.kind as "bbox" | "polygon",
-          xyxy,
-          className: cls?.name ?? "<unmapped>",
-          sourceClassId: a.classId,
-          color: cls?.color ?? "#9ca3af",
-        });
-      }
-    } else {
-      // Other asset path — read from the task fetch.
-      const refs = annotationsByAssetId.get(activeSourceAssetId) ?? [];
-      for (const r of refs) {
-        const xyxy = geometryToXyxy(r.geometry as never);
-        if (!xyxy) continue;
-        const cls = classesById.get(r.classId);
-        out.push({
-          id: r.id,
-          sourceKind: r.kind,
-          xyxy,
-          className: cls?.name ?? "<unmapped>",
-          sourceClassId: r.classId,
-          color: cls?.color ?? "#9ca3af",
-        });
-      }
-    }
-    // Sort: bboxes first (more direct visual prompt), then by id stable.
-    out.sort((p, q) => {
-      if (p.sourceKind !== q.sourceKind) {
-        return p.sourceKind === "bbox" ? -1 : 1;
-      }
-      return p.id.localeCompare(q.id);
-    });
-    return out;
-  }, [
-    activeSourceAssetId,
-    assetId,
-    annotationsById,
-    annotationsByAssetId,
-    classesById,
-  ]);
-
   // Pick up "Expand" requests for our task's yoloe-batch jobs.
   const bgExpandRequest = useBackgroundJobs((s) => s.expandRequest);
   const bgJobs = useBackgroundJobs((s) => s.jobs);
@@ -434,50 +305,12 @@ export function YoloeDialog({
     );
   }
 
-  // Visual selection helpers — toggle picked-state by adding/removing
-  // the ref id from the assignment map.
-  // Build the per-pick map key from (sourceAssetId, refId).
-  function pickKey(srcAssetId: string, refId: string): string {
-    return `${srcAssetId}:${refId}`;
-  }
-
-  function toggleVisual(refId: string) {
-    if (!activeSourceAssetId) return;
-    const key = pickKey(activeSourceAssetId, refId);
-    setPicks((prev) => {
-      if (key in prev) {
-        const { [key]: _drop, ...rest } = prev;
-        return rest;
-      }
-      // Pre-fill with the source annotation's project class so the
-      // common "find more like this" case is one click less work.
-      const ref = visualReferences.find((r) => r.id === refId);
-      if (!ref) return prev;
-      return {
-        ...prev,
-        [key]: {
-          assetId: activeSourceAssetId,
-          annotationId: refId,
-          classId: ref.sourceClassId,
-          xyxy: ref.xyxy,
-          className: ref.className,
-          color: ref.color,
-          sourceKind: ref.sourceKind,
-        },
-      };
-    });
-  }
-  function setVisualClass(refId: string, classId: string) {
-    if (!activeSourceAssetId) return;
-    const key = pickKey(activeSourceAssetId, refId);
-    setPicks((prev) => {
-      if (!(key in prev)) return prev;
-      return { ...prev, [key]: { ...prev[key]!, classId } };
-    });
-  }
-
   // Build the YOLOE wire payload (multi-source): one entry per
   // distinct source asset, each carrying its class-keyed bbox groups.
+  // YOLOE's wire is bbox-only — flatten polygon picks to their
+  // enclosing bbox at send time. The shared picker preserves the
+  // original geometry so polygon-aware backends (SAM 3.1 PCS) can
+  // use it; YOLOE just collapses it here.
   function buildVisualSources(): YoloeVisualSource[] | null {
     const bySource = new Map<
       string,
@@ -485,9 +318,25 @@ export function YoloeDialog({
     >();
     for (const p of Object.values(picks)) {
       if (!p.classId) continue;
+      const bbox: [number, number, number, number] =
+        p.geometry.kind === "bbox"
+          ? p.geometry.xyxy
+          : (() => {
+              let minX = Infinity;
+              let minY = Infinity;
+              let maxX = -Infinity;
+              let maxY = -Infinity;
+              for (const [x, y] of p.geometry.points) {
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+              }
+              return [minX, minY, maxX, maxY];
+            })();
       const groupMap = bySource.get(p.assetId) ?? new Map();
       const bboxes = groupMap.get(p.classId) ?? [];
-      bboxes.push(p.xyxy);
+      bboxes.push(bbox);
       groupMap.set(p.classId, bboxes);
       bySource.set(p.assetId, groupMap);
     }
@@ -699,10 +548,11 @@ export function YoloeDialog({
       ]);
     } else if (mode === "visual") {
       setPicks({});
-      // Keep activeSourceAssetId — it's a UI navigation cursor, not
-      // user-entered data; resetting would just bounce them back to
-      // the current asset which they might have already moved away
-      // from intentionally.
+      // The active source asset id lives inside VisualReferencePicker
+      // (uncontrolled). It's a navigation cursor, not user-entered
+      // data; clearing picks here doesn't reset it, which is fine —
+      // resetting would just bounce the user back to the current asset
+      // which they might have already moved away from intentionally.
     } else {
       setPfClassId("");
       setPfMaxDet(300);
@@ -1077,219 +927,18 @@ export function YoloeDialog({
                   </span>
                 </div>
 
-                {/* Thumbnail strip — switch source asset */}
-                {taskId && (
-                  taskAssetsQ.isLoading || taskAnnotationsQ.isLoading ? (
-                    <div
-                      className="flex items-center gap-2 text-[11px] text-[color:var(--text-tertiary)] px-2 py-1.5"
-                      data-testid="yoloe-visual-loading"
-                    >
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      Loading task assets &amp; annotations…
-                    </div>
-                  ) : pickableAssets.length === 0 ? null : (
-                    <div
-                      className="flex gap-1.5 overflow-x-auto pb-1.5 -mx-1 px-1"
-                      data-testid="yoloe-visual-source-strip"
-                    >
-                      {pickableAssets.map((a) => {
-                        const isActive = a.id === activeSourceAssetId;
-                        const sourcePicks = Object.values(picks).filter(
-                          (p) => p.assetId === a.id,
-                        );
-                        const hasPicks = sourcePicks.length > 0;
-                        return (
-                          <button
-                            key={a.id}
-                            type="button"
-                            onClick={() => setActiveSourceAssetId(a.id)}
-                            data-testid={`yoloe-visual-source-${a.id}`}
-                            title={a.original_name}
-                            className={cn(
-                              "shrink-0 grid gap-1 p-1 rounded-[var(--radius-md)] border",
-                              "transition-all duration-[160ms]",
-                              isActive
-                                ? "border-[color:var(--accent)] shadow-[0_0_0_1px_var(--accent)] scale-[1.03]"
-                                : hasPicks
-                                ? "border-[color:var(--accent)]/40 hover:border-[color:var(--accent)]"
-                                : "border-[var(--border-subtle)] hover:border-[var(--text-tertiary)]",
-                            )}
-                          >
-                            <div className="relative h-12 w-16 rounded-sm overflow-hidden bg-[var(--bg-subtle)]">
-                              {a.thumbnail_url ? (
-                                <img
-                                  src={a.thumbnail_url}
-                                  alt={a.original_name}
-                                  className="h-full w-full object-cover"
-                                />
-                              ) : (
-                                <div className="h-full w-full grid place-items-center text-[10px] text-[color:var(--text-tertiary)]">
-                                  no thumb
-                                </div>
-                              )}
-                              {hasPicks && (
-                                <span
-                                  className="absolute top-0.5 right-0.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-[var(--accent)] text-white text-[9px] font-medium leading-none"
-                                  aria-label={`${sourcePicks.length} picks`}
-                                >
-                                  {sourcePicks.length}
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[10px] truncate max-w-[64px] text-center text-[color:var(--text-secondary)]">
-                              {a.original_name}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )
-                )}
+                <VisualReferencePicker
+                  assetId={assetId}
+                  taskId={taskId}
+                  classes={classes}
+                  pickableAssets={pickableAssets}
+                  annotationsByAssetId={annotationsByAssetId}
+                  annotationsById={annotationsById}
+                  picks={picks}
+                  onPicksChange={setPicks}
+                  loading={taskAssetsQ.isLoading || taskAnnotationsQ.isLoading}
+                />
 
-                {/* Per-source refs panel */}
-                {pickableAssets.length === 0 ? (
-                  <div className="grid gap-2 p-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border-subtle)] bg-[var(--bg-subtle)]">
-                    <div className="flex items-start gap-2 text-[12px] text-[color:var(--text-secondary)]">
-                      <Wand2
-                        className="h-4 w-4 mt-0.5 text-[color:var(--accent)]"
-                        aria-hidden
-                      />
-                      <div>
-                        <div className="font-medium text-[color:var(--text-primary)]">
-                          No bbox/polygon annotations in this task.
-                        </div>
-                        <div>
-                          Draw at least one bbox or polygon (or use SAM) on
-                          any image asset in this task, then re-open YOLOE in
-                          Visual mode.
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : visualReferences.length === 0 ? (
-                  <div className="grid gap-1 p-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border-subtle)] bg-[var(--bg-subtle)] text-[12px] text-[color:var(--text-secondary)]">
-                    No bbox/polygon annotations on the selected source.
-                    Draw some on this asset, or pick another source above.
-                  </div>
-                ) : (
-                  <div
-                    className="grid gap-1 max-h-[220px] overflow-y-auto p-1 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]"
-                    data-testid="yoloe-visual-refs"
-                  >
-                    {visualReferences.map((r) => {
-                      const key = activeSourceAssetId
-                        ? `${activeSourceAssetId}:${r.id}`
-                        : r.id;
-                      const pick = picks[key];
-                      const picked = !!pick;
-                      const assignedCid = pick?.classId ?? "";
-                      const assignedCls = classes.find(
-                        (c) => c.id === assignedCid,
-                      );
-                      const w = Math.round(r.xyxy[2] - r.xyxy[0]);
-                      const h = Math.round(r.xyxy[3] - r.xyxy[1]);
-                      return (
-                        <div
-                          key={r.id}
-                          data-testid={`yoloe-visual-ref-${r.id}`}
-                          className={cn(
-                            "grid grid-cols-[20px_minmax(0,1fr)_minmax(0,180px)_auto] gap-2 items-center px-2 py-1.5 rounded-[var(--radius-sm)]",
-                            "transition-all duration-[140ms]",
-                            picked
-                              ? "bg-[var(--accent)]/8 shadow-[0_0_0_1px_var(--accent)]"
-                              : "hover:bg-[var(--bg-hover)]",
-                          )}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => toggleVisual(r.id)}
-                            aria-pressed={picked}
-                            aria-label={picked ? "Unpick reference" : "Pick reference"}
-                            className={cn(
-                              "h-4 w-4 rounded-sm border grid place-items-center",
-                              "transition-all duration-[140ms]",
-                              picked
-                                ? "bg-[var(--accent)] border-[var(--accent)]"
-                                : "border-[var(--border-subtle)] hover:border-[color:var(--accent)]",
-                            )}
-                          >
-                            {picked && (
-                              <CheckCircle2
-                                className="h-3 w-3 text-white"
-                                strokeWidth={3}
-                              />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => toggleVisual(r.id)}
-                            className="flex items-center gap-1.5 min-w-0 text-left"
-                          >
-                            <span
-                              className="h-2.5 w-2.5 rounded-sm shrink-0 ring-1 ring-black/10"
-                              style={{ backgroundColor: r.color }}
-                              aria-hidden
-                            />
-                            <span className="text-[12px] truncate">
-                              {r.className}
-                            </span>
-                            <span className="text-[10px] font-mono text-[color:var(--text-tertiary)] tabular-nums">
-                              {r.sourceKind} · {w}×{h}
-                            </span>
-                          </button>
-                          {picked ? (
-                            <div className="flex items-center gap-1 min-w-0">
-                              <span className="text-[10.5px] text-[color:var(--text-tertiary)] shrink-0">
-                                →
-                              </span>
-                              <select
-                                value={assignedCid}
-                                onChange={(e) =>
-                                  setVisualClass(r.id, e.target.value)
-                                }
-                                data-testid={`yoloe-visual-assign-${r.id}`}
-                                className={cn(
-                                  "flex-1 min-w-0 h-7 px-1.5 rounded-[var(--radius-sm)] text-[11.5px]",
-                                  "bg-transparent outline-none",
-                                  assignedCid
-                                    ? "text-[color:var(--text-primary)]"
-                                    : "text-[color:var(--danger,#d4504a)]",
-                                  "hover:bg-[var(--bg-hover)]",
-                                )}
-                              >
-                                <option value="">Pick class *</option>
-                                {classes.map((c) => (
-                                  <option key={c.id} value={c.id}>
-                                    {c.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          ) : (
-                            <span className="text-[10.5px] text-[color:var(--text-tertiary)] italic">
-                              not picked
-                            </span>
-                          )}
-                          <span
-                            className="h-2.5 w-2.5 rounded-full shrink-0"
-                            style={{
-                              backgroundColor: assignedCls?.color ?? "transparent",
-                              border: assignedCls
-                                ? "none"
-                                : "1px dashed var(--border-subtle)",
-                            }}
-                            aria-hidden
-                            title={
-                              assignedCls
-                                ? `Matches saved as ${assignedCls.name}`
-                                : "No class assigned yet"
-                            }
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
                 <p className="text-[10.5px] text-[color:var(--text-tertiary)]">
                   Pick references from any image asset in this task and assign
                   each to a project class. Refs sharing a class strengthen
