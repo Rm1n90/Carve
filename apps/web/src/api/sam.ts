@@ -36,6 +36,36 @@ export interface SamPromptResult {
   polygon: [number, number][];
 }
 
+// v3.28 — SAM Visual Prompt wire types (mirrors api/sam/auto-visual)
+export type SamVisualRefBbox = {
+  kind: "bbox";
+  xyxy: [number, number, number, number];
+};
+export type SamVisualRefPolygon = {
+  kind: "polygon";
+  points: [number, number][];
+};
+export type SamVisualRef = SamVisualRefBbox | SamVisualRefPolygon;
+export interface SamVisualGroup {
+  class_id: string;
+  refs: SamVisualRef[];
+}
+export interface SamVisualSource {
+  asset_id: string;
+  groups: SamVisualGroup[];
+}
+export interface SamAutoVisualBody {
+  sources: SamVisualSource[];
+  ref_kind: "bbox" | "polygon";
+  threshold: number;
+  find_all: boolean;
+  overwrite: boolean;
+}
+export interface SamAutoVisualResult {
+  annotations_created: number;
+  per_class: Record<string, number>;
+}
+
 export const samApi = {
   encode: async (
     assetId: string,
@@ -218,4 +248,69 @@ export const samApi = {
       )
     ).data;
   },
+  // ----- v3.28 — SAM Visual Prompt (Promotable Concept Segmentation) ---------
+  /**
+   * v3.28 — SAM 3.1 visual-prompt auto-annotate (sync, single asset).
+   * The dialog picks bbox/polygon refs from any image asset in the task,
+   * groups them by class, and the server returns polygon (preferred) /
+   * mask (fallback) annotations above the threshold.
+   */
+  autoVisual: async (
+    assetId: string,
+    body: SamAutoVisualBody,
+  ): Promise<SamAutoVisualResult> =>
+    (
+      await api.post<SamAutoVisualResult>(
+        `/assets/${assetId}/sam/auto-visual`,
+        body,
+      )
+    ).data,
+
+  /**
+   * v3.28 — SAM 3.1 visual-prompt batch (RQ-backed). Returns ``{job_id}``
+   * immediately. Poll ``autoVisualBatchProgress`` until ``status`` is
+   * terminal (completed / completed_with_errors / failed / canceled).
+   */
+  autoVisualBatch: async (
+    taskId: string,
+    body: SamAutoVisualBody,
+  ): Promise<{ job_id: string }> =>
+    (
+      await api.post<{ job_id: string }>(
+        `/tasks/${taskId}/sam/auto-visual-batch`,
+        body,
+      )
+    ).data,
+
+  autoVisualBatchProgress: async (
+    taskId: string,
+    jobId: string,
+  ): Promise<{
+    status: string;
+    done: number;
+    total: number;
+    failed: number;
+    errors: string[];
+    total_annotations_created: number;
+  }> =>
+    (
+      await api.get<{
+        status: string;
+        done: number;
+        total: number;
+        failed: number;
+        errors: string[];
+        total_annotations_created: number;
+      }>(`/tasks/${taskId}/sam/auto-visual-batch/${jobId}`)
+    ).data,
+
+  autoVisualBatchCancel: async (
+    taskId: string,
+    jobId: string,
+  ): Promise<{ job_id: string; status: string }> =>
+    (
+      await api.post<{ job_id: string; status: string }>(
+        `/tasks/${taskId}/sam/auto-visual-batch/${jobId}/cancel`,
+      )
+    ).data,
 };

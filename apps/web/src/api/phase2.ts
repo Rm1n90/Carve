@@ -79,6 +79,12 @@ export interface SamLoadStatus {
    * toggle.
    */
   vlm_fo1_available?: boolean;
+  /**
+   * v3.28+ — true when the model service has SAM 3.1 visual-prompt
+   * auto-annotation enabled. The editor uses this to enable the
+   * visual-prompt mode in AutoAnnotateDialog.
+   */
+  visual_prompt_available?: boolean;
 }
 
 export const modelsApi = {
