@@ -269,6 +269,9 @@ _SESSION: SamSession | None = None
 _TEST_PREDICTOR: SamPredictor | None = None
 _TEXT_PREDICTOR_FACTORY: TextPredictor | None = None
 _BOX_PREDICTOR_FACTORY: BoxPredictor | None = None
+# v3.28 — visual prompt predictor (sam3p1 only). See spec §5.7.
+VisualPredictor = Any  # callable: (*, target_b64, refer_b64, regions) -> list[dict]
+_VISUAL_PREDICTOR_FACTORY: VisualPredictor | None = None
 # v3.21+ — VLM-FO1 precision filter slot. ``None`` means the operator
 # has not opted in (or the feature gate is off). The text predictor
 # closure reads this at call time, only consulted when the request
@@ -845,6 +848,7 @@ def _default_factory() -> SamPredictor:
         adapter = sam3p1_adapter.build_sam3p1_image_predictor(device=sam_device)
         set_text_predictor(sam3p1_adapter.make_sam3p1_text_predictor())
         set_box_predictor(sam3p1_adapter.make_sam3p1_box_predictor())
+        set_visual_predictor(sam3p1_adapter.make_sam3p1_visual_predictor())
         return adapter
 
     if model == "sam3":
@@ -853,6 +857,7 @@ def _default_factory() -> SamPredictor:
         adapter = sam3_adapter.build_sam3_image_predictor(device=sam_device)
         set_text_predictor(sam3_adapter.make_sam3_text_predictor())
         set_box_predictor(sam3_adapter.make_sam3_box_predictor())
+        set_visual_predictor(sam3_adapter.make_sam3_visual_predictor())
         return adapter
 
     if model.startswith("sam2"):
@@ -992,6 +997,33 @@ def reset_text_predictor() -> None:
     """Clear the text predictor factory. Used by tests."""
     global _TEXT_PREDICTOR_FACTORY
     _TEXT_PREDICTOR_FACTORY = None
+
+
+def set_visual_predictor(factory) -> None:
+    """Register the SAM 3.1 visual-prompt predictor factory.
+
+    Pass ``None`` to clear (used by tests). The operator calls this once at
+    container start when ``SAM_MODEL=sam3.1``; tests pass a fake.
+    """
+    global _VISUAL_PREDICTOR_FACTORY
+    _VISUAL_PREDICTOR_FACTORY = factory
+
+
+def get_visual_predictor():
+    """Return the registered SAM 3.1 visual predictor.
+
+    Raises ``RuntimeError`` if no factory was registered. Callers should
+    convert this into a 503 ``sam_visual_predictor_not_loaded`` HTTP error.
+    """
+    if _VISUAL_PREDICTOR_FACTORY is None:
+        raise RuntimeError("sam_visual_predictor_not_loaded")
+    return _VISUAL_PREDICTOR_FACTORY
+
+
+def _reset_visual_predictor_for_test() -> None:
+    """Clear the visual predictor factory. Used by tests."""
+    global _VISUAL_PREDICTOR_FACTORY
+    _VISUAL_PREDICTOR_FACTORY = None
 
 
 def set_vlm_fo1_filter(fn: VlmFo1Filter | None) -> None:

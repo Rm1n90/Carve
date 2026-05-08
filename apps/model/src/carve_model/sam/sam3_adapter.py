@@ -980,3 +980,60 @@ def build_sam3_video_tracker(device: str | None = None) -> Sam3VideoDispatcherAd
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     return Sam3VideoDispatcherAdapter(device=dev)
+
+
+# --- visual predictor for /sam/visual-prompt (Sam3p1NativeImagePredictorAdapter) ---
+
+
+def make_sam3_visual_predictor():
+    """Factory: closure-cached Sam3p1NativeImagePredictorAdapter that handles
+    (refer_b64, region_list, target_b64) -> list of mask candidates.
+
+    Reuses one native adapter for both refer-encode and target-forward to
+    amortise model load. Output dict shape mirrors /sam/text-prompt:
+      {counts: str, size: [h, w], score: float, bbox: [x1,y1,x2,y2], polygon: [[x,y],...]}
+    """
+    adapter_holder: dict = {}
+
+    def _adapter():
+        if "a" not in adapter_holder:
+            from carve_model.sam.sam3p1_adapter import build_sam3p1_image_predictor
+            adapter_holder["a"] = build_sam3p1_image_predictor()
+        return adapter_holder["a"]
+
+    def _decode_b64(b64: str):
+        import base64
+        import io
+        from PIL import Image
+        import numpy as np
+        return np.asarray(Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB"))
+
+    def call(*, target_b64, refer_b64, regions):
+        import numpy as np
+        from carve_model.sam.codec import encode_mask_rle
+        from carve_model.sam.polygonize import mask_to_polygon
+        from carve_model.sam.visual_prompt_pool import l2norm
+
+        adapter = _adapter()
+        target = _decode_b64(target_b64)
+        refer = _decode_b64(refer_b64)
+        adapter.set_image(target)
+        per_ref = [adapter.set_visual_prompt(refer, r) for r in regions]
+        if not per_ref:
+            return []
+        pooled = l2norm(np.mean(per_ref, axis=0))
+        masks, scores, boxes = adapter.predict_with_visual_prompt(pooled)
+        out = []
+        for m, s, b in zip(masks, scores, boxes):
+            counts, size = encode_mask_rle(np.asarray(m, dtype=np.uint8))
+            polygon = mask_to_polygon(np.asarray(m, dtype=np.uint8))
+            out.append({
+                "counts": counts,
+                "size": list(size),
+                "score": float(s),
+                "bbox": [float(x) for x in b],
+                "polygon": polygon,
+            })
+        return out
+
+    return call
