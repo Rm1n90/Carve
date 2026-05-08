@@ -29,6 +29,7 @@ from carve_api.inference.model_client import (
     sam_decode,
     sam_encode,
     sam_text_prompt,
+    sam_visual_prompt,
 )
 
 
@@ -177,3 +178,38 @@ def sam_box_prompt_for_asset(
         if exc.status_code == 503:
             raise SamModelUnreachable(f"box-prompt: {exc.body!r}") from exc
         raise SamModelFailed(f"box-prompt: {exc.body!r}") from exc
+
+
+def sam_visual_prompt_for_asset(
+    *,
+    target_asset: Asset,
+    refer_asset: Asset,
+    regions: list[dict],
+    target_frame_id: uuid.UUID | None = None,
+    refer_frame_id: uuid.UUID | None = None,
+) -> list[dict]:
+    """SAM 3.1 visual-prompt entry point.
+
+    Fetches both the target and reference asset bytes once and forwards
+    them to the model service's /sam/visual-prompt endpoint with the
+    supplied region list (bbox or polygon, but not mixed). Maps the
+    model service's error codes to the same SAM AppErrors used by the
+    text-prompt path:
+      - 409 sam3p1_not_enabled       → Sam3NotEnabled
+      - 503 sam_visual_predictor_not_loaded / unreachable → SamModelUnreachable
+      - other 4xx/5xx                → SamModelFailed
+    """
+    target_bytes = fetch_asset_bytes(target_asset, frame_id=target_frame_id)
+    refer_bytes = fetch_asset_bytes(refer_asset, frame_id=refer_frame_id)
+    target_b64 = base64.b64encode(target_bytes).decode("ascii")
+    refer_b64 = base64.b64encode(refer_bytes).decode("ascii")
+    try:
+        return sam_visual_prompt(
+            refer_b64=refer_b64, regions=regions, target_b64=target_b64,
+        )
+    except ModelServiceError as exc:
+        if exc.status_code == 409:
+            raise Sam3NotEnabled(f"visual-prompt: {exc.body!r}") from exc
+        if exc.status_code == 503:
+            raise SamModelUnreachable(f"visual-prompt: {exc.body!r}") from exc
+        raise SamModelFailed(f"visual-prompt: {exc.body!r}") from exc
