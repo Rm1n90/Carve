@@ -153,3 +153,27 @@ def test_self_attn_pool_env_changes_output(monkeypatch):
     monkeypatch.setenv("SAM_VISUAL_PROMPT_SELF_ATTN", "1")
     a2 = _build_adapter().set_visual_prompt(refer, region)
     assert not np.allclose(a1, a2, atol=1e-3)
+
+
+def test_predict_with_visual_prompt_text_disabled():
+    adapter = _build_adapter()
+    target_state = {
+        "original_height": 100, "original_width": 100,
+        "_stub_dense_hi": _stub_features(14, 14, 8, seed=10),
+        "_stub_dense_lo": _stub_features(7, 7, 8, seed=11),
+        "_stub_global": _stub_features(1, 1, 8, seed=12).reshape(8),
+    }
+    adapter._state = target_state
+    adapter._original_size = (100, 100)
+    pooled = np.ones(8, dtype=np.float32) / np.sqrt(8)
+    masks_returned = np.zeros((1, 100, 100), dtype=bool)
+    masks_returned[0, 40:60, 40:60] = True
+    adapter._model.predict_visual_prompt = MagicMock(
+        return_value=(masks_returned, np.array([0.9]), np.array([[40.0, 40.0, 60.0, 60.0]]))
+    )
+    masks, scores, boxes = adapter.predict_with_visual_prompt(pooled)
+    assert masks.shape == (1, 100, 100)
+    assert scores[0] == pytest.approx(0.9)
+    kwargs = adapter._model.predict_visual_prompt.call_args.kwargs
+    assert kwargs.get("encode_text") is False
+    assert kwargs.get("visual_prompt_embed").shape == (1, 1, 8)

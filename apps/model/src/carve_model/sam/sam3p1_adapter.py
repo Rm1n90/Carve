@@ -492,6 +492,22 @@ class Sam3p1NativeImagePredictorAdapter:
                 )
         return masks, scores, logits
 
+    def predict_with_visual_prompt(self, pooled_embed):
+        """Run the SAM 3.1 grounding pass with a visual concept (text disabled).
+
+        The actual native sam3 wiring (calling forward_grounding with the
+        visual_prompt_embed slot) lands in Task A6. This method delegates to
+        self._model.predict_visual_prompt so unit tests can stub the model.
+        """
+        import numpy as np
+        if self._state is None:
+            raise RuntimeError("set_image must be called on the target before predict_with_visual_prompt")
+        embed = pooled_embed.reshape(1, 1, -1)
+        masks, scores, boxes = self._model.predict_visual_prompt(
+            self._state, visual_prompt_embed=embed, encode_text=False,
+        )
+        return np.asarray(masks), np.asarray(scores), np.asarray(boxes)
+
     def set_visual_prompt(
         self,
         refer_image,
