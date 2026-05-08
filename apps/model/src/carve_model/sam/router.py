@@ -367,6 +367,12 @@ class VisualPromptIn(BaseModel):
     refer_b64: str = Field(..., min_length=1)
     regions: list[VisualPromptRegion] = Field(..., min_length=1, max_length=64)
     target_b64: str = Field(..., min_length=1)
+    # v3.28 — confidence floor (0..1) passed to SAM 3.1's text-prompt
+    # path. Mapped directly from the user's UI threshold.
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    # v3.28 — fallback text concept when FO1 captioning fails or returns
+    # blank. The api supplies the project class's text_prompt or name.
+    text_hint: str | None = Field(default=None, max_length=300)
 
 
 class VisualPromptOut(BaseModel):
@@ -375,6 +381,10 @@ class VisualPromptOut(BaseModel):
     score: float
     bbox: list[float]
     polygon: list[list[float]] = []
+    # v3.28 — surfaced so the UI can tell the user what concept SAM
+    # was actually looking for (e.g. "wooden chair") when the visual
+    # prompt was bridged through FO1 captioning.
+    concept: str = ""
 
 
 @router.post("/text-prompt", response_model=list[TextPromptOut])
@@ -499,6 +509,8 @@ def sam_visual_prompt(payload: VisualPromptIn) -> list[dict]:
         target_b64=payload.target_b64,
         refer_b64=payload.refer_b64,
         regions=regions,
+        threshold=payload.threshold,
+        text_hint=payload.text_hint,
     )
 
 

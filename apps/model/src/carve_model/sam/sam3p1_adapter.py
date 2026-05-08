@@ -825,6 +825,198 @@ class Sam3p1NativeImagePredictorAdapter:
         return None
 
 
+def find_via_similarity_heatmap(
+    adapter: "Sam3p1NativeImagePredictorAdapter",
+    exemplar_vec: "np.ndarray",
+    *,
+    threshold: float = 0.5,
+    top_k: int = 20,
+) -> list[tuple[list[float], float]]:
+    """Find candidate object boxes in the target image by cosine-similarity
+    heatmap against the exemplar vector.
+
+    v3.28 — replaces the broken ``predict_with_visual_prompt`` path that
+    fed raw FPN features into the model's prompt slot (which expects
+    prompt-space embeddings, not backbone features). Cosine similarity
+    in dense feature space is well-behaved for visual concept matching.
+
+    Pipeline:
+      1. Pull dense feature map from the cached target state.
+      2. L2-normalise both the dense map and the exemplar.
+      3. Compute (Hf, Wf) cosine similarity heatmap.
+      4. Threshold + 8-connectivity components → candidate regions.
+      5. Project each component's bbox from feature grid to image space.
+      6. Score each by the peak cosine similarity inside the component.
+      7. NMS in image space; cap to ``top_k``.
+
+    Args:
+        adapter: a Sam3p1NativeImagePredictorAdapter with set_image already
+            called on the target.
+        exemplar_vec: L2-normed (D,) exemplar feature vector pooled from
+            the source ref(s).
+        threshold: minimum cosine similarity to count a region as a match.
+            0.5 is a sensible default — visually similar regions usually
+            score >= 0.5 in dense SAM features. Below 0.3 is essentially
+            random.
+        top_k: cap on returned candidates.
+
+    Returns:
+        List of ``(bbox_xyxy_image_space, peak_cosine_score)`` tuples,
+        sorted by score descending. Empty list when no region clears the
+        threshold.
+    """
+    import numpy as np
+
+    if adapter._state is None:
+        raise RuntimeError(
+            "set_image must be called on the target before find_via_similarity_heatmap"
+        )
+
+    dense = adapter._extract_dense(adapter._state, scale="hi")  # (Hf, Wf, D)
+    Hf, Wf, D = dense.shape
+    flat = dense.reshape(-1, D)
+    norms = np.linalg.norm(flat, axis=-1, keepdims=True)
+    flat_n = flat / np.maximum(norms, 1e-12)
+    heatmap = (flat_n @ exemplar_vec).reshape(Hf, Wf).astype(np.float32)
+
+    if heatmap.max() < threshold:
+        return []
+
+    binary = (heatmap >= threshold).astype(np.uint8)
+
+    # Connected components — cv2 if present, numpy fallback otherwise.
+    try:
+        import cv2  # type: ignore[import-not-found]
+
+        n_components, labels = cv2.connectedComponents(binary, connectivity=8)
+    except ImportError:
+        n_components, labels = _numpy_connected_components(binary)
+
+    H_img = adapter._original_size[0]
+    W_img = adapter._original_size[1]
+    sx = float(W_img) / float(Wf)
+    sy = float(H_img) / float(Hf)
+
+    candidates: list[tuple[list[float], float]] = []
+    for label in range(1, n_components):
+        mask = labels == label
+        if not mask.any():
+            continue
+        peak_score = float(heatmap[mask].max())
+        ys, xs = np.where(mask)
+        y1, y2 = int(ys.min()), int(ys.max())
+        x1, x2 = int(xs.min()), int(xs.max())
+        ix1 = max(0.0, x1 * sx)
+        iy1 = max(0.0, y1 * sy)
+        ix2 = min(float(W_img), (x2 + 1) * sx)
+        iy2 = min(float(H_img), (y2 + 1) * sy)
+        if ix2 - ix1 < 4 or iy2 - iy1 < 4:
+            continue
+        candidates.append(([ix1, iy1, ix2, iy2], peak_score))
+
+    candidates.sort(key=lambda t: -t[1])
+    return _nms_candidates(candidates, iou_threshold=0.3)[:top_k]
+
+
+def _numpy_connected_components(binary: "np.ndarray") -> tuple[int, "np.ndarray"]:
+    """8-connectivity connected components without cv2.
+
+    Iterative two-pass scan with union-find. Returns (n_labels_including_bg, labels).
+    """
+    import numpy as np
+
+    H, W = binary.shape
+    labels = np.zeros((H, W), dtype=np.int32)
+    parent: list[int] = [0]
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    next_label = 1
+    for y in range(H):
+        for x in range(W):
+            if not binary[y, x]:
+                continue
+            neighbors: list[int] = []
+            if y > 0 and labels[y - 1, x] > 0:
+                neighbors.append(int(labels[y - 1, x]))
+            if x > 0 and labels[y, x - 1] > 0:
+                neighbors.append(int(labels[y, x - 1]))
+            if y > 0 and x > 0 and labels[y - 1, x - 1] > 0:
+                neighbors.append(int(labels[y - 1, x - 1]))
+            if y > 0 and x + 1 < W and labels[y - 1, x + 1] > 0:
+                neighbors.append(int(labels[y - 1, x + 1]))
+            if not neighbors:
+                labels[y, x] = next_label
+                parent.append(next_label)
+                next_label += 1
+            else:
+                m = min(neighbors)
+                labels[y, x] = m
+                for n in neighbors:
+                    union(m, n)
+
+    # Second pass: resolve to roots and renumber compactly.
+    root_to_compact: dict[int, int] = {0: 0}
+    next_compact = 1
+    for y in range(H):
+        for x in range(W):
+            if labels[y, x] == 0:
+                continue
+            r = find(int(labels[y, x]))
+            if r not in root_to_compact:
+                root_to_compact[r] = next_compact
+                next_compact += 1
+            labels[y, x] = root_to_compact[r]
+    return next_compact, labels
+
+
+def _nms_candidates(
+    candidates: list[tuple[list[float], float]],
+    *,
+    iou_threshold: float = 0.3,
+) -> list[tuple[list[float], float]]:
+    """Greedy NMS over (bbox, score) tuples. Bboxes are xyxy floats."""
+    if not candidates:
+        return []
+    kept: list[tuple[list[float], float]] = []
+    for box, score in candidates:
+        ok = True
+        for kbox, _ in kept:
+            if _bbox_iou(box, kbox) >= iou_threshold:
+                ok = False
+                break
+        if ok:
+            kept.append((box, score))
+    return kept
+
+
+def _bbox_iou(a: list[float], b: list[float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
 def _native_visual_forward(
     model: Any,
     processor: Any,

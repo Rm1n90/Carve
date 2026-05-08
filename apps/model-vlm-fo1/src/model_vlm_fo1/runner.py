@@ -324,6 +324,127 @@ def _generate(
     return decoded.strip() if isinstance(decoded, str) else str(decoded)
 
 
+def _generate_freeform(
+    image: Any,
+    prompt: str,
+    max_new_tokens: int,
+) -> str:
+    """Generate freeform text for an image — used by the /caption path.
+
+    Mirrors ``_generate`` but bypasses ``OD_TEMPLATE`` because captioning
+    asks for a noun phrase, not an OD-style "find regions" instruction.
+    Empty bbox_list means the model attends to the whole image.
+    """
+    import torch  # type: ignore[import-not-found]
+    from vlm_fo1.mm_utils import prepare_inputs  # type: ignore[import-not-found]
+
+    tokenizer = _state["tokenizer"]
+    model = _state["model"]
+    processor = _state["processor"]
+    model_path = _state["model_path"]
+
+    # vlm_fo1.mm_utils.prepare_inputs raises on empty bbox_list ("Input
+    # lists cannot be empty."), so we pass a single full-image dummy
+    # box. The box doesn't contribute to the freeform output beyond
+    # giving the helper a non-empty list.
+    try:
+        W, H = image.size
+    except AttributeError:
+        W, H = 224, 224
+    dummy_box = [[0.0, 0.0, float(W), float(H)]]
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": image}},
+                {"type": "text", "text": prompt},
+            ],
+            "bbox_list": dummy_box,
+        },
+    ]
+
+    try:
+        device = next(model.parameters()).device
+        device_str = str(device)
+    except (AttributeError, StopIteration, TypeError):
+        device_str = "cuda"
+
+    generation_kwargs = prepare_inputs(
+        model_path,
+        model,
+        processor,
+        tokenizer,
+        messages,
+        device=device_str,
+        max_tokens=max_new_tokens,
+        top_p=0.05,
+        temperature=0.0,
+        do_sample=False,
+    )
+
+    with torch.inference_mode():
+        output_ids = model.generate(**generation_kwargs)
+
+    try:
+        prompt_len = int(generation_kwargs["inputs"].shape[1])
+    except (KeyError, AttributeError, IndexError, TypeError, ValueError):
+        prompt_len = 0
+    try:
+        sliced = output_ids[0, prompt_len:] if prompt_len > 0 else output_ids[0]
+    except (TypeError, IndexError):
+        sliced = output_ids
+
+    decoded = tokenizer.decode(sliced)
+    return decoded.strip() if isinstance(decoded, str) else str(decoded)
+
+
+def run_caption(
+    *,
+    image_b64: str,
+    prompt: str | None = None,
+    max_new_tokens: int = 50,
+) -> dict[str, Any]:
+    """Caption an image as a short noun phrase.
+
+    v3.28 — supports the SAM Visual Prompt feature. The caller crops the
+    user's reference region (with surrounding context) and posts it
+    here; we return e.g. ``"red metal chair"`` which SAM 3.1's native
+    text-prompt path can then use to find similar instances.
+
+    Why FO1 instead of a dedicated captioning model: FO1 is already
+    deployed, and Qwen2.5-VL (its base) has strong native captioning.
+    The OD fine-tune doesn't catastrophically forget freeform generation.
+    """
+    from model_vlm_fo1.prompts import CAPTION_TEMPLATE
+
+    global _last_used_at
+
+    _ensure_loaded()
+    image = _decode_image(image_b64)
+    text_prompt = prompt or CAPTION_TEMPLATE
+    try:
+        raw = _generate_freeform(image, text_prompt, max_new_tokens=max_new_tokens)
+    finally:
+        _empty_cuda_cache()
+
+    # Clean output: strip region tokens, any HTML-ish tags, leading
+    # punctuation/quotes, and keep only the first line. Despite the
+    # noun-phrase instruction the model can still emit follow-up text;
+    # we drop it.
+    cleaned = _REGION_TOKEN_RE.sub("", raw)
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    cleaned = cleaned.strip().strip(".\"'`,;:!? ").strip()
+    cleaned = cleaned.splitlines()[0].strip() if cleaned else ""
+
+    _last_used_at = time.monotonic()
+    return {
+        "text": cleaned,
+        "raw_output": raw,
+        "model_path": _state["model_path"],
+        "quant": _state["quant"],
+    }
+
+
 def run_filter(
     *,
     image_b64: str,

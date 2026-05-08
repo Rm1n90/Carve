@@ -86,6 +86,39 @@ def readyz() -> dict[str, str]:
     raise HTTPException(status_code=503, detail="model not loaded yet")
 
 
+class CaptionRequest(BaseModel):
+    image_b64: str
+    prompt: str | None = None  # override default CAPTION_TEMPLATE
+    max_new_tokens: int = Field(default=50, ge=1, le=512)
+
+
+class CaptionResponse(BaseModel):
+    text: str
+    raw_output: str
+    model_path: str
+    quant: str | None = None
+
+
+@app.post("/caption", response_model=CaptionResponse)
+def caption_endpoint(req: CaptionRequest) -> CaptionResponse:
+    """v3.28 — visual-to-text bridge for the SAM Visual Prompt feature.
+
+    Returns a short noun phrase describing the object in ``image_b64``.
+    The caller is expected to crop the user's reference region (with
+    surrounding context) before posting; we don't re-crop here.
+    """
+    try:
+        result = runner.run_caption(
+            image_b64=req.image_b64,
+            prompt=req.prompt,
+            max_new_tokens=req.max_new_tokens,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("caption failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return CaptionResponse(**result)
+
+
 @app.post("/filter", response_model=FilterResponse)
 def filter_endpoint(req: FilterRequest) -> FilterResponse:
     try:

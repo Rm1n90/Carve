@@ -97,15 +97,46 @@ def auto_visual_for_asset(
             asset_cache[asset_id] = session.get(Asset, uuid.UUID(asset_id))
         return asset_cache[asset_id]
 
+    # v3.28 — class lookup: SAM 3.1 doesn't natively support cross-image
+    # visual prompting, so we bridge the visual ref to TEXT via FO1
+    # captioning + fall back to the project class's text_prompt or name
+    # when the captioner returns blank. Cache per-class lookups.
+    from carve_api.projects.models import Class as ClassModel
+
+    class_cache: dict[uuid.UUID, ClassModel | None] = {}
+
+    def _class(cls_id: uuid.UUID) -> ClassModel | None:
+        if cls_id not in class_cache:
+            class_cache[cls_id] = session.get(ClassModel, cls_id)
+        return class_cache[cls_id]
+
     for src in sources:
         refer = _refer_asset(src["asset_id"])
         for grp in src["groups"]:
             cls_id = uuid.UUID(grp["class_id"])
             touched_class_ids.add(cls_id)
+            # Build text_hint for the visual-prompt → SAM 3.1 text-prompt
+            # bridge. Priority: class.text_prompt (curated, high-signal)
+            # → class.name (low-signal but better than nothing). The
+            # model service will prefer FO1 caption when available and
+            # fall back to this hint when the captioner is unavailable
+            # or returns blank.
+            cls_obj = _class(cls_id)
+            text_hint = ""
+            if cls_obj is not None:
+                tp = (cls_obj.text_prompt or "").strip()
+                text_hint = tp if tp else (cls_obj.name or "").strip()
+
+            # v3.28 — push the user's threshold + text hint through to
+            # the model service. The api-side ``>= threshold`` check
+            # below stays as a defence-in-depth for older model builds
+            # that ignore the kwarg.
             results = sam_visual_prompt_for_asset(
                 target_asset=asset,
                 refer_asset=refer,
                 regions=grp["refs"],
+                threshold=threshold,
+                text_hint=text_hint or None,
             )
             kept = [r for r in results if float(r.get("score", 0.0)) >= threshold]
             if not find_all and kept:

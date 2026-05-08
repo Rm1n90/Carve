@@ -26,6 +26,11 @@ services:
     volumes:
       - ./apps/model/src:/app/src
     command: ["uvicorn", "carve_model.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
+  model-vlm-fo1:
+    # v3.28 — bind-mount sidecar source so /caption endpoint additions
+    # land without an image rebuild.
+    volumes:
+      - ./apps/model-vlm-fo1/src:/app/src
   web:
     ports: ["5173:80"]
     healthcheck:

@@ -123,6 +123,43 @@ def unload_sidecar(*, timeout: float = 5.0) -> dict[str, Any]:
         return {"evicted": False, "gpu_freed_mb": None}
 
 
+def caption_image(
+    image: Any,
+    *,
+    prompt: str | None = None,
+    max_new_tokens: int = 50,
+    timeout: float = 60.0,
+) -> str:
+    """v3.28 — call the FO1 sidecar's /caption endpoint with a (cropped)
+    image and return the cleaned noun-phrase response.
+
+    Used by the SAM Visual Prompt path to bridge a user-picked visual
+    reference to a SAM 3.1 text concept. Returns ``""`` on any failure
+    (network, sidecar 5xx, blank output) so the caller can fall back to
+    the project class's text_prompt or name.
+    """
+    import httpx
+
+    base = _resolve_sidecar_url()
+    image_b64 = _encode_image_to_b64(image)
+    payload: dict[str, Any] = {
+        "image_b64": image_b64,
+        "max_new_tokens": int(max_new_tokens),
+    }
+    if prompt:
+        payload["prompt"] = prompt
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(f"{base}/caption", json=payload)
+            resp.raise_for_status()
+            body = resp.json() or {}
+            text = str(body.get("text") or "").strip()
+            return text
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("vlm_fo1 /caption failed: %s", exc)
+        return ""
+
+
 def _encode_image_to_b64(image: Any) -> str:
     """Encode a PIL ``Image`` (or already-encoded bytes) to base64 PNG.
 

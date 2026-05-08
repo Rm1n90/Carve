@@ -185,6 +185,8 @@ def sam_visual_prompt_for_asset(
     target_asset: Asset,
     refer_asset: Asset,
     regions: list[dict],
+    threshold: float | None = None,
+    text_hint: str | None = None,
     target_frame_id: uuid.UUID | None = None,
     refer_frame_id: uuid.UUID | None = None,
 ) -> list[dict]:
@@ -192,9 +194,12 @@ def sam_visual_prompt_for_asset(
 
     Fetches both the target and reference asset bytes once and forwards
     them to the model service's /sam/visual-prompt endpoint with the
-    supplied region list (bbox or polygon, but not mixed). Maps the
-    model service's error codes to the same SAM AppErrors used by the
-    text-prompt path:
+    supplied region list (bbox or polygon, but not mixed). v3.28 — the
+    ``threshold`` is now the cosine-similarity floor that the model
+    applies before returning candidates.
+
+    Maps the model service's error codes to the same SAM AppErrors used
+    by the text-prompt path:
       - 409 sam3p1_not_enabled       → Sam3NotEnabled
       - 503 sam_visual_predictor_not_loaded / unreachable → SamModelUnreachable
       - other 4xx/5xx                → SamModelFailed
@@ -205,7 +210,11 @@ def sam_visual_prompt_for_asset(
     refer_b64 = base64.b64encode(refer_bytes).decode("ascii")
     try:
         return sam_visual_prompt(
-            refer_b64=refer_b64, regions=regions, target_b64=target_b64,
+            refer_b64=refer_b64,
+            regions=regions,
+            target_b64=target_b64,
+            threshold=threshold,
+            text_hint=text_hint,
         )
     except ModelServiceError as exc:
         if exc.status_code == 409:

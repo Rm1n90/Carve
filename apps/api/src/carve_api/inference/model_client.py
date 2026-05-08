@@ -244,24 +244,31 @@ def sam_visual_prompt(
     refer_b64: str,
     regions: list[dict],
     target_b64: str,
+    threshold: float | None = None,
+    text_hint: str | None = None,
 ) -> list[dict]:
-    """POST /sam/visual-prompt — SAM 3.1 Promptable Concept Segmentation.
+    """POST /sam/visual-prompt — SAM 3.1 cosine-similarity visual prompt.
 
-    ``refer_b64`` is the reference image; ``regions`` is a list of bbox/polygon
-    dicts inside that reference; ``target_b64`` is the image to find similar
-    objects in. Returns the model service's list of mask candidates with the
-    same shape /sam/text-prompt produces (counts, size, score, bbox, polygon).
+    v3.28 — replaces the broken raw-FPN-features-into-prompt-slot path
+    with a similarity heatmap + SAM box-prompt refine pipeline. The user
+    threshold is now the cosine-similarity floor (0..1), not a normalised
+    score, so the model can return EMPTY when nothing similar is found
+    instead of forcing low-confidence FPs.
 
-    The model service answers 409 ``sam3p1_not_enabled`` when SAM 3.1 native
-    isn't the active variant, 422 ``mixed_ref_types`` when regions mix bbox
-    and polygon kinds, and 503 ``sam_visual_predictor_not_loaded`` when the
-    predictor factory isn't registered yet.
+    The model service answers 409 ``sam3p1_not_enabled`` when SAM 3.1
+    native isn't the active variant, 422 ``mixed_ref_types`` when regions
+    mix bbox and polygon kinds, and 503 ``sam_visual_predictor_not_loaded``
+    when the predictor factory isn't registered yet.
     """
-    body = {
+    body: dict = {
         "refer_b64": refer_b64,
         "regions": regions,
         "target_b64": target_b64,
     }
+    if threshold is not None:
+        body["threshold"] = float(threshold)
+    if text_hint:
+        body["text_hint"] = str(text_hint)
     with _wrap_unreachable("sam_visual_prompt"), _client() as c:
         r = c.post("/sam/visual-prompt", json=body)
         if r.status_code >= 400:

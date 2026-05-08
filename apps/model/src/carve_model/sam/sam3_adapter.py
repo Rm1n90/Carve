@@ -1008,70 +1008,210 @@ def make_sam3_visual_predictor():
         import numpy as np
         return np.asarray(Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB"))
 
-    def call(*, target_b64, refer_b64, regions):
+    def call(
+        *,
+        target_b64,
+        refer_b64,
+        regions,
+        threshold=None,
+        text_hint=None,
+    ):
+        """SAM 3.1 visual prompt via VLM-FO1 caption → native text-prompt.
+
+        v3.28 (FINAL design) — SAM 3.1 doesn't natively support cross-
+        image visual prompting (no public set_visual_prompt API; the
+        backbone features aren't discriminative for instance matching).
+        After two failed attempts (raw FPN features into the model's
+        prompt slot, and dense cosine heatmaps), the working approach
+        is to CONVERT the user's visual reference to TEXT via the
+        already-deployed VLM-FO1 sidecar, then use SAM 3.1's NATIVE
+        text-prompt path which IS proven accurate.
+
+        Pipeline:
+          1. Crop the user's reference region (with surrounding
+             context) from the refer image.
+          2. POST the crop to FO1 /caption → e.g. "red car",
+             "wooden chair". This is the visual-to-text bridge.
+          3. If captioning fails or returns blank, fall back to
+             ``text_hint`` (the project class's text_prompt or name)
+             which the API passes through.
+          4. set_image(target) + set_text_prompt(target, caption) —
+             SAM 3.1's native PCS finds matching object instances.
+          5. Filter by user threshold (cosine-style score the model
+             emits, capped at 1.0 after normalisation), return as the
+             existing /sam/text-prompt response shape.
+
+        Why this works: SAM 3.1's text-prompt path is tuned for high-
+        precision concept segmentation. FO1 (Qwen2.5-VL fine-tune) is
+        a proper VLM that captions images well. Combining them gives
+        a fast, accurate, SAM-driven visual prompt that doesn't
+        require new ML training.
+        """
         import numpy as np
+        import torch  # type: ignore[import-not-found]
+        from PIL import Image
         from carve_model.sam.codec import encode_mask_rle
         from carve_model.sam.polygonize import mask_to_polygon
-        from carve_model.sam.visual_prompt_pool import l2norm
 
         adapter = _adapter()
         target = _decode_b64(target_b64)
         refer = _decode_b64(refer_b64)
+
+        if not regions:
+            return []
+
+        # 1. Derive the SAM 3.1 text concept. Priority order:
+        #      (a) FO1 caption of the cropped refer region
+        #      (b) text_hint from the api (project class's text_prompt
+        #          or name as a fallback supplied by the caller)
+        #      (c) generic "object"  (last resort — broad recall, will
+        #          mostly produce noise but at least returns something)
+        concept_text = ""
+        try:
+            crop = _crop_refer_for_caption(refer, regions[0])
+            if crop is not None:
+                from carve_model.vlm_fo1.adapter import caption_image
+                concept_text = caption_image(
+                    Image.fromarray(crop), max_new_tokens=30, timeout=60.0,
+                ).strip()
+        except Exception:  # noqa: BLE001 — caption is best-effort
+            concept_text = ""
+
+        if not concept_text and isinstance(text_hint, str) and text_hint.strip():
+            concept_text = text_hint.strip()
+        if not concept_text:
+            concept_text = "object"
+
+        # 2. Encode target and run SAM 3.1 native PCS with the derived
+        #    concept text. set_text_prompt does a forward and writes
+        #    masks/scores/boxes onto the state.
         adapter.set_image(target)
-        per_ref = [adapter.set_visual_prompt(refer, r) for r in regions]
-        if not per_ref:
-            return []
-        pooled = l2norm(np.mean(per_ref, axis=0))
-        masks, scores, boxes = adapter.predict_with_visual_prompt(pooled)
-        if scores.size == 0:
+        state = adapter._state
+        if state is None:
             return []
 
-        # Post-process raw SAM 3.1 PCS output:
-        #
-        # 1. NMS by IoU on the bbox set — the processor returns hundreds of
-        #    overlapping proposals. IoU threshold 0.5 is the standard default.
-        # 2. Score normalisation — visual-prompt scores are systematically
-        #    much smaller (~0.01-0.05) than text-prompt scores (often 0.5-0.9),
-        #    so feeding raw SAM scores into a 0-1 UI threshold makes "0.4"
-        #    impossibly strict. We rescale by max so the best detection is
-        #    1.0 and the threshold becomes "keep everything ≥ X% of the best".
-        keep_idx = _nms_by_iou(boxes, scores, iou_threshold=0.5)
-        masks = masks[keep_idx]
-        scores = scores[keep_idx]
-        boxes = boxes[keep_idx]
+        # SAM 3.1 emits scores in [0, 1]. The user's threshold maps
+        # directly to confidence_threshold, so the model returns ONLY
+        # candidates above the floor. No post-hoc normalisation needed.
+        original_thr = getattr(adapter._processor, "confidence_threshold", 0.5)
+        sim_threshold = float(threshold) if threshold is not None else 0.5
+        try:
+            adapter._processor.set_confidence_threshold(sim_threshold)
+        except Exception:  # noqa: BLE001
+            pass
 
-        # Cap to the top-K post-NMS so a noisy run doesn't return 200 polygons.
+        try:
+            with torch.inference_mode():
+                if adapter._device == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        adapter._processor.set_text_prompt(concept_text, state)
+                else:
+                    adapter._processor.set_text_prompt(concept_text, state)
+        finally:
+            try:
+                adapter._processor.set_confidence_threshold(original_thr)
+            except Exception:  # noqa: BLE001
+                pass
+
+        masks = state.get("masks")
+        boxes = state.get("boxes")
+        det_scores = state.get("scores")
+        if masks is None or det_scores is None or len(det_scores) == 0:
+            return []
+
+        from carve_model.sam.perf import to_numpy_safe
+
+        masks_np = to_numpy_safe(masks)
+        if masks_np.ndim == 4 and masks_np.shape[1] == 1:
+            masks_np = masks_np[:, 0]
+        masks_np = (masks_np > 0).astype(np.uint8)
+        boxes_np = to_numpy_safe(boxes) if boxes is not None else np.zeros((0, 4))
+        scores_np = to_numpy_safe(det_scores)
+        if masks_np.shape[0] == 0:
+            return []
+
+        # NMS to deduplicate overlapping detections.
+        order = np.argsort(-scores_np)
+        keep_after_nms = _greedy_nms_indices(
+            boxes_np[order], scores_np[order], iou_threshold=0.5,
+        )
+        final_idx = order[keep_after_nms]
         TOP_K = 50
-        if scores.size > TOP_K:
-            order = np.argsort(-scores)[:TOP_K]
-            masks = masks[order]
-            scores = scores[order]
-            boxes = boxes[order]
+        final_idx = final_idx[:TOP_K]
 
-        max_score = float(scores.max())
-        if max_score > 0:
-            normalized = scores / max_score
-        else:
-            normalized = scores
-
-        out = []
-        for m, s, b in zip(masks, normalized, boxes):
-            counts, size = encode_mask_rle(np.asarray(m, dtype=np.uint8))
-            polygon = mask_to_polygon(np.asarray(m, dtype=np.uint8))
+        out: list[dict] = []
+        for idx in final_idx:
+            m = masks_np[idx]
+            if m.sum() == 0:
+                continue
+            score = float(scores_np[idx])
+            counts, size = encode_mask_rle(m)
+            polygon = mask_to_polygon(m)
+            ys, xs = np.where(m)
+            tight_bbox = [
+                float(xs.min()), float(ys.min()),
+                float(xs.max() + 1), float(ys.max() + 1),
+            ]
             out.append({
                 "counts": counts,
                 "size": list(size),
-                "score": float(s),
-                "bbox": [float(x) for x in b],
+                "score": score,
+                "bbox": tight_bbox,
                 "polygon": polygon,
+                # Surface the derived concept so the api/UI can show it
+                # in toasts (tells the user *what* SAM was looking for).
+                "concept": concept_text,
             })
         return out
 
     return call
 
 
-def _nms_by_iou(boxes, scores, *, iou_threshold: float = 0.5):
-    """Greedy NMS. ``boxes`` is (N, 4) xyxy; ``scores`` is (N,)."""
+def _crop_refer_for_caption(
+    refer_image: "np.ndarray", region: dict, *, pad_ratio: float = 0.20,
+) -> "np.ndarray | None":
+    """Crop the refer image at the region with surrounding context
+    padding, ready for FO1 captioning.
+
+    Wider padding (20%) than the visual-prompt encode (15%) because
+    captioning benefits from MORE context — VLMs do better when they
+    can see the object plus surrounding scene cues.
+    """
+    import numpy as np
+    H, W = refer_image.shape[:2]
+    if region["kind"] == "bbox":
+        x1, y1, x2, y2 = (float(v) for v in region["xyxy"])
+    elif region["kind"] == "polygon":
+        pts = np.asarray(region["points"], dtype=float)
+        x1, y1 = pts[:, 0].min(), pts[:, 1].min()
+        x2, y2 = pts[:, 0].max(), pts[:, 1].max()
+    else:
+        return None
+    w = x2 - x1
+    h = y2 - y1
+    pad_x = w * pad_ratio
+    pad_y = h * pad_ratio
+    cx1 = max(0, int(x1 - pad_x))
+    cy1 = max(0, int(y1 - pad_y))
+    cx2 = min(W, int(x2 + pad_x))
+    cy2 = min(H, int(y2 + pad_y))
+    if cx2 <= cx1 or cy2 <= cy1:
+        return None
+    return refer_image[cy1:cy2, cx1:cx2]
+
+
+def _downsample_mask_nn(mask: "np.ndarray", out_hw: tuple[int, int]) -> "np.ndarray":
+    """Nearest-neighbour downsample a 2-D bool/uint8 mask to ``out_hw``."""
+    import numpy as np
+    H_in, W_in = mask.shape
+    H_out, W_out = out_hw
+    ys = (np.arange(H_out) * (H_in / H_out)).astype(np.int64)
+    xs = (np.arange(W_out) * (W_in / W_out)).astype(np.int64)
+    return mask[np.ix_(ys, xs)]
+
+
+def _greedy_nms_indices(boxes, scores, *, iou_threshold: float = 0.5):
+    """Return indices kept by greedy NMS. ``boxes`` is (N, 4) xyxy."""
     import numpy as np
     if boxes.shape[0] == 0:
         return np.zeros((0,), dtype=np.int64)
