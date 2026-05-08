@@ -3,9 +3,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Sparkles, Wand2, X } from "lucide-react";
 
-import { samApi } from "@/api/sam";
+import {
+  samApi,
+  type SamAutoVisualBody,
+  type SamVisualRef,
+  type SamVisualSource,
+} from "@/api/sam";
 import { modelsApi } from "@/api/phase2";
 import type { ClassRow } from "@/api/classes";
+import {
+  VisualReferencePicker,
+  type VisualPick,
+} from "@/components/annotation/VisualReferencePicker";
+import { useTaskRefs } from "@/state/useTaskRefs";
 import {
   newAnnotationIdsSince,
   runBatchTaskPostProcess,
@@ -66,6 +76,11 @@ export function AutoAnnotateDialog({
 }: AutoAnnotateDialogProps) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  // v3.28 — top-level dialog mode. Visual tab is gated by the model
+  // service's ``visual_prompt_available`` capability flag; when it's
+  // false the tab switcher is hidden and the dialog renders the Text
+  // body only (no UX regression for SAM 2 / SAM 3-transformers users).
+  const [mode, setMode] = useState<"text" | "visual">("text");
   const [selectedClassIds, setSelectedClassIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -164,6 +179,20 @@ export function AutoAnnotateDialog({
   const isSam3Family = samVariant === "sam3";
   const vlmFo1Available =
     samStatusQuery.data?.vlm_fo1_available === true && isSam3Family;
+  // v3.28 — SAM Visual Prompt capability gate. Hidden when the model
+  // service does not advertise a visual-prompt runtime; preserves the
+  // single-tab Text UX on SAM 2 / SAM 3-transformers deployments.
+  const visualPromptAvailable =
+    samStatusQuery.data?.visual_prompt_available === true;
+  // Reset to "text" whenever the dialog closes, and clamp to "text" if
+  // the capability disappears mid-session.
+  useEffect(() => {
+    if (!open) {
+      setMode("text");
+    } else if (!visualPromptAvailable && mode === "visual") {
+      setMode("text");
+    }
+  }, [open, visualPromptAvailable, mode]);
 
   // v3.22 — no longer seed from per-user pref. The toggle starts OFF
   // each time the dialog opens (see useState above). Existing per-user
@@ -514,11 +543,55 @@ export function AutoAnnotateDialog({
         <DialogHeader>
           <DialogTitle>Auto-annotate</DialogTitle>
           <DialogDescription>
-            Run SAM 3 text prompts on the selected classes. Set per-class
-            prompts in the Classes editor.
+            {mode === "visual"
+              ? "Pick reference annotations from this task and SAM 3.1 will find matching objects."
+              : "Run SAM 3 text prompts on the selected classes. Set per-class prompts in the Classes editor."}
           </DialogDescription>
         </DialogHeader>
 
+        {/* v3.28 — Text/Visual tab switcher. Hidden when the model
+            service does not advertise a visual-prompt runtime. */}
+        {visualPromptAvailable && (
+          <div className="grid grid-cols-2 gap-1 p-1 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] mb-3">
+            <button
+              type="button"
+              data-testid="auto-annotate-mode-text"
+              onClick={() => setMode("text")}
+              aria-pressed={mode === "text"}
+              className={cn(
+                "flex flex-col items-start gap-0.5 px-3 py-2 rounded-[var(--radius-sm)] text-left transition-all duration-[160ms]",
+                mode === "text"
+                  ? "bg-[var(--bg-elev)] shadow-[0_0_0_1px_var(--accent)] scale-[1.02]"
+                  : "hover:bg-[var(--bg-hover)]",
+              )}
+            >
+              <span className="text-[12px] font-medium">Text Prompt</span>
+              <span className="text-[10.5px] text-[color:var(--text-tertiary)]">
+                Per-class text concept
+              </span>
+            </button>
+            <button
+              type="button"
+              data-testid="auto-annotate-mode-visual"
+              onClick={() => setMode("visual")}
+              aria-pressed={mode === "visual"}
+              className={cn(
+                "flex flex-col items-start gap-0.5 px-3 py-2 rounded-[var(--radius-sm)] text-left transition-all duration-[160ms]",
+                mode === "visual"
+                  ? "bg-[var(--bg-elev)] shadow-[0_0_0_1px_var(--accent)] scale-[1.02]"
+                  : "hover:bg-[var(--bg-hover)]",
+              )}
+            >
+              <span className="text-[12px] font-medium">Visual Prompt</span>
+              <span className="text-[10.5px] text-[color:var(--text-tertiary)]">
+                Pick reference annotations
+              </span>
+            </button>
+          </div>
+        )}
+
+        {mode === "text" && (
+        <>
         {/* Engine */}
         <div className="grid gap-2 mb-4">
           <div className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
@@ -783,6 +856,18 @@ export function AutoAnnotateDialog({
             Run
           </Button>
         </DialogFooter>
+        </>
+        )}
+
+        {mode === "visual" && (
+          <VisualBody
+            assetId={assetId}
+            taskId={taskId}
+            classes={classes}
+            onSuccess={onSuccess}
+            setOpen={setOpen}
+          />
+        )}
           </>
         )}
       </DialogContent>
@@ -940,6 +1025,458 @@ function BatchProgressView({
                 variant: "warning",
                 duration: 2500,
               });
+            } catch {
+              showToast("Failed to cancel.", { variant: "error" });
+            } finally {
+              setCanceling(false);
+            }
+          }}
+        >
+          Cancel
+        </Button>
+      </DialogFooter>
+    </div>
+  );
+}
+
+// v3.28 — SAM Visual Prompt body (PCS / Promotable Concept Segmentation).
+// Owns its own picks state, ref-kind toggle, scope/threshold/find/overwrite
+// controls, and the run mutation. Mounted only when the parent's ``mode``
+// is ``visual`` and the model service advertised ``visual_prompt_available``.
+function VisualBody({
+  assetId,
+  taskId,
+  classes,
+  onSuccess,
+  setOpen,
+}: {
+  assetId: string | null;
+  taskId?: string;
+  classes: ClassRow[];
+  onSuccess?: (n: number) => void;
+  setOpen: (o: boolean) => void;
+}) {
+  const qc = useQueryClient();
+  const [refKind, setRefKind] = useState<"bbox" | "polygon">("bbox");
+  const [picks, setPicks] = useState<Record<string, VisualPick>>({});
+  const [confirmSwitchTo, setConfirmSwitchTo] = useState<
+    "bbox" | "polygon" | null
+  >(null);
+  const [scope, setScope] = useState<"this" | "all">("this");
+  const [threshold, setThreshold] = useState<number>(0.4);
+  const [findAll, setFindAll] = useState<boolean>(true);
+  const [overwrite, setOverwrite] = useState<boolean>(false);
+  const [runningJobId, setRunningJobId] = useState<string | null>(null);
+
+  const refs = useTaskRefs({ taskId, assetId, enabled: true });
+
+  function requestSwitch(next: "bbox" | "polygon") {
+    if (next === refKind) return;
+    if (Object.keys(picks).length > 0) {
+      setConfirmSwitchTo(next);
+    } else {
+      setRefKind(next);
+    }
+  }
+
+  function buildSources(): SamVisualSource[] {
+    // Group picks by (asset_id, class_id). Each group's ``refs`` is the
+    // raw geometry from ``VisualPick`` so SAM 3.1 PCS can use polygon
+    // points or bbox xyxy directly.
+    const bySource = new Map<string, Map<string, SamVisualRef[]>>();
+    for (const p of Object.values(picks)) {
+      if (!p.classId) continue;
+      const inner = bySource.get(p.assetId) ?? new Map<string, SamVisualRef[]>();
+      const list = inner.get(p.classId) ?? [];
+      list.push(p.geometry as SamVisualRef);
+      inner.set(p.classId, list);
+      bySource.set(p.assetId, inner);
+    }
+    return Array.from(bySource.entries()).map(([asset_id, inner]) => ({
+      asset_id,
+      groups: Array.from(inner.entries()).map(([class_id, refList]) => ({
+        class_id,
+        refs: refList,
+      })),
+    }));
+  }
+
+  const summary = useMemo(() => {
+    const sources = new Set<string>();
+    const classIds = new Set<string>();
+    let unassigned = 0;
+    for (const p of Object.values(picks)) {
+      sources.add(p.assetId);
+      if (p.classId) classIds.add(p.classId);
+      else unassigned += 1;
+    }
+    return {
+      pickCount: Object.keys(picks).length,
+      sourceCount: sources.size,
+      classCount: classIds.size,
+      unassigned,
+    };
+  }, [picks]);
+
+  const canRun =
+    summary.pickCount > 0 &&
+    summary.unassigned === 0 &&
+    ((scope === "this" && !!assetId) || (scope === "all" && !!taskId));
+
+  const run = useMutation({
+    mutationFn: async () => {
+      const body: SamAutoVisualBody = {
+        sources: buildSources(),
+        ref_kind: refKind,
+        threshold,
+        find_all: findAll,
+        overwrite,
+      };
+      if (scope === "all") {
+        if (!taskId) throw new Error("no_task");
+        const r = await samApi.autoVisualBatch(taskId, body);
+        return { kind: "batch" as const, job_id: r.job_id };
+      }
+      if (!assetId) throw new Error("no_asset");
+      const r = await samApi.autoVisual(assetId, body);
+      return { kind: "sync" as const, ...r };
+    },
+    onSuccess: (result) => {
+      if (result.kind === "batch") {
+        setRunningJobId(result.job_id);
+        return;
+      }
+      qc.invalidateQueries({ queryKey: ["annotations"] });
+      showToast(
+        result.annotations_created > 0
+          ? `Created ${result.annotations_created} annotation${result.annotations_created === 1 ? "" : "s"}.`
+          : "No matches above the threshold.",
+        {
+          variant: result.annotations_created > 0 ? "success" : "warning",
+        },
+      );
+      onSuccess?.(result.annotations_created);
+      setOpen(false);
+    },
+    onError: () => {
+      showToast("SAM Visual Prompt failed.", { variant: "error" });
+    },
+  });
+
+  if (runningJobId && taskId) {
+    return (
+      <VisualBatchProgressView
+        taskId={taskId}
+        jobId={runningJobId}
+        onDone={(final) => {
+          setRunningJobId(null);
+          qc.invalidateQueries({ queryKey: ["annotations"] });
+          onSuccess?.(final?.total_annotations_created ?? 0);
+          setOpen(false);
+        }}
+      />
+    );
+  }
+
+  return (
+    <>
+      {/* Ref-kind toggle (single-kind per run, gated by SAM PCS server) */}
+      <div
+        className="grid grid-cols-2 gap-1 p-1 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] mb-3"
+        data-testid="auto-visual-ref-kind"
+      >
+        {(["bbox", "polygon"] as const).map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => requestSwitch(k)}
+            aria-pressed={refKind === k}
+            data-testid={`auto-visual-ref-kind-${k}`}
+            className={cn(
+              "px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium transition-all duration-[160ms]",
+              refKind === k
+                ? "bg-[var(--bg-elev)] shadow-[0_0_0_1px_var(--accent)]"
+                : "hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            {k === "bbox" ? "Bbox" : "Polygon"}
+          </button>
+        ))}
+      </div>
+
+      <VisualReferencePicker
+        assetId={assetId}
+        taskId={taskId}
+        classes={classes}
+        pickableAssets={refs.pickableAssets}
+        annotationsByAssetId={refs.annotationsByAssetId}
+        annotationsById={refs.annotationsById}
+        picks={picks}
+        onPicksChange={setPicks}
+        refKindFilter={refKind}
+        loading={refs.isLoading}
+      />
+
+      {/* Picks summary */}
+      <div className="text-[11px] text-[color:var(--text-tertiary)] mt-2 mb-3">
+        {summary.pickCount === 0 ? (
+          <span data-testid="auto-visual-empty-hint">
+            Pick at least one reference above to enable Run.
+          </span>
+        ) : (
+          <span data-testid="auto-visual-summary">
+            {summary.pickCount} pick{summary.pickCount === 1 ? "" : "s"} ·{" "}
+            {summary.sourceCount} source{summary.sourceCount === 1 ? "" : "s"} ·{" "}
+            {summary.classCount} class{summary.classCount === 1 ? "" : "es"}
+            {summary.unassigned > 0
+              ? ` · ${summary.unassigned} need${summary.unassigned === 1 ? "s" : ""} a class`
+              : ""}
+          </span>
+        )}
+      </div>
+
+      {/* Scope */}
+      <div className="grid gap-2 mb-3">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
+          Scope
+        </div>
+        <div className="flex flex-col gap-1.5 text-[12.5px] text-[color:var(--text-primary)]">
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="radio"
+              name="auto-visual-scope"
+              checked={scope === "this"}
+              onChange={() => setScope("this")}
+            />
+            This image
+          </label>
+          <label
+            className={cn(
+              "flex items-center gap-1.5",
+              taskId ? "cursor-pointer" : "opacity-50 cursor-not-allowed",
+            )}
+            title={taskId ? "Run on all assets in this task" : "Task id missing"}
+          >
+            <input
+              type="radio"
+              name="auto-visual-scope"
+              checked={scope === "all"}
+              disabled={!taskId}
+              onChange={() => setScope("all")}
+            />
+            All assets in this task
+          </label>
+        </div>
+      </div>
+
+      {/* Threshold */}
+      <div className="grid gap-2 mb-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
+            Score &ge;
+          </span>
+          <span className="font-mono text-[12px] text-[color:var(--text-primary)]">
+            {threshold.toFixed(2)}
+          </span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={threshold}
+          onChange={(e) => setThreshold(parseFloat(e.target.value))}
+          data-testid="auto-visual-threshold"
+        />
+      </div>
+
+      {/* Find */}
+      <div className="grid gap-2 mb-3">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
+          Find
+        </div>
+        <div className="flex gap-3 text-[12.5px] text-[color:var(--text-primary)]">
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="radio"
+              name="auto-visual-find"
+              checked={findAll}
+              onChange={() => setFindAll(true)}
+            />
+            All instances
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="radio"
+              name="auto-visual-find"
+              checked={!findAll}
+              onChange={() => setFindAll(false)}
+            />
+            Best match only
+          </label>
+        </div>
+      </div>
+
+      <label className="flex items-center gap-2 mb-3 text-[12.5px] text-[color:var(--text-primary)] cursor-pointer">
+        <Checkbox
+          checked={overwrite}
+          onChange={(e) => setOverwrite(e.target.checked)}
+          data-testid="auto-visual-overwrite"
+        />
+        Replace existing annotations for assigned classes
+      </label>
+
+      <DialogFooter>
+        <Button variant="ghost" size="md" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          size="md"
+          disabled={!canRun}
+          loading={run.isPending}
+          onClick={() => run.mutate()}
+          data-testid="auto-annotate-run"
+        >
+          {scope === "this" ? "Run" : "Run on all assets"}
+        </Button>
+      </DialogFooter>
+
+      {confirmSwitchTo && (
+        <Dialog
+          open={true}
+          onOpenChange={(o) => {
+            if (!o) setConfirmSwitchTo(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Switch to {confirmSwitchTo}?</DialogTitle>
+              <DialogDescription>
+                Switching reference type clears your current picks (
+                {summary.pickCount}).
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="ghost"
+                onClick={() => setConfirmSwitchTo(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                data-testid="auto-visual-switch-confirm"
+                onClick={() => {
+                  setPicks({});
+                  setRefKind(confirmSwitchTo);
+                  setConfirmSwitchTo(null);
+                }}
+              >
+                Switch &amp; clear picks
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
+  );
+}
+
+// v3.28 — Visual-prompt batch progress view. Mirrors the existing
+// BatchProgressView for SAM auto-text but polls the auto-visual batch
+// endpoint. Renders inside the Auto-annotate dialog while the RQ-backed
+// batch is running.
+function VisualBatchProgressView({
+  taskId,
+  jobId,
+  onDone,
+}: {
+  taskId: string;
+  jobId: string;
+  onDone: (
+    final: {
+      status: string;
+      total_annotations_created: number;
+      failed: number;
+    } | null,
+  ) => void;
+}) {
+  const POLL_MS = 500;
+  const statusQ = useQuery({
+    queryKey: ["sam-auto-visual-batch", taskId, jobId],
+    queryFn: () => samApi.autoVisualBatchProgress(taskId, jobId),
+    refetchInterval: (q) => {
+      const s = q.state.data?.status;
+      if (
+        s === "completed" ||
+        s === "completed_with_errors" ||
+        s === "failed" ||
+        s === "canceled"
+      ) {
+        return false;
+      }
+      return POLL_MS;
+    },
+    refetchIntervalInBackground: false,
+    staleTime: 0,
+  });
+  const data = statusQ.data;
+  const status = data?.status;
+  const [canceling, setCanceling] = useState(false);
+  useEffect(() => {
+    if (
+      status === "completed" ||
+      status === "completed_with_errors" ||
+      status === "failed" ||
+      status === "canceled"
+    ) {
+      onDone(data ?? null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+  const total = data?.total ?? 0;
+  const done = data?.done ?? 0;
+  const failed = data?.failed ?? 0;
+  const created = data?.total_annotations_created ?? 0;
+  const pct =
+    total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  return (
+    <div className="grid gap-3" data-testid="auto-visual-batch-progress">
+      <DialogHeader>
+        <DialogTitle className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin text-[color:var(--accent)]" />
+          Running visual prompt across the task…
+        </DialogTitle>
+        <DialogDescription>
+          {total > 0
+            ? `Asset ${done} of ${total} (${pct}%) — ${created} annotation${created === 1 ? "" : "s"} created.`
+            : "Initialising…"}
+        </DialogDescription>
+      </DialogHeader>
+      <div className="h-2 rounded-full bg-[var(--bg-sunken)] overflow-hidden">
+        <div
+          className="h-full bg-[var(--accent)] transition-[width] duration-300"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {failed > 0 && (
+        <p className="text-[11.5px] text-[color:var(--warning,oklch(0.78_0.18_85))]">
+          {failed} asset{failed === 1 ? "" : "s"} failed.
+        </p>
+      )}
+      <DialogFooter>
+        <Button
+          variant="danger"
+          size="md"
+          disabled={canceling}
+          loading={canceling}
+          leftIcon={<X className="h-3.5 w-3.5" />}
+          onClick={async () => {
+            setCanceling(true);
+            try {
+              await samApi.autoVisualBatchCancel(taskId, jobId);
+              showToast("Cancellation requested.", { variant: "warning" });
             } catch {
               showToast("Failed to cancel.", { variant: "error" });
             } finally {
