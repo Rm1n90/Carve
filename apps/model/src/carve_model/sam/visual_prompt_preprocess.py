@@ -136,10 +136,10 @@ def square_pad_replicate(crop):
     Centers the crop in the output. Uses numpy edge padding to replicate border pixels.
 
     Args:
-        crop: Array of shape (h, w, c) or (h, w)
+        crop: Array of shape (h, w, c) — 3-channel HxW uint8 image
 
     Returns:
-        Padded array of shape (side, side, c) or (side, side) where side = max(h, w)
+        Padded array of shape (side, side, c) where side = max(h, w)
     """
     h, w = crop.shape[:2]
     if h == w:
