@@ -239,6 +239,36 @@ def sam_text_prompt(
         return r.json()
 
 
+def sam_visual_prompt(
+    *,
+    refer_b64: str,
+    regions: list[dict],
+    target_b64: str,
+) -> list[dict]:
+    """POST /sam/visual-prompt — SAM 3.1 Promptable Concept Segmentation.
+
+    ``refer_b64`` is the reference image; ``regions`` is a list of bbox/polygon
+    dicts inside that reference; ``target_b64`` is the image to find similar
+    objects in. Returns the model service's list of mask candidates with the
+    same shape /sam/text-prompt produces (counts, size, score, bbox, polygon).
+
+    The model service answers 409 ``sam3p1_not_enabled`` when SAM 3.1 native
+    isn't the active variant, 422 ``mixed_ref_types`` when regions mix bbox
+    and polygon kinds, and 503 ``sam_visual_predictor_not_loaded`` when the
+    predictor factory isn't registered yet.
+    """
+    body = {
+        "refer_b64": refer_b64,
+        "regions": regions,
+        "target_b64": target_b64,
+    }
+    with _wrap_unreachable("sam_visual_prompt"), _client() as c:
+        r = c.post("/sam/visual-prompt", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
 # ---------------------------------------------------------------------------
 # YOLOE — Real-Time Seeing Anything (v3.23). Three predict modes (text,
 # visual, prompt-free) + a status probe + best-effort unload. Mirrors the
