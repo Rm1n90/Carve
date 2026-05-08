@@ -179,19 +179,23 @@ export function AutoAnnotateDialog({
 
   // v3.21+ — capability gate: hide the FO1 toggle when the model
   // service isn't advertising it. Only fetched while the dialog is open.
+  // v3.28 — staleTime dropped from 30s → 0 + refetchOnMount: "always"
+  // because variant switches can flip visual_prompt_available within the
+  // same browser session; the previous 30s stale window left users
+  // staring at a hidden Visual tab right after switching to SAM 3.1.
   const samStatusQuery = useQuery({
     queryKey: ["sam", "status", "vlm-fo1-cap"],
     queryFn: () => modelsApi.samStatus(),
     enabled: open,
     refetchOnWindowFocus: false,
-    staleTime: 30_000,
+    refetchOnMount: "always",
+    staleTime: 0,
   });
-  // FO1 only makes sense on SAM 3 family variants — the /sam/text-prompt
-  // endpoint already 409s when the variant is sam2.x, and the multiplex
-  // sam3.1 backend doesn't ship a transformers-compatible image runtime.
-  // Hide the toggle in those cases so users don't see a dead control.
+  // FO1 only makes sense on SAM 3 family variants. v3.28 — include
+  // "sam3.1" in the family check; the previous strict ``=== "sam3"``
+  // broke the FO1 toggle visibility when the user switched to native.
   const samVariant = samStatusQuery.data?.variant ?? "";
-  const isSam3Family = samVariant === "sam3";
+  const isSam3Family = samVariant === "sam3" || samVariant === "sam3.1";
   const vlmFo1Available =
     samStatusQuery.data?.vlm_fo1_available === true && isSam3Family;
   // v3.28 — SAM Visual Prompt capability gate. Hidden when the model
