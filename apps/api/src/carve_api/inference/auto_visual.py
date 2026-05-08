@@ -112,7 +112,11 @@ def auto_visual_for_asset(
                 kept = [max(kept, key=lambda r: float(r.get("score", 0.0)))]
             per_class[str(cls_id)] = per_class.get(str(cls_id), 0) + len(kept)
             for r in kept:
-                new_anns.append(_build_annotation(task, frame_id, cls_id, r, actor_id))
+                new_anns.append(
+                    _build_annotation(
+                        task, frame_id, cls_id, r, actor_id, ref_kind,
+                    )
+                )
 
     if overwrite and new_anns and frame_id is not None:
         session.execute(
@@ -128,7 +132,40 @@ def auto_visual_for_asset(
     return {"annotations_created": len(new_anns), "per_class": per_class}
 
 
-def _build_annotation(task: Task, frame_id, cls_id, r: dict, actor_id) -> Annotation:
+def _build_annotation(
+    task: Task, frame_id, cls_id, r: dict, actor_id, ref_kind: str,
+) -> Annotation:
+    """Build an Annotation row from one model-service result.
+
+    v3.28 — output kind mirrors the input ref kind:
+      - ref_kind == "bbox"    → AnnotationKind.bbox    (xywh from r["bbox"])
+      - ref_kind == "polygon" → AnnotationKind.polygon (r["polygon"] points)
+
+    Falls back to mask_rle only when the requested kind cannot be built
+    from the result (e.g. polygon requested but the polygonizer returned
+    empty for a degenerate mask).
+    """
+    if ref_kind == "bbox":
+        bbox = r.get("bbox") or []
+        if isinstance(bbox, list) and len(bbox) == 4:
+            x1, y1, x2, y2 = (float(v) for v in bbox)
+            return Annotation(
+                task_id=task.id,
+                frame_id=frame_id,
+                class_id=cls_id,
+                kind=AnnotationKind.bbox,
+                geometry={
+                    "kind": "bbox",
+                    "x": x1,
+                    "y": y1,
+                    "w": max(0.0, x2 - x1),
+                    "h": max(0.0, y2 - y1),
+                },
+                track_id=None,
+                created_by=actor_id,
+            )
+        # Degenerate bbox — fall through to polygon then mask fallback.
+
     polygon = r.get("polygon") or []
     if isinstance(polygon, list) and len(polygon) >= 3:
         return Annotation(
@@ -143,6 +180,9 @@ def _build_annotation(task: Task, frame_id, cls_id, r: dict, actor_id) -> Annota
             track_id=None,
             created_by=actor_id,
         )
+
+    # Last-resort mask_rle fallback. Reached when both bbox and polygon
+    # are degenerate but the model still produced a valid mask.
     return Annotation(
         task_id=task.id,
         frame_id=frame_id,

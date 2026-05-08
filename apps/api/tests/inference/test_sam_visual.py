@@ -1,184 +1,135 @@
-"""v3.27+ — API proxy tests for SAM 3.1 visual prompts.
+"""Tests for ``sam_visual_prompt_for_asset`` (the API-side helper that
+fetches asset bytes from MinIO + forwards to ``/sam/visual-prompt`` on
+the model service).
 
-Mirrors the encoding/decoding test pattern in ``test_sam.py``: monkeypatch
-``MinioClient`` so the asset bytes come from an in-memory PNG, and use
-``httpx.MockTransport`` to stub the model service. Each test exercises one
-status branch (200 happy path / 409 sam3p1_not_enabled / 503 unreachable).
+These were originally written against a non-existent
+``/assets/{aid}/sam/visual-prompt`` HTTP route. Rewritten in v3.28 to
+test the Python helper directly — the real HTTP surface is
+``/assets/{id}/sam/auto-visual`` (sync) and ``/tasks/{id}/sam/auto-visual-batch``
+(batch), already covered by ``test_auto_visual_router.py`` and
+``test_auto_visual_batch.py``.
 """
+from __future__ import annotations
 
-import io
+import uuid
+from unittest.mock import patch
 
-import httpx
-from fastapi.testclient import TestClient
+import pytest
 
-from carve_api.deps import get_db
-from carve_api.inference import model_client as model_client_mod
-from carve_api.main import create_app
-
-
-def _client(db_session) -> TestClient:
-    app = create_app()
-
-    def _override():
-        try:
-            yield db_session
-        finally:
-            db_session.rollback()
-
-    app.dependency_overrides[get_db] = _override
-    return TestClient(app)
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.auth.models import User, UserRole
+from carve_api.inference.sam import (
+    Sam3NotEnabled,
+    SamModelFailed,
+    SamModelUnreachable,
+    sam_visual_prompt_for_asset,
+)
+from carve_api.inference.model_client import ModelServiceError
+from carve_api.projects.models import Project, Task, TaskKind
 
 
-def _hdr(t):
-    return {"Authorization": f"Bearer {t}"}
-
-
-def _tiny_png() -> bytes:
-    return bytes.fromhex(
-        "89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C4890000000A4944415478DA63000000000200015C8B59FA0000000049454E44AE426082"
+def _seed(db_session):
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    target = Asset(
+        task_id=t.id, kind=AssetKind.image, xxh3_128="aa",
+        mime="image/png", size_bytes=1, width=10, height=10,
+        frames=1, original_name="t.png",
     )
+    refer = Asset(
+        task_id=t.id, kind=AssetKind.image, xxh3_128="bb",
+        mime="image/png", size_bytes=1, width=10, height=10,
+        frames=1, original_name="r.png",
+    )
+    db_session.add_all([target, refer])
+    db_session.flush()
+    db_session.add_all([
+        Frame(asset_id=target.id, idx=0, pts_ms=0),
+        Frame(asset_id=refer.id, idx=0, pts_ms=0),
+    ])
+    db_session.commit()
+    return target, refer
 
 
-class _FakeStorage:
-    @classmethod
-    def from_settings(cls):
-        return cls()
-
-    def ensure_bucket(self):
-        pass
-
-    def put_object(self, *a, **k):
-        pass
-
-    def get_object(self, key):
-        return io.BytesIO(_tiny_png())
-
-    def remove_object(self, key):
-        pass
-
-    def presigned_get(self, key, **k):
-        return f"https://fake/{key}"
-
-
-def _setup_asset(client, monkeypatch):
-    from carve_api.assets import service as assets_svc
-    from carve_api.inference import autoannotate as aa_mod
-
-    monkeypatch.setattr(assets_svc, "MinioClient", _FakeStorage)
-    monkeypatch.setattr(aa_mod, "MinioClient", _FakeStorage)
-
-    client.post("/auth/register", json={"email": "vis@x.com", "password": "hunter22"})
-    token = client.post(
-        "/auth/login", json={"email": "vis@x.com", "password": "hunter22"}
-    ).json()["access_token"]
-    pid = client.post("/projects", json={"name": "P"}, headers=_hdr(token)).json()["id"]
-    tid = client.post(
-        f"/projects/{pid}/tasks", json={"name": "T", "kind": "image"}, headers=_hdr(token)
-    ).json()["id"]
-    aid = client.post(
-        f"/tasks/{tid}/assets",
-        files={"file": ("a.png", io.BytesIO(_tiny_png()), "image/png")},
-        headers=_hdr(token),
-    ).json()["id"]
-    return token, aid
-
-
-# --- /sam/visual-prompt --------------------------------------------------------
-
-
-def test_sam_visual_prompt_returns_masks(db_session, monkeypatch) -> None:
-    client = _client(db_session)
-    token, aid = _setup_asset(client, monkeypatch)
-
-    seen: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/sam/visual-prompt":
-            import json
-
-            seen.update(json.loads(request.content))
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "counts": "0,2,2,2,10",
-                        "size": [4, 4],
-                        "score": 0.92,
-                        "bbox": [1.0, 2.0, 3.0, 4.0],
-                    }
-                ],
-            )
-        return httpx.Response(404)
-
-    model_client_mod.set_test_transport(httpx.MockTransport(handler))
-    try:
-        r = client.post(
-            f"/assets/{aid}/sam/visual-prompt",
-            json={
-                "refer_asset_id": aid,
-                "target_asset_id": aid,
-                "regions": [{"kind": "bbox", "xyxy": [0, 0, 10, 10]}],
-            },
-            headers=_hdr(token),
+def test_sam_visual_prompt_for_asset_loads_bytes_and_forwards(db_session):
+    target, refer = _seed(db_session)
+    with (
+        patch("carve_api.inference.sam.fetch_asset_bytes", return_value=b"fakebytes"),
+        patch(
+            "carve_api.inference.sam.sam_visual_prompt",
+            return_value=[{
+                "counts": "0", "size": [10, 10], "score": 0.9,
+                "bbox": [1, 1, 9, 9], "polygon": [[1, 1], [9, 1], [9, 9]],
+            }],
+        ) as mock_vp,
+    ):
+        out = sam_visual_prompt_for_asset(
+            target_asset=target,
+            refer_asset=refer,
+            regions=[{"kind": "bbox", "xyxy": [0, 0, 10, 10]}],
         )
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert isinstance(body, list)
-        assert body[0]["counts"] == "0,2,2,2,10"
-        assert body[0]["score"] == 0.92
-        assert "refer_b64" in seen
-        assert "target_b64" in seen
-        assert seen["regions"] == [{"kind": "bbox", "xyxy": [0, 0, 10, 10]}]
-    finally:
-        model_client_mod.set_test_transport(None)
+    assert len(out) == 1
+    assert out[0]["score"] == 0.9
+    mock_vp.assert_called_once()
+    kwargs = mock_vp.call_args.kwargs
+    assert "refer_b64" in kwargs
+    assert "target_b64" in kwargs
+    assert kwargs["regions"] == [{"kind": "bbox", "xyxy": [0, 0, 10, 10]}]
 
 
-def test_sam_visual_prompt_409_when_sam31_disabled(db_session, monkeypatch) -> None:
-    client = _client(db_session)
-    token, aid = _setup_asset(client, monkeypatch)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(409, json={"detail": "sam3p1_not_enabled"})
-
-    model_client_mod.set_test_transport(httpx.MockTransport(handler))
-    try:
-        r = client.post(
-            f"/assets/{aid}/sam/visual-prompt",
-            json={
-                "refer_asset_id": aid,
-                "target_asset_id": aid,
-                "regions": [{"kind": "bbox", "xyxy": [5, 5, 15, 15]}],
-            },
-            headers=_hdr(token),
-        )
-        assert r.status_code == 409
-        assert r.json()["error"] == "sam3_not_enabled"
-    finally:
-        model_client_mod.set_test_transport(None)
-
-
-def test_sam_visual_prompt_503_on_connect_error(db_session, monkeypatch) -> None:
-    client = _client(db_session)
-    token, aid = _setup_asset(client, monkeypatch)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError(
-            "[Errno -3] Temporary failure in name resolution",
-            request=request,
+def test_sam_visual_prompt_for_asset_maps_409_to_sam3_not_enabled(db_session):
+    target, refer = _seed(db_session)
+    with (
+        patch("carve_api.inference.sam.fetch_asset_bytes", return_value=b"fakebytes"),
+        patch(
+            "carve_api.inference.sam.sam_visual_prompt",
+            side_effect=ModelServiceError(409, {"detail": "sam3p1_not_enabled"}),
+        ),
+        pytest.raises(Sam3NotEnabled),
+    ):
+        sam_visual_prompt_for_asset(
+            target_asset=target, refer_asset=refer,
+            regions=[{"kind": "bbox", "xyxy": [0, 0, 10, 10]}],
         )
 
-    model_client_mod.set_test_transport(httpx.MockTransport(handler))
-    try:
-        r = client.post(
-            f"/assets/{aid}/sam/visual-prompt",
-            json={
-                "refer_asset_id": aid,
-                "target_asset_id": aid,
-                "regions": [{"kind": "polygon", "xy": [[1, 1], [10, 1], [10, 10]]}],
-            },
-            headers=_hdr(token),
+
+def test_sam_visual_prompt_for_asset_maps_503_to_unreachable(db_session):
+    target, refer = _seed(db_session)
+    with (
+        patch("carve_api.inference.sam.fetch_asset_bytes", return_value=b"fakebytes"),
+        patch(
+            "carve_api.inference.sam.sam_visual_prompt",
+            side_effect=ModelServiceError(503, {"detail": "model_service_unreachable"}),
+        ),
+        pytest.raises(SamModelUnreachable),
+    ):
+        sam_visual_prompt_for_asset(
+            target_asset=target, refer_asset=refer,
+            regions=[{"kind": "bbox", "xyxy": [0, 0, 10, 10]}],
         )
-        assert r.status_code == 503, r.text
-        assert r.json()["error"] == "model_service_unreachable"
-    finally:
-        model_client_mod.set_test_transport(None)
+
+
+def test_sam_visual_prompt_for_asset_maps_other_4xx_to_failed(db_session):
+    target, refer = _seed(db_session)
+    with (
+        patch("carve_api.inference.sam.fetch_asset_bytes", return_value=b"fakebytes"),
+        patch(
+            "carve_api.inference.sam.sam_visual_prompt",
+            side_effect=ModelServiceError(422, {"detail": "mixed_ref_types"}),
+        ),
+        pytest.raises(SamModelFailed),
+    ):
+        sam_visual_prompt_for_asset(
+            target_asset=target, refer_asset=refer,
+            regions=[
+                {"kind": "bbox", "xyxy": [0, 0, 10, 10]},
+                {"kind": "polygon", "points": [[0, 0], [1, 0], [1, 1]]},
+            ],
+        )

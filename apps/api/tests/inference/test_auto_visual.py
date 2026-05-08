@@ -64,15 +64,22 @@ def _seed(db_session):
     return u, p, t, cls, target, refer
 
 
-def test_auto_visual_creates_polygons_per_class(db_session):
+def test_auto_visual_bbox_ref_creates_bbox_annotations(db_session):
+    """ref_kind='bbox' must persist AnnotationKind.bbox annotations
+    built from the model's bbox xyxy, NOT polygons.
+
+    v3.28 user contract: output kind mirrors input kind.
+    """
+    from carve_api.annotations.models import Annotation, AnnotationKind
+
     u, p, t, cls, target, refer = _seed(db_session)
     fake_results = [
         {
             "counts": "0",
             "size": [10, 10],
             "score": 0.9,
-            "bbox": [1, 1, 9, 9],
-            "polygon": [[1, 1], [9, 1], [9, 9]],
+            "bbox": [1.0, 1.0, 9.0, 9.0],
+            "polygon": [[1, 1], [9, 1], [9, 9]],  # SAM still returns this; we ignore it
         }
     ]
     with patch(
@@ -102,6 +109,126 @@ def test_auto_visual_creates_polygons_per_class(db_session):
         )
     assert out["annotations_created"] == 1
     assert out["per_class"][str(cls.id)] == 1
+    db_session.flush()
+    rows = (
+        db_session.query(Annotation)
+        .filter(Annotation.task_id == t.id, Annotation.class_id == cls.id)
+        .all()
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.kind == AnnotationKind.bbox
+    assert row.geometry == {
+        "kind": "bbox",
+        "x": 1.0,
+        "y": 1.0,
+        "w": 8.0,
+        "h": 8.0,
+    }
+
+
+def test_auto_visual_polygon_ref_creates_polygon_annotations(db_session):
+    """ref_kind='polygon' must persist AnnotationKind.polygon annotations
+    built from the model's polygon point list."""
+    from carve_api.annotations.models import Annotation, AnnotationKind
+
+    u, p, t, cls, target, refer = _seed(db_session)
+    fake_results = [
+        {
+            "counts": "0",
+            "size": [10, 10],
+            "score": 0.9,
+            "bbox": [1.0, 1.0, 9.0, 9.0],
+            "polygon": [[1, 1], [9, 1], [9, 9]],
+        }
+    ]
+    with patch(
+        "carve_api.inference.auto_visual.sam_visual_prompt_for_asset",
+        return_value=fake_results,
+    ):
+        out = auto_visual_for_asset(
+            session=db_session,
+            asset=target,
+            task=t,
+            sources=[
+                {
+                    "asset_id": str(refer.id),
+                    "groups": [
+                        {
+                            "class_id": str(cls.id),
+                            "refs": [{
+                                "kind": "polygon",
+                                "points": [[0, 0], [10, 0], [10, 10]],
+                            }],
+                        }
+                    ],
+                }
+            ],
+            ref_kind="polygon",
+            threshold=0.4,
+            find_all=True,
+            overwrite=False,
+            actor_id=None,
+        )
+    assert out["annotations_created"] == 1
+    db_session.flush()
+    rows = (
+        db_session.query(Annotation)
+        .filter(Annotation.task_id == t.id, Annotation.class_id == cls.id)
+        .all()
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.kind == AnnotationKind.polygon
+    assert row.geometry["kind"] == "polygon"
+    assert row.geometry["points"] == [[1.0, 1.0], [9.0, 1.0], [9.0, 9.0]]
+
+
+def test_auto_visual_bbox_ref_falls_back_to_polygon_when_bbox_degenerate(db_session):
+    """Defensive: if the model returns a bbox missing fields but the
+    polygon is well-formed, the bbox-ref persistence should fall back to
+    polygon rather than dropping the detection."""
+    from carve_api.annotations.models import Annotation, AnnotationKind
+
+    u, p, t, cls, target, refer = _seed(db_session)
+    fake_results = [
+        {
+            "counts": "0",
+            "size": [10, 10],
+            "score": 0.9,
+            "bbox": [],  # degenerate — missing
+            "polygon": [[1, 1], [9, 1], [9, 9]],
+        }
+    ]
+    with patch(
+        "carve_api.inference.auto_visual.sam_visual_prompt_for_asset",
+        return_value=fake_results,
+    ):
+        auto_visual_for_asset(
+            session=db_session,
+            asset=target,
+            task=t,
+            sources=[{
+                "asset_id": str(refer.id),
+                "groups": [{
+                    "class_id": str(cls.id),
+                    "refs": [{"kind": "bbox", "xyxy": [0, 0, 10, 10]}],
+                }],
+            }],
+            ref_kind="bbox",
+            threshold=0.4,
+            find_all=True,
+            overwrite=False,
+            actor_id=None,
+        )
+    db_session.flush()
+    rows = (
+        db_session.query(Annotation)
+        .filter(Annotation.task_id == t.id, Annotation.class_id == cls.id)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].kind == AnnotationKind.polygon
 
 
 def test_mixed_ref_types_rejected(db_session):
