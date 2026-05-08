@@ -1023,8 +1023,39 @@ def make_sam3_visual_predictor():
             return []
         pooled = l2norm(np.mean(per_ref, axis=0))
         masks, scores, boxes = adapter.predict_with_visual_prompt(pooled)
+        if scores.size == 0:
+            return []
+
+        # Post-process raw SAM 3.1 PCS output:
+        #
+        # 1. NMS by IoU on the bbox set — the processor returns hundreds of
+        #    overlapping proposals. IoU threshold 0.5 is the standard default.
+        # 2. Score normalisation — visual-prompt scores are systematically
+        #    much smaller (~0.01-0.05) than text-prompt scores (often 0.5-0.9),
+        #    so feeding raw SAM scores into a 0-1 UI threshold makes "0.4"
+        #    impossibly strict. We rescale by max so the best detection is
+        #    1.0 and the threshold becomes "keep everything ≥ X% of the best".
+        keep_idx = _nms_by_iou(boxes, scores, iou_threshold=0.5)
+        masks = masks[keep_idx]
+        scores = scores[keep_idx]
+        boxes = boxes[keep_idx]
+
+        # Cap to the top-K post-NMS so a noisy run doesn't return 200 polygons.
+        TOP_K = 50
+        if scores.size > TOP_K:
+            order = np.argsort(-scores)[:TOP_K]
+            masks = masks[order]
+            scores = scores[order]
+            boxes = boxes[order]
+
+        max_score = float(scores.max())
+        if max_score > 0:
+            normalized = scores / max_score
+        else:
+            normalized = scores
+
         out = []
-        for m, s, b in zip(masks, scores, boxes):
+        for m, s, b in zip(masks, normalized, boxes):
             counts, size = encode_mask_rle(np.asarray(m, dtype=np.uint8))
             polygon = mask_to_polygon(np.asarray(m, dtype=np.uint8))
             out.append({
@@ -1037,3 +1068,30 @@ def make_sam3_visual_predictor():
         return out
 
     return call
+
+
+def _nms_by_iou(boxes, scores, *, iou_threshold: float = 0.5):
+    """Greedy NMS. ``boxes`` is (N, 4) xyxy; ``scores`` is (N,)."""
+    import numpy as np
+    if boxes.shape[0] == 0:
+        return np.zeros((0,), dtype=np.int64)
+    x1 = boxes[:, 0]; y1 = boxes[:, 1]
+    x2 = boxes[:, 2]; y2 = boxes[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+    order = np.argsort(-scores)
+    keep: list[int] = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(x1[i], x1[rest])
+        yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest])
+        yy2 = np.minimum(y2[i], y2[rest])
+        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
+        union = areas[i] + areas[rest] - inter
+        iou = np.where(union > 0, inter / union, 0.0)
+        order = rest[iou < iou_threshold]
+    return np.asarray(keep, dtype=np.int64)

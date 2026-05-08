@@ -922,12 +922,27 @@ def _native_visual_forward(
             encode_text=encode_text,
         )
 
+    # Force the processor's internal confidence threshold to 0 during the
+    # visual forward. SAM 3.1 PCS scores for visual prompts are
+    # systematically much lower (~0.01-0.05) than text prompts, so the
+    # processor's default 0.5 wipes every candidate before the api-side
+    # threshold ever sees them. We restore the original threshold after.
+    original_threshold = getattr(processor, "confidence_threshold", 0.5)
+    try:
+        processor.set_confidence_threshold(0.0)
+    except Exception:  # noqa: BLE001 — best-effort
+        pass
+
     model._encode_prompt = patched_encode_prompt
     try:
         with torch.inference_mode():
             processor._forward_grounding(state)
     finally:
         model._encode_prompt = original_encode_prompt
+        try:
+            processor.set_confidence_threshold(original_threshold)
+        except Exception:  # noqa: BLE001
+            pass
 
     # 4) Pull masks/scores/boxes off the state and return numpy.
     from carve_model.sam.perf import to_numpy_safe
