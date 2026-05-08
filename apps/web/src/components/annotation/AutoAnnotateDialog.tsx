@@ -1,7 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Sparkles, Wand2, X } from "lucide-react";
+import { AlertTriangle, Loader2, Wand2, X } from "lucide-react";
 
 import {
   samApi,
@@ -98,6 +98,13 @@ export function AutoAnnotateDialog({
   // v3.8 Phase 3.5 — track an in-flight RQ batch so the dialog can
   // render a live progress overlay with Cancel.
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
+  // v3.28 — parallel slot for the SAM Visual Prompt batch. Lifted to the
+  // dialog scope (not VisualBody) so the parent's onOpenChange can
+  // redirect outside-click closes to "background" without orphaning the
+  // job, and so the expand-from-bar handshake can target it.
+  const [visualRunningJobId, setVisualRunningJobId] = useState<string | null>(
+    null,
+  );
   // v3.22 — refs for the post-process AbortController + job_id so the
   // BatchProgressView's Cancel/Background buttons can address the
   // post-process phase (Promise-based, frontend-driven runner).
@@ -123,8 +130,16 @@ export function AutoAnnotateDialog({
     // Expand on a YOLO job opened the SAM dialog with stale state
     // ("the dialog is bigger"), and the next Background click hit
     // the wrong handler.
-    if (job.kind !== "sam-auto-text") return;
-    setRunningJobId(bgExpandRequest);
+    // v3.28 — claim sam-auto-text AND sam-auto-visual; the dialog body
+    // switches to the right body via the ``mode`` state which we also
+    // flip here based on the job kind.
+    if (job.kind !== "sam-auto-text" && job.kind !== "sam-auto-visual") return;
+    if (job.kind === "sam-auto-visual") {
+      setMode("visual");
+      setVisualRunningJobId(bgExpandRequest);
+    } else {
+      setRunningJobId(bgExpandRequest);
+    }
     setOpen(true);
     // Defer store cleanup to a microtask so React's state batching
     // commits ``runningJobId`` + ``open`` before any subscriber sees
@@ -334,7 +349,39 @@ export function AutoAnnotateDialog({
       (scope === "all" && !!taskId));
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        // v3.28 — outside-click / ESC / X close while a batch is running
+        // must NOT orphan the job (mirrors the YoloeDialog guard). The
+        // user has three intents in this state: Cancel (explicit), move
+        // it offscreen (Background button), or close (implicit). The
+        // implicit case used to silently drop the polling overlay; now
+        // we treat it as "background" so the floating bar takes over.
+        if (!o && visualRunningJobId && taskId) {
+          const jobId = visualRunningJobId;
+          const cap = taskId;
+          useBackgroundJobs.getState().add({
+            jobId,
+            taskId: cap,
+            kind: "sam-auto-visual",
+            label: "SAM visual prompt",
+            startedAt: Date.now(),
+            cancel: async () => {
+              await samApi.autoVisualBatchCancel(cap, jobId);
+            },
+          });
+          setVisualRunningJobId(null);
+          setOpen(false);
+          showToast(
+            "Running in background — progress shown bottom-right.",
+            { variant: "info", duration: 3000 },
+          );
+          return;
+        }
+        setOpen(o);
+      }}
+    >
       <DialogTrigger asChild>
         {trigger ?? (
           <button
@@ -861,6 +908,8 @@ export function AutoAnnotateDialog({
 
         {mode === "visual" && (
           <VisualBody
+            runningJobId={visualRunningJobId}
+            setRunningJobId={setVisualRunningJobId}
             assetId={assetId}
             taskId={taskId}
             classes={classes}
@@ -1049,12 +1098,18 @@ function VisualBody({
   classes,
   onSuccess,
   setOpen,
+  runningJobId,
+  setRunningJobId,
 }: {
   assetId: string | null;
   taskId?: string;
   classes: ClassRow[];
   onSuccess?: (n: number) => void;
   setOpen: (o: boolean) => void;
+  // v3.28 — lifted to the parent so the dialog's outside-click guard
+  // can redirect to "background" instead of orphaning the job.
+  runningJobId: string | null;
+  setRunningJobId: (id: string | null) => void;
 }) {
   const qc = useQueryClient();
   const [refKind, setRefKind] = useState<"bbox" | "polygon">("bbox");
@@ -1066,9 +1121,30 @@ function VisualBody({
   const [threshold, setThreshold] = useState<number>(0.4);
   const [findAll, setFindAll] = useState<boolean>(true);
   const [overwrite, setOverwrite] = useState<boolean>(false);
-  const [runningJobId, setRunningJobId] = useState<string | null>(null);
 
   const refs = useTaskRefs({ taskId, assetId, enabled: true });
+
+  function sendToBackground() {
+    if (!runningJobId || !taskId) return;
+    const jobId = runningJobId;
+    const cap = taskId;
+    useBackgroundJobs.getState().add({
+      jobId,
+      taskId: cap,
+      kind: "sam-auto-visual",
+      label: "SAM visual prompt",
+      startedAt: Date.now(),
+      cancel: async () => {
+        await samApi.autoVisualBatchCancel(cap, jobId);
+      },
+    });
+    setRunningJobId(null);
+    setOpen(false);
+    showToast(
+      "Running in background — progress shown bottom-right.",
+      { variant: "info", duration: 3000 },
+    );
+  }
 
   function requestSwitch(next: "bbox" | "polygon") {
     if (next === refKind) return;
@@ -1172,8 +1248,39 @@ function VisualBody({
           setRunningJobId(null);
           qc.invalidateQueries({ queryKey: ["annotations"] });
           onSuccess?.(final?.total_annotations_created ?? 0);
+          // v3.28 — show a final toast so the user knows the run landed
+          // (mirrors the auto-text BatchProgressView final-status toast).
+          const created = final?.total_annotations_created ?? 0;
+          const status = final?.status ?? "completed";
+          if (status === "canceled") {
+            showToast(
+              `Visual prompt canceled. Kept ${created} annotation${created === 1 ? "" : "s"} created so far.`,
+              { variant: "warning", duration: 4500 },
+            );
+          } else if (status === "completed_with_errors") {
+            showToast(
+              `Visual prompt finished with errors. Created ${created} annotation${created === 1 ? "" : "s"}; ${final?.failed ?? 0} asset${(final?.failed ?? 0) === 1 ? "" : "s"} failed.`,
+              { variant: "warning", duration: 5000 },
+            );
+          } else if (status === "failed") {
+            showToast(
+              `Visual prompt batch failed${created > 0 ? ` after creating ${created} annotation${created === 1 ? "" : "s"}` : ""}.`,
+              { variant: "error", duration: 5000 },
+            );
+          } else {
+            showToast(
+              created > 0
+                ? `Created ${created} annotation${created === 1 ? "" : "s"} across the task.`
+                : "Batch completed with no matches above the threshold.",
+              {
+                variant: created > 0 ? "success" : "warning",
+                duration: 4500,
+              },
+            );
+          }
           setOpen(false);
         }}
+        onBackground={sendToBackground}
       />
     );
   }
@@ -1391,6 +1498,7 @@ function VisualBatchProgressView({
   taskId,
   jobId,
   onDone,
+  onBackground,
 }: {
   taskId: string;
   jobId: string;
@@ -1401,8 +1509,20 @@ function VisualBatchProgressView({
       failed: number;
     } | null,
   ) => void;
+  onBackground?: () => void;
 }) {
   const POLL_MS = 500;
+  // v3.28 — stuck-pending heuristic (mirrors YoloeBatchProgress). If the
+  // worker hasn't bumped ``total`` off zero within 15s, we surface a hint
+  // because that almost always means the worker is dead, the queue is
+  // backed up, or the model service is unreachable.
+  const [openedAt] = useState(() => Date.now());
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  void tick;
   const statusQ = useQuery({
     queryKey: ["sam-auto-visual-batch", taskId, jobId],
     queryFn: () => samApi.autoVisualBatchProgress(taskId, jobId),
@@ -1441,6 +1561,14 @@ function VisualBatchProgressView({
   const created = data?.total_annotations_created ?? 0;
   const pct =
     total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const elapsedMs = Date.now() - openedAt;
+  const isTerminal =
+    status === "completed" ||
+    status === "completed_with_errors" ||
+    status === "failed" ||
+    status === "canceled";
+  const isStuck =
+    !isTerminal && total === 0 && (status === "pending" || status === undefined) && elapsedMs > 15000;
   return (
     <div className="grid gap-3" data-testid="auto-visual-batch-progress">
       <DialogHeader>
@@ -1465,11 +1593,37 @@ function VisualBatchProgressView({
           {failed} asset{failed === 1 ? "" : "s"} failed.
         </p>
       )}
-      <DialogFooter>
+      {isStuck && (
+        <div
+          data-testid="auto-visual-batch-stuck-hint"
+          className="flex items-start gap-1.5 text-[10.5px] text-[color:var(--warning,#d49a4a)]"
+        >
+          <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" aria-hidden />
+          <span>
+            Worker hasn't started yet. Confirm the worker container is
+            up (<span className="font-mono">docker compose ps worker</span>)
+            and hasn't crashed. Cancel here is safe.
+          </span>
+        </div>
+      )}
+      <p className="text-[11px] text-[color:var(--text-tertiary)] italic">
+        Annotations save per-asset, so cancelling keeps everything done so far.
+      </p>
+      <DialogFooter className="flex-row gap-2">
+        {onBackground && !isTerminal && (
+          <Button
+            variant="ghost"
+            size="md"
+            onClick={onBackground}
+            data-testid="auto-visual-batch-background"
+          >
+            Background
+          </Button>
+        )}
         <Button
           variant="danger"
           size="md"
-          disabled={canceling}
+          disabled={canceling || isTerminal}
           loading={canceling}
           leftIcon={<X className="h-3.5 w-3.5" />}
           onClick={async () => {

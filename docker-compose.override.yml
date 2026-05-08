@@ -13,6 +13,14 @@ services:
       - ./apps/api/src:/app/src
       - ./apps/api/alembic:/app/alembic
     command: ["bash", "-c", "alembic upgrade head && uvicorn carve_api.main:app --host 0.0.0.0 --port 8000 --reload"]
+  worker:
+    # v3.28 — bind-mount api source so the RQ worker picks up new
+    # batch-payload dataclasses without a rebuild. Before this, queued
+    # jobs failed with DeserializationError because the worker's
+    # baked-in image pre-dated AutoVisualBatchPayload.
+    volumes:
+      - ./apps/api/src:/app/src
+      - ./apps/api/alembic:/app/alembic
   model:
     ports: ["8100:8100"]
     volumes:

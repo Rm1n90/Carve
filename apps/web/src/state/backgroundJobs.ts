@@ -32,6 +32,7 @@ import { create } from "zustand";
 
 export type BackgroundJobKind =
   | "sam-auto-text"
+  | "sam-auto-visual"
   | "yolo-predict-batch"
   | "yoloe-batch"
   | "sam-refine-batch"

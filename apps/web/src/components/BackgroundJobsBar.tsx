@@ -87,6 +87,8 @@ function usePollJob(job: BackgroundJob): PollResult {
     switch (job.kind) {
       case "sam-auto-text":
         return () => samApi.autoTextBatchProgress(job.taskId, job.jobId);
+      case "sam-auto-visual":
+        return () => samApi.autoVisualBatchProgress(job.taskId, job.jobId);
       case "yolo-predict-batch":
         return () => inferenceApi.pollBatchProgress(job.taskId, job.jobId);
       case "yoloe-batch":
