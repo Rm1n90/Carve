@@ -495,17 +495,34 @@ class Sam3p1NativeImagePredictorAdapter:
     def predict_with_visual_prompt(self, pooled_embed):
         """Run the SAM 3.1 grounding pass with a visual concept (text disabled).
 
-        The actual native sam3 wiring (calling forward_grounding with the
-        visual_prompt_embed slot) lands in Task A6. This method delegates to
-        self._model.predict_visual_prompt so unit tests can stub the model.
+        Delegates to ``self._model.predict_visual_prompt`` (bound by
+        ``build_sam3p1_image_predictor`` to ``_native_visual_forward``).
+        Unit tests stub the model attribute to bypass native execution.
+
+        On CUDA we wrap in ``autocast(bf16)`` for parity with the
+        text/box/point native paths — the native sam3 stack's fused
+        ``addmm_act`` MLP and ``with autocast(enabled=False)`` decoder
+        blocks are designed for an outer bf16 autocast.
         """
         import numpy as np
+
         if self._state is None:
-            raise RuntimeError("set_image must be called on the target before predict_with_visual_prompt")
+            raise RuntimeError(
+                "set_image must be called on the target before predict_with_visual_prompt",
+            )
         embed = pooled_embed.reshape(1, 1, -1)
-        masks, scores, boxes = self._model.predict_visual_prompt(
-            self._state, visual_prompt_embed=embed, encode_text=False,
-        )
+        if self._device == "cuda":
+            import torch  # type: ignore[import-not-found]
+
+            with torch.no_grad():
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    masks, scores, boxes = self._model.predict_visual_prompt(
+                        self._state, visual_prompt_embed=embed, encode_text=False,
+                    )
+        else:
+            masks, scores, boxes = self._model.predict_visual_prompt(
+                self._state, visual_prompt_embed=embed, encode_text=False,
+            )
         return np.asarray(masks), np.asarray(scores), np.asarray(boxes)
 
     def set_visual_prompt(
@@ -771,10 +788,34 @@ class Sam3p1NativeImagePredictorAdapter:
             return 0.7
 
     def _extract_dense_from_native(self, state, *, scale):
-        raise NotImplementedError("filled in Task A6")
+        """Read dense feature map from the native sam3 state.
+
+        ``Sam3Processor.set_image`` stores backbone outputs under
+        ``state["backbone_out"]`` with FPN levels in ``backbone_fpn``
+        (highest-resolution stage first per the Hiera default config
+        verified inside the model container):
+
+          ``scale="hi"`` → ``backbone_fpn[0]`` (stride-4, 288x288x256)
+          ``scale="lo"`` → ``backbone_fpn[1]`` (stride-8, 144x144x256)
+
+        Returns an ``(H, W, C)`` float32 numpy array on CPU.
+        """
+        import torch  # type: ignore[import-not-found]
+
+        fpn = state["backbone_out"]["backbone_fpn"]
+        idx = 0 if scale == "hi" else 1
+        feats = fpn[idx]
+        if feats.dim() == 4:
+            feats = feats[0]
+        feats = feats.permute(1, 2, 0).contiguous()
+        return feats.detach().to("cpu", dtype=torch.float32).numpy()
 
     def _extract_global_from_native(self, state):
-        raise NotImplementedError("filled in Task A6")
+        """Build a global pooled vector by mean-pooling the hi-res FPN."""
+        import numpy as np
+
+        dense_hi = self._extract_dense_from_native(state, scale="hi")
+        return dense_hi.reshape(-1, dense_hi.shape[-1]).mean(axis=0)
 
     def extract_embedding(self) -> dict | None:
         """The native image model's encoder cache is internal — no clean
@@ -782,6 +823,133 @@ class Sam3p1NativeImagePredictorAdapter:
         back to server-side decode (verified-acceptable per Plan 12).
         """
         return None
+
+
+def _native_visual_forward(
+    model: Any,
+    processor: Any,
+    state: dict,
+    *,
+    visual_prompt_embed: Any,
+    encode_text: bool = False,
+) -> tuple[Any, Any, Any]:
+    """Run a SAM 3.1 grounding forward with a visual concept (text disabled).
+
+    The native ``Sam3Image.forward_grounding`` does not expose
+    ``visual_prompt_embed`` through its kwargs — it always calls
+    ``self._encode_prompt(backbone_out, find_input, geometric_prompt)``
+    with no visual slot. To inject the visual embedding without forking
+    the package, we monkey-patch ``model._encode_prompt`` for the
+    duration of this call so the inner ``_encode_prompt`` receives our
+    ``visual_prompt_embed`` and ``encode_text=False`` flags.
+
+    Mirrors ``Sam3Processor.set_text_prompt`` + ``_forward_grounding``:
+      1. Populate ``state["backbone_out"]`` with language features for
+         the dummy ``"visual"`` token (so ``find_input.text_ids`` is
+         valid even though we will skip text in encode_prompt).
+      2. Install a dummy geometric prompt if absent.
+      3. Patch ``_encode_prompt`` and invoke
+         ``processor._forward_grounding(state)`` — this writes
+         ``masks``, ``scores``, ``boxes`` onto ``state`` and returns it.
+      4. Read masks/scores/boxes off ``state`` and return numpy arrays.
+    """
+    import numpy as np
+    import torch  # type: ignore[import-not-found]
+
+    if "backbone_out" not in state:
+        raise RuntimeError(
+            "native visual forward: state missing 'backbone_out' "
+            "(set_image must be called first)",
+        )
+
+    # Coerce visual_prompt_embed into a torch tensor of shape (N, B, C)
+    # on the model device. The adapter passes a numpy (1, 1, C) reshape.
+    if isinstance(visual_prompt_embed, np.ndarray):
+        embed_t = torch.from_numpy(visual_prompt_embed).to(
+            device=processor.device, dtype=torch.float32,
+        )
+    elif isinstance(visual_prompt_embed, torch.Tensor):
+        embed_t = visual_prompt_embed.to(
+            device=processor.device, dtype=torch.float32,
+        )
+    else:
+        embed_t = torch.tensor(
+            visual_prompt_embed, device=processor.device, dtype=torch.float32,
+        )
+    if embed_t.dim() == 1:
+        embed_t = embed_t.view(1, 1, -1)
+    elif embed_t.dim() == 2:
+        embed_t = embed_t.unsqueeze(1)
+
+    n_tokens = int(embed_t.shape[0])
+    batch_size = int(embed_t.shape[1])
+
+    # mask shape is (batch, num_tokens) per torch.cat([..., visual_prompt_mask], dim=1)
+    # in Sam3Image._encode_prompt. False means "valid" (not padded) for the
+    # transformer's key_padding_mask convention used by the native model
+    # (see geo_masks built in geometry_encoders).
+    visual_prompt_mask = torch.zeros(
+        (batch_size, n_tokens), device=processor.device, dtype=torch.bool,
+    )
+
+    # 1) Make sure language_features exist on the backbone_out so the
+    #    find_stage's text_ids index is valid. We only need this because
+    #    _encode_prompt indexes language_features even when encode_text
+    #    is False (the index is computed but the slice is dropped).
+    if "language_features" not in state["backbone_out"]:
+        with torch.inference_mode():
+            text_outputs = model.backbone.forward_text(
+                ["visual"], device=processor.device,
+            )
+        state["backbone_out"].update(text_outputs)
+
+    # 2) Install a dummy geometric prompt if none was provided.
+    if "geometric_prompt" not in state:
+        state["geometric_prompt"] = model._get_dummy_prompt()
+
+    # 3) Monkey-patch _encode_prompt to inject our visual slot.
+    original_encode_prompt = model._encode_prompt
+
+    def patched_encode_prompt(
+        backbone_out, find_input, geometric_prompt, **_unused,
+    ):
+        return original_encode_prompt(
+            backbone_out,
+            find_input,
+            geometric_prompt,
+            visual_prompt_embed=embed_t,
+            visual_prompt_mask=visual_prompt_mask,
+            encode_text=encode_text,
+        )
+
+    model._encode_prompt = patched_encode_prompt
+    try:
+        with torch.inference_mode():
+            processor._forward_grounding(state)
+    finally:
+        model._encode_prompt = original_encode_prompt
+
+    # 4) Pull masks/scores/boxes off the state and return numpy.
+    from carve_model.sam.perf import to_numpy_safe
+
+    masks = state.get("masks")
+    scores = state.get("scores")
+    boxes = state.get("boxes")
+    if masks is None or scores is None:
+        return (
+            np.zeros((0, state["original_height"], state["original_width"]), dtype=bool),
+            np.zeros((0,), dtype=np.float32),
+            np.zeros((0, 4), dtype=np.float32),
+        )
+
+    masks_np = to_numpy_safe(masks)
+    if masks_np.ndim == 4 and masks_np.shape[1] == 1:
+        masks_np = masks_np[:, 0]
+    scores_np = to_numpy_safe(scores)
+    boxes_np = to_numpy_safe(boxes) if boxes is not None else np.zeros(
+        (masks_np.shape[0], 4), dtype=np.float32,
+    )
+    return masks_np, scores_np, boxes_np
 
 
 def build_sam3p1_image_predictor(device: str | None = None) -> Sam3p1NativeImagePredictorAdapter:
@@ -814,6 +982,25 @@ def build_sam3p1_image_predictor(device: str | None = None) -> Sam3p1NativeImage
     # ``with autocast(enabled=False)`` blocks in ``decoder.py`` were
     # designed for: outer autocast(bf16), specific layers opt out.
     processor = Sam3Processor(model)
+
+    # Wire native visual-prompt forward onto ``model.predict_visual_prompt``
+    # so ``Sam3p1NativeImagePredictorAdapter.predict_with_visual_prompt``
+    # dispatches into the native sam3 grounding pass with text disabled
+    # and our pooled embedding injected via the monkey-patched
+    # ``_encode_prompt`` slot. Tests stub this attribute directly on
+    # the model to bypass the native forward.
+    def _bound_predict_visual_prompt(
+        state, *, visual_prompt_embed, encode_text=False,
+    ):
+        return _native_visual_forward(
+            model,
+            processor,
+            state,
+            visual_prompt_embed=visual_prompt_embed,
+            encode_text=encode_text,
+        )
+
+    model.predict_visual_prompt = _bound_predict_visual_prompt
     return Sam3p1NativeImagePredictorAdapter(model=model, processor=processor, device=dev)
 
 
