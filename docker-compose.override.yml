@@ -23,6 +23,12 @@ services:
       - ./apps/api/alembic:/app/alembic
   model:
     ports: ["8100:8100"]
+    # v3.28 — SAM Visual Prompt (CLIP image-similarity pipeline) requires
+    # the native SAM 3.1 variant. Without this, the model loads sam3
+    # (transformers) by default and the Visual Prompt tab disappears
+    # because /sam/status reports visual_prompt_available=false.
+    environment:
+      SAM_MODEL: sam3.1
     volumes:
       - ./apps/model/src:/app/src
     command: ["uvicorn", "carve_model.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
