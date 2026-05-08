@@ -104,6 +104,9 @@ class SamStatusOut(BaseModel):
     # v3.21+ — proxied from the model service's /sam/status. Tells the
     # editor whether the per-user VLM-FO1 toggle should be visible.
     vlm_fo1_available: bool = False
+    # v3.28 — proxied from /sam/status. Tells the editor whether the
+    # SAM Visual Prompt tab should be available in Auto-Annotate.
+    visual_prompt_available: bool = False
 
 
 def _probe_model_service() -> bool:
@@ -275,4 +278,5 @@ def sam_status_endpoint(
         error=body.get("error"),
         job_id=body.get("job_id"),
         vlm_fo1_available=bool(body.get("vlm_fo1_available", False)),
+        visual_prompt_available=bool(body.get("visual_prompt_available", False)),
     )
