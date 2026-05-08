@@ -500,20 +500,59 @@ class Sam3p1NativeImagePredictorAdapter:
         fusion_mode="dense_plus_global",
         pad_ratio=0.15,
         multi_scale=True,
+        tta_hflip=False,
+        tta_vflip=False,
+        tta_rot90=False,
+        color_aug=False,
+        self_attn_pool=False,
+        ximg_refine=False,
+        target_state=None,
     ):
         """Compute a pooled visual_prompt_embed for one (refer_image, region) pair.
 
-        Defaults-only path. Optional levers (TTA / color aug / self-attn / x-img)
-        land in Task A4. See spec Section 5.5 + 5.6.
+        See spec Section 5.5 + 5.6. Optional levers are env-gated, off by default.
+        """
+        import os
+        import numpy as np
+        from carve_model.sam.visual_prompt_pool import l2norm, cross_image_refine
+
+        flags = {
+            "tta_hflip": tta_hflip or os.environ.get("SAM_VISUAL_PROMPT_TTA_HFLIP") == "1",
+            "tta_vflip": tta_vflip or os.environ.get("SAM_VISUAL_PROMPT_TTA_VFLIP") == "1",
+            "tta_rot90": tta_rot90 or os.environ.get("SAM_VISUAL_PROMPT_TTA_ROT90") == "1",
+            "color_aug": color_aug or os.environ.get("SAM_VISUAL_PROMPT_COLOR_AUG") == "1",
+            "self_attn": self_attn_pool or os.environ.get("SAM_VISUAL_PROMPT_SELF_ATTN") == "1",
+            "ximg":      ximg_refine    or os.environ.get("SAM_VISUAL_PROMPT_XIMG_REFINE") == "1",
+        }
+
+        crops = self._build_tta_crops(
+            refer_image, region, pad_ratio=pad_ratio, flags=flags,
+        )
+        per_ref_vecs = [
+            self._encode_one(crop, region_in_crop, multi_scale, flags["self_attn"])
+            for crop, region_in_crop in crops
+        ]
+        pooled = l2norm(np.mean(per_ref_vecs, axis=0))
+        if flags["ximg"] and target_state is not None:
+            pooled = cross_image_refine(
+                pooled,
+                self._extract_dense(target_state, scale="hi"),
+                k=int(os.environ.get("SAM_VISUAL_PROMPT_XIMG_K", "10")),
+                beta=float(os.environ.get("SAM_VISUAL_PROMPT_XIMG_BETA", "0.2")),
+            )
+        return pooled
+
+    def _build_tta_crops(self, refer_image, region, *, pad_ratio, flags):
+        """Build list of (crop_array, region_in_crop) tuples for TTA variants.
+
+        Applies crop preprocessing (expand, min_size_guard, slice, square_pad).
+        Returns augmented crops based on enabled flags: hflip, vflip, rot90, color_aug.
         """
         import numpy as np
         from PIL import Image
         from carve_model.sam.visual_prompt_preprocess import (
             expand_region_with_padding, min_size_guard,
             rasterise_polygon, square_pad_replicate,
-        )
-        from carve_model.sam.visual_prompt_pool import (
-            masked_mean, l2norm, fuse_dense_global,
         )
 
         H, W = refer_image.shape[:2]
@@ -526,36 +565,155 @@ class Sam3p1NativeImagePredictorAdapter:
         crop = square_pad_replicate(crop)
         crop_h, crop_w = crop.shape[:2]
 
+        pad_top = (crop_h - (cy2 - cy1)) // 2
+        pad_left = (crop_w - (cx2 - cx1)) // 2
+
+        # Compute region_in_crop (region coords in crop-local space)
+        if region["kind"] == "bbox":
+            rx1, ry1, rx2, ry2 = (float(v) for v in region["xyxy"])
+            rx1_crop = pad_left + (rx1 - cx1); rx2_crop = pad_left + (rx2 - cx1)
+            ry1_crop = pad_top + (ry1 - cy1);  ry2_crop = pad_top + (ry2 - cy1)
+            region_in_crop_orig = {"kind": "bbox", "xyxy": [rx1_crop, ry1_crop, rx2_crop, ry2_crop]}
+        else:
+            pts = [[pad_left + (p[0] - cx1), pad_top + (p[1] - cy1)] for p in region["points"]]
+            region_in_crop_orig = {"kind": "polygon", "points": pts}
+
+        crops = []
+
+        # Original
+        crops.append((crop.copy(), region_in_crop_orig))
+
+        # Build TTA variants
+        if flags["tta_rot90"]:
+            # rot90 replaces the original list
+            crops = []
+            for k in range(4):
+                rotated = np.rot90(crop, k=k).copy()
+                # Rotate region coords
+                if region_in_crop_orig["kind"] == "bbox":
+                    rx1, ry1, rx2, ry2 = region_in_crop_orig["xyxy"]
+                    # For k=0: no change
+                    # For k=1: (x,y) → (y, crop_h-x)  [90° ccw]
+                    # For k=2: (x,y) → (crop_w-x, crop_h-y) [180°]
+                    # For k=3: (x,y) → (crop_w-y, x) [270° ccw]
+                    if k == 0:
+                        region_rot = {"kind": "bbox", "xyxy": [rx1, ry1, rx2, ry2]}
+                    elif k == 1:
+                        # 90° ccw: (x,y) → (y, crop_h-x)
+                        region_rot = {"kind": "bbox", "xyxy": [ry1, crop_h - rx2, ry2, crop_h - rx1]}
+                    elif k == 2:
+                        # 180°: (x,y) → (crop_w-x, crop_h-y)
+                        region_rot = {"kind": "bbox", "xyxy": [crop_w - rx2, crop_h - ry2, crop_w - rx1, crop_h - ry1]}
+                    else:  # k == 3
+                        # 270° ccw: (x,y) → (crop_w-y, x)
+                        region_rot = {"kind": "bbox", "xyxy": [crop_w - ry2, rx1, crop_w - ry1, rx2]}
+                else:
+                    # Polygon rotation
+                    pts = region_in_crop_orig["points"]
+                    if k == 0:
+                        pts_rot = pts
+                    elif k == 1:
+                        pts_rot = [[p[1], crop_h - p[0]] for p in pts]
+                    elif k == 2:
+                        pts_rot = [[crop_w - p[0], crop_h - p[1]] for p in pts]
+                    else:  # k == 3
+                        pts_rot = [[crop_w - p[1], p[0]] for p in pts]
+                    region_rot = {"kind": "polygon", "points": pts_rot}
+                crops.append((rotated, region_rot))
+        else:
+            # hflip/vflip/color_aug compose
+            if flags["tta_hflip"]:
+                # hflip: (x,y) → (crop_w-x, y)
+                if region_in_crop_orig["kind"] == "bbox":
+                    rx1, ry1, rx2, ry2 = region_in_crop_orig["xyxy"]
+                    region_hflip = {"kind": "bbox", "xyxy": [crop_w - rx2, ry1, crop_w - rx1, ry2]}
+                else:
+                    pts = region_in_crop_orig["points"]
+                    region_hflip = {"kind": "polygon", "points": [[crop_w - p[0], p[1]] for p in pts]}
+                crops.append((crop[:, ::-1].copy(), region_hflip))
+
+            if flags["tta_vflip"]:
+                # vflip: (x,y) → (x, crop_h-y)
+                if region_in_crop_orig["kind"] == "bbox":
+                    rx1, ry1, rx2, ry2 = region_in_crop_orig["xyxy"]
+                    region_vflip = {"kind": "bbox", "xyxy": [rx1, crop_h - ry2, rx2, crop_h - ry1]}
+                else:
+                    pts = region_in_crop_orig["points"]
+                    region_vflip = {"kind": "polygon", "points": [[p[0], crop_h - p[1]] for p in pts]}
+                crops.append((crop[::-1, :].copy(), region_vflip))
+
+            if flags["tta_hflip"] and flags["tta_vflip"]:
+                # hflip+vflip: (x,y) → (crop_w-x, crop_h-y)
+                if region_in_crop_orig["kind"] == "bbox":
+                    rx1, ry1, rx2, ry2 = region_in_crop_orig["xyxy"]
+                    region_hvflip = {"kind": "bbox", "xyxy": [crop_w - rx2, crop_h - ry2, crop_w - rx1, crop_h - ry1]}
+                else:
+                    pts = region_in_crop_orig["points"]
+                    region_hvflip = {"kind": "polygon", "points": [[crop_w - p[0], crop_h - p[1]] for p in pts]}
+                crops.append((crop[::-1, ::-1].copy(), region_hvflip))
+
+        if flags["color_aug"]:
+            aug_crop = self._color_jitter(crop)
+            crops.append((aug_crop, region_in_crop_orig))
+
+        return crops
+
+    def _encode_one(self, crop, region_in_crop, multi_scale, use_self_attn):
+        """Encode a single (pre-cropped) image and region into a pooled vector.
+
+        Takes a crop array + region_in_crop (in crop-local coords), runs processor,
+        extracts dense/global features, builds mask, pools, and returns L2-normed vector.
+        """
+        import numpy as np
+        from PIL import Image
+        from carve_model.sam.visual_prompt_preprocess import rasterise_polygon
+        from carve_model.sam.visual_prompt_pool import (
+            masked_mean, l2norm, fuse_dense_global, self_attn_pool,
+        )
+
+        crop_h, crop_w = crop.shape[:2]
         state = self._processor.set_image(Image.fromarray(crop))
         dense_hi = self._extract_dense(state, scale="hi")
         dense_lo = self._extract_dense(state, scale="lo") if multi_scale else None
         global_vec = self._extract_global(state)
 
-        pad_top = (crop_h - (cy2 - cy1)) // 2
-        pad_left = (crop_w - (cx2 - cx1)) // 2
-        if region["kind"] == "bbox":
-            rx1, ry1, rx2, ry2 = (float(v) for v in region["xyxy"])
-            rx1 = pad_left + (rx1 - cx1); rx2 = pad_left + (rx2 - cx1)
-            ry1 = pad_top + (ry1 - cy1);  ry2 = pad_top + (ry2 - cy1)
+        # Build mask from region_in_crop
+        if region_in_crop["kind"] == "bbox":
+            rx1, ry1, rx2, ry2 = region_in_crop["xyxy"]
             mask_hi = self._bbox_mask((rx1, ry1, rx2, ry2), crop_h, crop_w, dense_hi.shape[:2])
             mask_lo = (
                 self._bbox_mask((rx1, ry1, rx2, ry2), crop_h, crop_w, dense_lo.shape[:2])
                 if dense_lo is not None else None
             )
         else:
-            pts = [[pad_left + (p[0] - cx1), pad_top + (p[1] - cy1)] for p in region["points"]]
+            pts = region_in_crop["points"]
             full_mask = rasterise_polygon(pts, crop_h, crop_w)
             mask_hi = self._downsample_bool(full_mask, dense_hi.shape[:2])
             mask_lo = self._downsample_bool(full_mask, dense_lo.shape[:2]) if dense_lo is not None else None
 
-        dense_vec_hi = l2norm(masked_mean(dense_hi, mask_hi))
+        # Pool dense features
+        if use_self_attn:
+            dense_vec_hi = self_attn_pool(dense_hi, mask_hi, l2norm(global_vec))
+        else:
+            dense_vec_hi = l2norm(masked_mean(dense_hi, mask_hi))
+
         if dense_lo is not None and mask_lo is not None:
-            dense_vec_lo = l2norm(masked_mean(dense_lo, mask_lo))
+            if use_self_attn:
+                dense_vec_lo = self_attn_pool(dense_lo, mask_lo, l2norm(global_vec))
+            else:
+                dense_vec_lo = l2norm(masked_mean(dense_lo, mask_lo))
             dense_vec = l2norm(0.5 * (dense_vec_hi + dense_vec_lo))
         else:
             dense_vec = dense_vec_hi
+
         global_vec = l2norm(global_vec)
         return fuse_dense_global(dense_vec, global_vec, alpha=self._alpha())
+
+    @staticmethod
+    def _color_jitter(crop):
+        """Apply a simple color augmentation: 1.1x brightness."""
+        import numpy as np
+        return np.clip(crop.astype(np.int32) * 1.1, 0, 255).astype(np.uint8)
 
     @staticmethod
     def _bbox_mask(xyxy, crop_h, crop_w, feat_hw):

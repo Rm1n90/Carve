@@ -90,3 +90,66 @@ def test_min_size_guard_expands_tiny_region():
         {"kind": "bbox", "xyxy": [95.0, 95.0, 105.0, 105.0]},
     )
     assert out.shape == (8,)
+
+
+def test_all_optional_levers_off_by_default(monkeypatch):
+    for k in (
+        "SAM_VISUAL_PROMPT_TTA_HFLIP", "SAM_VISUAL_PROMPT_TTA_VFLIP",
+        "SAM_VISUAL_PROMPT_TTA_ROT90", "SAM_VISUAL_PROMPT_COLOR_AUG",
+        "SAM_VISUAL_PROMPT_SELF_ATTN", "SAM_VISUAL_PROMPT_XIMG_REFINE",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    adapter = _build_adapter()
+    adapter.set_visual_prompt(np.zeros((100, 100, 3), dtype=np.uint8),
+                              {"kind": "bbox", "xyxy": [10.0, 10.0, 30.0, 30.0]})
+    assert adapter._processor.set_image.call_count == 1
+
+
+def test_tta_hflip_env_doubles_encode(monkeypatch):
+    monkeypatch.setenv("SAM_VISUAL_PROMPT_TTA_HFLIP", "1")
+    adapter = _build_adapter()
+    adapter.set_visual_prompt(np.zeros((100, 100, 3), dtype=np.uint8),
+                              {"kind": "bbox", "xyxy": [10.0, 10.0, 30.0, 30.0]})
+    assert adapter._processor.set_image.call_count == 2
+
+
+def test_tta_vflip_env_doubles_encode(monkeypatch):
+    monkeypatch.setenv("SAM_VISUAL_PROMPT_TTA_VFLIP", "1")
+    adapter = _build_adapter()
+    adapter.set_visual_prompt(np.zeros((100, 100, 3), dtype=np.uint8),
+                              {"kind": "bbox", "xyxy": [10.0, 10.0, 30.0, 30.0]})
+    assert adapter._processor.set_image.call_count == 2
+
+
+def test_tta_rot90_env_runs_four_encodes(monkeypatch):
+    monkeypatch.setenv("SAM_VISUAL_PROMPT_TTA_ROT90", "1")
+    adapter = _build_adapter()
+    adapter.set_visual_prompt(np.zeros((100, 100, 3), dtype=np.uint8),
+                              {"kind": "bbox", "xyxy": [10.0, 10.0, 30.0, 30.0]})
+    assert adapter._processor.set_image.call_count == 4
+
+
+def test_tta_compose_hflip_and_vflip(monkeypatch):
+    monkeypatch.setenv("SAM_VISUAL_PROMPT_TTA_HFLIP", "1")
+    monkeypatch.setenv("SAM_VISUAL_PROMPT_TTA_VFLIP", "1")
+    adapter = _build_adapter()
+    adapter.set_visual_prompt(np.zeros((100, 100, 3), dtype=np.uint8),
+                              {"kind": "bbox", "xyxy": [10.0, 10.0, 30.0, 30.0]})
+    assert adapter._processor.set_image.call_count == 4
+
+
+def test_color_aug_env_runs_twice(monkeypatch):
+    monkeypatch.setenv("SAM_VISUAL_PROMPT_COLOR_AUG", "1")
+    adapter = _build_adapter()
+    adapter.set_visual_prompt(np.zeros((100, 100, 3), dtype=np.uint8),
+                              {"kind": "bbox", "xyxy": [10.0, 10.0, 30.0, 30.0]})
+    assert adapter._processor.set_image.call_count == 2
+
+
+def test_self_attn_pool_env_changes_output(monkeypatch):
+    refer = np.zeros((100, 100, 3), dtype=np.uint8)
+    region = {"kind": "bbox", "xyxy": [10.0, 10.0, 30.0, 30.0]}
+    a1 = _build_adapter().set_visual_prompt(refer, region)
+    monkeypatch.setenv("SAM_VISUAL_PROMPT_SELF_ATTN", "1")
+    a2 = _build_adapter().set_visual_prompt(refer, region)
+    assert not np.allclose(a1, a2, atol=1e-3)
