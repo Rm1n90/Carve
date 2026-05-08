@@ -618,6 +618,35 @@ class SamAutoTextOut(BaseModel):
     ineligible: list[str]
 
 
+class SamVisualRegionIn(BaseModel):
+    kind: str  # "bbox" or "polygon"
+    xyxy: list[float] | None = None
+    points: list[list[float]] | None = None
+
+
+class SamAutoVisualGroupIn(BaseModel):
+    class_id: uuid.UUID
+    refs: list[SamVisualRegionIn] = Field(..., min_length=1, max_length=64)
+
+
+class SamAutoVisualSourceIn(BaseModel):
+    asset_id: uuid.UUID
+    groups: list[SamAutoVisualGroupIn] = Field(..., min_length=1)
+
+
+class SamAutoVisualIn(BaseModel):
+    sources: list[SamAutoVisualSourceIn] = Field(..., min_length=1)
+    ref_kind: str  # "bbox" or "polygon"
+    threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    find_all: bool = Field(default=True)
+    overwrite: bool = Field(default=False)
+
+
+class SamAutoVisualOut(BaseModel):
+    annotations_created: int
+    per_class: dict[str, int]
+
+
 @router.post(
     "/{asset_id}/sam/auto-text",
     response_model=SamAutoTextOut,
@@ -686,6 +715,74 @@ def sam_auto_text_endpoint(
         except Exception:  # noqa: BLE001
             pass
     return SamAutoTextOut(**result)
+
+
+@router.post(
+    "/{asset_id}/sam/auto-visual",
+    response_model=SamAutoVisualOut,
+)
+def sam_auto_visual_endpoint(
+    asset_id: uuid.UUID,
+    payload: SamAutoVisualIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SamAutoVisualOut:
+    """Run SAM 3.1 visual-prompt across the picked references on this asset.
+
+    For each (source asset, class) group, calls /sam/visual-prompt and
+    persists polygon (preferred) / mask (fallback) annotations above
+    ``threshold``. Reuses the same compute-first/delete-second overwrite
+    safety as the text-prompt sync path.
+    """
+    from carve_api.inference.auto_visual import (
+        AutoVisualMixedRefs,
+        AutoVisualNoClass,
+        AutoVisualNoRefs,
+        auto_visual_for_asset,
+    )
+
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        task = require_visible_task(db, user, asset.task_id)
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    # Convert payload sources to plain dicts for the orchestrator.
+    sources = [
+        {
+            "asset_id": str(src.asset_id),
+            "groups": [
+                {
+                    "class_id": str(grp.class_id),
+                    "refs": [r.model_dump(exclude_none=True) for r in grp.refs],
+                }
+                for grp in src.groups
+            ],
+        }
+        for src in payload.sources
+    ]
+
+    try:
+        result = auto_visual_for_asset(
+            session=db,
+            asset=asset,
+            task=task,
+            sources=sources,
+            ref_kind=payload.ref_kind,
+            threshold=payload.threshold,
+            find_all=payload.find_all,
+            overwrite=payload.overwrite,
+            actor_id=user.id,
+        )
+    except (AutoVisualMixedRefs, AutoVisualNoClass, AutoVisualNoRefs) as exc:
+        raise _http(exc) from exc
+    except AppError as exc:
+        raise _http(exc) from exc
+    db.commit()
+    return SamAutoVisualOut(**result)
 
 
 @router.post("/{asset_id}/sam/encode")
