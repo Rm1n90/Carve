@@ -437,6 +437,164 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
                 )
 
 
+# v3.24 — SAM 3.1 visual-prompt batch. Reuses the Redis progress hash
+# helpers (init/update/finalize/read) so the frontend's BatchProgressDialog
+# works uniformly across YOLO, SAM-text, and SAM-visual batches.
+
+@dataclass
+class AutoVisualBatchPayload:
+    """Serialisable args for the SAM 3.1 visual-prompt auto-annotate batch.
+
+    ``sources`` is the same multi-source list shape the sync endpoint
+    accepts; we keep it as plain dicts here so RQ pickles cleanly.
+    """
+
+    job_id: str
+    actor_id: str
+    task_id: str
+    sources: list[dict]
+    ref_kind: str
+    threshold: float
+    find_all: bool
+    overwrite: bool
+
+
+def build_auto_visual_payload(
+    *,
+    actor: User,
+    task: Task,
+    sources: list[dict],
+    ref_kind: str,
+    threshold: float,
+    find_all: bool,
+    overwrite: bool,
+) -> AutoVisualBatchPayload:
+    return AutoVisualBatchPayload(
+        job_id=str(uuid.uuid4()),
+        actor_id=str(actor.id),
+        task_id=str(task.id),
+        sources=sources,
+        ref_kind=str(ref_kind),
+        threshold=float(threshold),
+        find_all=bool(find_all),
+        overwrite=bool(overwrite),
+    )
+
+
+def run_auto_visual_batch(payload: AutoVisualBatchPayload) -> dict:
+    """RQ job entry point for the SAM 3.1 visual-prompt multi-asset batch.
+
+    Mirrors run_auto_text_batch's session/commit semantics:
+      - Single shared session for the whole batch.
+      - Per-asset commit on success, per-asset rollback on failure.
+      - Cooperative cancel: between assets, check the progress hash for
+        ``status="canceled"`` written by the API's cancel endpoint.
+    """
+    import os
+
+    import redis as _redis
+    from carve_api.db import get_session_factory
+    from carve_api.inference.auto_visual import auto_visual_for_asset
+
+    redis_client = None
+    try:
+        redis_client = _redis.Redis(
+            host=os.environ.get("REDIS_HOST", "redis"),
+            port=int(os.environ.get("REDIS_PORT", "6379")),
+            decode_responses=True,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception(
+            "auto_visual_batch: redis init failed; running without progress"
+        )
+
+    task_uuid = uuid.UUID(payload.task_id)
+    actor_uuid = uuid.UUID(payload.actor_id)
+
+    total_created = 0
+    failed = 0
+    errors: list[str] = []
+
+    session = get_session_factory()()
+    try:
+        task = session.get(Task, task_uuid)
+        if task is None:
+            finalize_progress(redis_client, payload.job_id, status="failed")
+            return {"ok": False, "error": "task_not_found"}
+
+        assets = list_assets_for_task(session, task_uuid)
+        init_progress(redis_client, payload.job_id, total=len(assets))
+
+        canceled = False
+        for i, asset in enumerate(assets):
+            if redis_client is not None:
+                try:
+                    cur_status = redis_client.hget(
+                        progress_key(payload.job_id), "status"
+                    )
+                    if cur_status == "canceled":
+                        canceled = True
+                        break
+                except Exception:
+                    pass
+            try:
+                result = auto_visual_for_asset(
+                    session=session,
+                    asset=asset,
+                    task=task,
+                    sources=payload.sources,
+                    ref_kind=payload.ref_kind,
+                    threshold=payload.threshold,
+                    find_all=payload.find_all,
+                    overwrite=payload.overwrite,
+                    actor_id=actor_uuid,
+                )
+                session.commit()
+                total_created += int(result.get("annotations_created", 0))
+            except (AppError, ModelServiceError) as exc:
+                session.rollback()
+                failed += 1
+                errors.append(_truncated_repr(exc, limit=200))
+                log.warning(
+                    "auto_visual_batch: asset %s failed: %s",
+                    asset.id,
+                    _truncated_repr(exc),
+                )
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                failed += 1
+                errors.append(_truncated_repr(exc, limit=200))
+                log.exception("auto_visual_batch: asset %s unexpected error", asset.id)
+
+            update_progress(
+                redis_client,
+                payload.job_id,
+                done=i + 1,
+                failed=failed,
+                errors=errors[-20:],
+                total_annotations_created=total_created,
+                total_skipped_detections=0,
+                skipped_by_class={},
+            )
+
+        if canceled:
+            finalize_progress(redis_client, payload.job_id, status="canceled")
+            return {
+                "ok": True,
+                "canceled": True,
+                "annotations_created": total_created,
+                "failed": failed,
+            }
+        finalize_progress(
+            redis_client,
+            payload.job_id,
+            status="completed" if failed == 0 else "completed_with_errors",
+        )
+        return {"ok": True, "annotations_created": total_created, "failed": failed}
+    finally:
+        session.close()
+
+
 # v3.23 — YOLOE batch (text / visual / prompt-free) over all assets in a task.
 # Reuses the same Redis progress hash + cooperative cancel pattern as the
 # YOLO and SAM auto-text batches so the frontend's BackgroundJobsBar +
