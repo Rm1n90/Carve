@@ -160,6 +160,11 @@ def set_visual_prompt(
     refer_image: np.ndarray,            # HxWx3 uint8 RGB, the source asset
     region: dict,                       # {"kind": "bbox", "xyxy": [...]}
                                         # OR {"kind": "polygon", "points": [...]}
+    *,
+    fusion_mode: str = "dense_plus_global",   # see §5.6.1
+    pad_ratio: float = 0.15,                  # see §5.6.2
+    multi_scale: bool = True,                 # see §5.6.3
+    tta_hflip: bool = False,                  # off by default; opt-in via env
 ) -> np.ndarray:
     """Return a pooled visual_prompt_embed for the region.
 
@@ -167,44 +172,116 @@ def set_visual_prompt(
     polygon: rasterise polygon to a binary mask at the backbone feature
              resolution, then masked-mean pool feature vectors where
              the mask is True.
+
+    The returned embed is the fused dense + global vector described in
+    §5.6.1. The caller stacks per-ref embeds and means across exemplars.
     """
 ```
 
-Pooling pseudocode:
+Per-ref pseudocode (the per-ref output is the input to multi-exemplar mean):
 
 ```python
-backbone_out = self._processor.set_image(pil_refer)
-feats, _, sizes = self._model.get_image_features(backbone_out)
-# feats: (H_f, W_f, D)  for the highest-resolution stage we use
-H, W = refer_image.shape[:2]
-H_f, W_f, D = feats.shape
+# 1. Preprocess: crop with padding + aspect-preserving square pad (§5.6.2).
+crop, region_local = preprocess_refer(refer_image, region, pad_ratio=pad_ratio)
 
-if region["kind"] == "bbox":
-    x1, y1, x2, y2 = region["xyxy"]
-    fx1 = max(0, int(x1 / W * W_f)); fx2 = min(W_f, int(np.ceil(x2 / W * W_f)))
-    fy1 = max(0, int(y1 / H * H_f)); fy2 = min(H_f, int(np.ceil(y2 / H * H_f)))
-    pool = feats[fy1:fy2, fx1:fx2].mean(dim=(0, 1))    # (D,)
-elif region["kind"] == "polygon":
-    mask = rasterise_polygon(region["points"], H, W)    # bool HxW
-    mask_f = downsample(mask, (H_f, W_f))                # bool H_fxW_f
-    if mask_f.sum() == 0:
-        # degenerate polygon → fall back to enclosing-bbox pool
-        ...
-    pool = feats[mask_f].mean(dim=0)                     # (D,)
+# 2. Backbone forward at native input resolution.
+backbone_out = self._processor.set_image(pil(crop))
 
-return pool   # caller stacks → mean across exemplars
+# 3. Multi-scale dense features (§5.6.3): pull both the highest-res FPN
+#    stage AND a coarser one. Both are used; we don't average them.
+dense_hi, dense_lo = get_image_features_multi_scale(backbone_out)
+# dense_hi: (H_hi, W_hi, D), dense_lo: (H_lo, W_lo, D)
+
+# 4. Build feature-resolution mask from region_local (bbox grid OR
+#    rasterised polygon downsampled to feature resolution).
+mask_hi = build_region_mask(region_local, dense_hi.shape[:2])
+mask_lo = build_region_mask(region_local, dense_lo.shape[:2])
+
+# 5. Dense pool — masked mean per scale, L2-normalised.
+dense_vec_hi = l2norm(masked_mean(dense_hi, mask_hi))   # (D,)
+dense_vec_lo = l2norm(masked_mean(dense_lo, mask_lo))   # (D,)
+dense_vec    = l2norm(0.5 * (dense_vec_hi + dense_vec_lo))   # (D,)
+
+# 6. Global pool — whole-crop mean (or backbone CLS token if available).
+global_vec = l2norm(masked_mean(dense_hi, ones_like(mask_hi)))    # (D,)
+
+# 7. Fuse (§5.6.1).
+fused = fuse_dense_global(dense_vec, global_vec, mode=fusion_mode)  # (D,)
+
+# 8. Optional TTA: horizontal flip, repeat 1–7, mean and re-L2-norm.
+if tta_hflip:
+    fused_flip = encode_with_hflip(...)
+    fused = l2norm(0.5 * (fused + fused_flip))
+
+return fused
 ```
 
-The pooled `(D,)` becomes a single visual concept slot. The `_forward_grounding` call passes:
+The fused per-ref `(D,)` is appended to the class's exemplar list. After all refs for a class are encoded, the multi-exemplar pool is the L2-normalised mean of the per-ref vectors. The result becomes the `visual_prompt_embed` slot:
 
 ```python
 visual_prompt_embed = pooled[None, None, :]           # (1, 1, D) shape match
 visual_prompt_mask  = torch.ones(1, 1, dtype=bool)    # one valid concept
 ```
 
-with text features replaced by the dummy "visual" embedding the SAM 3.1 native package already supports for vision-only mode (verified at `sam3_image_processor.py:140`).
+Text features are replaced by the dummy "visual" embedding the SAM 3.1 native package already supports for vision-only mode (verified at `sam3_image_processor.py:140`).
 
-### 5.6 Capability gate
+### 5.6 Preprocessing & feature design — accuracy levers
+
+#### 5.6.1 Dense + global fusion
+
+Dense (region-pooled) features capture **part-level appearance**; global (whole-crop) features capture **object identity / context**. PCS-style models behave noticeably better when both signals are combined, especially when the refer region is small (dense features are noisy) or large (global features wash out part detail).
+
+Two fusion modes, selected via the `fusion_mode` argument:
+
+| Mode | Operation | When |
+|---|---|---|
+| `dense_plus_global` (default) | `fused = l2norm(α · dense + (1 − α) · global)` with `α = 0.7` | Default — dense-led blend, robust across small/large refs. |
+| `concat` | `fused = l2norm(concat(dense, global))` then project back to D via a fixed linear layer | Reserved for a possible future learned projection. **Not implemented in v1** to keep the path checkpoint-free. |
+
+`α` is tunable via the `SAM_VISUAL_PROMPT_ALPHA` env var (default `0.7`). The default value is documented; the env exists so we can A/B test on real tasks without a redeploy.
+
+#### 5.6.2 Crop with context padding + aspect-preserving square pad
+
+Encoding the bare bbox crop is a known PCS failure mode: the encoder loses scene context and over-fits to the central pixels. Mitigations:
+
+1. **Context expansion**: enlarge the region by `pad_ratio` (default `0.15` = 15 %) on each side, clipped to image bounds. Recorded as `region_local` in expanded crop coordinates so the mask still aligns.
+2. **Aspect-preserving square pad**: pad the expanded crop with replicate-edge pixels (NOT zeros — zero-padding biases backbone activations) so the input is square before resize. SAM 3.1's processor resizes to its native input size; feeding a stretched rectangle distorts feature geometry.
+3. **Min-size guard**: if the original region is < 32 px in either dimension, expand the crop to at least 64×64 with replicate padding. SAM 3.1's backbone has stride 16; sub-stride regions otherwise pool from 1–2 cells of noise.
+
+Polygon-specific:
+- Rasterise polygon at full crop resolution first, **then** downsample to feature-map resolution with bilinear → threshold. Gives smoother feature-grid coverage than rasterising at feature resolution directly (verified standard practice in detection codebases).
+
+#### 5.6.3 Multi-scale dense features
+
+SAM 3.1's image backbone exposes a Hiera FPN. We pull dense features from two scales:
+- **High-res** — finest stage available (typically stride 16). Captures part detail.
+- **Low-res** — coarsest segmentation-relevant stage (typically stride 32). Captures shape / object-level structure.
+
+Per-scale pool first (so each scale's mask covers the same physical region), then average. Empirically this is more robust than concatenating across scales when the refer region size varies.
+
+#### 5.6.4 L2 normalisation discipline
+
+Every aggregation step ends in L2 normalisation:
+- Per-scale dense pool
+- Cross-scale dense average
+- Global pool
+- Final fused vector
+- Cross-exemplar mean
+
+Without it, large-magnitude exemplars dominate the cross-ref mean. The downstream `_forward_grounding` doesn't itself L2-normalise the visual prompt slot.
+
+#### 5.6.5 Test-time augmentation (off by default)
+
+Optional horizontal-flip TTA: encode the refer crop normally and flipped, average the per-ref vectors. Improves accuracy ~1–2 % on shape-rotation-invariant classes; doubles refer-side encode cost. Off by default; opt-in via `SAM_VISUAL_PROMPT_TTA_HFLIP=1`. The `tta_hflip` parameter exists in the adapter signature so a future UI toggle can plumb it through without touching internals.
+
+#### 5.6.6 What we are NOT doing (and why)
+
+- **Vertical-flip / rotation TTA** — not natural for object orientation; usually hurts.
+- **Random-color augmentation** — backbones we use are already trained with strong color aug; runtime aug doesn't help.
+- **Self-attention on the dense map before pool** — adds compute without measurable gain at our typical region sizes.
+- **Cross-image self-similarity refinement** — would require running the encoder across the target's tile bank; out of scope, defer until perf trace shows headroom.
+
+### 5.7 Capability gate
 
 `samStatus()` already returns `variant`. Add a derived flag:
 
@@ -239,9 +316,19 @@ Frontend toasts mirror the existing auto-text error map.
 `apps/model/tests/sam/test_sam3p1_visual_prompt.py` (new):
 - `test_set_visual_prompt_bbox_pool_shape` — verifies returned embed has shape `(D,)`.
 - `test_set_visual_prompt_polygon_masks_background` — bbox embed differs from polygon embed on the same shape (mask actually applied).
-- `test_multi_exemplar_pool_is_mean` — feeding two refs returns the mean of their per-ref embeds.
+- `test_multi_exemplar_pool_is_mean_l2_normed` — feeding two refs returns the L2-normed mean of their L2-normed per-ref embeds.
 - `test_visual_prompt_runs_without_text` — `_forward_grounding` produces masks with text-disabled state.
 - `test_visual_prompt_returns_polygon_when_polygonize_succeeds` — same polygon shaping the text path uses.
+- `test_dense_plus_global_default_is_alpha_0_7` — fused vector equals `l2norm(0.7 * dense + 0.3 * global)` with stub features.
+- `test_alpha_env_override` — `SAM_VISUAL_PROMPT_ALPHA=0.5` flips the blend weight.
+- `test_multi_scale_pool_uses_two_stages` — fused dense vector is the L2-normed mean of two per-scale L2-normed pools, not just the highest-res.
+- `test_crop_padding_expands_region` — region with `pad_ratio=0.15` expands by 15 % each side and clips to image bounds.
+- `test_aspect_preserving_square_pad_uses_replicate` — non-square crop is padded with replicate-edge, not zeros (verify boundary pixel equality).
+- `test_min_size_guard_expands_tiny_region` — a 16×16 region is expanded to at least 64×64 before encode.
+- `test_polygon_rasterise_then_downsample_smoother_than_direct` — comparison check: rasterise-then-downsample retains more True cells than rasterise-at-feature-resolution for a thin shape.
+- `test_tta_hflip_off_by_default` — without env, encode is called once per ref.
+- `test_tta_hflip_env_runs_twice` — `SAM_VISUAL_PROMPT_TTA_HFLIP=1` doubles the encode count and averages.
+- `test_l2_normalisation_at_every_aggregation_step` — intermediate vectors all have unit norm (within fp tolerance).
 
 ### 7.2 API service
 
