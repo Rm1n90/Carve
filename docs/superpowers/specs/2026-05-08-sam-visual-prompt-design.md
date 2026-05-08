@@ -164,7 +164,13 @@ def set_visual_prompt(
     fusion_mode: str = "dense_plus_global",   # see §5.6.1
     pad_ratio: float = 0.15,                  # see §5.6.2
     multi_scale: bool = True,                 # see §5.6.3
-    tta_hflip: bool = False,                  # off by default; opt-in via env
+    # Optional accuracy levers — all off by default, env-gated. See §5.6.5.
+    tta_hflip: bool = False,
+    tta_vflip: bool = False,
+    tta_rot90: bool = False,
+    color_aug: bool = False,
+    self_attn_pool: bool = False,
+    ximg_refine: bool = False,
 ) -> np.ndarray:
     """Return a pooled visual_prompt_embed for the region.
 
@@ -270,16 +276,28 @@ Every aggregation step ends in L2 normalisation:
 
 Without it, large-magnitude exemplars dominate the cross-ref mean. The downstream `_forward_grounding` doesn't itself L2-normalise the visual prompt slot.
 
-#### 5.6.5 Test-time augmentation (off by default)
+#### 5.6.5 Optional accuracy levers (all off by default, env-gated)
 
-Optional horizontal-flip TTA: encode the refer crop normally and flipped, average the per-ref vectors. Improves accuracy ~1–2 % on shape-rotation-invariant classes; doubles refer-side encode cost. Off by default; opt-in via `SAM_VISUAL_PROMPT_TTA_HFLIP=1`. The `tta_hflip` parameter exists in the adapter signature so a future UI toggle can plumb it through without touching internals.
+All listed behaviors below ship in v1 implementation but are **off by default**. Each is opt-in via a single environment variable read once at adapter construction time. The adapter signature exposes one boolean per lever so a future UI toggle can plumb it through without touching the internals. The on-by-default levers (§5.6.1–§5.6.4) stay on regardless of these flags.
 
-#### 5.6.6 What we are NOT doing (and why)
+| Lever | Env flag | Adapter kwarg | What it does | Cost when on |
+|---|---|---|---|---|
+| **HFlip TTA** | `SAM_VISUAL_PROMPT_TTA_HFLIP=1` | `tta_hflip` | Encode refer crop normally and horizontally flipped; average the two L2-normed per-ref vectors. Helps shape-symmetric classes by ~1–2 %. | 2× refer-side encode |
+| **VFlip TTA** | `SAM_VISUAL_PROMPT_TTA_VFLIP=1` | `tta_vflip` | Same as hflip but vertical. Useful for top-down imagery (drone, microscopy, satellite). Composes with hflip (4× when both on). | 2× refer-side encode (4× combined) |
+| **90° rotation TTA** | `SAM_VISUAL_PROMPT_TTA_ROT90=1` | `tta_rot90` | Encode refer crop at 0°, 90°, 180°, 270°; mean the four L2-normed per-ref vectors. Useful when target objects appear in arbitrary orientations (parts on a conveyor, microscopy). | 4× refer-side encode |
+| **Color jitter TTA** | `SAM_VISUAL_PROMPT_COLOR_AUG=1` | `color_aug` | Encode refer crop normally and with mild brightness/contrast/saturation jitter (±10 %); mean the L2-normed per-ref vectors. Helps when target lighting differs noticeably from the source. | 2× refer-side encode |
+| **Dense self-attention pool** | `SAM_VISUAL_PROMPT_SELF_ATTN=1` | `self_attn_pool` | Replace masked-mean dense pool with attention-weighted pool: weights = `softmax(cos_sim(dense_cell, global_vec) / τ)` over the masked region. Emphasises object-relevant cells over noisy background cells. Parameter-free. τ defaults to 0.07. | Negligible (one extra matmul + softmax per ref) |
+| **Cross-image refinement** | `SAM_VISUAL_PROMPT_XIMG_REFINE=1` | `ximg_refine` | After computing the pooled exemplar vector, run a single cosine-sim pass against the **target** dense features; pull the top-K (K=10) most-similar target cells, mean their vectors, blend back into the exemplar with weight β (default 0.2, env `SAM_VISUAL_PROMPT_XIMG_BETA`). Adapts the concept to the target domain when source/target visually differ. | One target-side cosine pass per (source, class) |
 
-- **Vertical-flip / rotation TTA** — not natural for object orientation; usually hurts.
-- **Random-color augmentation** — backbones we use are already trained with strong color aug; runtime aug doesn't help.
-- **Self-attention on the dense map before pool** — adds compute without measurable gain at our typical region sizes.
-- **Cross-image self-similarity refinement** — would require running the encoder across the target's tile bank; out of scope, defer until perf trace shows headroom.
+**Composability**: Flags compose. The order of operations is fixed: TTA augmentations multiply per-ref encodes, then per-ref vectors aggregate via L2-normed mean, then optional cross-image refinement adjusts the per-class pooled vector after multi-exemplar averaging.
+
+**Defaults rationale**: Each lever has measurable but small expected gain on typical workloads, while all of them increase encode cost or implementation surface area. We ship them as off-by-default tools so power users (or projects with characterised data — e.g., known to be rotation-invariant) can opt in without forcing the cost on everyone. A future UI surface ("Advanced visual prompt") can expose the kwargs without backend changes.
+
+#### 5.6.6 Truly out of scope
+
+- **Learned visual-prompt projection head** (the §5.6.1 `concat`-mode path) — needs training, not just inference. Defer until we have a labelled eval harness.
+- **Multi-target self-similarity propagation** (treat detections in target as new exemplars and re-run) — meaningful complexity, defer until perf trace + accuracy data justify it.
+- **Backbone fine-tuning** — out of scope for this feature.
 
 ### 5.7 Capability gate
 
@@ -326,9 +344,20 @@ Frontend toasts mirror the existing auto-text error map.
 - `test_aspect_preserving_square_pad_uses_replicate` — non-square crop is padded with replicate-edge, not zeros (verify boundary pixel equality).
 - `test_min_size_guard_expands_tiny_region` — a 16×16 region is expanded to at least 64×64 before encode.
 - `test_polygon_rasterise_then_downsample_smoother_than_direct` — comparison check: rasterise-then-downsample retains more True cells than rasterise-at-feature-resolution for a thin shape.
-- `test_tta_hflip_off_by_default` — without env, encode is called once per ref.
-- `test_tta_hflip_env_runs_twice` — `SAM_VISUAL_PROMPT_TTA_HFLIP=1` doubles the encode count and averages.
 - `test_l2_normalisation_at_every_aggregation_step` — intermediate vectors all have unit norm (within fp tolerance).
+
+Optional-lever tests (§5.6.5):
+- `test_all_optional_levers_off_by_default` — none of `SAM_VISUAL_PROMPT_TTA_*`, `_COLOR_AUG`, `_SELF_ATTN`, `_XIMG_REFINE` set ⇒ adapter kwargs all default to False ⇒ exactly one refer-side encode per ref.
+- `test_tta_hflip_env_doubles_encode_and_averages` — `SAM_VISUAL_PROMPT_TTA_HFLIP=1` ⇒ encode called twice (original + hflip), output is L2-normed mean.
+- `test_tta_vflip_env_doubles_encode` — `SAM_VISUAL_PROMPT_TTA_VFLIP=1`.
+- `test_tta_rot90_env_runs_four_encodes` — `SAM_VISUAL_PROMPT_TTA_ROT90=1` ⇒ four encodes (0/90/180/270), L2-normed mean.
+- `test_tta_compose_hflip_and_vflip` — both flags ⇒ four encodes total (orig, h, v, hv).
+- `test_color_aug_env_runs_twice` — `SAM_VISUAL_PROMPT_COLOR_AUG=1` ⇒ two encodes; jitter ranges within ±10 %.
+- `test_self_attn_pool_emphasises_high_sim_cells` — with `SAM_VISUAL_PROMPT_SELF_ATTN=1`, given stub features where one cell has cos-sim 1.0 to global and others 0.0, the pooled vector equals that high-sim cell after τ-softmax.
+- `test_self_attn_pool_tau_default_0_07` — softmax temperature is 0.07 unless overridden by env.
+- `test_ximg_refine_blends_target_top_k` — with `SAM_VISUAL_PROMPT_XIMG_REFINE=1` and stub target features, output equals `l2norm((1−β)·exemplar + β·mean(top_K_target_cells))` with β=0.2 default.
+- `test_ximg_refine_beta_env_override` — `SAM_VISUAL_PROMPT_XIMG_BETA=0.5` flips the blend weight.
+- `test_optional_levers_compose_in_documented_order` — TTA expands per-ref encodes ⇒ multi-exemplar mean ⇒ optional ximg refinement applied last.
 
 ### 7.2 API service
 
