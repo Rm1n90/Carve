@@ -18,9 +18,9 @@ OD_TEMPLATE = (
 # constraint keeps the output suitable as a SAM concept (no preamble,
 # no full sentences, no qualifiers).
 CAPTION_TEMPLATE = (
-    "Describe the object in this image with a SHORT noun phrase that includes "
-    "distinguishing visual attributes — color, material, or shape descriptors "
-    "(e.g. 'red metal car', 'wooden brown chair', 'small black dog', "
-    "'yellow road pothole'). Do not use a generic noun on its own. Reply with "
-    "ONLY the noun phrase, no other words, no punctuation, no explanation."
+    "Look at the object in this image and describe it as a short noun phrase "
+    "with one or two visual attributes (color, material, or shape) when they "
+    "are clearly visible. Reply with only the noun phrase. Do not include "
+    "examples, do not include the words 'noun phrase', do not start with 'a' "
+    "or 'an'. Just the description."
 )

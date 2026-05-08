@@ -1090,15 +1090,28 @@ def make_sam3_visual_predictor():
         if state is None:
             return []
 
-        # SAM 3.1 emits scores in [0, 1]. The user's threshold maps
-        # directly to confidence_threshold, so the model returns ONLY
-        # candidates above the floor. No post-hoc normalisation needed.
+        # SAM 3.1 PCS scores for text-prompts in real-world images are
+        # typically 0.2-0.7 (the synthetic-image 0.96 we saw in tests is
+        # the easy case). Setting the model's internal floor = user's
+        # UI threshold would make 0.4 / 0.6 silently kill 80%+ of valid
+        # matches. We keep the internal floor LOW (0.05) so SAM emits
+        # all reasonable proposals, then the api side filters by the
+        # user threshold against the same SAM scores. This makes the
+        # threshold UI behave like "minimum SAM confidence" — what the
+        # user expects.
         original_thr = getattr(adapter._processor, "confidence_threshold", 0.5)
-        sim_threshold = float(threshold) if threshold is not None else 0.5
         try:
-            adapter._processor.set_confidence_threshold(sim_threshold)
+            adapter._processor.set_confidence_threshold(0.05)
         except Exception:  # noqa: BLE001
             pass
+
+        # v3.28 — log the concept SAM is actually searching for so the
+        # operator can correlate empty results with bad captions.
+        import logging as _log
+        _log.getLogger("carve_model.sam.visual_prompt").info(
+            "SAM Visual Prompt: concept=%r user_threshold=%s",
+            concept_text, threshold,
+        )
 
         try:
             with torch.inference_mode():
