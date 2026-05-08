@@ -785,6 +785,109 @@ def sam_auto_visual_endpoint(
     return SamAutoVisualOut(**result)
 
 
+# v3.24 — multi-asset SAM 3.1 visual-prompt batch. Mirrors the SAM
+# auto-text-batch pattern: enqueue/poll/cancel via the same Redis
+# progress hash and cooperative cancel flag. Reuses SamAutoVisualIn
+# from the sync endpoint (B4) to avoid drift.
+@task_inference_router.post("/{task_id}/sam/auto-visual-batch")
+def enqueue_sam_auto_visual_batch(
+    task_id: uuid.UUID,
+    payload: SamAutoVisualIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Enqueue a multi-asset SAM 3.1 visual-prompt batch."""
+    try:
+        task = require_visible_task(db, user, task_id)
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    # Convert payload sources to plain dicts (RQ pickles cleanly).
+    sources = [
+        {
+            "asset_id": str(src.asset_id),
+            "groups": [
+                {
+                    "class_id": str(grp.class_id),
+                    "refs": [r.model_dump(exclude_none=True) for r in grp.refs],
+                }
+                for grp in src.groups
+            ],
+        }
+        for src in payload.sources
+    ]
+
+    from carve_api.inference.batch import build_auto_visual_payload, run_auto_visual_batch
+    job_payload = build_auto_visual_payload(
+        actor=user,
+        task=task,
+        sources=sources,
+        ref_kind=payload.ref_kind,
+        threshold=payload.threshold,
+        find_all=payload.find_all,
+        overwrite=payload.overwrite,
+    )
+    try:
+        from rq import Queue
+        from carve_api.jobs.queue import enqueue_with_defaults
+        client = _redis_client_or_none()
+        if client is not None:
+            q = Queue("default", connection=client)
+            enqueue_with_defaults(
+                q,
+                run_auto_visual_batch,
+                job_payload,
+                job_id=job_payload.job_id,
+            )
+    except Exception:
+        pass
+    return {"job_id": job_payload.job_id}
+
+
+@task_inference_router.get(
+    "/{task_id}/sam/auto-visual-batch/{job_id}",
+    response_model=BatchAutoAnnotateProgress,
+)
+def get_sam_auto_visual_batch_progress(
+    task_id: uuid.UUID,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return read_progress(_redis_client_or_none(), job_id)
+
+
+@task_inference_router.post(
+    "/{task_id}/sam/auto-visual-batch/{job_id}/cancel",
+    status_code=202,
+)
+def cancel_sam_auto_visual_batch(
+    task_id: uuid.UUID,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    client = _redis_client_or_none()
+    if client is None:
+        raise HTTPException(status_code=503, detail="redis_unavailable")
+    try:
+        from carve_api.inference.batch import progress_key
+        client.hset(progress_key(job_id), "status", "canceled")
+    except Exception:
+        raise HTTPException(status_code=502, detail="cancel_failed") from None
+    _try_send_stop(client, job_id)
+    return {"job_id": job_id, "status": "canceled"}
+
+
 @router.post("/{asset_id}/sam/encode")
 def sam_encode_endpoint(
     asset_id: uuid.UUID,

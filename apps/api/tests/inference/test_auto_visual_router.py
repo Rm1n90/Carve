@@ -662,3 +662,93 @@ def test_multiple_refs_in_one_group(db_session, monkeypatch) -> None:
     body = r.json()
     assert body["annotations_created"] == 2
     assert body["per_class"][class_id] == 2
+
+
+def test_enqueue_auto_visual_batch_returns_job_id(db_session, monkeypatch) -> None:
+    """Enqueue endpoint returns a job_id for batch processing."""
+    client = _client(db_session)
+    token, pid, tid, class_id, target_id, refer_id = _setup_asset(client, monkeypatch)
+
+    captured = {}
+    def fake_enqueue(q, fn, *args, **kwargs):
+        captured["called"] = True
+        captured["job_id"] = kwargs.get("job_id")
+        return None
+    monkeypatch.setattr("carve_api.jobs.queue.enqueue_with_defaults", fake_enqueue)
+
+    # Stub redis client so the enqueue branch runs
+    class _RedisStub:
+        pass
+    monkeypatch.setattr(
+        "carve_api.inference.router._redis_client_or_none",
+        lambda: _RedisStub(),
+    )
+
+    r = client.post(
+        f"/tasks/{tid}/sam/auto-visual-batch",
+        headers=_hdr(token),
+        json={
+            "sources": [{"asset_id": str(refer_id), "groups": [
+                {"class_id": str(class_id), "refs": [
+                    {"kind": "bbox", "xyxy": [0, 0, 10, 10]}
+                ]}
+            ]}],
+            "ref_kind": "bbox", "threshold": 0.4,
+            "find_all": True, "overwrite": False,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "job_id" in body
+    assert captured.get("called") is True
+
+
+def test_poll_auto_visual_batch_returns_progress(db_session, monkeypatch) -> None:
+    """Poll endpoint returns current batch progress from Redis."""
+    client = _client(db_session)
+    token, pid, tid, class_id, target_id, refer_id = _setup_asset(client, monkeypatch)
+
+    fake = {"status": "running", "done": 1, "total": 2, "failed": 0,
+            "errors": [], "total_annotations_created": 3,
+            "total_skipped_detections": 0, "skipped_by_class": {}}
+    monkeypatch.setattr(
+        "carve_api.inference.router.read_progress",
+        lambda client, job_id: fake,
+    )
+    r = client.get(
+        f"/tasks/{tid}/sam/auto-visual-batch/job1",
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["done"] == 1
+    assert body["total"] == 2
+    assert body["total_annotations_created"] == 3
+
+
+def test_cancel_auto_visual_batch_sets_redis_flag(db_session, monkeypatch) -> None:
+    """Cancel endpoint sets status='canceled' in Redis and sends stop command."""
+    client = _client(db_session)
+    token, pid, tid, class_id, target_id, refer_id = _setup_asset(client, monkeypatch)
+
+    captured = {}
+    class _RedisStub:
+        def hset(self, key, field, value):
+            captured["key"] = key
+            captured["field"] = field
+            captured["value"] = value
+    monkeypatch.setattr(
+        "carve_api.inference.router._redis_client_or_none",
+        lambda: _RedisStub(),
+    )
+    monkeypatch.setattr(
+        "carve_api.inference.router._try_send_stop",
+        lambda *a, **kw: None,
+    )
+    r = client.post(
+        f"/tasks/{tid}/sam/auto-visual-batch/job1/cancel",
+        headers=_hdr(token),
+    )
+    assert r.status_code == 202
+    assert captured.get("field") == "status"
+    assert captured.get("value") == "canceled"
