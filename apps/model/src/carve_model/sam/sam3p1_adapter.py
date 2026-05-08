@@ -492,6 +492,116 @@ class Sam3p1NativeImagePredictorAdapter:
                 )
         return masks, scores, logits
 
+    def set_visual_prompt(
+        self,
+        refer_image,
+        region,
+        *,
+        fusion_mode="dense_plus_global",
+        pad_ratio=0.15,
+        multi_scale=True,
+    ):
+        """Compute a pooled visual_prompt_embed for one (refer_image, region) pair.
+
+        Defaults-only path. Optional levers (TTA / color aug / self-attn / x-img)
+        land in Task A4. See spec Section 5.5 + 5.6.
+        """
+        import numpy as np
+        from PIL import Image
+        from carve_model.sam.visual_prompt_preprocess import (
+            expand_region_with_padding, min_size_guard,
+            rasterise_polygon, square_pad_replicate,
+        )
+        from carve_model.sam.visual_prompt_pool import (
+            masked_mean, l2norm, fuse_dense_global,
+        )
+
+        H, W = refer_image.shape[:2]
+        expanded = expand_region_with_padding(region, image_h=H, image_w=W, pad_ratio=pad_ratio)
+        crop_xyxy = expanded["xyxy"] if expanded["kind"] == "bbox" else expanded["crop_xyxy"]
+        crop_xyxy = min_size_guard(crop_xyxy, min_side=64)
+        cx1 = max(0, int(crop_xyxy[0])); cy1 = max(0, int(crop_xyxy[1]))
+        cx2 = min(W, int(crop_xyxy[2])); cy2 = min(H, int(crop_xyxy[3]))
+        crop = refer_image[cy1:cy2, cx1:cx2]
+        crop = square_pad_replicate(crop)
+        crop_h, crop_w = crop.shape[:2]
+
+        state = self._processor.set_image(Image.fromarray(crop))
+        dense_hi = self._extract_dense(state, scale="hi")
+        dense_lo = self._extract_dense(state, scale="lo") if multi_scale else None
+        global_vec = self._extract_global(state)
+
+        pad_top = (crop_h - (cy2 - cy1)) // 2
+        pad_left = (crop_w - (cx2 - cx1)) // 2
+        if region["kind"] == "bbox":
+            rx1, ry1, rx2, ry2 = (float(v) for v in region["xyxy"])
+            rx1 = pad_left + (rx1 - cx1); rx2 = pad_left + (rx2 - cx1)
+            ry1 = pad_top + (ry1 - cy1);  ry2 = pad_top + (ry2 - cy1)
+            mask_hi = self._bbox_mask((rx1, ry1, rx2, ry2), crop_h, crop_w, dense_hi.shape[:2])
+            mask_lo = (
+                self._bbox_mask((rx1, ry1, rx2, ry2), crop_h, crop_w, dense_lo.shape[:2])
+                if dense_lo is not None else None
+            )
+        else:
+            pts = [[pad_left + (p[0] - cx1), pad_top + (p[1] - cy1)] for p in region["points"]]
+            full_mask = rasterise_polygon(pts, crop_h, crop_w)
+            mask_hi = self._downsample_bool(full_mask, dense_hi.shape[:2])
+            mask_lo = self._downsample_bool(full_mask, dense_lo.shape[:2]) if dense_lo is not None else None
+
+        dense_vec_hi = l2norm(masked_mean(dense_hi, mask_hi))
+        if dense_lo is not None and mask_lo is not None:
+            dense_vec_lo = l2norm(masked_mean(dense_lo, mask_lo))
+            dense_vec = l2norm(0.5 * (dense_vec_hi + dense_vec_lo))
+        else:
+            dense_vec = dense_vec_hi
+        global_vec = l2norm(global_vec)
+        return fuse_dense_global(dense_vec, global_vec, alpha=self._alpha())
+
+    @staticmethod
+    def _bbox_mask(xyxy, crop_h, crop_w, feat_hw):
+        import numpy as np
+        H_f, W_f = feat_hw
+        x1, y1, x2, y2 = xyxy
+        fx1 = max(0, int(x1 / crop_w * W_f))
+        fx2 = min(W_f, int(np.ceil(x2 / crop_w * W_f)))
+        fy1 = max(0, int(y1 / crop_h * H_f))
+        fy2 = min(H_f, int(np.ceil(y2 / crop_h * H_f)))
+        m = np.zeros((H_f, W_f), dtype=bool)
+        m[fy1:fy2, fx1:fx2] = True
+        return m
+
+    @staticmethod
+    def _downsample_bool(mask, out_hw):
+        import numpy as np
+        H_out, W_out = out_hw
+        H_in, W_in = mask.shape
+        ys = (np.arange(H_out) * (H_in / H_out)).astype(int)
+        xs = (np.arange(W_out) * (W_in / W_out)).astype(int)
+        return mask[np.ix_(ys, xs)]
+
+    def _extract_dense(self, state, *, scale):
+        if f"_stub_dense_{scale}" in state:
+            return state[f"_stub_dense_{scale}"]
+        return self._extract_dense_from_native(state, scale=scale)
+
+    def _extract_global(self, state):
+        if "_stub_global" in state:
+            return state["_stub_global"]
+        return self._extract_global_from_native(state)
+
+    def _alpha(self):
+        import os
+        try:
+            return float(os.environ.get("SAM_VISUAL_PROMPT_ALPHA", "0.7"))
+        except ValueError:
+            return 0.7
+
+    def _extract_dense_from_native(self, state, *, scale):
+        raise NotImplementedError("filled in Task A6")
+
+    def _extract_global_from_native(self, state):
+        raise NotImplementedError("filled in Task A6")
+
     def extract_embedding(self) -> dict | None:
         """The native image model's encoder cache is internal — no clean
         serializable embedding handoff. Return None so the router falls
