@@ -347,6 +347,36 @@ class TextPromptOut(BaseModel):
     polygon: list[list[float]] = []
 
 
+# --- SAM 3.1 visual-prompt endpoint ------------------------------------------
+#
+# One-shot endpoint: SAM 3.1 Promptable Concept Segmentation via image
+# exemplars (visual prompts). Accepts a target image and reference regions
+# (all same type: either all bbox or all polygon). Returns masks as masks
+# + bounding boxes + optional polygons. Requires native SAM 3.1 (not sam3,
+# not sam2) because the backbone exposes the dense feature pyramid that the
+# visual-prompt encoder needs.
+
+
+class VisualPromptRegion(BaseModel):
+    kind: Literal["bbox", "polygon"]
+    xyxy: list[float] | None = None
+    points: list[list[float]] | None = None
+
+
+class VisualPromptIn(BaseModel):
+    refer_b64: str = Field(..., min_length=1)
+    regions: list[VisualPromptRegion] = Field(..., min_length=1, max_length=64)
+    target_b64: str = Field(..., min_length=1)
+
+
+class VisualPromptOut(BaseModel):
+    counts: str
+    size: list[int]
+    score: float
+    bbox: list[float]
+    polygon: list[list[float]] = []
+
+
 @router.post("/text-prompt", response_model=list[TextPromptOut])
 def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
     if get_sam_variant() != "sam3":
@@ -435,6 +465,40 @@ def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
         boxes=payload.boxes,
         box_labels=payload.box_labels,
         text=payload.text,
+    )
+
+
+@router.post("/visual-prompt", response_model=list[VisualPromptOut])
+def sam_visual_prompt(payload: VisualPromptIn) -> list[dict]:
+    """SAM 3.1 Promptable Concept Segmentation via image exemplars.
+
+    Requires the native SAM 3.1 variant (``SAM_MODEL=sam3.1``). Other
+    variants 409 with ``sam3p1_not_enabled`` because their backbones
+    don't expose the dense feature pyramid the visual-prompt encoder
+    needs. See spec §5.5–§5.7.
+    """
+    if get_sam_model() != "sam3.1":
+        raise HTTPException(status_code=409, detail="sam3p1_not_enabled")
+    kinds = {r.kind for r in payload.regions}
+    if len(kinds) > 1:
+        raise HTTPException(status_code=422, detail="mixed_ref_types")
+    try:
+        from carve_model.sam.predictor import get_visual_predictor, load_predictor
+        factory = get_visual_predictor()
+    except RuntimeError:
+        try:
+            load_predictor(get_sam_model())
+            from carve_model.sam.predictor import get_visual_predictor
+            factory = get_visual_predictor()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=503, detail="sam_visual_predictor_not_loaded",
+            ) from exc
+    regions = [r.model_dump(exclude_none=True) for r in payload.regions]
+    return factory(
+        target_b64=payload.target_b64,
+        refer_b64=payload.refer_b64,
+        regions=regions,
     )
 
 
@@ -533,6 +597,9 @@ class StatusOut(BaseModel):
     # registered a filter and the per-request ``use_vlm_fo1`` flag will
     # be honored. The editor toggle hides itself when this is False.
     vlm_fo1_available: bool = False
+    # v3.24+ — visual-prompt capability gate. ``True`` means SAM 3.1 is
+    # the active model and the visual predictor factory has been registered.
+    visual_prompt_available: bool = False
     # v3.22 — diagnostic GPU memory readouts for the model service
     # process. ``gpu_allocated_mb`` is the truly in-use bytes (active
     # model weights + activations); ``gpu_reserved_mb`` is what the
@@ -553,7 +620,7 @@ def sam_status() -> StatusOut:
       ready   — predictor is loaded and ready to encode/decode
       error   — last load attempt failed; ``error`` carries the detail
     """
-    from carve_model.sam.predictor import get_vlm_fo1_filter
+    from carve_model.sam.predictor import get_vlm_fo1_filter, get_visual_predictor
 
     state = get_load_state()
     # In-process GPU memory readout — uses memory_allocated (truly
@@ -573,6 +640,15 @@ def sam_status() -> StatusOut:
     # If the state machine has never been touched but the env already
     # names a variant (e.g. operator preset SAM_MODEL but nobody hit
     # encode yet), fall back to that name so the response is informative.
+    # Check if visual prompts are available (requires SAM 3.1 + factory).
+    visual_prompt_available = False
+    if get_sam_model() == "sam3.1":
+        try:
+            get_visual_predictor()
+            visual_prompt_available = True
+        except RuntimeError:
+            pass
+
     return StatusOut(
         state=state.kind,
         variant=state.variant or get_sam_model(),
@@ -582,6 +658,7 @@ def sam_status() -> StatusOut:
         error=state.error,
         job_id=state.job_id,
         vlm_fo1_available=get_vlm_fo1_filter() is not None,
+        visual_prompt_available=visual_prompt_available,
         gpu_allocated_mb=gpu_allocated_mb,
         gpu_reserved_mb=gpu_reserved_mb,
     )
