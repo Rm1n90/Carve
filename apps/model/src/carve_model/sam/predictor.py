@@ -843,12 +843,16 @@ def _default_factory() -> SamPredictor:
     model = get_sam_model()
     if model == "sam3.1":
         # Plan 12: native sam3 image predictor (point + box + text).
-        from carve_model.sam import sam3p1_adapter
+        from carve_model.sam import sam3_adapter, sam3p1_adapter
 
         adapter = sam3p1_adapter.build_sam3p1_image_predictor(device=sam_device)
         set_text_predictor(sam3p1_adapter.make_sam3p1_text_predictor())
         set_box_predictor(sam3p1_adapter.make_sam3p1_box_predictor())
-        set_visual_predictor(sam3p1_adapter.make_sam3p1_visual_predictor())
+        # v3.28 — visual prompt requires the native sam3p1 image adapter.
+        # The factory lives in sam3_adapter.py because it composes both
+        # variants' decode/RLE helpers; it builds its own sam3p1 adapter
+        # internally for the encode pass.
+        set_visual_predictor(sam3_adapter.make_sam3_visual_predictor())
         return adapter
 
     if model == "sam3":
@@ -857,7 +861,9 @@ def _default_factory() -> SamPredictor:
         adapter = sam3_adapter.build_sam3_image_predictor(device=sam_device)
         set_text_predictor(sam3_adapter.make_sam3_text_predictor())
         set_box_predictor(sam3_adapter.make_sam3_box_predictor())
-        set_visual_predictor(sam3_adapter.make_sam3_visual_predictor())
+        # v3.28 — sam3 (transformers) variant does not expose the
+        # backbone-features API the visual prompt factory needs. The
+        # /sam/visual-prompt endpoint will 409 sam3p1_not_enabled if hit.
         return adapter
 
     if model.startswith("sam2"):
