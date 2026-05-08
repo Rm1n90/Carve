@@ -1014,45 +1014,51 @@ def make_sam3_visual_predictor():
         refer_b64,
         regions,
         threshold=None,
-        text_hint=None,
+        text_hint=None,  # noqa: ARG001 — kept for API compatibility
     ):
-        """SAM 3.1 visual prompt via VLM-FO1 caption → native text-prompt.
+        """SAM 3.1 visual prompt via CLIP image-image similarity.
 
-        v3.28 (FINAL design) — SAM 3.1 doesn't natively support cross-
-        image visual prompting (no public set_visual_prompt API; the
-        backbone features aren't discriminative for instance matching).
-        After two failed attempts (raw FPN features into the model's
-        prompt slot, and dense cosine heatmaps), the working approach
-        is to CONVERT the user's visual reference to TEXT via the
-        already-deployed VLM-FO1 sidecar, then use SAM 3.1's NATIVE
-        text-prompt path which IS proven accurate.
+        v3.28 (FINAL FINAL design) — third and working approach. SAM 3.1
+        doesn't natively support cross-image visual prompting and FO1
+        captioning was unusable (the OD fine-tune emits the same
+        hallucinated phrase regardless of input). The right tool for
+        cross-image visual matching is CLIP — it's the exact task the
+        model was trained for.
 
         Pipeline:
-          1. Crop the user's reference region (with surrounding
-             context) from the refer image.
-          2. POST the crop to FO1 /caption → e.g. "red car",
-             "wooden chair". This is the visual-to-text bridge.
-          3. If captioning fails or returns blank, fall back to
-             ``text_hint`` (the project class's text_prompt or name)
-             which the API passes through.
-          4. set_image(target) + set_text_prompt(target, caption) —
-             SAM 3.1's native PCS finds matching object instances.
-          5. Filter by user threshold (cosine-style score the model
-             emits, capped at 1.0 after normalisation), return as the
+          1. Crop the user's reference region with context padding,
+             encode → CLIP image embedding (512-d, L2-normed). Multi-
+             ref runs mean-pool the per-ref embeddings.
+          2. set_image(target) + set_text_prompt(target, "object") with
+             a low confidence floor — SAM 3.1 returns hundreds of
+             OBJECT-INSTANCE proposals (clean masks for everything
+             that looks like an object).
+          3. For each candidate proposal, crop the target image at the
+             proposal's bbox, encode → CLIP image embedding.
+          4. Score each candidate by cosine similarity to the ref
+             exemplar. CLIP image embeddings are highly discriminative
+             across images — the backbone of every modern image-search
+             system.
+          5. Filter by user threshold + image-space NMS. Return as the
              existing /sam/text-prompt response shape.
 
-        Why this works: SAM 3.1's text-prompt path is tuned for high-
-        precision concept segmentation. FO1 (Qwen2.5-VL fine-tune) is
-        a proper VLM that captions images well. Combining them gives
-        a fast, accurate, SAM-driven visual prompt that doesn't
-        require new ML training.
+        Why this works where the prior approaches didn't: CLIP was
+        explicitly trained for cross-image visual concept matching;
+        SAM 3.1 backbone features were not. SAM 3.1's text-prompt path
+        gives us clean object proposals (the part SAM 3.1 IS good at);
+        CLIP scores them. Each model does what it's designed for.
         """
+        import logging as _log
         import numpy as np
         import torch  # type: ignore[import-not-found]
         from PIL import Image
+        from carve_model.sam.clip_embed import embed_image, embed_image_batch
         from carve_model.sam.codec import encode_mask_rle
         from carve_model.sam.polygonize import mask_to_polygon
+        from carve_model.sam.perf import to_numpy_safe
+        from carve_model.sam.visual_prompt_pool import l2norm
 
+        log = _log.getLogger("carve_model.sam.visual_prompt")
         adapter = _adapter()
         target = _decode_b64(target_b64)
         refer = _decode_b64(refer_b64)
@@ -1060,66 +1066,54 @@ def make_sam3_visual_predictor():
         if not regions:
             return []
 
-        # 1. Derive the SAM 3.1 text concept. Priority order:
-        #      (a) FO1 caption of the cropped refer region
-        #      (b) text_hint from the api (project class's text_prompt
-        #          or name as a fallback supplied by the caller)
-        #      (c) generic "object"  (last resort — broad recall, will
-        #          mostly produce noise but at least returns something)
-        concept_text = ""
-        try:
-            crop = _crop_refer_for_caption(refer, regions[0])
-            if crop is not None:
-                from carve_model.vlm_fo1.adapter import caption_image
-                concept_text = caption_image(
-                    Image.fromarray(crop), max_new_tokens=30, timeout=60.0,
-                ).strip()
-        except Exception:  # noqa: BLE001 — caption is best-effort
-            concept_text = ""
+        # 1. Encode each refer region with CLIP and L2-mean-pool.
+        ref_embeds: list[np.ndarray] = []
+        for region in regions:
+            crop = _crop_refer_for_caption(refer, region, pad_ratio=0.20)
+            if crop is None or crop.size == 0:
+                continue
+            emb = embed_image(Image.fromarray(crop))
+            if np.linalg.norm(emb) < 1e-6:
+                continue
+            ref_embeds.append(emb)
+        if not ref_embeds:
+            log.warning("SAM Visual Prompt: no usable refer crops")
+            return []
+        exemplar = l2norm(np.mean(ref_embeds, axis=0))
 
-        if not concept_text and isinstance(text_hint, str) and text_hint.strip():
-            concept_text = text_hint.strip()
-        if not concept_text:
-            concept_text = "object"
-
-        # 2. Encode target and run SAM 3.1 native PCS with the derived
-        #    concept text. set_text_prompt does a forward and writes
-        #    masks/scores/boxes onto the state.
+        # 2. SAM 3.1 native PCS gives us object-instance proposals on
+        #    the target. Empirical finding: text "object" returns 0-1
+        #    proposals on many images; empty string ("") triggers the
+        #    "no concept" mode that returns 100+ proposals — the right
+        #    high-recall input for a CLIP-scored visual prompt. The
+        #    confidence floor is kept low (0.05) so we see all of them;
+        #    CLIP filters by visual similarity afterwards.
         adapter.set_image(target)
         state = adapter._state
         if state is None:
             return []
 
-        # SAM 3.1 PCS scores for text-prompts in real-world images are
-        # typically 0.2-0.7 (the synthetic-image 0.96 we saw in tests is
-        # the easy case). Setting the model's internal floor = user's
-        # UI threshold would make 0.4 / 0.6 silently kill 80%+ of valid
-        # matches. We keep the internal floor LOW (0.05) so SAM emits
-        # all reasonable proposals, then the api side filters by the
-        # user threshold against the same SAM scores. This makes the
-        # threshold UI behave like "minimum SAM confidence" — what the
-        # user expects.
         original_thr = getattr(adapter._processor, "confidence_threshold", 0.5)
         try:
             adapter._processor.set_confidence_threshold(0.05)
         except Exception:  # noqa: BLE001
             pass
 
-        # v3.28 — log the concept SAM is actually searching for so the
-        # operator can correlate empty results with bad captions.
-        import logging as _log
-        _log.getLogger("carve_model.sam.visual_prompt").info(
-            "SAM Visual Prompt: concept=%r user_threshold=%s",
-            concept_text, threshold,
-        )
-
+        # Try the empty-string "find everything" mode first; if it
+        # somehow returns fewer than a few proposals, fall back to a
+        # broader generic noun.
+        proposal_prompts = ["", "the", "thing"]
         try:
-            with torch.inference_mode():
-                if adapter._device == "cuda":
-                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                        adapter._processor.set_text_prompt(concept_text, state)
-                else:
-                    adapter._processor.set_text_prompt(concept_text, state)
+            for tp in proposal_prompts:
+                with torch.inference_mode():
+                    if adapter._device == "cuda":
+                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                            adapter._processor.set_text_prompt(tp, state)
+                    else:
+                        adapter._processor.set_text_prompt(tp, state)
+                _b = state.get("boxes")
+                if _b is not None and to_numpy_safe(_b).shape[0] >= 5:
+                    break
         finally:
             try:
                 adapter._processor.set_confidence_threshold(original_thr)
@@ -1128,36 +1122,83 @@ def make_sam3_visual_predictor():
 
         masks = state.get("masks")
         boxes = state.get("boxes")
-        det_scores = state.get("scores")
-        if masks is None or det_scores is None or len(det_scores) == 0:
+        if masks is None or boxes is None:
+            log.info("SAM Visual Prompt: no proposals")
             return []
-
-        from carve_model.sam.perf import to_numpy_safe
-
         masks_np = to_numpy_safe(masks)
         if masks_np.ndim == 4 and masks_np.shape[1] == 1:
             masks_np = masks_np[:, 0]
         masks_np = (masks_np > 0).astype(np.uint8)
-        boxes_np = to_numpy_safe(boxes) if boxes is not None else np.zeros((0, 4))
-        scores_np = to_numpy_safe(det_scores)
-        if masks_np.shape[0] == 0:
+        boxes_np = to_numpy_safe(boxes)
+        if masks_np.shape[0] == 0 or boxes_np.shape[0] == 0:
             return []
 
-        # NMS to deduplicate overlapping detections.
-        order = np.argsort(-scores_np)
-        keep_after_nms = _greedy_nms_indices(
-            boxes_np[order], scores_np[order], iou_threshold=0.5,
+        # 3. Crop target at each proposal bbox + CLIP-embed in batch.
+        H, W = target.shape[:2]
+        candidate_crops: list[np.ndarray] = []
+        valid_idx: list[int] = []
+        for i, b in enumerate(boxes_np):
+            x1, y1, x2, y2 = (
+                int(max(0, b[0])), int(max(0, b[1])),
+                int(min(W, b[2])), int(min(H, b[3])),
+            )
+            if x2 - x1 < 4 or y2 - y1 < 4:
+                continue
+            candidate_crops.append(target[y1:y2, x1:x2])
+            valid_idx.append(i)
+        if not candidate_crops:
+            log.info("SAM Visual Prompt: %d proposals all degenerate", len(boxes_np))
+            return []
+
+        cand_embeds = embed_image_batch(candidate_crops)
+        # Cosine similarity (both already L2-normed): just dot product.
+        raw_sim = cand_embeds @ exemplar  # (N,) in [-1, 1]
+
+        # CLIP cosine for natural images clusters in [0.7, 0.95], so
+        # using raw cosine as a 0-1 UI threshold is unintuitive (the
+        # user's "0.5" lets everything through). Linearly remap [0.7, 1.0]
+        # → [0, 1] so threshold 0.5 means roughly "0.85 raw cosine"
+        # — a meaningful "this looks pretty similar" cutoff.
+        BASELINE = 0.70
+        sim = np.clip((raw_sim - BASELINE) / (1.0 - BASELINE), 0.0, 1.0)
+
+        # 4. Apply user threshold on the rescaled score. Default 0.4
+        #    so the user sees something on first try and can tighten.
+        sim_threshold = float(threshold) if threshold is not None else 0.4
+        keep_mask = sim >= sim_threshold
+        log.info(
+            "SAM Visual Prompt: %d proposals, raw cos [%.3f, %.3f], "
+            "rescaled [%.3f, %.3f], threshold %.3f keeps %d",
+            len(sim),
+            float(raw_sim.min()) if raw_sim.size else 0.0,
+            float(raw_sim.max()) if raw_sim.size else 0.0,
+            float(sim.min()) if sim.size else 0.0,
+            float(sim.max()) if sim.size else 0.0,
+            sim_threshold, int(keep_mask.sum()),
         )
-        final_idx = order[keep_after_nms]
-        TOP_K = 50
-        final_idx = final_idx[:TOP_K]
+        if not keep_mask.any():
+            return []
+
+        kept = np.where(keep_mask)[0]
+        kept_sims = sim[kept]
+        kept_orig_idx = [valid_idx[k] for k in kept]
+        # Sort by similarity descending; cap at top-50 then NMS.
+        order = np.argsort(-kept_sims)[:50]
+        ordered_orig_idx = [kept_orig_idx[k] for k in order]
+        ordered_boxes = np.asarray(
+            [boxes_np[i] for i in ordered_orig_idx], dtype=np.float32,
+        )
+        ordered_sims = np.asarray([kept_sims[k] for k in order], dtype=np.float32)
+        keep_after_nms = _greedy_nms_indices(
+            ordered_boxes, ordered_sims, iou_threshold=0.5,
+        )
 
         out: list[dict] = []
-        for idx in final_idx:
-            m = masks_np[idx]
+        for k in keep_after_nms:
+            orig_idx = ordered_orig_idx[k]
+            m = masks_np[orig_idx]
             if m.sum() == 0:
                 continue
-            score = float(scores_np[idx])
             counts, size = encode_mask_rle(m)
             polygon = mask_to_polygon(m)
             ys, xs = np.where(m)
@@ -1168,12 +1209,10 @@ def make_sam3_visual_predictor():
             out.append({
                 "counts": counts,
                 "size": list(size),
-                "score": score,
+                "score": float(ordered_sims[k]),
                 "bbox": tight_bbox,
                 "polygon": polygon,
-                # Surface the derived concept so the api/UI can show it
-                # in toasts (tells the user *what* SAM was looking for).
-                "concept": concept_text,
+                "concept": "clip-image-similarity",
             })
         return out
 
