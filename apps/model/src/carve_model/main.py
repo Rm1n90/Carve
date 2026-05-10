@@ -16,6 +16,17 @@ from carve_model.yoloe.router import router as yoloe_router
 
 log = logging.getLogger(__name__)
 
+# v3.29 — surface app-side diagnostics under uvicorn's default handler
+# config (which only configures uvicorn.* loggers). Without this, our
+# logger.info() calls (e.g. SAM Visual Prompt's per-request score
+# distribution) get filtered out at the root WARN level. Idempotent.
+logging.getLogger("carve_model").setLevel(logging.INFO)
+if not logging.getLogger("carve_model").handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(name)s %(levelname)s %(message)s"))
+    logging.getLogger("carve_model").addHandler(_h)
+    logging.getLogger("carve_model").propagate = False
+
 # Background sweep runs every SWEEP_INTERVAL_S to evict idle SAM models.
 # Daemon thread → never blocks shutdown. The Event-based wait exits early
 # when the lifespan stops the sweeper.

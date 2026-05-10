@@ -992,8 +992,20 @@ def make_sam3_visual_predictor():
     Reuses one native adapter for both refer-encode and target-forward to
     amortise model load. Output dict shape mirrors /sam/text-prompt:
       {counts: str, size: [h, w], score: float, bbox: [x1,y1,x2,y2], polygon: [[x,y],...]}
+
+    v3.29 — wraps every ``call()`` in a process-wide lock. The shared
+    adapter mutates ``adapter._state`` on every request (set_image
+    overwrites, set_text_prompt overwrites). Without serialisation,
+    two concurrent /sam/visual-prompt requests (e.g. a sync user
+    request running while a batch worker job is mid-flight) can clobber
+    each other — Request A reads ``state['masks']`` AFTER Request B has
+    overwritten it with masks for B's target image, producing nonsense
+    proposals for A. This was the user-reported "batch run output
+    differs from sync" symptom.
     """
+    import threading as _threading
     adapter_holder: dict = {}
+    call_lock = _threading.Lock()
 
     def _adapter():
         if "a" not in adapter_holder:
@@ -1016,47 +1028,66 @@ def make_sam3_visual_predictor():
         threshold=None,
         text_hint=None,  # noqa: ARG001 — kept for API compatibility
     ):
+        with call_lock:
+            return _call_locked(
+                target_b64=target_b64,
+                refer_b64=refer_b64,
+                regions=regions,
+                threshold=threshold,
+                text_hint=text_hint,
+            )
+
+    def _call_locked(
+        *,
+        target_b64,
+        refer_b64,
+        regions,
+        threshold=None,
+        text_hint=None,  # noqa: ARG001 — kept for API compatibility
+    ):
         """SAM 3.1 visual prompt via CLIP image-image similarity.
 
-        v3.28 (FINAL FINAL design) — third and working approach. SAM 3.1
-        doesn't natively support cross-image visual prompting and FO1
-        captioning was unusable (the OD fine-tune emits the same
-        hallucinated phrase regardless of input). The right tool for
-        cross-image visual matching is CLIP — it's the exact task the
-        model was trained for.
+        v3.29 — fixes the silent quality drains in v3.28's pipeline:
+
+          * Square-pad ref+candidate crops before CLIP so its
+            ``Resize(224)+CenterCrop(224)`` no longer slices the long
+            side off non-square objects (the dominant FN/FP source).
+          * Apply the polygon mask on polygon refs so CLIP encodes
+            the traced object, not the bbox of the polygon (which
+            included background).
+          * Apply the SAM proposal mask on each candidate so CLIP
+            scores the segmented object, not its bbox neighbourhood
+            (which conflated overlapping/adjacent objects).
+          * Score candidates by max-similarity over the per-ref
+            embeddings instead of mean-pool exemplar — preserves
+            distinct exemplars (e.g. red banner + blue banner) so a
+            candidate matching either ref scores high.
+          * Drop the [0.7,1.0]→[0,1] rescale; report raw cosine. The
+            rescale assumed a universal CLIP baseline that doesn't
+            hold across image domains. Default threshold raised to
+            0.78 (sane "looks similar" cutoff for raw cosine).
 
         Pipeline:
-          1. Crop the user's reference region with context padding,
-             encode → CLIP image embedding (512-d, L2-normed). Multi-
-             ref runs mean-pool the per-ref embeddings.
-          2. set_image(target) + set_text_prompt(target, "object") with
-             a low confidence floor — SAM 3.1 returns hundreds of
-             OBJECT-INSTANCE proposals (clean masks for everything
-             that looks like an object).
-          3. For each candidate proposal, crop the target image at the
-             proposal's bbox, encode → CLIP image embedding.
-          4. Score each candidate by cosine similarity to the ref
-             exemplar. CLIP image embeddings are highly discriminative
-             across images — the backbone of every modern image-search
-             system.
-          5. Filter by user threshold + image-space NMS. Return as the
+          1. For each ref region, crop refer with context padding, mask
+             out polygon background if applicable, encode → CLIP 512-d
+             L2-normed embedding.
+          2. set_image(target) + set_text_prompt(target, "") with a
+             low confidence floor — SAM 3.1 returns 100+ object-
+             instance proposals.
+          3. For each candidate proposal, crop the target at its bbox,
+             mask out everything outside the proposal mask, encode →
+             CLIP embedding.
+          4. Score each candidate as max_i cos(cand, ref_i).
+          5. Filter by user threshold + greedy NMS. Return in the
              existing /sam/text-prompt response shape.
-
-        Why this works where the prior approaches didn't: CLIP was
-        explicitly trained for cross-image visual concept matching;
-        SAM 3.1 backbone features were not. SAM 3.1's text-prompt path
-        gives us clean object proposals (the part SAM 3.1 IS good at);
-        CLIP scores them. Each model does what it's designed for.
         """
         import logging as _log
         import numpy as np
         import torch  # type: ignore[import-not-found]
-        from PIL import Image
         from carve_model.sam.clip_embed import embed_image, embed_image_batch
         from carve_model.sam.codec import encode_mask_rle
         from carve_model.sam.polygonize import mask_to_polygon
         from carve_model.sam.perf import to_numpy_safe
-        from carve_model.sam.visual_prompt_pool import l2norm
 
         log = _log.getLogger("carve_model.sam.visual_prompt")
         adapter = _adapter()
@@ -1066,20 +1097,26 @@ def make_sam3_visual_predictor():
         if not regions:
             return []
 
-        # 1. Encode each refer region with CLIP and L2-mean-pool.
+        # 1. Encode each refer region with CLIP — keep ALL embeddings
+        #    (max-similarity scoring over the set, not a mean prototype).
         ref_embeds: list[np.ndarray] = []
         for region in regions:
-            crop = _crop_refer_for_caption(refer, region, pad_ratio=0.20)
+            crop, mask_in_crop = _crop_refer_with_mask(
+                refer, region, pad_ratio=0.20,
+            )
             if crop is None or crop.size == 0:
                 continue
-            emb = embed_image(Image.fromarray(crop))
+            emb = embed_image(crop, mask=mask_in_crop)
             if np.linalg.norm(emb) < 1e-6:
                 continue
             ref_embeds.append(emb)
         if not ref_embeds:
             log.warning("SAM Visual Prompt: no usable refer crops")
             return []
-        exemplar = l2norm(np.mean(ref_embeds, axis=0))
+        ref_stack = np.stack(ref_embeds, axis=0)  # (R, 512)
+        log.info(
+            "SAM Visual Prompt: encoded %d ref region(s)", ref_stack.shape[0],
+        )
 
         # 2. SAM 3.1 native PCS gives us object-instance proposals on
         #    the target. Empirical finding: text "object" returns 0-1
@@ -1099,21 +1136,21 @@ def make_sam3_visual_predictor():
         except Exception:  # noqa: BLE001
             pass
 
-        # Try the empty-string "find everything" mode first; if it
-        # somehow returns fewer than a few proposals, fall back to a
-        # broader generic noun.
-        proposal_prompts = ["", "the", "thing"]
+        # Empirical (sam3.1 native): empty string is the high-recall
+        # "concept-free" mode, returning 100+ object proposals on real
+        # photos and a small handful on synthetic scenes — both useful.
+        # Generic nouns ("object", "thing") often return 0 because they
+        # don't match a learned concept. Stick with "" and stop trying
+        # to "improve" it with fallbacks (the prior waterfall actively
+        # OVERWROTE good empty-string proposals with empty fallback
+        # results). If "" yields nothing, accept the empty result.
         try:
-            for tp in proposal_prompts:
-                with torch.inference_mode():
-                    if adapter._device == "cuda":
-                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                            adapter._processor.set_text_prompt(tp, state)
-                    else:
-                        adapter._processor.set_text_prompt(tp, state)
-                _b = state.get("boxes")
-                if _b is not None and to_numpy_safe(_b).shape[0] >= 5:
-                    break
+            with torch.inference_mode():
+                if adapter._device == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        adapter._processor.set_text_prompt("", state)
+                else:
+                    adapter._processor.set_text_prompt("", state)
         finally:
             try:
                 adapter._processor.set_confidence_threshold(original_thr)
@@ -1123,7 +1160,7 @@ def make_sam3_visual_predictor():
         masks = state.get("masks")
         boxes = state.get("boxes")
         if masks is None or boxes is None:
-            log.info("SAM Visual Prompt: no proposals")
+            log.warning("SAM Visual Prompt: no proposals from SAM 3.1")
             return []
         masks_np = to_numpy_safe(masks)
         if masks_np.ndim == 4 and masks_np.shape[1] == 1:
@@ -1133,10 +1170,22 @@ def make_sam3_visual_predictor():
         if masks_np.shape[0] == 0 or boxes_np.shape[0] == 0:
             return []
 
-        # 3. Crop target at each proposal bbox + CLIP-embed in batch.
+        # 3. Crop target at each proposal bbox + per-proposal mask,
+        #    then CLIP-embed the batch. The mask focuses CLIP on the
+        #    SAM-segmented object (not its bbox neighbourhood).
+        #
+        # Drop proposals that are clearly too big — SAM occasionally
+        # emits whole-scene patches that match anything visually.
+        # 60% of image area is the cutoff; real objects rarely exceed
+        # this in well-framed photos.
         H, W = target.shape[:2]
+        image_area = float(H * W)
+        MAX_PROPOSAL_AREA_FRAC = 0.60
+
         candidate_crops: list[np.ndarray] = []
+        candidate_masks: list[np.ndarray] = []
         valid_idx: list[int] = []
+        n_oversized = 0
         for i, b in enumerate(boxes_np):
             x1, y1, x2, y2 = (
                 int(max(0, b[0])), int(max(0, b[1])),
@@ -1144,36 +1193,92 @@ def make_sam3_visual_predictor():
             )
             if x2 - x1 < 4 or y2 - y1 < 4:
                 continue
-            candidate_crops.append(target[y1:y2, x1:x2])
+            box_area = float((x2 - x1) * (y2 - y1))
+            if image_area > 0 and box_area / image_area > MAX_PROPOSAL_AREA_FRAC:
+                n_oversized += 1
+                continue
+            crop = target[y1:y2, x1:x2]
+            # Co-crop the proposal mask so it aligns with the RGB crop
+            # (clip_embed expects mask in same coords as image).
+            m_full = masks_np[i]
+            if m_full.shape == (H, W):
+                m_crop = m_full[y1:y2, x1:x2]
+            else:
+                m_crop = None
+            candidate_crops.append(crop)
+            candidate_masks.append(m_crop)
             valid_idx.append(i)
         if not candidate_crops:
-            log.info("SAM Visual Prompt: %d proposals all degenerate", len(boxes_np))
+            log.info(
+                "SAM Visual Prompt: %d proposals all degenerate (oversized: %d)",
+                len(boxes_np), n_oversized,
+            )
             return []
+        if n_oversized:
+            log.info(
+                "SAM Visual Prompt: dropped %d oversized proposals (>%.0f%% of image)",
+                n_oversized, MAX_PROPOSAL_AREA_FRAC * 100,
+            )
 
-        cand_embeds = embed_image_batch(candidate_crops)
-        # Cosine similarity (both already L2-normed): just dot product.
-        raw_sim = cand_embeds @ exemplar  # (N,) in [-1, 1]
+        cand_embeds = embed_image_batch(candidate_crops, masks=candidate_masks)
+        # Max-similarity over per-ref embeddings (not mean prototype).
+        # Keeps distinct exemplars usable: a candidate matching any one
+        # ref strongly scores high, instead of being dragged down by the
+        # average of all refs.
+        all_sims = cand_embeds @ ref_stack.T  # (N, R)
+        raw_sim = all_sims.max(axis=1) if all_sims.size else np.zeros(0, dtype=np.float32)
 
-        # CLIP cosine for natural images clusters in [0.7, 0.95], so
-        # using raw cosine as a 0-1 UI threshold is unintuitive (the
-        # user's "0.5" lets everything through). Linearly remap [0.7, 1.0]
-        # → [0, 1] so threshold 0.5 means roughly "0.85 raw cosine"
-        # — a meaningful "this looks pretty similar" cutoff.
-        BASELINE = 0.70
-        sim = np.clip((raw_sim - BASELINE) / (1.0 - BASELINE), 0.0, 1.0)
+        # Adaptive per-image rescale.
+        #
+        # Old behaviour was a hardcoded ``[0.70, 1.0] → [0, 1]`` remap.
+        # That breaks across image domains: on cluttered scenes every
+        # CLIP cosine sits at 0.85+ (so even random crops score 0.5+
+        # rescaled → many FP); on sparse scenes everything sits at
+        # 0.72 (so real matches barely scrape 0.1 rescaled → many FN).
+        #
+        # The fix is an adaptive baseline: anchor "0 rescaled" at the
+        # MEDIAN raw cosine across all candidates on this target image,
+        # and "1 rescaled" at 1.0. A candidate that's only as similar
+        # as the typical proposal scores 0; one substantially more
+        # similar than typical scores high. The slider then means
+        # "stands out from typical" rather than a fragile absolute.
+        # We floor the baseline at 0.70 so easy-case images (only a
+        # handful of proposals, all real matches) still produce
+        # confident scores rather than collapsing to 0.
+        if raw_sim.size:
+            median_cos = float(np.median(raw_sim))
+        else:
+            median_cos = 0.70
+        baseline = max(0.70, median_cos)
+        denom = max(1e-3, 1.0 - baseline)
+        sim = np.clip((raw_sim - baseline) / denom, 0.0, 1.0)
 
-        # 4. Apply user threshold on the rescaled score. Default 0.4
-        #    so the user sees something on first try and can tighten.
+        # 4. Apply user threshold on the rescaled score (UI-friendly
+        #    [0, 1]). Default 0.4 mirrors the slider default.
         sim_threshold = float(threshold) if threshold is not None else 0.4
         keep_mask = sim >= sim_threshold
+        # Diagnostics: log both raw cosine AND rescaled score for the
+        # top-5 candidates so we can see the underlying CLIP signal in
+        # server logs without touching the response shape.
+        if sim.size:
+            top_idx = np.argsort(-sim)[:5]
+            top_pairs = [
+                f"{float(raw_sim[i]):.3f}/{float(sim[i]):.3f}" for i in top_idx
+            ]
+        else:
+            top_pairs = []
         log.info(
-            "SAM Visual Prompt: %d proposals, raw cos [%.3f, %.3f], "
-            "rescaled [%.3f, %.3f], threshold %.3f keeps %d",
-            len(sim),
+            "SAM Visual Prompt: %d proposals, %d refs, "
+            "raw cos [%.3f, %.3f] med=%.3f baseline=%.3f, "
+            "rescaled [%.3f, %.3f], top5(raw/rescaled)=%s, "
+            "threshold %.3f keeps %d",
+            len(sim), ref_stack.shape[0],
             float(raw_sim.min()) if raw_sim.size else 0.0,
             float(raw_sim.max()) if raw_sim.size else 0.0,
+            median_cos, baseline,
             float(sim.min()) if sim.size else 0.0,
             float(sim.max()) if sim.size else 0.0,
+            ", ".join(top_pairs),
             sim_threshold, int(keep_mask.sum()),
         )
         if not keep_mask.any():
@@ -1223,22 +1328,50 @@ def _crop_refer_for_caption(
     refer_image: "np.ndarray", region: dict, *, pad_ratio: float = 0.20,
 ) -> "np.ndarray | None":
     """Crop the refer image at the region with surrounding context
-    padding, ready for FO1 captioning.
+    padding, ready for downstream captioning/embedding.
 
     Wider padding (20%) than the visual-prompt encode (15%) because
     captioning benefits from MORE context — VLMs do better when they
     can see the object plus surrounding scene cues.
     """
+    crop, _ = _crop_refer_with_mask(refer_image, region, pad_ratio=pad_ratio)
+    return crop
+
+
+def _crop_refer_with_mask(
+    refer_image: "np.ndarray",
+    region: dict,
+    *,
+    pad_ratio: float = 0.20,
+):
+    """Crop the refer image at a bbox/polygon region, returning the
+    crop AND a foreground mask aligned to the crop coordinates.
+
+    For ``bbox`` regions the mask is ``None`` (the whole crop is the
+    object — there's no foreground/background distinction the user
+    intended).
+
+    For ``polygon`` regions the mask is the rasterised polygon shifted
+    into the cropped frame, so the caller can fade out background pixels
+    inside the bbox-but-outside-the-polygon.
+    """
     import numpy as np
+    from carve_model.sam.visual_prompt_preprocess import rasterise_polygon
+
     H, W = refer_image.shape[:2]
     if region["kind"] == "bbox":
         x1, y1, x2, y2 = (float(v) for v in region["xyxy"])
+        polygon_pts = None
     elif region["kind"] == "polygon":
         pts = np.asarray(region["points"], dtype=float)
+        if pts.size == 0:
+            return None, None
         x1, y1 = pts[:, 0].min(), pts[:, 1].min()
         x2, y2 = pts[:, 0].max(), pts[:, 1].max()
+        polygon_pts = pts
     else:
-        return None
+        return None, None
+
     w = x2 - x1
     h = y2 - y1
     pad_x = w * pad_ratio
@@ -1248,8 +1381,18 @@ def _crop_refer_for_caption(
     cx2 = min(W, int(x2 + pad_x))
     cy2 = min(H, int(y2 + pad_y))
     if cx2 <= cx1 or cy2 <= cy1:
-        return None
-    return refer_image[cy1:cy2, cx1:cx2]
+        return None, None
+    crop = refer_image[cy1:cy2, cx1:cx2]
+    if polygon_pts is None:
+        return crop, None
+
+    # Shift the polygon into crop coordinates and rasterise at crop size.
+    shifted = polygon_pts.copy()
+    shifted[:, 0] -= cx1
+    shifted[:, 1] -= cy1
+    crop_h, crop_w = crop.shape[:2]
+    mask = rasterise_polygon(shifted.tolist(), crop_h, crop_w)
+    return crop, mask
 
 
 def _downsample_mask_nn(mask: "np.ndarray", out_hw: tuple[int, int]) -> "np.ndarray":
@@ -1262,8 +1405,29 @@ def _downsample_mask_nn(mask: "np.ndarray", out_hw: tuple[int, int]) -> "np.ndar
     return mask[np.ix_(ys, xs)]
 
 
-def _greedy_nms_indices(boxes, scores, *, iou_threshold: float = 0.5):
-    """Return indices kept by greedy NMS. ``boxes`` is (N, 4) xyxy."""
+def _greedy_nms_indices(
+    boxes,
+    scores,
+    *,
+    iou_threshold: float = 0.5,
+    containment_threshold: float = 0.85,
+):
+    """Greedy suppression that handles two failure modes plain IoU misses:
+
+    1. **Nested boxes** (small inside big, or big around small). Plain
+       IoU is small/big which can be far below the threshold even when
+       one box is fully inside the other. We add ``containment`` =
+       ``inter / min(area_a, area_b)`` which goes to 1.0 when one box
+       is contained in the other regardless of relative size, and
+       suppress when ``containment >= containment_threshold``.
+    2. **Slightly-different segmentations of the same object**. Two
+       SAM proposals for the same object may have IoU ~ 0.4–0.5 from
+       boundary jitter alone. Suppressing on ``max(iou, containment)``
+       and a slightly looser IoU threshold (default 0.5 still) catches
+       both cases.
+
+    ``boxes`` is (N, 4) xyxy. Returns kept indices (highest-score-first).
+    """
     import numpy as np
     if boxes.shape[0] == 0:
         return np.zeros((0,), dtype=np.int64)
@@ -1285,5 +1449,8 @@ def _greedy_nms_indices(boxes, scores, *, iou_threshold: float = 0.5):
         inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
         union = areas[i] + areas[rest] - inter
         iou = np.where(union > 0, inter / union, 0.0)
-        order = rest[iou < iou_threshold]
+        smaller = np.minimum(areas[i], areas[rest])
+        containment = np.where(smaller > 0, inter / smaller, 0.0)
+        suppress = (iou >= iou_threshold) | (containment >= containment_threshold)
+        order = rest[~suppress]
     return np.asarray(keep, dtype=np.int64)
