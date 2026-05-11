@@ -10,9 +10,12 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
+  ArrowUpRight,
   Bell,
   Calendar,
+  Clock,
   FolderPlus,
+  Play,
   Plus,
   Search,
 } from "lucide-react";
@@ -155,6 +158,55 @@ export function ProjectsPage() {
     : 0;
   const pinnedCount = projects.filter((p) => pinnedSet.has(p.id)).length;
 
+  // v3.30 — "Continue where you left off" target. Picks the most
+  // recently visited project that still exists. Falls back to ``null``
+  // (suppressing the rail entirely) when the user hasn't visited a
+  // project yet OR every recent id has been deleted.
+  const resumeProject = useMemo(() => {
+    if (recentIds.length === 0 || projects.length === 0) return null;
+    const byId = new Map(projects.map((p) => [p.id, p] as const));
+    for (const id of recentIds) {
+      const p = byId.get(id);
+      if (p) return p;
+    }
+    return null;
+  }, [recentIds, projects]);
+
+  // v3.30 — per-project task summary fan-out. Shares the same cache key
+  // as ``WorkspaceDeadlines`` so no duplicate network calls. Capped at
+  // the same 24-project ceiling for huge workspaces; cards past the
+  // cap simply render without the ring (acceptable degradation).
+  const STATS_LIMIT = 24;
+  const statsTargets = useMemo(() => projects.slice(0, STATS_LIMIT), [projects]);
+  const statsQueries = useQueries({
+    queries: statsTargets.map((p) => ({
+      queryKey: ["tasks", p.id, "with-archived"] as const,
+      queryFn: () => tasksApi.listForProject(p.id, { includeArchived: true }),
+      staleTime: 60_000,
+    })),
+  });
+  const projectStats = useMemo(() => {
+    const out = new Map<
+      string,
+      { total: number; completed: number; percent: number; lastActivityAt: string | null }
+    >();
+    statsQueries.forEach((q, i) => {
+      const project = statsTargets[i];
+      if (!project || !q.data) return;
+      const tasks = q.data;
+      const total = tasks.length;
+      const completed = tasks.filter((t) => t.completed_at != null).length;
+      const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+      let lastActivityAt: string | null = null;
+      for (const t of tasks) {
+        const c = t.completed_at ?? t.created_at;
+        if (!lastActivityAt || c > lastActivityAt) lastActivityAt = c;
+      }
+      out.set(project.id, { total, completed, percent, lastActivityAt });
+    });
+    return out;
+  }, [statsQueries, statsTargets]);
+
   return (
     <div className="mx-auto grid max-w-[1100px] gap-5">
       {/* ---- Hero header ---- */}
@@ -242,6 +294,13 @@ export function ProjectsPage() {
           </Button>
         </div>
       </header>
+
+      {/* v3.30 — "Continue where you left off" rail. Surfaces the most
+          recently visited project as a one-click resume card right
+          below the hero. Hidden when there's no relevant target. */}
+      {resumeProject && (
+        <ContinueRail project={resumeProject} />
+      )}
 
       {/* ---- Workspace deadlines — notification card across all projects ---- */}
       <WorkspaceDeadlines projects={projects} />
@@ -348,6 +407,7 @@ export function ProjectsPage() {
               onTogglePin={togglePin}
               onDelete={(id) => deleteM.mutate(id)}
               view={view}
+              projectStats={projectStats}
             />
           )}
         </>
@@ -356,12 +416,20 @@ export function ProjectsPage() {
   );
 }
 
+interface ProjectStatsEntry {
+  total: number;
+  completed: number;
+  percent: number;
+  lastActivityAt: string | null;
+}
+
 interface ProjectsListProps {
   projects: Project[];
   pinnedSet: Set<string>;
   onTogglePin: (id: string) => void;
   onDelete: (id: string) => void;
   view: ProjectView;
+  projectStats?: Map<string, ProjectStatsEntry>;
 }
 
 /**
@@ -376,6 +444,7 @@ function ProjectsList({
   onTogglePin,
   onDelete,
   view,
+  projectStats,
 }: ProjectsListProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const rowHeight = view === "cards" ? ROW_HEIGHT_CARDS : ROW_HEIGHT_COMPACT;
@@ -392,9 +461,7 @@ function ProjectsList({
       <section
         data-testid="projects-list"
         data-virtualised="false"
-        className={cn(
-          "rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] overflow-hidden",
-        )}
+        className="grid gap-2"
       >
         {projects.map((p) => (
           <ProjectCard
@@ -404,6 +471,7 @@ function ProjectsList({
             onTogglePin={() => onTogglePin(p.id)}
             onDelete={() => onDelete(p.id)}
             view={view}
+            stats={projectStats?.get(p.id) ?? null}
           />
         ))}
       </section>
@@ -415,10 +483,7 @@ function ProjectsList({
       ref={scrollRef}
       data-testid="projects-list"
       data-virtualised="true"
-      className={cn(
-        "rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] overflow-y-auto",
-        "max-h-[70vh]",
-      )}
+      className="overflow-y-auto max-h-[70vh]"
     >
       <div
         style={{
@@ -438,6 +503,7 @@ function ProjectsList({
                 top: 0,
                 left: 0,
                 width: "100%",
+                paddingBottom: 8,
                 transform: `translateY(${vi.start}px)`,
               }}
             >
@@ -447,6 +513,7 @@ function ProjectsList({
                 onTogglePin={() => onTogglePin(project.id)}
                 onDelete={() => onDelete(project.id)}
                 view={view}
+                stats={projectStats?.get(project.id) ?? null}
               />
             </div>
           );
@@ -650,5 +717,85 @@ function WorkspaceDeadlines({ projects }: { projects: Project[] }) {
         })}
       </ul>
     </section>
+  );
+}
+
+/**
+ * v3.30 — "Continue where you left off" rail. One-card surface that
+ * gives the projects index immediate momentum: drop the user back
+ * into the project they were last working in with a single click.
+ * Uses the deterministic per-project accent gradient so the rail
+ * visually matches the project's card below.
+ */
+function ContinueRail({ project }: { project: Project }) {
+  const accent = useMemo(() => {
+    let h = 0;
+    for (let i = 0; i < project.id.length; i++) {
+      h = (h * 31 + project.id.charCodeAt(i)) >>> 0;
+    }
+    const hue = h % 360;
+    return {
+      from: `oklch(0.74 0.16 ${hue})`,
+      to: `oklch(0.68 0.19 ${(hue + 40) % 360})`,
+      initial: (project.name.trim().slice(0, 1) || "?").toUpperCase(),
+    };
+  }, [project.id, project.name]);
+
+  return (
+    <Link
+      to="/projects/$projectId"
+      params={{ projectId: project.id }}
+      data-testid="projects-continue-rail"
+      className={cn(
+        "group relative flex items-center gap-4 overflow-hidden",
+        "rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
+        "bg-[var(--bg-elev)] p-4",
+        "transition-[transform,box-shadow] duration-150",
+        "hover:-translate-y-px hover:shadow-[0_3px_18px_rgba(0,0,0,0.12)]",
+      )}
+      aria-label={`Continue project ${project.name}`}
+    >
+      <div
+        aria-hidden
+        className="absolute right-0 top-0 bottom-0 w-1/3 pointer-events-none opacity-[0.10]"
+        style={{
+          background: `radial-gradient(circle at 90% 50%, ${accent.from}, transparent 60%)`,
+        }}
+      />
+      <div
+        className="relative shrink-0 grid place-items-center h-12 w-12 rounded-[var(--radius-sm)] text-white font-mono text-[18px] tracking-tight font-medium"
+        style={{
+          background: `linear-gradient(135deg, ${accent.from}, ${accent.to})`,
+        }}
+      >
+        {accent.initial}
+      </div>
+      <div className="relative flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+          <Clock className="h-3 w-3" />
+          Continue where you left off
+        </div>
+        <div className="text-[15px] font-medium tracking-tight text-[color:var(--text-primary)] truncate mt-0.5">
+          {project.name}
+        </div>
+        <div className="text-[11.5px] text-[color:var(--text-tertiary)] truncate mt-0.5">
+          {project.description ?? "No description."}
+        </div>
+      </div>
+      <span
+        aria-hidden
+        className={cn(
+          "relative shrink-0 inline-flex items-center gap-1.5 h-8 px-3",
+          "rounded-[var(--radius-sm)]",
+          "bg-[var(--accent)] text-white",
+          "text-[12.5px] font-medium tracking-tight",
+          "transition-transform duration-150 group-hover:translate-x-0.5",
+        )}
+      >
+        <Play className="h-3.5 w-3.5 fill-current" />
+        Resume
+        <ArrowUpRight className="h-3.5 w-3.5" />
+      </span>
+    </Link>
   );
 }

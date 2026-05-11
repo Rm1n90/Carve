@@ -60,13 +60,49 @@ export function ProjectsToolbar({
       data-testid="projects-toolbar"
       className={cn(
         "sticky top-0 z-20",
-        "grid gap-2 py-2",
-        "bg-[var(--bg-app)]/85 backdrop-blur-md",
-        "border-b border-[var(--border-subtle)]",
+        "rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
+        "bg-[var(--bg-elev)]/95 backdrop-blur-md",
+        "p-2",
       )}
     >
+      {/* Single-row toolbar — filter segmented control on the left,
+          search in the middle, sort + view on the right. Wraps on
+          narrow viewports but collapses to one row on desktop. */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* Search input */}
+        <div
+          role="tablist"
+          aria-label="Filter projects"
+          className={cn(
+            "inline-flex h-8 p-0.5 rounded-[var(--radius-sm)]",
+            "bg-[var(--bg-subtle)] border border-[var(--border-subtle)]",
+          )}
+        >
+          {FILTER_CHIPS.map((chip) => {
+            const active = chip.value === filter;
+            return (
+              <button
+                key={chip.value}
+                type="button"
+                role="tab"
+                onClick={() => onFilterChange(chip.value)}
+                data-testid={`projects-toolbar-filter-${chip.value}`}
+                aria-pressed={active}
+                aria-selected={active}
+                className={cn(
+                  "h-7 px-2.5 rounded-[var(--radius-xs)]",
+                  "text-[11.5px] tracking-tight font-medium",
+                  "transition-colors duration-[160ms] ease-out",
+                  active
+                    ? "bg-[var(--bg-elev)] text-[color:var(--text-primary)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]"
+                    : "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]",
+                )}
+              >
+                {chip.label}
+              </button>
+            );
+          })}
+        </div>
+
         <div className="relative min-w-[220px] flex-1">
           <Input
             type="search"
@@ -91,7 +127,6 @@ export function ProjectsToolbar({
           )}
         </div>
 
-        {/* Sort dropdown */}
         <Select
           value={sort}
           onValueChange={(v) => onSortChange(v as ProjectSort)}
@@ -111,11 +146,13 @@ export function ProjectsToolbar({
           </Select.Content>
         </Select>
 
-        {/* View toggle */}
         <div
           role="group"
           aria-label="View mode"
-          className="inline-flex h-8 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] overflow-hidden"
+          className={cn(
+            "inline-flex h-8 p-0.5 rounded-[var(--radius-sm)]",
+            "bg-[var(--bg-subtle)] border border-[var(--border-subtle)]",
+          )}
         >
           <button
             type="button"
@@ -124,10 +161,11 @@ export function ProjectsToolbar({
             aria-pressed={view === "cards"}
             aria-label="Cards view"
             className={cn(
-              "grid w-8 place-items-center text-[color:var(--text-tertiary)]",
-              view === "cards" &&
-                "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
-              "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+              "grid w-7 h-7 place-items-center rounded-[var(--radius-xs)]",
+              "transition-colors duration-[160ms] ease-out",
+              view === "cards"
+                ? "bg-[var(--bg-elev)] text-[color:var(--text-primary)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]"
+                : "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]",
             )}
           >
             <LayoutGrid className="h-3.5 w-3.5" />
@@ -139,40 +177,16 @@ export function ProjectsToolbar({
             aria-pressed={view === "compact"}
             aria-label="Compact list view"
             className={cn(
-              "grid w-8 place-items-center text-[color:var(--text-tertiary)] border-l border-[var(--border-subtle)]",
-              view === "compact" &&
-                "bg-[var(--bg-subtle)] text-[color:var(--text-primary)]",
-              "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+              "grid w-7 h-7 place-items-center rounded-[var(--radius-xs)]",
+              "transition-colors duration-[160ms] ease-out",
+              view === "compact"
+                ? "bg-[var(--bg-elev)] text-[color:var(--text-primary)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]"
+                : "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]",
             )}
           >
             <List className="h-3.5 w-3.5" />
           </button>
         </div>
-      </div>
-
-      {/* Filter chips */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {FILTER_CHIPS.map((chip) => {
-          const active = chip.value === filter;
-          return (
-            <button
-              key={chip.value}
-              type="button"
-              onClick={() => onFilterChange(chip.value)}
-              data-testid={`projects-toolbar-filter-${chip.value}`}
-              aria-pressed={active}
-              className={cn(
-                "h-6 px-2.5 rounded-full text-[11.5px] tracking-tight",
-                "border transition-colors duration-[180ms] ease-out",
-                active
-                  ? "border-[var(--accent)] bg-[var(--bg-subtle)] text-[color:var(--text-primary)]"
-                  : "border-[var(--border-subtle)] text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-              )}
-            >
-              {chip.label}
-            </button>
-          );
-        })}
       </div>
     </div>
   );

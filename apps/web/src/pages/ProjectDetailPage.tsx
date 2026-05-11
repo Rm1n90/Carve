@@ -23,11 +23,14 @@ import {
   Image as ImageIcon,
   ListChecks,
   MoreVertical,
+  Play,
+  Plus,
   RefreshCw,
   Settings,
   Sparkles,
   Trash2,
   Upload,
+  Users,
 } from "lucide-react";
 import { projectsApi } from "@/api/projects";
 import { classesApi } from "@/api/classes";
@@ -68,6 +71,141 @@ import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
 import { Tag } from "lucide-react";
 import { formatRelative } from "@/lib/relativeTime";
+
+// ---------------------------------------------------------------------------
+// v3.30 — Hero block helpers: completion ring + activity pulse strip.
+// ---------------------------------------------------------------------------
+interface AccentColors { from: string; to: string }
+
+function CompletionRing({
+  percent,
+  completed,
+  total,
+  accent,
+}: {
+  percent: number;
+  completed: number;
+  total: number;
+  accent: AccentColors;
+}) {
+  const size = 84;
+  const stroke = 6;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const dash = (percent / 100) * c;
+  // Unique gradient id so multiple rings on a page can coexist.
+  const gradId = `ring-grad-${(accent.from + accent.to).replace(/[^a-z0-9]/gi, "")}`;
+  return (
+    <div
+      data-testid="project-detail-completion-ring"
+      className="relative grid place-items-center"
+      style={{ width: size, height: size }}
+      role="progressbar"
+      aria-valuenow={percent}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label="Project task completion"
+    >
+      <svg width={size} height={size} className="-rotate-90">
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor={accent.from} />
+            <stop offset="100%" stopColor={accent.to} />
+          </linearGradient>
+        </defs>
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke="var(--bg-subtle)"
+          strokeWidth={stroke}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke={`url(#${gradId})`}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={`${dash} ${c}`}
+          style={{ transition: "stroke-dasharray 600ms cubic-bezier(0.16, 1, 0.3, 1)" }}
+        />
+      </svg>
+      <div className="absolute inset-0 grid place-items-center">
+        <div className="grid place-items-center">
+          <span className="font-mono text-[18px] tabular-nums font-medium text-[color:var(--text-primary)]">
+            {percent}%
+          </span>
+          <span className="font-mono text-[9px] tracking-[0.16em] uppercase text-[color:var(--text-tertiary)]">
+            {completed}/{total}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActivityPulse({
+  buckets,
+  maxValue,
+  accent,
+}: {
+  buckets: { date: string; created: number; completed: number }[];
+  maxValue: number;
+  accent: AccentColors;
+}) {
+  const total = buckets.reduce(
+    (a, b) => a + b.created + b.completed,
+    0,
+  );
+  return (
+    <div
+      data-testid="project-detail-activity-pulse"
+      className="grid gap-1"
+      aria-label="14-day project activity"
+    >
+      <div className="flex items-center justify-between gap-2 text-[10px] tracking-[0.16em] uppercase text-[color:var(--text-tertiary)]">
+        <span>Last 14 days</span>
+        <span className="font-mono tabular-nums">
+          {total} {total === 1 ? "event" : "events"}
+        </span>
+      </div>
+      <div className="flex items-end gap-[3px] h-10">
+        {buckets.map((b) => {
+          const value = b.created + b.completed;
+          const h = Math.max(2, Math.round((value / maxValue) * 36));
+          const completedH = Math.round((b.completed / Math.max(1, value)) * h);
+          return (
+            <div
+              key={b.date}
+              title={`${b.date}: ${b.created} created · ${b.completed} completed`}
+              className="relative w-[8px] rounded-sm overflow-hidden bg-[var(--bg-subtle)]"
+              style={{ height: 40 }}
+            >
+              {value > 0 && (
+                <div
+                  className="absolute bottom-0 inset-x-0"
+                  style={{
+                    height: h,
+                    background: `linear-gradient(180deg, ${accent.from}, ${accent.to})`,
+                  }}
+                />
+              )}
+              {b.completed > 0 && (
+                <div
+                  className="absolute bottom-0 inset-x-0 bg-[var(--success)]"
+                  style={{ height: completedH }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Stat tile (used inside the totals strip)
@@ -1175,6 +1313,73 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     return { total, completed, percent };
   }, [tasksQ.data]);
 
+  // v3.30 — "Resume" target: the most recently created task that is
+  // neither completed nor archived. Falls back to the newest task at
+  // all when every task is already complete/archived. This is the
+  // cheapest "where did I leave off?" proxy available without a real
+  // last-activity timestamp.
+  const resumeTask = useMemo<Task | null>(() => {
+    const all = tasksQ.data ?? [];
+    if (all.length === 0) return null;
+    const active = all.filter(
+      (t) => t.completed_at == null && t.archived_at == null,
+    );
+    const pool = active.length > 0 ? active : all;
+    return [...pool].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    )[0];
+  }, [tasksQ.data]);
+
+  // v3.30 — 14-day activity pulse. Each day is a bucket counting tasks
+  // CREATED that day (filled bar) and tasks COMPLETED that day (success
+  // overlay). With no real activity log this is a usable proxy: gives
+  // a sense of recent project rhythm without a backend change.
+  const activityBars = useMemo(() => {
+    const days = 14;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const buckets: { date: string; created: number; completed: number }[] = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      buckets.push({
+        date: d.toISOString().slice(0, 10),
+        created: 0,
+        completed: 0,
+      });
+    }
+    const byDate = new Map(buckets.map((b, i) => [b.date, i]));
+    for (const t of tasksQ.data ?? []) {
+      const c = t.created_at.slice(0, 10);
+      if (byDate.has(c)) buckets[byDate.get(c)!].created += 1;
+      if (t.completed_at) {
+        const k = t.completed_at.slice(0, 10);
+        if (byDate.has(k)) buckets[byDate.get(k)!].completed += 1;
+      }
+    }
+    const maxValue = Math.max(
+      1,
+      ...buckets.map((b) => Math.max(b.created, b.completed)),
+    );
+    return { buckets, maxValue };
+  }, [tasksQ.data]);
+
+  // v3.30 — deterministic accent color per project so each project
+  // feels visually distinct without storing a "color" on the row.
+  // Hashes the id into the H slot of an OKLCH triplet that lands in
+  // our app's accent range.
+  const projectAccent = useMemo(() => {
+    let h = 0;
+    for (let i = 0; i < projectId.length; i++) {
+      h = (h * 31 + projectId.charCodeAt(i)) >>> 0;
+    }
+    const hue = h % 360;
+    return {
+      from: `oklch(0.74 0.16 ${hue})`,
+      to: `oklch(0.68 0.19 ${(hue + 40) % 360})`,
+    };
+  }, [projectId]);
+
   // Plan-21 — mark a task complete / in progress. Same toast pattern as
   // archive/unarchive; invalidates the tasks list so the row re-renders
   // with the green pill.
@@ -1348,86 +1553,191 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
           },
         ]}
       />
-      {/* ---- Header ---- */}
-      <header className="flex items-baseline justify-between gap-4 flex-wrap">
-        <div className="grid gap-1">
-          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
-            Project
-          </span>
-          <h1 className="font-editorial text-[36px] leading-[0.95] text-[color:var(--text-primary)]">
-            {project.name}
-          </h1>
-          {project.description && (
-            <p className="text-[12.5px] text-[color:var(--text-tertiary)] mt-0.5">
-              {project.description}
-            </p>
-          )}
-          {/* v3.3 Issue 2 — created_at + owner email meta row. */}
-          <div
-            data-testid="project-detail-meta"
-            className="text-[11px] text-[color:var(--text-tertiary)] mt-1"
-          >
-            Created {formatRelative(project.created_at)} ·{" "}
-            {project.owner_email ?? "Unknown"}
-          </div>
-        </div>
-        <Link
-          to="/projects/$projectId/stats"
-          params={{ projectId }}
-          data-testid="project-detail-view-stats-link"
-          className={cn(
-            "inline-flex items-center gap-1.5 h-8 px-3",
-            "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
-            "text-[12.5px] tracking-tight text-[color:var(--text-secondary)]",
-            "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-            "transition-colors",
-          )}
-        >
-          <BarChart3 className="h-3.5 w-3.5" />
-          View stats
-        </Link>
-      </header>
-
-      {/* Plan-21 — completion progress strip. Renders only once tasks
-          have loaded so we don't flash 0/0 on first paint. The accent
-          fill width animates over 600ms so newly-completed tasks read
-          as a real signal, not a hard snap. */}
-      {completionSummary.total > 0 && (
+      {/* v3.30 — hero block. Replaces the slim header + completion
+          line with one section that combines:
+            • project-seeded accent strip (gives each project a face)
+            • editorial title + description + meta pills
+            • a circular completion ring (instant visual progress)
+            • action cluster: Resume / New task / View stats
+            • a 14-day activity pulse strip (created vs completed)
+          All driven by existing data — no backend changes. */}
+      <section
+        data-testid="project-detail-hero"
+        className={cn(
+          "relative overflow-hidden",
+          "rounded-[var(--radius-lg)] border border-[var(--border-subtle)]",
+          "bg-[var(--bg-elev)]",
+        )}
+      >
+        {/* Seeded accent strip — top edge gradient unique to this project. */}
         <div
-          data-testid="project-detail-completion-strip"
-          className="grid gap-1.5"
-        >
-          <div className="flex items-baseline justify-between gap-2 text-[11.5px] text-[color:var(--text-tertiary)]">
-            <span>
-              <span className="font-mono tabular-nums text-[color:var(--text-secondary)]">
-                {completionSummary.completed}
-              </span>{" "}
-              /{" "}
-              <span className="font-mono tabular-nums">
-                {completionSummary.total}
-              </span>{" "}
-              tasks completed
-            </span>
-            <span className="font-mono tabular-nums">
-              {completionSummary.percent}%
-            </span>
-          </div>
-          <div
-            className="h-1 rounded-full bg-[var(--bg-subtle)] overflow-hidden"
-            role="progressbar"
-            aria-valuenow={completionSummary.percent}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label="Project task completion"
-          >
+          aria-hidden
+          className="absolute inset-x-0 top-0 h-[3px]"
+          style={{
+            background: `linear-gradient(90deg, ${projectAccent.from}, ${projectAccent.to})`,
+          }}
+        />
+        <div className="grid gap-5 p-5 lg:p-6 lg:grid-cols-[1fr_auto]">
+          <div className="grid gap-3 min-w-0">
+            <div className="grid gap-1.5">
+              <div className="flex items-center gap-2">
+                <span
+                  aria-hidden
+                  className="h-2 w-2 rounded-full"
+                  style={{
+                    background: `linear-gradient(135deg, ${projectAccent.from}, ${projectAccent.to})`,
+                  }}
+                />
+                <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[color:var(--text-tertiary)]">
+                  Project
+                </span>
+              </div>
+              <h1 className="font-editorial text-[40px] leading-[0.95] text-[color:var(--text-primary)] truncate">
+                {project.name}
+              </h1>
+              {project.description && (
+                <p className="text-[13px] text-[color:var(--text-secondary)] mt-1 max-w-prose">
+                  {project.description}
+                </p>
+              )}
+            </div>
+
+            {/* Meta pills row. */}
             <div
-              data-testid="project-detail-completion-bar"
-              className="h-full bg-[var(--success)] transition-[width] duration-[600ms] ease-out"
-              style={{ width: `${completionSummary.percent}%` }}
+              data-testid="project-detail-meta"
+              className="flex flex-wrap items-center gap-1.5 text-[11px] text-[color:var(--text-tertiary)]"
+            >
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 h-6 px-2",
+                  "rounded-full border border-[var(--border-subtle)]",
+                )}
+              >
+                <Users className="h-3 w-3" />
+                {project.owner_email ?? "Unknown"}
+              </span>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 h-6 px-2",
+                  "rounded-full border border-[var(--border-subtle)]",
+                )}
+              >
+                <Clock className="h-3 w-3" />
+                Created {formatRelative(project.created_at)}
+              </span>
+              {completionSummary.total > 0 && (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 h-6 px-2 font-mono tabular-nums",
+                    "rounded-full border border-[var(--border-subtle)]",
+                  )}
+                >
+                  <ListChecks className="h-3 w-3" />
+                  {completionSummary.completed}/{completionSummary.total} tasks
+                </span>
+              )}
+            </div>
+
+            {/* Action cluster — primary CTA is Resume when an active
+                task exists; otherwise New task takes the bold slot. */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              {resumeTask ? (
+                <Link
+                  to="/projects/$projectId/tasks/$taskId"
+                  params={{ projectId, taskId: resumeTask.id }}
+                  data-testid="project-detail-resume-task"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 h-8 px-3",
+                    "rounded-[var(--radius-sm)]",
+                    "bg-[var(--accent)] text-white",
+                    "text-[12.5px] font-medium tracking-tight",
+                    "hover:opacity-90 transition-opacity",
+                  )}
+                >
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                  Resume {resumeTask.name}
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="project-detail-create-first-task"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("carve:open-new-task-form"),
+                    )
+                  }
+                  className={cn(
+                    "inline-flex items-center gap-1.5 h-8 px-3",
+                    "rounded-[var(--radius-sm)]",
+                    "bg-[var(--accent)] text-white",
+                    "text-[12.5px] font-medium tracking-tight",
+                    "hover:opacity-90 transition-opacity",
+                  )}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Create first task
+                </button>
+              )}
+              {resumeTask && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("carve:open-new-task-form"),
+                    )
+                  }
+                  className={cn(
+                    "inline-flex items-center gap-1.5 h-8 px-3",
+                    "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+                    "text-[12.5px] tracking-tight text-[color:var(--text-secondary)]",
+                    "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+                    "transition-colors",
+                  )}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  New task
+                </button>
+              )}
+              <Link
+                to="/projects/$projectId/stats"
+                params={{ projectId }}
+                data-testid="project-detail-view-stats-link"
+                className={cn(
+                  "inline-flex items-center gap-1.5 h-8 px-3",
+                  "rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+                  "text-[12.5px] tracking-tight text-[color:var(--text-secondary)]",
+                  "hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+                  "transition-colors",
+                )}
+              >
+                <BarChart3 className="h-3.5 w-3.5" />
+                View stats
+              </Link>
+            </div>
+          </div>
+
+          {/* Completion ring + 14-day pulse, stacked on the right. */}
+          <div className="grid gap-3 justify-items-center lg:justify-items-end content-start">
+            {completionSummary.total > 0 ? (
+              <CompletionRing
+                percent={completionSummary.percent}
+                completed={completionSummary.completed}
+                total={completionSummary.total}
+                accent={projectAccent}
+              />
+            ) : (
+              <div className="text-[11.5px] text-[color:var(--text-tertiary)] italic max-w-[140px] text-center lg:text-right">
+                No tasks yet — your project pulse will show up here.
+              </div>
+            )}
+            <ActivityPulse
+              buckets={activityBars.buckets}
+              maxValue={activityBars.maxValue}
+              accent={projectAccent}
             />
           </div>
         </div>
-      )}
+      </section>
 
       <Tabs defaultValue="overview" data-testid="project-detail-tabs" variant="underline">
         <Tabs.List
