@@ -1,7 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Loader2, Wand2, X } from "lucide-react";
+import { AlertTriangle, Loader2, Plus, Search, Wand2, X } from "lucide-react";
 
 import {
   samApi,
@@ -10,7 +10,8 @@ import {
   type SamVisualSource,
 } from "@/api/sam";
 import { modelsApi } from "@/api/phase2";
-import type { ClassRow } from "@/api/classes";
+import { classesApi, type ClassRow } from "@/api/classes";
+import { Input } from "@/components/ui/Input";
 import {
   VisualReferencePicker,
   type VisualPick,
@@ -37,6 +38,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
+import { useDialogPrefs } from "@/state/dialogPrefs";
 
 interface AutoAnnotateDialogProps {
   /** The asset currently open in the editor (sync run scope). */
@@ -81,9 +83,22 @@ export function AutoAnnotateDialog({
   // false the tab switcher is hidden and the dialog renders the Text
   // body only (no UX regression for SAM 2 / SAM 3-transformers users).
   const [mode, setMode] = useState<"text" | "visual">("text");
-  const [selectedClassIds, setSelectedClassIds] = useState<Set<string>>(
-    () => new Set(),
-  );
+  // v3.30 — inline class+prompt rows, matching Smart Find. Each row
+  // pairs a project class with a YOLOE/SAM-text prompt the user can
+  // edit at run time. Dirty rows are persisted via classesApi.update
+  // right before the run so the next session sees them too.
+  interface TextRow {
+    rid: string;
+    classId: string;
+    prompt: string;
+    /** Original prompt at the time the row was seeded; used to compute
+     *  whether a save is needed before submit. */
+    initialPrompt: string;
+  }
+  const [textRows, setTextRows] = useState<TextRow[]>([]);
+  // Search filter for the row list. Hidden until >6 rows so small
+  // projects don't see unnecessary chrome.
+  const [textRowQuery, setTextRowQuery] = useState("");
   const [threshold, setThreshold] = useState<number>(0.4);
   const [findAll, setFindAll] = useState<boolean>(true);
   const [overwrite, setOverwrite] = useState<boolean>(false);
@@ -168,14 +183,156 @@ export function AutoAnnotateDialog({
   // can scope itself to annotations the run produced.
   const runStartIsoRef = useRef<string | null>(null);
 
-  const eligibleClasses = useMemo(
-    () => classes.filter((c) => (c.text_prompt ?? "").trim().length > 0),
-    [classes],
+  // v3.30 — hydrate from persisted per-task prefs when the dialog
+  // opens. Falls back to seeding from the project's saved class
+  // prompts (the legacy behaviour) so users who never ran a task
+  // still see something useful on first open. Closed-state edits
+  // from elsewhere are reflected because the seed re-runs each
+  // open.
+  const dialogPrefs = useDialogPrefs();
+  useEffect(() => {
+    if (!open) return;
+    const stored = dialogPrefs.getAutoAnnotate(taskId)?.text;
+    if (stored && stored.rows.length > 0) {
+      // Reconcile stored rows against the current class set in case
+      // a class was deleted between sessions.
+      const classIds = new Set(classes.map((c) => c.id));
+      const restored: TextRow[] = stored.rows
+        .filter((r) => !r.classId || classIds.has(r.classId))
+        .map((r, i) => ({
+          rid: `pref-${i}-${r.classId || "empty"}`,
+          classId: r.classId,
+          prompt: r.prompt,
+          initialPrompt:
+            classes.find((c) => c.id === r.classId)?.text_prompt ?? r.prompt,
+        }));
+      if (restored.length === 0) {
+        restored.push({
+          rid: `r-${Date.now()}`,
+          classId: "",
+          prompt: "",
+          initialPrompt: "",
+        });
+      }
+      setTextRows(restored);
+      setThreshold(stored.threshold);
+      setFindAll(stored.findAll);
+      setOverwrite(stored.overwrite);
+      setSamPostMode(stored.samPostMode);
+      setScope(stored.scope);
+      setUseVlmFo1(stored.useVlmFo1);
+    } else {
+      const seeded: TextRow[] = classes
+        .filter((c) => (c.text_prompt ?? "").trim().length > 0)
+        .map((c) => ({
+          rid: `seed-${c.id}`,
+          classId: c.id,
+          prompt: c.text_prompt ?? "",
+          initialPrompt: c.text_prompt ?? "",
+        }));
+      if (seeded.length === 0) {
+        seeded.push({
+          rid: `r-${Date.now()}`,
+          classId: "",
+          prompt: "",
+          initialPrompt: "",
+        });
+      }
+      setTextRows(seeded);
+    }
+    setTextRowQuery("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // v3.30 — write current state back to per-task prefs whenever the
+  // user edits anything while the dialog is open. Static getState
+  // avoids re-binding the effect on every render of the store.
+  useEffect(() => {
+    if (!open) return;
+    useDialogPrefs.getState().saveAutoAnnotate(taskId, {
+      text: {
+        rows: textRows.map((r) => ({ classId: r.classId, prompt: r.prompt })),
+        threshold,
+        findAll,
+        overwrite,
+        samPostMode,
+        scope,
+        useVlmFo1,
+      },
+    });
+  }, [
+    open,
+    taskId,
+    textRows,
+    threshold,
+    findAll,
+    overwrite,
+    samPostMode,
+    scope,
+    useVlmFo1,
+  ]);
+
+  // Reset everything for this task back to defaults — both in-memory
+  // state and the persisted entry. The user picks this when they want
+  // a fresh start.
+  function clearForThisTask() {
+    useDialogPrefs.getState().clearAutoAnnotate(taskId);
+    setTextRows([
+      { rid: `r-${Date.now()}`, classId: "", prompt: "", initialPrompt: "" },
+    ]);
+    setTextRowQuery("");
+    setThreshold(0.4);
+    setFindAll(true);
+    setOverwrite(false);
+    setSamPostMode("off");
+    setScope("this");
+    setUseVlmFo1(false);
+  }
+
+  // Selection is derived: any row with a class and a non-empty prompt
+  // counts as selected for the run.
+  const validTextRows = useMemo(
+    () => textRows.filter((r) => r.classId && r.prompt.trim().length > 0),
+    [textRows],
   );
-  const ineligibleClasses = useMemo(
-    () => classes.filter((c) => !(c.text_prompt ?? "").trim()),
-    [classes],
-  );
+
+  const classById = useMemo(() => {
+    const m = new Map<string, ClassRow>();
+    for (const c of classes) m.set(c.id, c);
+    return m;
+  }, [classes]);
+
+  const visibleTextRows = useMemo(() => {
+    const q = textRowQuery.trim().toLowerCase();
+    if (!q) return textRows;
+    return textRows.filter((r) => {
+      const name = classById.get(r.classId)?.name.toLowerCase() ?? "";
+      return name.includes(q) || r.prompt.toLowerCase().includes(q);
+    });
+  }, [textRows, textRowQuery, classById]);
+
+  function patchTextRow(rid: string, patch: Partial<TextRow>) {
+    setTextRows((prev) =>
+      prev.map((r) => (r.rid === rid ? { ...r, ...patch } : r)),
+    );
+  }
+  function addTextRow() {
+    setTextRows((prev) => [
+      ...prev,
+      {
+        rid: `r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        classId: "",
+        prompt: "",
+        initialPrompt: "",
+      },
+    ]);
+  }
+  function removeTextRow(rid: string) {
+    setTextRows((prev) => {
+      if (prev.length === 1) return prev;
+      return prev.filter((r) => r.rid !== rid);
+    });
+  }
 
   // v3.21+ — capability gate: hide the FO1 toggle when the model
   // service isn't advertising it. Only fetched while the dialog is open.
@@ -221,6 +378,33 @@ export function AutoAnnotateDialog({
 
   const run = useMutation({
     mutationFn: async () => {
+      // v3.30 — persist any row whose prompt was edited inline before
+      // we kick off the run, so the saved per-class prompts stay in
+      // sync with what the user just submitted. We collect a project
+      // id from the first valid row's class (every class on a project
+      // shares the same project_id by construction).
+      const projectId =
+        validTextRows.length > 0
+          ? classById.get(validTextRows[0].classId)?.project_id
+          : undefined;
+      if (projectId) {
+        const dirty = validTextRows.filter(
+          (r) => r.prompt.trim() !== r.initialPrompt.trim(),
+        );
+        if (dirty.length > 0) {
+          await Promise.all(
+            dirty.map((r) =>
+              classesApi.update(projectId, r.classId, {
+                text_prompt: r.prompt.trim(),
+              }),
+            ),
+          );
+          // Refresh the classes list so the dialog (and the editor's
+          // ClassesPanel) reflect the saved prompts.
+          qc.invalidateQueries({ queryKey: ["classes", projectId] });
+        }
+      }
+      const runClassIds = validTextRows.map((r) => r.classId);
       // Plan-17 Phase 2 — capture snapshot of annotation IDs before
       // the run kicks off so onSuccess can diff and find rows that
       // SAM auto-text produced (vs. pre-existing ones on the asset).
@@ -241,7 +425,7 @@ export function AutoAnnotateDialog({
       if (scope === "all") {
         if (!taskId) throw new Error("no_task");
         const r = await samApi.autoTextBatch(taskId, {
-          class_ids: Array.from(selectedClassIds),
+          class_ids: runClassIds,
           threshold,
           find_all: findAll,
           overwrite,
@@ -251,7 +435,7 @@ export function AutoAnnotateDialog({
       }
       if (!assetId) throw new Error("no_asset");
       const r = await samApi.autoText(assetId, {
-        class_ids: Array.from(selectedClassIds),
+        class_ids: runClassIds,
         threshold,
         find_all: findAll,
         overwrite,
@@ -334,20 +518,10 @@ export function AutoAnnotateDialog({
     },
   });
 
-  const toggleClass = (id: string) => {
-    setSelectedClassIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-  const selectAll = () =>
-    setSelectedClassIds(new Set(eligibleClasses.map((c) => c.id)));
-  const selectNone = () => setSelectedClassIds(new Set());
-
+  // v3.30 — Run is gated on the derived row state. ``selectedClassIds``
+  // remains in scope for older callers but isn't part of the gate.
   const canRun =
-    selectedClassIds.size > 0 &&
+    validTextRows.length > 0 &&
     !run.isPending &&
     ((scope === "this" && !!assetId) ||
       (scope === "all" && !!taskId));
@@ -489,7 +663,7 @@ export function AutoAnnotateDialog({
                 void runBatchTaskPostProcess({
                   taskId,
                   sinceIso: startIso,
-                  classIds: selectedClassIds,
+                  classIds: new Set(validTextRows.map((r) => r.classId)),
                   mode: samPostMode as PostProcessMode,
                   signal: ppController.signal,
                   onProgress: (p) => {
@@ -653,75 +827,145 @@ export function AutoAnnotateDialog({
           </div>
         </div>
 
-        {/* Class checklist */}
+        {/* v3.30 — Class & prompt rows (mirrors Smart Find). Each row
+            pairs a project class with the SAM text prompt that drives
+            its detection. Edits are persisted to the per-class
+            text_prompt on submit so the next session sees them. */}
         <div className="grid gap-2 mb-4">
           <div className="flex items-center justify-between">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
-              Classes
-            </div>
-            <div className="flex gap-1">
-              <button
-                type="button"
-                onClick={selectAll}
-                disabled={eligibleClasses.length === 0}
-                className="h-6 px-2 rounded-[var(--radius-xs)] text-[11px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] disabled:opacity-40"
-              >
-                Select all
-              </button>
-              <button
-                type="button"
-                onClick={selectNone}
-                className="h-6 px-2 rounded-[var(--radius-xs)] text-[11px] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
-              >
-                None
-              </button>
-            </div>
+            <label className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
+              Class &amp; prompt rows
+            </label>
+            <span className="text-[10.5px] text-[color:var(--text-tertiary)] font-mono tabular-nums">
+              {validTextRows.length}/{textRows.length} ready
+            </span>
           </div>
-          <div className="max-h-[220px] overflow-y-auto grid gap-0.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] p-1">
-            {eligibleClasses.map((c) => {
-              const checked = selectedClassIds.has(c.id);
+          {textRows.length > 6 && (
+            <Input
+              type="search"
+              value={textRowQuery}
+              onChange={(e) => setTextRowQuery(e.target.value)}
+              placeholder="Filter rows by class name or prompt…"
+              data-testid="auto-annotate-row-search"
+              aria-label="Filter rows"
+              leftIcon={<Search className="h-3.5 w-3.5" aria-hidden />}
+              className="h-7 text-[12px]"
+            />
+          )}
+          {/* Scroll-bound row list — dialog stays a sane height even
+              with 80+ classes. */}
+          <div className="grid gap-1.5 max-h-[280px] overflow-y-auto pr-1">
+            {visibleTextRows.length === 0 && textRowQuery && (
+              <p className="px-2 py-2 text-[12px] text-[color:var(--text-tertiary)] italic">
+                No rows match "{textRowQuery}".
+              </p>
+            )}
+            {visibleTextRows.map((row) => {
+              const cls = classById.get(row.classId);
+              const ready =
+                !!row.classId && row.prompt.trim().length > 0;
+              const dirty =
+                row.prompt.trim() !== row.initialPrompt.trim();
               return (
-                <label
-                  key={c.id}
-                  data-testid={`auto-annotate-class-${c.id}`}
+                <div
+                  key={row.rid}
+                  data-testid={`auto-annotate-text-row-${row.rid}`}
                   className={cn(
-                    "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] cursor-pointer",
-                    "hover:bg-[var(--bg-hover)] transition-colors",
-                    checked && "bg-[var(--accent-bg)]",
+                    "grid grid-cols-[180px_1fr_28px] gap-1.5 items-center",
+                    "p-1.5 rounded-[var(--radius-md)] border bg-[var(--bg-elev)]",
+                    ready
+                      ? "border-[var(--border-subtle)]"
+                      : "border-[var(--border-subtle)]/60",
                   )}
                 >
-                  <Checkbox
-                    checked={checked}
-                    onChange={() => toggleClass(c.id)}
-                    className="shrink-0"
-                  />
-                  <span
-                    className="h-2.5 w-2.5 shrink-0 rounded-full border border-[var(--border-strong)]"
-                    style={{ background: c.color }}
-                  />
-                  <span className="text-[12.5px] text-[color:var(--text-primary)] shrink-0">
-                    {c.name}
-                  </span>
-                  <span className="flex-1 text-[11.5px] text-[color:var(--text-tertiary)] truncate italic">
-                    {c.text_prompt}
-                  </span>
-                </label>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span
+                      className="h-2.5 w-2.5 rounded-sm shrink-0 ring-1 ring-black/10"
+                      style={{
+                        backgroundColor:
+                          cls?.color ?? "var(--bg-subtle)",
+                      }}
+                      aria-hidden
+                    />
+                    <select
+                      value={row.classId}
+                      onChange={(e) =>
+                        patchTextRow(row.rid, { classId: e.target.value })
+                      }
+                      data-testid={`auto-annotate-class-${row.rid}`}
+                      className="flex-1 min-w-0 h-8 px-2 rounded-[var(--radius-sm)] bg-transparent text-[12px] outline-none focus:bg-[var(--bg-hover)]"
+                    >
+                      <option value="">Pick class…</option>
+                      {classes.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="relative">
+                    <input
+                      value={row.prompt}
+                      onChange={(e) =>
+                        patchTextRow(row.rid, { prompt: e.target.value })
+                      }
+                      placeholder={
+                        cls
+                          ? `Describe a ${cls.name.toLowerCase()}…`
+                          : "Describe what to detect…"
+                      }
+                      data-testid={`auto-annotate-prompt-${row.rid}`}
+                      className="w-full h-8 px-2.5 pr-12 rounded-[var(--radius-sm)] bg-transparent text-[12px] outline-none focus:bg-[var(--bg-hover)]"
+                    />
+                    {dirty && (
+                      <span
+                        title="Unsaved prompt edit — saved on Run"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[9.5px] text-[color:var(--accent)]"
+                      >
+                        edited
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeTextRow(row.rid)}
+                    disabled={textRows.length === 1}
+                    aria-label="Remove row"
+                    data-testid={`auto-annotate-remove-${row.rid}`}
+                    className={cn(
+                      "h-7 w-7 grid place-items-center rounded-[var(--radius-sm)]",
+                      "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]",
+                      "hover:bg-[var(--bg-hover)]",
+                      "disabled:opacity-30 disabled:cursor-not-allowed",
+                      "transition-colors duration-[140ms]",
+                    )}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               );
             })}
-            {eligibleClasses.length === 0 && (
-              <p className="text-[12px] text-[color:var(--text-tertiary)] italic px-3 py-3">
-                No classes have a text prompt yet. Add one in the Classes
-                editor (right panel: type below the class name).
-              </p>
-            )}
-            {ineligibleClasses.length > 0 && eligibleClasses.length > 0 && (
-              <p className="text-[10.5px] text-[color:var(--text-tertiary)] italic px-3 py-1.5 mt-1 border-t border-[var(--border-subtle)]">
-                {ineligibleClasses.length} class
-                {ineligibleClasses.length === 1 ? "" : "es"} hidden -- no text
-                prompt configured.
-              </p>
-            )}
           </div>
+          <button
+            type="button"
+            onClick={addTextRow}
+            data-testid="auto-annotate-add-row"
+            className={cn(
+              "self-start inline-flex items-center gap-1 h-7 px-2 rounded-[var(--radius-sm)]",
+              "text-[11.5px] text-[color:var(--accent)] font-medium",
+              "border border-dashed border-[color:var(--accent)]/40",
+              "transition-all duration-[160ms]",
+              "hover:bg-[var(--accent)]/10 hover:border-[color:var(--accent)]",
+            )}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add another class + prompt
+          </button>
+          <p className="text-[10.5px] text-[color:var(--text-tertiary)]">
+            Pick a project class, then write a SAM-text prompt that
+            describes it (e.g. <span className="font-mono">red helmet on a person</span>).
+            Edits are saved to the class on Run.
+          </p>
         </div>
 
         {/* Find mode */}
@@ -893,6 +1137,15 @@ export function AutoAnnotateDialog({
         </div>
 
         <DialogFooter>
+          <Button
+            variant="ghost"
+            size="md"
+            onClick={clearForThisTask}
+            data-testid="auto-annotate-clear"
+            title="Reset rows and settings for this task"
+          >
+            Clear
+          </Button>
           <Button variant="ghost" size="md" onClick={() => setOpen(false)}>
             Cancel
           </Button>

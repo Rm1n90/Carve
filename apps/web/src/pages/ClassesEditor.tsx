@@ -61,15 +61,9 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
     mutationFn: (cid: string) => classesApi.delete(projectId, cid),
     onSuccess: () => invalidateClassDependents(),
   });
-  // v3.8 Phase 3 — per-class SAM 3 text prompt patch. ``text_prompt:
-  // null`` clears the prompt; the API uses Pydantic model_fields_set to
-  // tell null-clear from omitted-keep.
-  const updatePrompt = useMutation({
-    mutationFn: ({ cid, prompt }: { cid: string; prompt: string | null }) =>
-      classesApi.update(projectId, cid, { text_prompt: prompt }),
-    onSuccess: () => invalidateClassDependents(),
-    onError: () => showToast("Failed to update text prompt.", { variant: "error" }),
-  });
+  // v3.30 — `updatePrompt` mutation removed alongside the per-class
+  // prompt input. Prompt edits now flow through Auto-Annotate /
+  // Smart Find dialogs, which save via classesApi.update directly.
   const importFrom = useMutation({
     mutationFn: (sourceProjectId: string) =>
       projectsApi.importClasses(projectId, sourceProjectId),
@@ -292,19 +286,10 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
-                {/* v3.8 Phase 3 — per-class SAM 3 text prompt. Saves on
-                    blur if the value changed; leave empty to clear (the
-                    runner UI hides classes without a prompt). */}
-                <ClassPromptInput
-                  classId={c.id}
-                  initial={c.text_prompt ?? ""}
-                  onSave={(prompt) =>
-                    updatePrompt.mutate({
-                      cid: c.id,
-                      prompt: prompt.trim() === "" ? null : prompt.trim(),
-                    })
-                  }
-                />
+                {/* v3.30 — per-class SAM text prompt input removed.
+                    Auto-Annotate and Smart Find now expose inline
+                    class+prompt rows in their dialogs, so this
+                    permanently-visible sub-row was redundant chrome. */}
               </li>
             ))}
           </ul>
@@ -496,67 +481,8 @@ function CopyClassesFromProjectDialog({
   );
 }
 
-// v3.8 Phase 3 — per-class SAM 3 text prompt input. Holds local draft
-// state and only PATCHes when the value changed at blur (or Enter).
-// Empty string maps to ``null`` upstream (clears the prompt and removes
-// the class from the Text-SAM runner picklist).
-function ClassPromptInput({
-  classId,
-  initial,
-  onSave,
-}: {
-  classId: string;
-  initial: string;
-  onSave: (prompt: string) => void;
-}) {
-  const [value, setValue] = useState(initial);
-  // Re-sync if upstream changes (e.g., after a successful PATCH the
-  // refetched class arrives).
-  useEffect(() => {
-    setValue(initial);
-  }, [initial]);
-
-  const dirty = value.trim() !== initial.trim();
-  return (
-    <div className="flex items-center gap-1.5 pl-[22px]">
-      <span
-        title="SAM text prompt"
-        className="font-mono text-[9.5px] tracking-[0.16em] uppercase text-[color:var(--text-tertiary)] shrink-0"
-      >
-        SAM
-      </span>
-      <input
-        type="text"
-        data-testid={`class-text-prompt-${classId}`}
-        placeholder="(no prompt — class hidden in Text-SAM runner)"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onBlur={() => {
-          if (dirty) onSave(value);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            (e.currentTarget as HTMLInputElement).blur();
-          } else if (e.key === "Escape") {
-            setValue(initial);
-            (e.currentTarget as HTMLInputElement).blur();
-          }
-        }}
-        maxLength={200}
-        className={cn(
-          "flex-1 h-6 px-2 rounded-[var(--radius-xs)]",
-          "bg-transparent border border-transparent",
-          "text-[12px] tracking-tight text-[color:var(--text-primary)]",
-          "placeholder:text-[color:var(--text-tertiary)]",
-          "focus:outline-none focus:border-[var(--border-strong)] focus:bg-[var(--bg-sunken)]",
-          "hover:border-[var(--border-subtle)]",
-          dirty && "border-[var(--accent)] bg-[var(--accent-bg)]",
-        )}
-      />
-    </div>
-  );
-}
+// v3.30 — ClassPromptInput removed. Inline class+prompt editing
+// now lives in the Auto-Annotate / Smart Find dialogs.
 
 // ---------------------------------------------------------------------------
 // Bulk paste classes — accepts plain list / JSON array / YAML list and auto-

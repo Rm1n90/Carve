@@ -50,6 +50,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
+import { useDialogPrefs } from "@/state/dialogPrefs";
 import { useAnnotations } from "@/state/annotations";
 import {
   VisualReferencePicker,
@@ -173,6 +174,124 @@ export function YoloeDialog({
 
   // Active batch tracking
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
+
+  // v3.30 — per-task persistence. Hydrate when the dialog opens and
+  // write back whenever the user edits the form. Visual-mode picks
+  // are intentionally NOT persisted because they reference concrete
+  // annotation ids that may have been deleted between sessions; all
+  // other settings (rows, sliders, scope, overwrite, output kind,
+  // prompt-free class + max-det) are.
+  useEffect(() => {
+    if (!open) return;
+    const stored = useDialogPrefs.getState().getSmartFind(taskId);
+    if (!stored) return;
+    if (stored.mode) setMode(stored.mode);
+    if (stored.text) {
+      const validClassIds = new Set(classes.map((c) => c.id));
+      const rows = stored.text.rows
+        .filter((r) => !r.classId || validClassIds.has(r.classId))
+        .map((r, i) => ({
+          rid: `pref-${i}-${r.classId || "empty"}`,
+          classId: r.classId,
+          prompt: r.prompt,
+        }));
+      if (rows.length > 0) setTextRows(rows);
+      setConfigByMode((prev) => ({
+        ...prev,
+        text: {
+          ...prev.text,
+          conf: stored.text!.conf,
+          iou: stored.text!.iou,
+          outputKind: stored.text!.outputKind as YoloeOutputKind,
+          overwrite: stored.text!.overwrite,
+          scope: stored.text!.scope,
+        },
+      }));
+    }
+    if (stored.prompt_free) {
+      setPfClassId(stored.prompt_free.classId);
+      setPfMaxDet(stored.prompt_free.maxDet);
+      setConfigByMode((prev) => ({
+        ...prev,
+        prompt_free: {
+          ...prev.prompt_free,
+          conf: stored.prompt_free!.conf,
+          iou: stored.prompt_free!.iou,
+          outputKind: stored.prompt_free!.outputKind as YoloeOutputKind,
+          overwrite: stored.prompt_free!.overwrite,
+          scope: stored.prompt_free!.scope,
+        },
+      }));
+    }
+    if (stored.visual_common) {
+      setConfigByMode((prev) => ({
+        ...prev,
+        visual: {
+          ...prev.visual,
+          conf: stored.visual_common!.conf,
+          iou: stored.visual_common!.iou,
+          outputKind: stored.visual_common!.outputKind as YoloeOutputKind,
+          overwrite: stored.visual_common!.overwrite,
+          scope: stored.visual_common!.scope,
+        },
+      }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Write back on every relevant change while the dialog is open.
+  useEffect(() => {
+    if (!open) return;
+    useDialogPrefs.getState().saveSmartFind(taskId, {
+      mode,
+      text: {
+        rows: textRows.map((r) => ({ classId: r.classId, prompt: r.prompt })),
+        conf: configByMode.text.conf,
+        iou: configByMode.text.iou,
+        outputKind: configByMode.text.outputKind,
+        overwrite: configByMode.text.overwrite,
+        scope: configByMode.text.scope,
+      },
+      prompt_free: {
+        classId: pfClassId,
+        maxDet: pfMaxDet,
+        conf: configByMode.prompt_free.conf,
+        iou: configByMode.prompt_free.iou,
+        outputKind: configByMode.prompt_free.outputKind,
+        overwrite: configByMode.prompt_free.overwrite,
+        scope: configByMode.prompt_free.scope,
+      },
+      visual_common: {
+        conf: configByMode.visual.conf,
+        iou: configByMode.visual.iou,
+        outputKind: configByMode.visual.outputKind,
+        overwrite: configByMode.visual.overwrite,
+        scope: configByMode.visual.scope,
+      },
+    });
+  }, [
+    open,
+    taskId,
+    mode,
+    textRows,
+    pfClassId,
+    pfMaxDet,
+    configByMode,
+  ]);
+
+  function clearForThisTask() {
+    useDialogPrefs.getState().clearSmartFind(taskId);
+    setMode("text");
+    setTextRows([{ rid: `r-${Date.now()}`, classId: "", prompt: "" }]);
+    setPicks({});
+    setPfClassId("");
+    setPfMaxDet(300);
+    setConfigByMode({
+      text: { ...DEFAULT_MODE_CONFIG },
+      visual: { ...DEFAULT_MODE_CONFIG },
+      prompt_free: { ...DEFAULT_MODE_CONFIG },
+    });
+  }
 
   // Visual picker — read existing annotations from the editor's store.
   // The store is implicitly scoped to whichever frame the canvas is
@@ -537,31 +656,9 @@ export function YoloeDialog({
   // specific selections (text rows, visual picks, prompt-free fields).
   // Other modes' state is preserved so the user doesn't lose work
   // they did in another tab.
-  function clearActiveMode() {
-    setConfigByMode((prev) => ({
-      ...prev,
-      [mode]: { ...DEFAULT_MODE_CONFIG },
-    }));
-    if (mode === "text") {
-      setTextRows([
-        { rid: `r-${Date.now()}`, classId: "", prompt: "" },
-      ]);
-    } else if (mode === "visual") {
-      setPicks({});
-      // The active source asset id lives inside VisualReferencePicker
-      // (uncontrolled). It's a navigation cursor, not user-entered
-      // data; clearing picks here doesn't reset it, which is fine —
-      // resetting would just bounce the user back to the current asset
-      // which they might have already moved away from intentionally.
-    } else {
-      setPfClassId("");
-      setPfMaxDet(300);
-    }
-    showToast(`${MODE_TABS.find((t) => t.id === mode)?.label ?? "Mode"} reset to defaults.`, {
-      variant: "info",
-      duration: 2200,
-    });
-  }
+  // v3.30 — replaced by ``clearForThisTask`` above, which also wipes
+  // the persisted entry so reopening the dialog doesn't restore the
+  // just-cleared setup.
 
   // Move an in-flight batch into the floating BackgroundJobsBar and
   // close the dialog. Used by:
@@ -806,7 +903,11 @@ export function YoloeDialog({
                     {textValidRows.length}/{textRows.length} ready
                   </span>
                 </div>
-                <div className="grid gap-1.5">
+                {/* v3.30 — bound the row list height so adding many
+                    classes doesn't make the dialog grow taller than
+                    the viewport. The "add" button + helper text stay
+                    outside the scroll region for predictable layout. */}
+                <div className="grid gap-1.5 max-h-[320px] overflow-y-auto pr-1">
                   {textRows.map((row) => {
                     const cls = classes.find((c) => c.id === row.classId);
                     const ready = !!row.classId && row.prompt.trim().length > 0;
@@ -1121,9 +1222,9 @@ export function YoloeDialog({
               <Button
                 variant="ghost"
                 size="md"
-                onClick={clearActiveMode}
+                onClick={clearForThisTask}
                 data-testid="yoloe-clear"
-                title={`Reset ${MODE_TABS.find((t) => t.id === mode)?.label ?? "this mode"} to defaults`}
+                title="Reset every mode for this task (also wipes the saved prefs)"
                 className="mr-auto"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
