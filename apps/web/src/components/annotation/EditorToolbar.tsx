@@ -37,6 +37,7 @@ import {
   Keyboard,
   Info,
   Crosshair,
+  Search,
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
@@ -49,6 +50,7 @@ import { hasMeaningfulRules } from "@/lib/annotation-filter";
 import { useTool, type ToolName, type VisibilityFlags } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { Input } from "@/components/ui/Input";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { Kbd } from "@/components/ui/Kbd";
 import { Select } from "@/components/ui/Select";
@@ -372,6 +374,8 @@ const YoloPredictButton = forwardRef<
 >(function YoloPredictButton({ projectId, taskId, assetId, onAfter }, ref) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  // v3.30 — weight-search query for large weight lists (>6 entries).
+  const [weightQuery, setWeightQuery] = useState("");
   const [overwrite, setOverwrite] = useState(false);
   // Plan-17 Phase 2 — SAM post-processing. ``samPost`` toggles the
   // pass on/off; mode is auto-derived from the selected weight's
@@ -1029,11 +1033,48 @@ const YoloPredictButton = forwardRef<
           </span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="min-w-[320px] p-2">
-        <p className="px-1 py-1 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
-          YOLO weight
-        </p>
-        <div className="grid gap-1 max-h-[200px] overflow-y-auto pr-1">
+      <PopoverContent
+        align="end"
+        className="min-w-[360px] max-w-[440px] w-[440px] p-2"
+      >
+        <div className="flex items-center justify-between px-1 py-1 gap-2">
+          <p className="text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
+            YOLO weight
+          </p>
+          {weights.length > 0 && (
+            <p
+              className="font-mono text-[10px] tabular-nums text-[color:var(--text-tertiary)]"
+              data-testid="yolo-weight-count"
+            >
+              {weightQuery
+                ? `${
+                    weights.filter((w) =>
+                      w.name.toLowerCase().includes(weightQuery.trim().toLowerCase()),
+                    ).length
+                  } / ${weights.length}`
+                : `${weights.length} ${weights.length === 1 ? "weight" : "weights"}`}
+            </p>
+          )}
+        </div>
+        {/* v3.30 — show a search input when the list is big enough that
+            scrolling alone becomes tedious. Below the threshold we
+            keep the popover as compact as it was. */}
+        {weights.length > 6 && (
+          <div className="px-1 pb-2">
+            <Input
+              type="search"
+              autoFocus
+              value={weightQuery}
+              onChange={(e) => setWeightQuery(e.target.value)}
+              placeholder="Filter weights by name…"
+              data-testid="yolo-weight-search"
+              aria-label="Filter weights by name"
+              leftIcon={<Search className="h-3.5 w-3.5" aria-hidden />}
+              className="h-7 text-[12px]"
+            />
+          </div>
+        )}
+        <div className="grid gap-1 max-h-[260px] overflow-y-auto pr-1">
           {wq.isLoading && (
             <p className="px-2 py-2 text-[12px] text-[color:var(--text-tertiary)] italic">
               Loading weights…
@@ -1092,38 +1133,54 @@ const YoloPredictButton = forwardRef<
               )}
             </div>
           )}
-          {weights.map((w) => (
-            <button
-              key={w.id}
-              type="button"
-              onClick={() => setSelected(w.id)}
-              className={cn(
-                "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
-                "text-[12.5px] cursor-pointer outline-none",
-                selected === w.id ? "bg-[var(--accent-bg)]" : "hover:bg-[var(--bg-hover)]",
-              )}
-              data-testid={`weight-row-${w.id}`}
-              data-default={w.is_default ? "true" : undefined}
-            >
-              {selected === w.id ? (
-                <Check className="h-3.5 w-3.5 text-[color:var(--accent)]" />
-              ) : (
-                <span className="h-3.5 w-3.5" aria-hidden />
-              )}
-              <span className="flex-1 truncate">{w.name}</span>
-              {w.is_default && (
-                <span
-                  data-testid={`weight-default-badge-${w.id}`}
-                  className="text-[9.5px] uppercase tracking-[0.10em] px-1.5 py-0.5 rounded bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium"
+          {(() => {
+            const q = weightQuery.trim().toLowerCase();
+            const visible = q
+              ? weights.filter((w) => w.name.toLowerCase().includes(q))
+              : weights;
+            if (!wq.isLoading && weights.length > 0 && visible.length === 0) {
+              return (
+                <p
+                  className="px-2 py-2 text-[12px] text-[color:var(--text-tertiary)] italic"
+                  data-testid="yolo-weight-no-match"
                 >
-                  Default
+                  No weights match "{weightQuery}".
+                </p>
+              );
+            }
+            return visible.map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => setSelected(w.id)}
+                className={cn(
+                  "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)]",
+                  "text-[12.5px] cursor-pointer outline-none",
+                  selected === w.id ? "bg-[var(--accent-bg)]" : "hover:bg-[var(--bg-hover)]",
+                )}
+                data-testid={`weight-row-${w.id}`}
+                data-default={w.is_default ? "true" : undefined}
+              >
+                {selected === w.id ? (
+                  <Check className="h-3.5 w-3.5 text-[color:var(--accent)]" />
+                ) : (
+                  <span className="h-3.5 w-3.5" aria-hidden />
+                )}
+                <span className="flex-1 truncate">{w.name}</span>
+                {w.is_default && (
+                  <span
+                    data-testid={`weight-default-badge-${w.id}`}
+                    className="text-[9.5px] uppercase tracking-[0.10em] px-1.5 py-0.5 rounded bg-[var(--accent)] text-[color:var(--accent-fg)] font-medium"
+                  >
+                    Default
+                  </span>
+                )}
+                <span className="text-[10px] uppercase tracking-wider text-[color:var(--text-tertiary)]">
+                  {w.task_kind}
                 </span>
-              )}
-              <span className="text-[10px] uppercase tracking-wider text-[color:var(--text-tertiary)]">
-                {w.task_kind}
-              </span>
-            </button>
-          ))}
+              </button>
+            ));
+          })()}
         </div>
         {/* v3.7 Phase 2 Issue 1 — predict scope picker. Defaults to
             "asset" (existing single-asset flow). Switching to "task"
@@ -1356,8 +1413,8 @@ const YoloPredictButton = forwardRef<
             {samPost && (
               <p className="ml-5 text-[10.5px] text-[color:var(--text-tertiary)] leading-snug">
                 {selectedWeight?.task_kind === "detect"
-                  ? "After predict, SAM converts every new bounding box into a polygon (one SAM call per annotation, so progress is counted in annotations — not assets). The SAM model loads on demand if it isn't already running."
-                  : "After predict, SAM tightens every new polygon to the object's edge (one SAM call per annotation, so progress is counted in annotations — not assets). The SAM model loads on demand if it isn't already running."}
+                  ? "Runs SAM on every new bbox to produce a polygon. Progress is counted per annotation; SAM loads on demand."
+                  : "Runs SAM on every new polygon to snap it to the object edge. Progress is counted per annotation; SAM loads on demand."}
               </p>
             )}
             {samPostProgress && (
