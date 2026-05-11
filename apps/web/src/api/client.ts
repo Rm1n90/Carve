@@ -4,7 +4,19 @@ import { useAuth } from "@/auth/store";
 
 const baseURL = import.meta.env.VITE_API_BASE ?? "/api";
 
-export const api: AxiosInstance = axios.create({ baseURL });
+// v3.30 — every API call must finish or fail within 30 seconds. Without
+// a timeout, a hung backend / proxy / MinIO presign keeps the request
+// in-flight forever, which (a) blocks React Query's success path and
+// (b) keeps Chrome's tab loading-indicator spinning. The few endpoints
+// that legitimately run longer (long-running batch jobs) already poll
+// short status calls instead of holding one request open, so a 30 s
+// ceiling is safe across the surface.
+const REQUEST_TIMEOUT_MS = 30_000;
+
+export const api: AxiosInstance = axios.create({
+  baseURL,
+  timeout: REQUEST_TIMEOUT_MS,
+});
 
 api.interceptors.request.use((config) => {
   const token = useAuth.getState().accessToken;
