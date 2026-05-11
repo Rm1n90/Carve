@@ -70,6 +70,7 @@ import { useAnnotations } from "@/state/annotations";
 import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
+import { useProjectPrefs } from "@/state/projectPrefs";
 import { useShortcutHandler } from "@/state/shortcuts";
 import { useResizableRightPanel } from "@/hooks/useResizableRightPanel";
 import { showToast } from "@/lib/toast";
@@ -150,6 +151,14 @@ function SamTrackModeGate({
 export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  // v3.30 — record this task as the user's most-recently-touched
+  // task in this project. Drives the Resume button on the project
+  // detail page so reopening the project jumps you back to the work
+  // you were just doing, not just the newest task by created_at.
+  const recordTaskVisit = useProjectPrefs((s) => s.recordTaskVisit);
+  useEffect(() => {
+    recordTaskVisit(projectId, taskId);
+  }, [projectId, taskId, recordTaskVisit]);
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
   const [zoomPct, setZoomPct] = useState(100);
   // When the user enables Settings → Player → "Reset zoom on frame change",

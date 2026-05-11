@@ -1313,22 +1313,37 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     return { total, completed, percent };
   }, [tasksQ.data]);
 
-  // v3.30 — "Resume" target: the most recently created task that is
-  // neither completed nor archived. Falls back to the newest task at
-  // all when every task is already complete/archived. This is the
-  // cheapest "where did I leave off?" proxy available without a real
-  // last-activity timestamp.
+  // v3.30 — "Resume" target. Picks the task the user was actually
+  // last working in, not just the newest task by ``created_at``.
+  //
+  // Resolution order:
+  //   1. recentTaskIdsByProject[projectId] — first id that resolves
+  //      to an active (non-completed, non-archived) task in this
+  //      project. AnnotateAssetPage stamps this list on every mount,
+  //      so it tracks real user activity (open-the-editor activity,
+  //      which is the closest proxy we have to "updated").
+  //   2. Most recently created active task.
+  //   3. Most recently created task overall (covers the all-done /
+  //      all-archived case so the button doesn't disappear).
+  const recentTaskIds = useProjectPrefs((s) =>
+    s.recentTaskIdsByProject[projectId] ?? [],
+  );
   const resumeTask = useMemo<Task | null>(() => {
     const all = tasksQ.data ?? [];
     if (all.length === 0) return null;
     const active = all.filter(
       (t) => t.completed_at == null && t.archived_at == null,
     );
+    const activeById = new Map(active.map((t) => [t.id, t] as const));
+    for (const id of recentTaskIds) {
+      const hit = activeById.get(id);
+      if (hit) return hit;
+    }
     const pool = active.length > 0 ? active : all;
     return [...pool].sort((a, b) =>
       b.created_at.localeCompare(a.created_at),
     )[0];
-  }, [tasksQ.data]);
+  }, [tasksQ.data, recentTaskIds]);
 
   // v3.30 — 14-day activity pulse. Each day is a bucket counting tasks
   // CREATED that day (filled bar) and tasks COMPLETED that day (success

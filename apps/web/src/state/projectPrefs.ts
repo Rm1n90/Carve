@@ -20,13 +20,24 @@ import { createJSONStorage, persist } from "zustand/middleware";
  * O(1) membership checks without rebuilding it on every render.
  */
 const RECENT_CAP = 5;
+const RECENT_TASKS_PER_PROJECT_CAP = 10;
 
 export interface ProjectPrefsState {
   pinnedProjectIds: string[];
   recentProjectIds: string[];
+  /**
+   * v3.30 — most-recent-first task visit history, scoped per project.
+   * Drives the project detail page's "Resume" CTA so the button
+   * targets the task the user was last working in, not just the
+   * newest task by ``created_at``. Visits are recorded on
+   * AnnotateAssetPage mount.
+   */
+  recentTaskIdsByProject: Record<string, string[]>;
   isPinned: (projectId: string) => boolean;
   togglePin: (projectId: string) => void;
   recordVisit: (projectId: string) => void;
+  recordTaskVisit: (projectId: string, taskId: string) => void;
+  getRecentTasks: (projectId: string) => string[];
   getPinnedSet: () => Set<string>;
 }
 
@@ -35,6 +46,7 @@ export const useProjectPrefs = create<ProjectPrefsState>()(
     (set, get) => ({
       pinnedProjectIds: [],
       recentProjectIds: [],
+      recentTaskIdsByProject: {},
       isPinned: (projectId) => get().pinnedProjectIds.includes(projectId),
       togglePin: (projectId) =>
         set((s) => {
@@ -54,11 +66,30 @@ export const useProjectPrefs = create<ProjectPrefsState>()(
             recentProjectIds: [projectId, ...without].slice(0, RECENT_CAP),
           };
         }),
+      recordTaskVisit: (projectId, taskId) =>
+        set((s) => {
+          const existing = s.recentTaskIdsByProject[projectId] ?? [];
+          const without = existing.filter((x) => x !== taskId);
+          const next = [taskId, ...without].slice(
+            0,
+            RECENT_TASKS_PER_PROJECT_CAP,
+          );
+          return {
+            ...s,
+            recentTaskIdsByProject: {
+              ...s.recentTaskIdsByProject,
+              [projectId]: next,
+            },
+          };
+        }),
+      getRecentTasks: (projectId) =>
+        get().recentTaskIdsByProject[projectId] ?? [],
       getPinnedSet: () => new Set(get().pinnedProjectIds),
     }),
     {
       name: "carve-project-prefs",
       storage: createJSONStorage(() => localStorage),
+      version: 2,
     },
   ),
 );
