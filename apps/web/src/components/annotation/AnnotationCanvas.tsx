@@ -851,6 +851,20 @@ export function AnnotationCanvas({
     }
 
     function onWheel(e: WheelEvent) {
+      // v3.29 — generic UI-overlay passthrough. Any wheel event whose
+      // target lives inside a popover-style overlay (right-click menu,
+      // command palette, dropdown listbox, modal dialog, scrollable
+      // tooltip…) must NOT zoom the canvas. We test the target's
+      // ancestry once: if it climbs to any of these well-known roles
+      // before reaching the canvas host, we bail. This replaces every
+      // per-popup `e.stopPropagation()` patch with a single rule.
+      const target = e.target as Element | null;
+      if (target && typeof target.closest === "function") {
+        const overlay = target.closest(
+          '[role="menu"],[role="menuitem"],[role="dialog"],[role="alertdialog"],[role="listbox"],[role="combobox"],[role="tooltip"],[data-canvas-wheel-passthrough="false"]',
+        );
+        if (overlay) return;
+      }
       e.preventDefault();
       const rect = host!.getBoundingClientRect();
       lastAnchor = {

@@ -27,10 +27,18 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
     queryKey: ["classes", projectId],
     queryFn: () => classesApi.listForProject(projectId),
   });
+  // Any class mutation can change the per-task class-count chip in
+  // ProjectDetailPage (keyed by ``["task-classes", projectId, taskId]``)
+  // — invalidate the prefix so every task row refetches its count
+  // without the user having to refresh the page.
+  function invalidateClassDependents() {
+    qc.invalidateQueries({ queryKey: ["classes", projectId] });
+    qc.invalidateQueries({ queryKey: ["task-classes", projectId] });
+  }
   const create = useMutation({
     mutationFn: (input: { idx: number; name: string; color: string }) =>
       classesApi.create(projectId, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+    onSuccess: () => invalidateClassDependents(),
     // v3.2 Issue 7 — surface the 409 duplicate-name error as a toast so the
     // user understands why the create silently no-op'd. `pendingName` is
     // captured from the mutation variables (TanStack Query passes them as
@@ -51,7 +59,7 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
   });
   const remove = useMutation({
     mutationFn: (cid: string) => classesApi.delete(projectId, cid),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+    onSuccess: () => invalidateClassDependents(),
   });
   // v3.8 Phase 3 — per-class SAM 3 text prompt patch. ``text_prompt:
   // null`` clears the prompt; the API uses Pydantic model_fields_set to
@@ -59,14 +67,14 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
   const updatePrompt = useMutation({
     mutationFn: ({ cid, prompt }: { cid: string; prompt: string | null }) =>
       classesApi.update(projectId, cid, { text_prompt: prompt }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["classes", projectId] }),
+    onSuccess: () => invalidateClassDependents(),
     onError: () => showToast("Failed to update text prompt.", { variant: "error" }),
   });
   const importFrom = useMutation({
     mutationFn: (sourceProjectId: string) =>
       projectsApi.importClasses(projectId, sourceProjectId),
     onSuccess: (result) => {
-      qc.invalidateQueries({ queryKey: ["classes", projectId] });
+      invalidateClassDependents();
       showToast(
         `Imported ${result.imported} ${result.imported === 1 ? "class" : "classes"} (${result.skipped} skipped)`,
         { variant: "success" },
@@ -662,12 +670,12 @@ function BulkPasteClassesDialog({
           className="font-mono leading-relaxed"
         />
         {entries.length > 0 && (
-          <div className="grid gap-1 max-h-[180px] overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-2">
-            <span className="text-[10.5px] tracking-tight text-[color:var(--text-tertiary)]">
+          <div className="grid gap-1 max-h-[260px] overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-2">
+            <span className="text-[10.5px] tracking-tight text-[color:var(--text-tertiary)] sticky top-0 bg-[var(--bg-sunken)] -mx-2 -mt-2 px-2 pt-2 pb-1">
               Preview ({entries.length} new
               {duplicates.length > 0 ? `, ${duplicates.length} duplicate skipped` : ""})
             </span>
-            {entries.slice(0, 50).map((e) => (
+            {entries.map((e) => (
               <div
                 key={`${e.idx}-${e.name}`}
                 className="flex items-center gap-2 text-[12px] tracking-tight text-[color:var(--text-secondary)]"
@@ -687,11 +695,6 @@ function BulkPasteClassesDialog({
                 </span>
               </div>
             ))}
-            {entries.length > 50 && (
-              <span className="text-[11px] italic text-[color:var(--text-tertiary)] mt-1">
-                …and {entries.length - 50} more
-              </span>
-            )}
           </div>
         )}
         {parsed.length === 0 && text.trim().length > 0 && (

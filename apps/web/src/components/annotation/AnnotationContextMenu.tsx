@@ -1,5 +1,12 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ChevronsUp,
   ChevronUp,
@@ -484,10 +491,7 @@ export function AnnotationContextMenu({
   assetId,
 }: Props) {
   const [state, setState] = useState<MenuState | null>(null);
-  const [classMenuOpen, setClassMenuOpen] = useState(false);
-  const [submenuLeft, setSubmenuLeft] = useState(true);
   const menuRef = useRef<HTMLDivElement>(null);
-  const submenuRef = useRef<HTMLDivElement>(null);
 
   // v3.20 -- live hotkey labels and Z-order menu items, reactive to
   // user shortcut overrides. ``HK`` shadows the legacy module-level
@@ -495,17 +499,11 @@ export function AnnotationContextMenu({
   // unchanged.
   const HK = useMenuHotkeys();
   const Z_ITEMS = useMemo(() => buildZItems(HK), [HK]);
-  const hoverCloseTimer = useRef<number | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
   function close() {
     setState(null);
-    setClassMenuOpen(false);
     setPos(null);
-    if (hoverCloseTimer.current) {
-      window.clearTimeout(hoverCloseTimer.current);
-      hoverCloseTimer.current = null;
-    }
   }
 
   useEffect(() => {
@@ -610,6 +608,23 @@ export function AnnotationContextMenu({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
+  // v3.29 — attach a native wheel listener on the menu so wheel events
+  // fired anywhere inside it (including the inline class list's scroll
+  // area) don't bubble up to the canvas host listener, which would
+  // otherwise zoom the image while the user scrolls through classes.
+  // React's synthetic ``onWheel`` only stops React-tree propagation; it
+  // does not stop the native bubble path the canvas listener uses.
+  useEffect(() => {
+    if (!state) return;
+    const el = menuRef.current;
+    if (!el) return;
+    function blockWheel(e: WheelEvent) {
+      e.stopPropagation();
+    }
+    el.addEventListener("wheel", blockWheel, { passive: true });
+    return () => el.removeEventListener("wheel", blockWheel);
+  }, [state]);
+
   useLayoutEffect(() => {
     if (!state) return;
     const el = menuRef.current;
@@ -626,7 +641,6 @@ export function AnnotationContextMenu({
       y = Math.max(VIEWPORT_MARGIN, vh - rect.height - VIEWPORT_MARGIN);
     }
     setPos({ x, y });
-    setSubmenuLeft(x + rect.width + SUBMENU_WIDTH + VIEWPORT_MARGIN <= vw);
   }, [state]);
 
   if (!state) return null;
@@ -635,7 +649,14 @@ export function AnnotationContextMenu({
   const menuStyle: React.CSSProperties = {
     top,
     left,
-    visibility: pos ? "visible" : "hidden",
+    // v3.29 — use opacity/pointer-events instead of `visibility` so the
+    // input inside InlineClassSearch can receive focus during the
+    // first measurement render. `visibility: hidden` blocks `.focus()`
+    // at the browser level, which left the menu unfocused on open and
+    // sent the user's first keystroke to whichever global shortcut
+    // happened to match it.
+    opacity: pos ? 1 : 0,
+    pointerEvents: pos ? "auto" : "none",
   };
 
   if (state.kind === "empty") {
@@ -723,21 +744,6 @@ export function AnnotationContextMenu({
   const draft = useAnnotations.getState().byId[annId];
   const isLocked = useAnnotations.getState().isLocked(annId);
 
-  function openClassSubmenu() {
-    if (hoverCloseTimer.current) {
-      window.clearTimeout(hoverCloseTimer.current);
-      hoverCloseTimer.current = null;
-    }
-    setClassMenuOpen(true);
-  }
-  function scheduleSubmenuClose() {
-    if (hoverCloseTimer.current) window.clearTimeout(hoverCloseTimer.current);
-    hoverCloseTimer.current = window.setTimeout(() => {
-      setClassMenuOpen(false);
-      hoverCloseTimer.current = null;
-    }, 120);
-  }
-
   return (
     <div
       ref={menuRef}
@@ -751,6 +757,10 @@ export function AnnotationContextMenu({
       onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.stopPropagation()}
+      // v3.29 — stop wheel events from bubbling to the canvas while the
+      // menu (or its class-pick submenu) is open. Otherwise scrolling a
+      // long class list also triggers the canvas's zoom-on-wheel.
+      onWheel={(e) => e.stopPropagation()}
       className={cn(
         // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
         "fixed z-[1100] min-w-[220px]",
@@ -760,6 +770,22 @@ export function AnnotationContextMenu({
       )}
       style={menuStyle}
     >
+      {/* v3.29 — inline class search at the very top of the menu.
+          Auto-focused on open so the user can immediately type to
+          filter classes without hovering into a submenu. The full class
+          palette (R) remains available below for power users. */}
+      {classes && classes.length > 0 && (
+        <InlineClassSearch
+          classes={classes}
+          activeClassId={draft?.classId ?? null}
+          onPick={(classId) => {
+            if (draft?.classId !== classId) {
+              useAnnotations.getState().update(annId, { classId });
+            }
+            close();
+          }}
+        />
+      )}
       <MenuButton
         testId="ctx-change-class-palette"
         icon={<TagIcon className="h-3.5 w-3.5" />}
@@ -775,77 +801,6 @@ export function AnnotationContextMenu({
           close();
         }}
       />
-
-      {classes && classes.length > 0 && (
-        <div
-          className="relative"
-          onMouseEnter={openClassSubmenu}
-          onMouseLeave={scheduleSubmenuClose}
-        >
-          <button
-            type="button"
-            data-testid="ctx-change-class"
-            onFocus={openClassSubmenu}
-            aria-haspopup="menu"
-            aria-expanded={classMenuOpen}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] text-left hover:bg-[var(--bg-hover)]"
-          >
-            <TagIcon className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-            <span className="flex-1">Pick class</span>
-            <ChevronRight className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-          </button>
-          {classMenuOpen && (
-            <div
-              ref={submenuRef}
-              role="menu"
-              aria-label="Change class submenu"
-              data-testid="ctx-change-class-submenu"
-              onMouseEnter={openClassSubmenu}
-              onMouseLeave={scheduleSubmenuClose}
-              className={cn(
-                // DESIGN.md §1 / §6 — solid surface, compact 6px radius.
-                "absolute top-0 min-w-[180px] max-h-[260px] overflow-y-auto",
-                submenuLeft ? "left-full ml-1" : "right-full mr-1",
-                "rounded-[var(--radius-6)] p-1",
-                "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
-                "shadow-[var(--shadow-card)]",
-              )}
-            >
-              {classes.map((c) => {
-                const active = draft?.classId === c.id;
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    data-testid={`ctx-change-class-${c.id}`}
-                    onClick={() => {
-                      if (!active) {
-                        useAnnotations
-                          .getState()
-                          .update(annId, { classId: c.id });
-                      }
-                      close();
-                    }}
-                    className={cn(
-                      "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12px] text-left cursor-pointer",
-                      active
-                        ? "bg-[var(--accent-bg)] text-[color:var(--accent)]"
-                        : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
-                    )}
-                  >
-                    <span
-                      aria-hidden
-                      className="h-3 w-3 shrink-0 rounded-full border border-[var(--border-strong)]"
-                      style={{ background: c.color }}
-                    />
-                    <span className="flex-1 truncate">{c.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
 
       <div className="my-1 h-px bg-[var(--border-subtle)]" />
 
@@ -1023,4 +978,157 @@ export function AnnotationContextMenu({
       />
     </div>
   );
+}
+
+/**
+ * v3.29 — inline class search at the top of the right-click context
+ * menu. Auto-focused on mount so the user can immediately type to
+ * filter classes without hovering into a submenu. ↑/↓ navigate,
+ * Enter selects.
+ *
+ * Replaces the previous "Pick class ▶" submenu — typing in a submenu
+ * was a two-step gesture (hover, then type) that broke at scale.
+ */
+interface InlineClassSearchProps {
+  classes: { id: string; name: string; color: string; idx?: number }[];
+  activeClassId: string | null;
+  onPick: (classId: string) => void;
+}
+
+function InlineClassSearch(props: InlineClassSearchProps) {
+  const { classes, activeClassId, onPick } = props;
+    const [query, setQuery] = useState("");
+    const [highlightIdx, setHighlightIdx] = useState(0);
+    const inputRef = useRef<HTMLInputElement>(null);
+    const listRef = useRef<HTMLDivElement>(null);
+
+    const filtered = useMemo(() => {
+      const q = query.trim().toLowerCase();
+      if (!q) return classes;
+      return classes.filter((c) => c.name.toLowerCase().includes(q));
+    }, [classes, query]);
+
+    // Reset / keep the highlighted row in bounds whenever the filter changes.
+    useEffect(() => {
+      setHighlightIdx((prev) => {
+        if (filtered.length === 0) return 0;
+        if (prev >= filtered.length) return 0;
+        return prev;
+      });
+    }, [filtered.length]);
+
+    // Auto-focus the search input the moment the menu mounts. We try
+    // synchronously AND on the next animation frame so we cover the
+    // case where the menu's parent measure-then-position effect causes
+    // a transient blur, or where the first focus() call lands while
+    // the menu is still in its measurement render.
+    useEffect(() => {
+      function tryFocus() {
+        const el = inputRef.current;
+        if (!el) return;
+        if (document.activeElement !== el) el.focus();
+      }
+      tryFocus();
+      const raf = requestAnimationFrame(tryFocus);
+      return () => cancelAnimationFrame(raf);
+    }, []);
+
+    // Keep the highlighted row scrolled into view when navigating with
+    // arrow keys.
+    useEffect(() => {
+      const el = listRef.current?.querySelector<HTMLElement>(
+        `[data-row-idx="${highlightIdx}"]`,
+      );
+      el?.scrollIntoView({ block: "nearest" });
+    }, [highlightIdx]);
+
+    function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHighlightIdx((i) => (filtered.length ? (i + 1) % filtered.length : 0));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHighlightIdx((i) =>
+          filtered.length ? (i - 1 + filtered.length) % filtered.length : 0,
+        );
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const cls = filtered[highlightIdx];
+        if (cls) onPick(cls.id);
+      }
+    }
+
+    const hasQuery = query.trim().length > 0;
+    return (
+      <div className="mb-1" data-testid="ctx-class-search-section">
+        <div className="px-1 pb-1">
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            autoFocus
+            placeholder={`Search ${classes.length} classes…`}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            data-testid="ctx-change-class-search"
+            className={cn(
+              "w-full h-7 px-2 text-[12px] tracking-tight",
+              "rounded-[var(--radius-xs)] border border-[var(--border-subtle)]",
+              "bg-[var(--bg-app)] text-[color:var(--text-primary)]",
+              "focus:outline-none focus:border-[var(--accent)]",
+            )}
+          />
+        </div>
+        {/* Results only appear once the user starts typing — keeps the
+            menu compact when right-clicking, and prevents the "6 random
+            classes" preview from cluttering the menu. */}
+        {hasQuery && (
+        <div
+          ref={listRef}
+          className="max-h-[220px] overflow-y-auto"
+        >
+          {filtered.length === 0 ? (
+            <div className="px-2 py-2 text-[11.5px] text-[color:var(--text-tertiary)] italic">
+              No classes match "{query}"
+            </div>
+          ) : (
+            filtered.map((c, i) => {
+              const active = c.id === activeClassId;
+              const highlighted = i === highlightIdx;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  data-testid={`ctx-change-class-${c.id}`}
+                  data-row-idx={i}
+                  onMouseEnter={() => setHighlightIdx(i)}
+                  onClick={() => onPick(c.id)}
+                  className={cn(
+                    "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12px] text-left cursor-pointer",
+                    active
+                      ? "bg-[var(--accent-bg)] text-[color:var(--accent)]"
+                      : highlighted
+                        ? "bg-[var(--bg-hover)] text-[color:var(--text-primary)]"
+                        : "text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]",
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className="h-3 w-3 shrink-0 rounded-full border border-[var(--border-strong)]"
+                    style={{ background: c.color }}
+                  />
+                  {typeof c.idx === "number" && c.idx >= 0 && c.idx < 9 && (
+                    <span className="font-mono text-[10px] text-[color:var(--text-tertiary)] w-3 text-right">
+                      {c.idx + 1}
+                    </span>
+                  )}
+                  <span className="flex-1 truncate">{c.name}</span>
+                </button>
+              );
+            })
+          )}
+        </div>
+        )}
+      </div>
+    );
 }

@@ -755,9 +755,10 @@ export function ClassesPanel({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showAdd, setShowAdd] = useState(false);
   // Plan 14 Phase 8 Task 4 — when ``classes.length > 12`` collapse the
-  // "All classes" group behind a "Show all (N)" expander. Pinned and
-  // search-filtered views remain expanded regardless.
-  const [showAllExpanded, setShowAllExpanded] = useState(false);
+  // v3.29 — removed the "Show all (N)" expander. Large-project users
+  // (≥50 classes) found the disclosure a speed bump; the outer panel
+  // is already scroll-bounded so always rendering every class doesn't
+  // cost layout space.
 
   // Project id is derived from the first class — every class on a
   // project shares the same project_id, and the panel never mounts
@@ -1028,7 +1029,6 @@ export function ClassesPanel({
             .map((id) => filtered.find((c) => c.id === id))
             .filter((c): c is ClassRow => Boolean(c));
           const rest = filtered.filter((c) => !pinnedSet.has(c.id));
-          const collapseAll = classes.length > 12 && !showAllExpanded;
           return (
             <>
               {pinned.length > 0 && (
@@ -1046,30 +1046,11 @@ export function ClassesPanel({
                   aria-hidden
                 />
               )}
-              {classes.length > 12 ? (
-                <>
-                  <li className="px-2.5 pt-1 pb-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setShowAllExpanded((v) => !v)}
-                      data-testid="classes-show-all-toggle"
-                      className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]"
-                    >
-                      {showAllExpanded ? (
-                        <ChevronDown className="h-3 w-3" />
-                      ) : (
-                        <ChevronRight className="h-3 w-3" />
-                      )}
-                      <span>
-                        {showAllExpanded ? "Hide" : "Show"} all ({rest.length})
-                      </span>
-                    </button>
-                  </li>
-                  {!collapseAll && rest.map((c, i) => renderRow(c, i))}
-                </>
-              ) : (
-                rest.map((c, i) => renderRow(c, i))
-              )}
+              {/* Always render all remaining classes — the outer panel
+                  is already scroll-bounded, and hiding classes behind a
+                  "Show all" disclosure made large-project workflows
+                  (≥50 classes) slow. */}
+              {rest.map((c, i) => renderRow(c, i))}
             </>
           );
         })()}

@@ -262,7 +262,12 @@ export function ClassCommandPalette({
           "rounded-[var(--radius-lg)] p-3",
           "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
           "shadow-[0_24px_60px_rgba(0,0,0,0.45)]",
-          "animate-confirm-in",
+          // v3.29 — palette-specific in animation that does NOT include
+          // `translate(-50%, -50%)`. The grid container already places
+          // the dialog correctly; reusing the confirm-in keyframes here
+          // applied a stray translate that made the dialog briefly
+          // render at top-left before snapping to its grid position.
+          "animate-class-palette-in",
         )}
         onClick={(e) => e.stopPropagation()}
         onPointerDown={(e) => e.stopPropagation()}
