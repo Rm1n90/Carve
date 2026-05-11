@@ -227,25 +227,32 @@ def _fetch_asset_bytes(storage, key: str) -> bytes | None:
 def _convert_for_yolo_mode(
     annotations: list[Annotation], mode: str
 ) -> list[Any]:
-    """Plan-20.1 — return a list of ``_AnnView`` objects with ``kind`` and
-    ``geometry`` adapted to the chosen YOLO write mode.
+    """Return a list of annotation views adapted to the chosen YOLO write mode.
 
-    For ``segmentation`` mode every spatial annotation must be a polygon
-    so the resulting label file has uniform polygon-shaped lines. Bboxes
-    are promoted to a 4-vertex polygon; masks and polygons stay as-is
-    (the writer already handles each).
+    Segmentation mode: every spatial annotation must be a polygon so the
+    resulting label file has uniform polygon-shaped lines.
+      - bbox    → 4-vertex axis-aligned polygon (clockwise from top-left).
+      - polygon → unchanged.
+      - mask    → one polygon per 4-connected component, extracted via
+                  Moore-neighbor boundary tracing. Components smaller than
+                  4 pixels or with <3 boundary points are dropped — they
+                  cannot form a valid YOLO-seg polygon. A single mask can
+                  expand into multiple polygons when the segmentation has
+                  disjoint blobs.
 
-    For ``detection`` mode every spatial annotation must be a bbox.
-    Polygons are collapsed to their axis-aligned bbox; masks are left to
-    the writer (which already decodes RLE → bbox).
+    Detection mode: every spatial annotation must be a bbox.
+      - polygon → tight axis-aligned bbox.
+      - bbox    → unchanged.
+      - mask    → left to the writer (which decodes RLE → bbox).
 
-    For ``tags_only`` mode the geometric annotations are dropped — the
-    archive layer skips the labels/ tree entirely; we just return the
-    original list so ``extract_image_tags`` still sees the tag rows.
+    Tags-only mode: geometric annotations are dropped at the archive layer
+    (this function just passes everything through so the caller can still
+    pluck tags via ``extract_image_tags``).
     """
     from types import SimpleNamespace
 
     from carve_api.annotations.models import AnnotationKind
+    from carve_api.io.rle import rle_to_polygons
 
     if mode == "tags_only":
         return list(annotations)
@@ -253,13 +260,13 @@ def _convert_for_yolo_mode(
     out: list[Any] = []
     for ann in annotations:
         if ann.kind == AnnotationKind.tag:
-            # Tags ride to the sidecar regardless of mode.
+            # Tags ride to the sidecar / ImageFolder regardless of mode.
             out.append(ann)
             continue
         if mode == "detection":
             if ann.kind == AnnotationKind.polygon:
                 pts = ann.geometry.get("points") or []
-                if not pts:
+                if len(pts) < 3:
                     continue
                 xs = [float(p[0]) for p in pts]
                 ys = [float(p[1]) for p in pts]
@@ -275,8 +282,8 @@ def _convert_for_yolo_mode(
                     geometry={"x": x, "y": y, "w": w, "h": h},
                 ))
             else:
-                # bbox / mask flow through unchanged — writer already
-                # emits a 5-token detection line for each.
+                # bbox / mask flow through unchanged — writer emits a
+                # 5-token detection line for each.
                 out.append(ann)
         elif mode == "segmentation":
             if ann.kind == AnnotationKind.bbox:
@@ -285,6 +292,8 @@ def _convert_for_yolo_mode(
                 y = float(g["y"])
                 w = float(g["w"])
                 h = float(g["h"])
+                if w <= 0 or h <= 0:
+                    continue
                 # Clockwise from top-left, 4 vertices.
                 points = [
                     [x, y],
@@ -297,10 +306,24 @@ def _convert_for_yolo_mode(
                     class_id=ann.class_id,
                     geometry={"points": points},
                 ))
+            elif ann.kind == AnnotationKind.mask:
+                g = ann.geometry
+                counts = str(g.get("counts", ""))
+                size = g.get("size")
+                if not counts or not size:
+                    continue
+                polygons = rle_to_polygons(counts, (int(size[0]), int(size[1])))
+                # One polygon line per connected component. Trainers
+                # interpret multi-polygon annotations of the same class
+                # as separate instances of that class.
+                for poly in polygons:
+                    out.append(SimpleNamespace(
+                        kind=AnnotationKind.polygon,
+                        class_id=ann.class_id,
+                        geometry={"points": [[p[0], p[1]] for p in poly]},
+                    ))
             else:
-                # polygon / mask flow through. Mask still becomes a
-                # bbox line (YOLO has no mask format) — documented in
-                # the README.
+                # polygon flows through unchanged.
                 out.append(ann)
         else:
             out.append(ann)
@@ -328,14 +351,22 @@ def _yolo_archive(
       images/{train,val,test}/<asset_basename> (when include_images)
     """
     splits = splits or {"train": 1.0, "val": 0.0, "test": 0.0}
-    partitioned = _partition_assets_by_split(assets, splits)
+    # Only image assets contribute to the YOLO archive; partition them
+    # _after_ filtering so the populated-split set doesn't include
+    # buckets that hold nothing but videos.
+    exportable_assets = [
+        a for a in assets
+        if a.kind == AssetKind.image
+        and a.width is not None
+        and a.height is not None
+    ]
+    partitioned = _partition_assets_by_split(exportable_assets, splits)
     buf = io.BytesIO()
     targets: list[RemapTarget] = []
     seen_target_ids: set[int] = set()
-    # Plan-20.3 — single-set detection. When the user picked "Single set
-    # (no split)" the only populated bucket is "train"; we flatten the
-    # layout so images and labels land directly under training_data/
-    # instead of training_data/train/. data.yaml is updated to match.
+    # Single-set: only one bucket has data, so flatten the layout so
+    # images and labels land directly under training_data/ instead of
+    # training_data/<split>/. data.yaml is aliased to match.
     populated = [k for k, v in partitioned.items() if v]
     single_set = len(populated) <= 1
     def _td_dir(split_name: str) -> str:
@@ -348,11 +379,7 @@ def _yolo_archive(
     download_futures: dict[uuid.UUID, Any] = {}
     if include_images:
         pool = ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS)
-        for asset in assets:
-            if asset.width is None or asset.height is None:
-                continue
-            if asset.kind != AssetKind.image:
-                continue
+        for asset in exportable_assets:
             ext = (
                 Path(asset.original_name).suffix.lstrip(".")
                 or "bin"
@@ -360,73 +387,114 @@ def _yolo_archive(
             key = f"assets/{asset.xxh3_128}/original.{ext}"
             download_futures[asset.id] = pool.submit(_fetch_asset_bytes, storage, key)
         pool.shutdown(wait=False)
+    # Build the densified targets list once. Used by data.yaml (for
+    # detection/segmentation) and to look up class names for the
+    # ImageFolder layout (for tags_only).
+    for v in class_remap.values():
+        if v is None:
+            continue
+        t = RemapTarget(export_id=int(v["export_id"]), name=str(v["name"]))
+        if t.export_id not in seen_target_ids:
+            seen_target_ids.add(t.export_id)
+            targets.append(t)
+    name_by_export_id = {t.export_id: t.name for t in targets}
+
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for split_name, split_assets in partitioned.items():
             for asset in split_assets:
-                if asset.width is None or asset.height is None:
-                    # Skip assets without known dimensions (videos with no probe yet).
-                    continue
+                # exportable_assets was already filtered to image assets
+                # with known dimensions, so no per-asset gate is needed
+                # here. Video assets are exported via the separate frames
+                # flow; writing a .txt for them here would produce orphan
+                # labels with no images.
                 anns = annotations_by_asset_id.get(asset.id, [])
                 stem = Path(asset.original_name).stem
                 td = _td_dir(split_name)
-                # Plan-20.3 — strict mode isolation.
-                #   detection   -> only geometric .txt (5-token bbox lines)
-                #   segmentation-> only geometric .txt (polygon lines)
-                #   tags_only   -> only tag class-id .txt next to images;
-                #                  no separate tags/ tree, no geometric labels
                 if yolo_mode == "tags_only":
+                    # Ultralytics' classification trainer (`yolo task=classify`)
+                    # expects an ImageFolder layout: <split>/<class_name>/<img>.
+                    # We pick the first tag as the canonical label and skip
+                    # images that have no tags — the trainer can't use them.
                     tag_ids = extract_image_tags(anns, remap=class_remap)
-                    if tag_ids:
+                    if not tag_ids:
+                        continue
+                    primary_id = tag_ids[0]
+                    class_name = _sanitize_for_path(
+                        name_by_export_id.get(primary_id, f"class_{primary_id}"),
+                    )
+                    if include_images:
+                        fut = download_futures.get(asset.id)
+                        if fut is None:
+                            continue
+                        body = fut.result()
+                        if body is None:
+                            continue
                         zf.writestr(
-                            f"{td}/{stem}.txt",
-                            "\n".join(str(t) for t in tag_ids) + "\n",
+                            f"{td}/{class_name}/{asset.original_name}",
+                            body,
                         )
-                    # else: no tag file at all for this image
                 else:
                     converted = _convert_for_yolo_mode(anns, yolo_mode)
                     lines, _ = write_yolo_label(
                         converted, remap=class_remap,
                         image_w=int(asset.width), image_h=int(asset.height),
                     )
+                    # Always write the .txt (empty = background image) so
+                    # there's a 1:1 correspondence between images and labels.
                     zf.writestr(
                         f"{td}/{stem}.txt",
                         ("\n".join(lines) + "\n") if lines else "",
                     )
-                if include_images and asset.kind == AssetKind.image:
-                    fut = download_futures.get(asset.id)
-                    if fut is None:
-                        continue
-                    body = fut.result()
-                    if body is None:
-                        continue
-                    zf.writestr(f"{td}/{asset.original_name}", body)
-        # Build the targets list across the WHOLE remap so data.yaml has all classes
-        for v in class_remap.values():
-            if v is None:
-                continue
-            t = RemapTarget(export_id=int(v["export_id"]), name=str(v["name"]))
-            if t.export_id not in seen_target_ids:
-                seen_target_ids.add(t.export_id)
-                targets.append(t)
-        if single_set:
-            yaml_splits = {
-                "train": "training_data",
-                "val": "training_data",
-                "test": "training_data",
-            }
+                    if include_images:
+                        fut = download_futures.get(asset.id)
+                        if fut is None:
+                            continue
+                        body = fut.result()
+                        if body is None:
+                            continue
+                        zf.writestr(f"{td}/{asset.original_name}", body)
+        if yolo_mode == "tags_only":
+            # Classification: no data.yaml (not consumed by classify), but
+            # emit a classes.txt listing the dense class names in id order
+            # so consumers can reverse-lookup if needed.
+            class_lines = "\n".join(
+                name_by_export_id[i]
+                for i in sorted(name_by_export_id.keys())
+            )
+            if class_lines:
+                zf.writestr(f"{root}/classes.txt", class_lines + "\n")
         else:
-            yaml_splits = {
-                "train": "training_data/train",
-                "val": "training_data/val",
-                "test": "training_data/test",
-            }
-        zf.writestr(
-            f"{root}/data.yaml",
-            write_data_yaml(
-                targets=targets,
-                splits=yaml_splits,
-            ),
-        )
+            # Detection / segmentation: emit data.yaml referencing only
+            # populated splits, but always include train: and val:
+            # (Ultralytics requires both — pointing them at an empty
+            # directory makes its loader error).
+            if single_set:
+                # Everything lives flat under training_data/. Alias
+                # train, val, test to the same dir so any task config
+                # works without further changes.
+                yaml_splits = {
+                    "train": "training_data",
+                    "val": "training_data",
+                    "test": "training_data",
+                }
+            else:
+                yaml_splits = {
+                    split: f"training_data/{split}"
+                    for split in populated
+                }
+                # If val is empty but train exists, alias val→train so
+                # Ultralytics can still validate (using train as val is
+                # a fallback, not ideal — the user can re-export with
+                # a non-zero val ratio for proper holdout).
+                if "val" not in yaml_splits and "train" in yaml_splits:
+                    yaml_splits["val"] = yaml_splits["train"]
+            zf.writestr(
+                f"{root}/data.yaml",
+                write_data_yaml(
+                    targets=targets,
+                    splits=yaml_splits,
+                ),
+            )
         if classes_manifest is not None:
             zf.writestr(
                 f"{root}/classes.json",
@@ -441,10 +509,10 @@ def _yolo_readme(
     single_set: bool = True,
     root: str = "export",
 ) -> str:
-    """Plan-20 — self-describing layout + per-kind handling notes for the
-    YOLO export. Written as ``README.md`` inside every YOLO archive.
+    """Self-describing layout + per-kind handling notes for the YOLO
+    export. Written as ``README.md`` inside every YOLO archive.
 
-    The ``mode`` parameter (``detection`` / ``segmentation`` / ``tags_only``)
+    The ``mode`` (``detection`` / ``segmentation`` / ``tags_only``)
     selects which conversion paragraph appears so the user sees what
     actually happened in their archive.
     """
@@ -452,36 +520,101 @@ def _yolo_readme(
         mode_note = (
             "## YOLO mode: **detection**\n\n"
             "Every `<stem>.txt` next to its image is the standard YOLO\n"
-            "5-token detection format `<id> cx cy w h` (normalised). Polygons\n"
-            "and masks were collapsed to their tight axis-aligned bounding\n"
-            "box at export time — segmentation detail is intentionally\n"
-            "discarded so the file works with `yolo task=detect` training.\n"
-            "Image-level tags are NOT in this archive (use the 'Tags only'\n"
-            "mode for that).\n\n"
+            "5-token detection format `<id> cx cy w h`, all values normalised\n"
+            "to `[0, 1]`. Polygons and masks were collapsed to their tight\n"
+            "axis-aligned bounding box at export time — segmentation detail\n"
+            "is intentionally discarded so the file works with\n"
+            "`yolo task=detect` training. Image-level tags are NOT in this\n"
+            "archive (use the 'Tags only' mode for that).\n\n"
+        )
+        layout = _layout_box_detect_or_seg(single_set, root)
+        kind_section = (
+            "## Per-annotation-kind handling\n\n"
+            "**bbox** — `<class_id> <cx> <cy> <w> <h>` (normalised).\n\n"
+            "**polygon** — collapsed to its tight axis-aligned bbox before\n"
+            "writing. Emitted as a 5-token detection line.\n\n"
+            "**mask (RLE)** — decoded to its tight axis-aligned bbox.\n"
+            "Emitted as a 5-token detection line. Lossy by design —\n"
+            "for pixel-perfect masks, export as COCO.\n\n"
+            "**tag (image-level label)** — not included in detection mode.\n\n"
         )
     elif mode == "tags_only":
         mode_note = (
-            "## YOLO mode: **tags only**\n\n"
-            "Each `<stem>.txt` next to its image lists one densified class id\n"
-            "per line — every class the image was tagged with. No bboxes,\n"
-            "polygons, or masks are present. Use this archive for\n"
-            "image-classification training. Images with no tags don't get\n"
-            "a `.txt` file. The `data.yaml` `nc` and `names` still describe\n"
-            "the project's classes for the tag ids.\n\n"
+            "## YOLO mode: **classification (tags only)**\n\n"
+            "Images are arranged in an ImageFolder layout consumable by\n"
+            "Ultralytics' classification trainer (`yolo task=classify`).\n"
+            "Each image lives inside a folder named after its primary tag.\n"
+            "When an image has multiple tags, the first tag (by remap\n"
+            "order) is used — `yolo task=classify` is single-label.\n"
+            "Images with no tags are skipped (the trainer can't use them).\n\n"
+        )
+        layout = _layout_box_classify(single_set, root)
+        kind_section = (
+            "## Per-annotation-kind handling\n\n"
+            "**tag** — the image is copied into\n"
+            "`training_data/<split>/<class_name>/<image>`. Multi-tag images\n"
+            "use the first tag only.\n\n"
+            "**bbox / polygon / mask** — not exported in tags-only mode.\n"
+            "If you need geometric labels, use the detection or\n"
+            "segmentation mode.\n\n"
         )
     else:
         mode_note = (
             "## YOLO mode: **segmentation**\n\n"
             "Every `<stem>.txt` next to its image is a YOLO-seg polygon\n"
-            "line `<id> x1 y1 x2 y2 ... xn yn` (normalised). Bboxes were\n"
-            "promoted to a 4-vertex axis-aligned polygon so the file has\n"
-            "uniform shape and is consumable by `yolo task=segment`. Masks\n"
-            "are still written as their tight bounding box (YOLO has no\n"
-            "mask format). Image-level tags are NOT in this archive (use\n"
-            "'Tags only' mode for that).\n\n"
+            "line `<id> x1 y1 x2 y2 ... xn yn`, all values normalised to\n"
+            "`[0, 1]`. Bboxes were promoted to a 4-vertex axis-aligned\n"
+            "polygon so the file has uniform polygon-shaped lines. Masks\n"
+            "were converted to one polygon per 4-connected component via\n"
+            "Moore-neighbor boundary tracing, so segmentation detail is\n"
+            "preserved. Consumable by `yolo task=segment` out of the box.\n"
+            "Image-level tags are NOT in this archive (use the 'Tags only'\n"
+            "mode for that).\n\n"
         )
+        layout = _layout_box_detect_or_seg(single_set, root)
+        kind_section = (
+            "## Per-annotation-kind handling\n\n"
+            "**bbox** — promoted to a 4-vertex axis-aligned polygon\n"
+            "(clockwise from top-left). Emitted as a polygon line.\n\n"
+            "**polygon** — `<class_id> <x1> <y1> <x2> <y2> ... <xn> <yn>`\n"
+            "(normalised). Vertex order preserved.\n\n"
+            "**mask (RLE)** — one polygon per 4-connected component, traced\n"
+            "from the bitmap. Disjoint blobs of the same mask produce\n"
+            "multiple polygon lines (treated as separate instances by the\n"
+            "trainer). Components smaller than 4 pixels are dropped.\n\n"
+            "**tag (image-level label)** — not included in segmentation mode.\n\n"
+        )
+    classes_note = (
+        "## Class ids\n"
+    )
+    if mode == "tags_only":
+        classes_note += (
+            "Class names match the directory names under each split. A\n"
+            "`classes.txt` at the archive root lists the dense class names\n"
+            "in id order. The original project `idx` and the dense\n"
+            "`export_idx` are both available in `classes.json`.\n"
+        )
+    else:
+        classes_note += (
+            "Class ids in `data.yaml` and label files are densified to\n"
+            "`0..N-1` based on the per-export class remap order. The\n"
+            "original project `idx` and the dense `export_idx` are both\n"
+            "available in `classes.json`.\n"
+        )
+    return (
+        f"# Carve YOLO export — {root}\n\n"
+        + mode_note
+        + "## Layout\n```\n"
+        + layout
+        + "```\n\n"
+        + kind_section
+        + classes_note
+    )
+
+
+def _layout_box_detect_or_seg(single_set: bool, root: str) -> str:
     if single_set:
-        layout = (
+        return (
             f"{root}/\n"
             "├── training_data/                # images and labels live together\n"
             "│   ├── IMG_001.jpg\n"
@@ -492,46 +625,47 @@ def _yolo_readme(
             "├── classes.json                  # project class manifest\n"
             "└── README.md                     # this file\n"
         )
-    else:
-        layout = (
+    return (
+        f"{root}/\n"
+        "├── training_data/\n"
+        "│   ├── train/                    # images and labels mixed in each split\n"
+        "│   │   ├── IMG_001.jpg\n"
+        "│   │   └── IMG_001.txt\n"
+        "│   ├── val/\n"
+        "│   └── test/\n"
+        "├── data.yaml                     # YOLO dataset descriptor\n"
+        "├── classes.json                  # project class manifest\n"
+        "└── README.md                     # this file\n"
+    )
+
+
+def _layout_box_classify(single_set: bool, root: str) -> str:
+    if single_set:
+        return (
             f"{root}/\n"
-            "├── training_data/\n"
-            "│   ├── train/                    # images and labels mixed in each split\n"
+            "├── training_data/                # ImageFolder layout\n"
+            "│   ├── cat/\n"
             "│   │   ├── IMG_001.jpg\n"
-            "│   │   └── IMG_001.txt\n"
-            "│   ├── val/\n"
-            "│   └── test/\n"
-            "├── data.yaml                     # YOLO dataset descriptor\n"
+            "│   │   └── IMG_002.jpg\n"
+            "│   └── dog/\n"
+            "│       └── IMG_003.jpg\n"
+            "├── classes.txt                   # dense class names, id order\n"
             "├── classes.json                  # project class manifest\n"
             "└── README.md                     # this file\n"
         )
     return (
-        f"# Carve YOLO export — {root}\n\n"
-        + mode_note +
-        "## Layout\n"
-        "```\n"
-        + layout +
-        "```\n\n"
-        "Images and label files live in the same folder (no separate\n"
-        "`images/` and `labels/` trees). Ultralytics' loader looks for\n"
-        "`<stem>.txt` next to each image when there's no `/images/`\n"
-        "segment in the path, so this layout works with `yolo train …`\n"
-        "out of the box.\n\n"
-        "## Per-annotation-kind handling\n\n"
-        "**bbox** — `<class_id> <cx> <cy> <w> <h>` (normalised).\n\n"
-        "**polygon** — `<class_id> <x1> <y1> <x2> <y2> ... <xn> <yn>`\n"
-        "(normalised). Only present in segmentation mode.\n\n"
-        "**mask (RLE)** — YOLO has no mask format. Each mask is decoded to\n"
-        "its tight axis-aligned bbox and written as a 5-token bbox line.\n"
-        "Lossy by design — for pixel-perfect masks, export as COCO.\n\n"
-        "**tag (image-level label)** — only present in `tags_only` mode.\n"
-        "Each line is one densified class id; an image with multiple tags\n"
-        "produces several lines in its `.txt` file.\n\n"
-        "## Class ids\n"
-        "Class ids in `data.yaml` and label files are densified to `0..N-1`\n"
-        "based on the per-export class remap order. The original project\n"
-        "`idx` and the dense `export_idx` are both available in\n"
-        "`classes.json`.\n"
+        f"{root}/\n"
+        "├── training_data/\n"
+        "│   ├── train/\n"
+        "│   │   ├── cat/\n"
+        "│   │   │   └── IMG_001.jpg\n"
+        "│   │   └── dog/\n"
+        "│   │       └── IMG_002.jpg\n"
+        "│   ├── val/\n"
+        "│   └── test/\n"
+        "├── classes.txt                   # dense class names, id order\n"
+        "├── classes.json                  # project class manifest\n"
+        "└── README.md                     # this file\n"
     )
 
 

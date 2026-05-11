@@ -32,6 +32,21 @@ def _normalise_remap(remap: dict) -> dict[str, RemapTarget | None]:
     return out
 
 
+def _clamp01(v: float) -> float:
+    """Clamp a normalised coordinate to ``[0.0, 1.0]``.
+
+    Ultralytics' loader warns or clips when label coords are outside
+    ``[0,1]``. Bboxes and polygons in the DB can legitimately stick
+    slightly outside the image (auto-annotation, manual drawing that
+    overshoots), so we clamp at the writer to keep training data clean.
+    """
+    if v < 0.0:
+        return 0.0
+    if v > 1.0:
+        return 1.0
+    return v
+
+
 def write_yolo_label(
     annotations: Iterable[Annotation],
     remap: dict,
@@ -40,26 +55,27 @@ def write_yolo_label(
 ) -> tuple[list[str], list[str]]:
     """Build the YOLO label-file lines + warnings for a single image.
 
-    Per-kind handling (Plan-20):
+    All normalised coordinates are clamped to ``[0, 1]`` so Ultralytics'
+    loader does not warn or silently clip on overshoot.
+
+    Per-kind handling:
 
     * ``bbox``    — emitted as the standard YOLO detection line
                     ``idx cx cy w h`` (all values normalised 0..1).
+                    Zero-area bboxes are dropped with a warning.
     * ``polygon`` — emitted as a YOLO-seg polygon line
-                    ``idx x1 y1 x2 y2 …`` (all normalised). Trainers that
-                    only do detection will treat the first 4 floats as
-                    ``cx cy w h``; ultralytics' segmentation trainers
-                    consume the full polygon. Mixing the two kinds in
-                    the same file is supported by ultralytics.
+                    ``idx x1 y1 x2 y2 …`` (all normalised). Polygons
+                    with fewer than 3 vertices are dropped with a
+                    warning (ultralytics needs ≥3 to form a region).
     * ``mask``    — decoded to its tight axis-aligned bounding box and
-                    emitted as a YOLO bbox line. The full segmentation
-                    mask cannot be expressed in the YOLO label format;
-                    callers that need pixel-perfect masks should use
-                    the COCO export. A warning is appended noting the
-                    lossy conversion.
+                    emitted as a YOLO bbox line. This path is used by
+                    the detection mode; the segmentation mode converts
+                    masks to true polygons in the export job _before_
+                    the writer is called so seg label files stay
+                    uniformly polygon-shaped. A warning is appended
+                    noting the lossy conversion.
     * ``tag``     — NOT written into the label file. The export job
-                    pulls these via ``extract_image_tags`` and writes
-                    them to a sidecar so YOLO trainers don't choke on
-                    tag-only lines (which carry no coordinates).
+                    builds an ImageFolder layout for classification.
 
     Returns ``(lines, warnings)``.
     """
@@ -75,15 +91,31 @@ def write_yolo_label(
         idx = target.export_id
         g = ann.geometry
         if ann.kind == AnnotationKind.bbox:
-            cx = (float(g["x"]) + float(g["w"]) / 2.0) / image_w
-            cy = (float(g["y"]) + float(g["h"]) / 2.0) / image_h
-            w = float(g["w"]) / image_w
-            h = float(g["h"]) / image_h
-            lines.append(f"{idx} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+            bx = float(g["x"])
+            by = float(g["y"])
+            bw = float(g["w"])
+            bh = float(g["h"])
+            cx = _clamp01((bx + bw / 2.0) / image_w)
+            cy = _clamp01((by + bh / 2.0) / image_h)
+            nw = _clamp01(bw / image_w)
+            nh = _clamp01(bh / image_h)
+            if nw <= 0.0 or nh <= 0.0:
+                warnings.append(
+                    f"yolo writer dropped zero-area bbox; class_id={ann.class_id}"
+                )
+                continue
+            lines.append(f"{idx} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
         elif ann.kind == AnnotationKind.polygon:
+            raw_pts = g.get("points") or []
+            if len(raw_pts) < 3:
+                warnings.append(
+                    f"yolo writer dropped polygon with <3 vertices; class_id={ann.class_id}"
+                )
+                continue
             pts = " ".join(
-                f"{float(p[0]) / image_w:.6f} {float(p[1]) / image_h:.6f}"
-                for p in g["points"]
+                f"{_clamp01(float(p[0]) / image_w):.6f} "
+                f"{_clamp01(float(p[1]) / image_h):.6f}"
+                for p in raw_pts
             )
             lines.append(f"{idx} {pts}")
         elif ann.kind == AnnotationKind.mask:
@@ -94,17 +126,22 @@ def write_yolo_label(
                 )
                 continue
             x, y, mw, mh = box
-            cx = (x + mw / 2.0) / image_w
-            cy = (y + mh / 2.0) / image_h
-            nw = mw / image_w
-            nh = mh / image_h
+            cx = _clamp01((x + mw / 2.0) / image_w)
+            cy = _clamp01((y + mh / 2.0) / image_h)
+            nw = _clamp01(mw / image_w)
+            nh = _clamp01(mh / image_h)
+            if nw <= 0.0 or nh <= 0.0:
+                warnings.append(
+                    f"yolo writer dropped zero-area mask bbox; class_id={ann.class_id}"
+                )
+                continue
             lines.append(f"{idx} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
             warnings.append(
                 f"yolo writer converted mask to its bounding box (lossy); class_id={ann.class_id}"
             )
         elif ann.kind == AnnotationKind.tag:
-            # Tags are written to a separate sidecar — see
-            # ``extract_image_tags`` and the export job.
+            # Tags are written via a separate path — the export job
+            # builds an ImageFolder layout for classification.
             continue
     return lines, warnings
 
@@ -140,8 +177,11 @@ def write_data_yaml(
     """Build the data.yaml contents.
 
     ``targets`` is the list of distinct (export_id, name) pairs in id order.
-    ``splits`` is `{"train": "images/train", "val": "images/val", "test": "images/test"}`
-    or any subset; missing values default to the standard subdirectory layout.
+    ``splits`` maps ``"train" | "val" | "test"`` → directory path. Only the
+    keys present in the dict are emitted; pointing data.yaml at an empty
+    directory makes Ultralytics' loader error, so callers should omit
+    splits that have no data. ``train:`` and ``val:`` are emitted in the
+    order Ultralytics expects when both are present.
     """
     splits = splits or {}
     by_id: dict[int, str] = {}
@@ -150,11 +190,11 @@ def write_data_yaml(
     names_sorted = [name for _id, name in sorted(by_id.items())]
     nc = len(by_id)
     quoted = ", ".join(f'"{n}"' for n in names_sorted)
-    return (
-        "path: .\n"
-        f"train: {splits.get('train', 'images/train')}\n"
-        f"val: {splits.get('val', 'images/val')}\n"
-        f"test: {splits.get('test', 'images/test')}\n"
-        f"nc: {nc}\n"
-        f"names: [{quoted}]\n"
-    )
+    lines = ["path: ."]
+    # Stable ordering: train, val, test.
+    for key in ("train", "val", "test"):
+        if key in splits:
+            lines.append(f"{key}: {splits[key]}")
+    lines.append(f"nc: {nc}")
+    lines.append(f"names: [{quoted}]")
+    return "\n".join(lines) + "\n"

@@ -84,17 +84,20 @@ def test_yolo_export_writes_data_yaml_and_label(db_session) -> None:
     assert result["status"] == "completed"
     assert len(storage.uploaded) == 1
     key, body = storage.uploaded[0]
-    assert key == f"exports/{t.id}/{e.id}.zip"
+    # Plan-20.4 — MinIO key embeds the friendly root name.
+    assert key.startswith(f"exports/{t.id}/{e.id}/")
+    assert key.endswith(".zip")
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
         names = set(zf.namelist())
-        assert "data.yaml" in names
-        # Single asset with default splits 0.8/0.1/0.1: floor(1*0.8)=0,
-        # floor(1*0.1)=0, remainder 1 → test bucket.
-        assert "labels/test/a.txt" in names
-        yaml = zf.read("data.yaml").decode()
+        # Single asset with default 0.8/0.1/0.1 splits collapses to one
+        # populated bucket → single_set flatten under training_data/.
+        root = next(n.split("/", 1)[0] for n in names if n.endswith("/data.yaml"))
+        assert f"{root}/data.yaml" in names
+        assert f"{root}/training_data/a.txt" in names
+        yaml = zf.read(f"{root}/data.yaml").decode()
         assert "vehicle" in yaml
         assert "nc: 1" in yaml
-        label = zf.read("labels/test/a.txt").decode()
+        label = zf.read(f"{root}/training_data/a.txt").decode()
         # bbox at (50,50,100,80) on 640x480 → cx=0.156250 cy=0.187500 w=0.156250 h=0.166667
         assert label.strip().startswith("0 0.156250 0.187500")
 
@@ -140,9 +143,12 @@ def test_export_with_include_images_includes_image_bytes(db_session) -> None:
     run_export_inline(session=db_session, storage=storage, payload=payload)
     _, body = storage.uploaded[0]
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
-        # Single asset with default splits 0.8/0.1/0.1 → test bucket.
-        assert "images/test/a.png" in zf.namelist()
-        assert zf.read("images/test/a.png") == b"PNG-IMAGE-BYTES"
+        names = set(zf.namelist())
+        # Single asset → single_set flatten: image lives directly under
+        # training_data/, not training_data/<split>/.
+        root = next(n.split("/", 1)[0] for n in names if n.endswith("/data.yaml"))
+        assert f"{root}/training_data/a.png" in names
+        assert zf.read(f"{root}/training_data/a.png") == b"PNG-IMAGE-BYTES"
 
 
 def _seed_two_assets(db) -> tuple[User, Task, list[Asset], Class, Export]:
@@ -197,9 +203,11 @@ def test_yolo_export_partitions_by_splits(db_session) -> None:
     _, body = storage.uploaded[0]
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
         names = set(zf.namelist())
-        train_labels = [n for n in names if n.startswith("labels/train/")]
-        val_labels = [n for n in names if n.startswith("labels/val/")]
-        test_labels = [n for n in names if n.startswith("labels/test/")]
+        root = next(n.split("/", 1)[0] for n in names if n.endswith("/data.yaml"))
+        prefix = f"{root}/training_data"
+        train_labels = [n for n in names if n.startswith(f"{prefix}/train/") and n.endswith(".txt")]
+        val_labels = [n for n in names if n.startswith(f"{prefix}/val/") and n.endswith(".txt")]
+        test_labels = [n for n in names if n.startswith(f"{prefix}/test/") and n.endswith(".txt")]
         assert len(train_labels) >= 1, names
         assert len(val_labels) >= 1, names
         assert len(test_labels) == 0, names

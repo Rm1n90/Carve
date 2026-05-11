@@ -89,27 +89,81 @@ def test_polygon_normalised() -> None:
     assert lines == ["0 0.000000 0.000000 1.000000 0.000000 1.000000 1.000000"]
 
 
-def test_mask_emits_warning_and_no_line() -> None:
+def test_mask_emits_bbox_line_and_lossy_warning() -> None:
+    """Mask path in the writer emits a 5-token bbox line (detection mode).
+    The segmentation-mode mask→polygon conversion happens in the export
+    job before the writer is called."""
+    # 2x2 foreground block at top-left of a 10x10 image; column-major
+    # RLE: 0 zeros, 2 ones, 8 zeros, 2 ones, 86 zeros.
     ann = _FakeAnnotation(
         kind=AnnotationKind.mask,
-        geometry={"kind": "mask_rle", "size": [10, 10], "counts": "0,2,2"},
+        geometry={"kind": "mask_rle", "size": [10, 10], "counts": "0 2 8 2 86"},
+        class_id=_car_id(),
+    )
+    lines, warnings = write_yolo_label(
+        [ann], remap=_remap_car_only_truck_skip(), image_w=10, image_h=10,
+    )
+    assert len(lines) == 1
+    assert lines[0].startswith("0 ")
+    assert any("mask" in w.lower() for w in warnings)
+
+
+def test_empty_mask_drops_line_and_warns() -> None:
+    ann = _FakeAnnotation(
+        kind=AnnotationKind.mask,
+        geometry={"kind": "mask_rle", "size": [10, 10], "counts": "100"},
         class_id=_car_id(),
     )
     lines, warnings = write_yolo_label(
         [ann], remap=_remap_car_only_truck_skip(), image_w=10, image_h=10,
     )
     assert lines == []
-    assert any("mask" in w for w in warnings)
+    assert any("empty mask" in w for w in warnings)
 
 
-def test_tag_emits_class_index_only_once_per_image() -> None:
-    ann1 = _FakeAnnotation(kind=AnnotationKind.tag, geometry={}, class_id=_car_id())
-    ann2 = _FakeAnnotation(kind=AnnotationKind.tag, geometry={}, class_id=_car_id())
+def test_tag_is_skipped_in_writer() -> None:
+    """Tags are routed through the ImageFolder classification layout —
+    the geometric writer ignores them so detection/segmentation label
+    files stay strictly geometric."""
+    ann = _FakeAnnotation(kind=AnnotationKind.tag, geometry={}, class_id=_car_id())
     lines, warnings = write_yolo_label(
-        [ann1, ann2], remap=_remap_car_only_truck_skip(), image_w=1, image_h=1,
+        [ann], remap=_remap_car_only_truck_skip(), image_w=10, image_h=10,
     )
-    assert lines == ["0"]
-    assert any("first tag" in w for w in warnings)
+    assert lines == []
+    assert warnings == []
+
+
+def test_bbox_coords_are_clamped_to_unit_interval() -> None:
+    """A bbox that extends past the image right/bottom edge is clamped
+    so Ultralytics' loader doesn't warn / silently clip."""
+    ann = _FakeAnnotation(
+        kind=AnnotationKind.bbox,
+        # x=8, y=8, extends to 18 — well past the 10x10 image.
+        geometry={"kind": "bbox", "x": 8, "y": 8, "w": 10, "h": 10},
+        class_id=_car_id(),
+    )
+    lines, _ = write_yolo_label(
+        [ann], remap=_remap_car_only_truck_skip(), image_w=10, image_h=10,
+    )
+    parts = lines[0].split()
+    cx, cy, nw, nh = (float(p) for p in parts[1:])
+    assert 0.0 <= cx <= 1.0
+    assert 0.0 <= cy <= 1.0
+    assert 0.0 <= nw <= 1.0
+    assert 0.0 <= nh <= 1.0
+
+
+def test_degenerate_polygon_dropped() -> None:
+    ann = _FakeAnnotation(
+        kind=AnnotationKind.polygon,
+        geometry={"kind": "polygon", "points": [[0, 0], [5, 5]]},
+        class_id=_car_id(),
+    )
+    lines, warnings = write_yolo_label(
+        [ann], remap=_remap_car_only_truck_skip(), image_w=10, image_h=10,
+    )
+    assert lines == []
+    assert any("<3 vertices" in w for w in warnings)
 
 
 def test_invalid_image_dimensions_raise() -> None:
@@ -129,11 +183,25 @@ def test_data_yaml_contains_class_names_and_counts() -> None:
             RemapTarget(export_id=0, name="vehicle"),  # duplicate id deduped
             RemapTarget(export_id=1, name="person"),
         ],
+        splits={"train": "training_data"},
     )
     assert "nc: 2" in yaml
     assert '"vehicle"' in yaml
     assert '"person"' in yaml
-    assert "train: images/train" in yaml
+    assert "train: training_data" in yaml
+    # Unspecified splits are omitted — no fallback to `images/val` etc.
+    assert "val:" not in yaml
+    assert "test:" not in yaml
+
+
+def test_data_yaml_omits_unspecified_splits() -> None:
+    yaml = write_data_yaml(
+        targets=[RemapTarget(export_id=0, name="x")],
+        splits={"train": "td", "val": "td"},
+    )
+    assert "train: td" in yaml
+    assert "val: td" in yaml
+    assert "test:" not in yaml
 
 
 def test_data_yaml_custom_splits() -> None:
