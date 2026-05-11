@@ -952,7 +952,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       <TopBar breadcrumbSegments={breadcrumbSegments} rightAction={rightAction} />
 
       <div className="flex flex-1 min-h-0">
-        <LeftNav />
+        <LeftNav defaultCollapsed persist={false} />
 
         <div className="flex flex-1 min-w-0 flex-col">
           <EditorToolbar

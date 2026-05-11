@@ -47,7 +47,7 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Popover from "@radix-ui/react-popover";
-import { LayoutGroup, motion } from "framer-motion";
+import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import {
   Activity,
   ChevronDown,
@@ -56,6 +56,7 @@ import {
   HelpCircle,
   Info,
   LogOut,
+  PanelLeftClose,
   Settings,
   Sparkles,
   Trash2,
@@ -458,11 +459,46 @@ function ModelsDockIcon({ active }: { active: boolean }) {
 // Main rail
 // ---------------------------------------------------------------------------
 
-export function LeftNav() {
+interface LeftNavProps {
+  /**
+   * Persisted collapsed-state key. Only consulted when `persist` is
+   * true. Editor and app-shell use different keys so they remember
+   * independently.
+   */
+  storageKey?: string;
+  /** Initial collapsed state when no value is stored yet. */
+  defaultCollapsed?: boolean;
+  /**
+   * When false, the rail always opens at `defaultCollapsed` and does
+   * not read or write localStorage. The editor uses this so the rail
+   * is collapsed every time you enter the editor, regardless of what
+   * you toggled in a previous editor session.
+   */
+  persist?: boolean;
+}
+
+export function LeftNav({
+  storageKey = "leftnav:collapsed",
+  defaultCollapsed = false,
+  persist = true,
+}: LeftNavProps = {}) {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const user = useAuth((s) => s.user);
   const nav = useNavigate();
   const confirm = useConfirm();
+
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (!persist) return defaultCollapsed;
+    if (typeof window === "undefined") return defaultCollapsed;
+    const stored = window.localStorage.getItem(storageKey);
+    if (stored === null) return defaultCollapsed;
+    return stored === "1";
+  });
+  useEffect(() => {
+    if (!persist) return;
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(storageKey, collapsed ? "1" : "0");
+  }, [collapsed, persist, storageKey]);
 
   const projectsQ = useQuery({
     queryKey: ["projects"],
@@ -533,59 +569,110 @@ export function LeftNav() {
   const workspaceName = workspaceQ.data?.name ?? "Carve";
 
   return (
-    <aside
+    <motion.aside
       aria-label="Primary navigation"
       data-testid="left-nav"
+      data-collapsed={collapsed ? "true" : "false"}
+      initial={false}
+      animate={{ width: collapsed ? 56 : 220 }}
+      transition={{ type: "spring", stiffness: 320, damping: 34, mass: 0.7 }}
       className={cn(
-        "relative w-[220px] shrink-0 h-full flex flex-col",
+        "relative shrink-0 h-full flex flex-col",
         "glass-surface",
         "border-r border-[var(--glass-border)]",
+        "overflow-hidden",
       )}
     >
-      {/* Brand mark — gradient diamond with a one-shot scan pulse on
-          mount (a 600 ms vertical sweep across the glyph). The diamond
-          rotates on hover and the wordmark gets a subtle letter-
-          spacing tightening to feel tactile. */}
-      <Link to="/" className="block">
-        <div className="px-3 pt-3.5 pb-3 flex items-center gap-2.5 group">
-          <span aria-hidden className="relative h-4 w-4">
-            <span
-              className={cn(
-                "absolute inset-0 rotate-45 rounded-[2px]",
-                "bg-gradient-to-br from-[var(--accent)] to-[oklch(0.62_0.20_240)]",
-                "shadow-[0_0_10px_oklch(0.78_0.14_220_/_0.45)]",
-                "transition-transform duration-[500ms] ease-out group-hover:rotate-[225deg]",
-              )}
-            />
-            <motion.span
-              className="absolute inset-0 rotate-45 rounded-[2px] overflow-hidden"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: [0, 1, 0] }}
-              transition={{ duration: 1.2, ease: "easeInOut" }}
+      {/* Brand mark + collapse toggle. Layout:
+          - Expanded (220px): diamond + wordmark on the left, toggle on
+            the trailing edge.
+          - Collapsed (56px): brand fades out and the toggle slides to
+            the centre on its own. The toggle is the SAME mounted node
+            in both states (icon rotates 180°), so the button never
+            re-mounts mid-animation. The brand uses AnimatePresence to
+            fade out cleanly so the toggle never overlaps it. */}
+      <div
+        className={cn(
+          "flex items-center pt-3.5 pb-3 min-w-0",
+          collapsed ? "px-2 justify-center" : "px-3 justify-between gap-2",
+        )}
+      >
+        <AnimatePresence initial={false}>
+          {!collapsed && (
+            <motion.div
+              key="brand"
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -8 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              className="min-w-0 flex-1"
             >
-              <span
-                className={cn(
-                  "absolute -inset-y-2 w-[3px]",
-                  "bg-gradient-to-b from-transparent via-white/60 to-transparent",
-                )}
-                style={{
-                  animation: "leftnav-scan 1.2s ease-in-out 1",
-                }}
-              />
-            </motion.span>
-          </span>
-          <span
+              <Link to="/" className="block min-w-0">
+                <div className="flex items-center gap-2.5 group min-w-0">
+                  <span aria-hidden className="relative h-4 w-4 shrink-0">
+                    <span
+                      className={cn(
+                        "absolute inset-0 rotate-45 rounded-[2px]",
+                        "bg-gradient-to-br from-[var(--accent)] to-[oklch(0.62_0.20_240)]",
+                        "shadow-[0_0_10px_oklch(0.78_0.14_220_/_0.45)]",
+                        "transition-transform duration-[500ms] ease-out group-hover:rotate-[225deg]",
+                      )}
+                    />
+                    <motion.span
+                      className="absolute inset-0 rotate-45 rounded-[2px] overflow-hidden"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: [0, 1, 0] }}
+                      transition={{ duration: 1.2, ease: "easeInOut" }}
+                    >
+                      <span
+                        className={cn(
+                          "absolute -inset-y-2 w-[3px]",
+                          "bg-gradient-to-b from-transparent via-white/60 to-transparent",
+                        )}
+                        style={{
+                          animation: "leftnav-scan 1.2s ease-in-out 1",
+                        }}
+                      />
+                    </motion.span>
+                  </span>
+                  <span
+                    className={cn(
+                      "text-[14px] font-medium text-[color:var(--text-primary)]",
+                      "tracking-tight whitespace-nowrap",
+                      "group-hover:tracking-[-0.005em] truncate",
+                    )}
+                    data-testid="leftnav-workspace-name"
+                  >
+                    {workspaceName}
+                  </span>
+                </div>
+              </Link>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <Tooltip content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+          <button
+            type="button"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
+            data-testid="leftnav-toggle"
+            onClick={() => setCollapsed((c) => !c)}
             className={cn(
-              "text-[14px] font-medium text-[color:var(--text-primary)]",
-              "tracking-tight transition-[letter-spacing] duration-[300ms]",
-              "group-hover:tracking-[-0.005em] truncate",
+              "grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] shrink-0",
+              "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]",
+              "hover:bg-[var(--bg-hover)]/40 transition-colors",
             )}
-            data-testid="leftnav-workspace-name"
           >
-            {workspaceName}
-          </span>
-        </div>
-      </Link>
+            <motion.span
+              animate={{ rotate: collapsed ? 180 : 0 }}
+              transition={{ type: "spring", stiffness: 320, damping: 28 }}
+              className="grid place-items-center"
+            >
+              <PanelLeftClose className="h-3.5 w-3.5" />
+            </motion.span>
+          </button>
+        </Tooltip>
+      </div>
 
       {/* One-shot scan keyframe — defined inline so the rail file
           stays self-contained. */}
@@ -597,8 +684,19 @@ export function LeftNav() {
       `}</style>
 
       {/* Projects (primary IA — projects list IS the nav, no Section
-          wrapper, no chevron, just a typography label + the list). */}
-      <SectionLabel count={projectList.length}>Projects</SectionLabel>
+          wrapper, no chevron, just a typography label + the list).
+          The inner 220px-wide content stays the same width during the
+          rail's width animation; the parent aside's overflow-hidden
+          clips it cleanly from the right and the opacity fade hides
+          residual sub-pixel artifacts during the spring. */}
+      <motion.div
+        animate={{ opacity: collapsed ? 0 : 1 }}
+        transition={{ duration: collapsed ? 0.12 : 0.22, ease: "easeOut" }}
+        style={{ width: 220, pointerEvents: collapsed ? "none" : "auto" }}
+        aria-hidden={collapsed}
+        className="flex flex-col flex-1 min-h-0"
+      >
+        <SectionLabel count={projectList.length}>Projects</SectionLabel>
 
       <nav className="relative flex-1 min-h-0 overflow-y-auto pb-1">
         {/* LayoutGroup unifies every motion.span with
@@ -645,16 +743,20 @@ export function LeftNav() {
           </ul>
         </LayoutGroup>
       </nav>
+      </motion.div>
 
       {/* Icon dock — collapses Models / System / Settings / Trash /
           About into one tooltipped row. Replaces 4 separate sections
-          and removes the v2-stub Train/Deploy entries entirely. */}
+          and removes the v2-stub Train/Deploy entries entirely. In
+          collapsed mode the dock stacks vertically to fit the 56 px
+          rail. */}
       <div
         role="navigation"
         aria-label="Secondary navigation"
         className={cn(
-          "px-2 py-2 flex items-center gap-1",
+          "px-2 py-2 flex gap-1",
           "border-t border-[var(--glass-border)]",
+          collapsed ? "flex-col items-center" : "items-center",
         )}
       >
         <ModelsDockIcon active={isActive(path, "/models", false)} />
@@ -684,7 +786,8 @@ export function LeftNav() {
             enough that the dropdown surface is the right home. */}
       </div>
 
-      {/* Slim user footer — single 36-px row. */}
+      {/* Slim user footer — single 36-px row. Collapses to an avatar-
+          only square in narrow mode. */}
       {user && (
         <div className="border-t border-[var(--glass-border)] px-2 py-1.5">
           <DropdownMenu.Root>
@@ -692,10 +795,13 @@ export function LeftNav() {
               <button
                 type="button"
                 className={cn(
-                  "w-full h-9 flex items-center gap-2 px-1.5 rounded-[var(--radius-sm)]",
+                  "h-9 flex items-center rounded-[var(--radius-sm)]",
                   "text-left transition-colors",
                   "hover:bg-[var(--bg-hover)]/40",
                   "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+                  collapsed
+                    ? "w-9 justify-center mx-auto"
+                    : "w-full gap-2 px-1.5",
                 )}
                 aria-label="Account menu"
               >
@@ -726,12 +832,16 @@ export function LeftNav() {
                     />
                   )}
                 </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[11.5px] tracking-tight truncate text-[color:var(--text-primary)]">
-                    {user.email}
-                  </span>
-                </span>
-                <ChevronDown className="h-3 w-3 text-[color:var(--text-tertiary)] shrink-0" />
+                {!collapsed && (
+                  <>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[11.5px] tracking-tight truncate text-[color:var(--text-primary)]">
+                        {user.email}
+                      </span>
+                    </span>
+                    <ChevronDown className="h-3 w-3 text-[color:var(--text-tertiary)] shrink-0" />
+                  </>
+                )}
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
@@ -785,6 +895,6 @@ export function LeftNav() {
           </DropdownMenu.Root>
         </div>
       )}
-    </aside>
+    </motion.aside>
   );
 }
