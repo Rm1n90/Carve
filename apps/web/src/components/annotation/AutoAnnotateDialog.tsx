@@ -37,6 +37,7 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { ensureSamReady } from "@/lib/samConvert";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
 import { useDialogPrefs } from "@/state/dialogPrefs";
 
@@ -83,6 +84,10 @@ export function AutoAnnotateDialog({
   // false the tab switcher is hidden and the dialog renders the Text
   // body only (no UX regression for SAM 2 / SAM 3-transformers users).
   const [mode, setMode] = useState<"text" | "visual">("text");
+  // v3.30 — visible "Loading SAM…" state while the Run mutation is
+  // waiting for the predictor to come online. Driven by
+  // ``ensureSamReady`` inside the mutationFn.
+  const [samLoadingForRun, setSamLoadingForRun] = useState(false);
   // v3.30 — inline class+prompt rows, matching Smart Find. Each row
   // pairs a project class with a YOLOE/SAM-text prompt the user can
   // edit at run time. Dirty rows are persisted via classesApi.update
@@ -405,6 +410,16 @@ export function AutoAnnotateDialog({
         }
       }
       const runClassIds = validTextRows.map((r) => r.classId);
+      // v3.30 — pre-flight SAM load. The backend lazy-loads on first
+      // request, but the load can take 5-30 s; without this guard the
+      // first Run after a cold start 503s and the user has to retry.
+      // Idempotent + cheap when SAM is already ready.
+      setSamLoadingForRun(true);
+      try {
+        await ensureSamReady();
+      } finally {
+        setSamLoadingForRun(false);
+      }
       // Plan-17 Phase 2 — capture snapshot of annotation IDs before
       // the run kicks off so onSuccess can diff and find rows that
       // SAM auto-text produced (vs. pre-existing ones on the asset).
@@ -1157,7 +1172,7 @@ export function AutoAnnotateDialog({
             onClick={() => run.mutate()}
             data-testid="auto-annotate-run"
           >
-            Run
+            {samLoadingForRun ? "Loading SAM…" : "Run"}
           </Button>
         </DialogFooter>
         </>
@@ -1456,6 +1471,7 @@ function VisualBody({
     summary.unassigned === 0 &&
     ((scope === "this" && !!assetId) || (scope === "all" && !!taskId));
 
+  const [samLoadingForRun, setSamLoadingForRun] = useState(false);
   const run = useMutation({
     mutationFn: async () => {
       const body: SamAutoVisualBody = {
@@ -1465,6 +1481,14 @@ function VisualBody({
         find_all: findAll,
         overwrite,
       };
+      // v3.30 — pre-flight SAM load. Mirrors the text-mode Run path
+      // so the visual flow never 503s on a cold backend.
+      setSamLoadingForRun(true);
+      try {
+        await ensureSamReady();
+      } finally {
+        setSamLoadingForRun(false);
+      }
       if (scope === "all") {
         if (!taskId) throw new Error("no_task");
         const r = await samApi.autoVisualBatch(taskId, body);
@@ -1702,7 +1726,11 @@ function VisualBody({
           onClick={() => run.mutate()}
           data-testid="auto-annotate-run"
         >
-          {scope === "this" ? "Run" : "Run on all assets"}
+          {samLoadingForRun
+            ? "Loading SAM…"
+            : scope === "this"
+              ? "Run"
+              : "Run on all assets"}
         </Button>
       </DialogFooter>
 

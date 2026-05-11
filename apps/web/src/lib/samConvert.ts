@@ -21,8 +21,12 @@ import type { Bbox, Geometry } from "@/state/annotations";
  *
  * Throws if the load takes longer than ``timeoutMs`` or fails — the
  * caller's catch surfaces this to the user as a toast.
+ *
+ * v3.30 — exported so the Auto-Annotate Run flow can pre-flight a
+ * load before firing the actual inference request. Same idempotent
+ * behaviour: a no-op when SAM is already ready.
  */
-async function ensureSamReady(timeoutMs = 60_000): Promise<void> {
+export async function ensureSamReady(timeoutMs = 60_000): Promise<void> {
   // Quick path — already loaded.
   let status = await modelsApi.samStatus();
   if (status.state === "ready") return;
