@@ -16,7 +16,15 @@ import {
   type MouseEvent as ReactMouseEvent,
   type WheelEvent,
 } from "react";
-import { Trash2, FolderInput, Tag, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  FolderInput,
+  Images,
+  Tag,
+  Trash2,
+  X,
+} from "lucide-react";
 import { assetsApi, type Asset, type AssetListPage } from "@/api/assets";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
@@ -107,6 +115,8 @@ function ThumbItem({
           src={url}
           alt={asset.original_name}
           loading="lazy"
+          decoding="async"
+          fetchPriority="low"
           className="h-full w-full object-cover"
         />
       ) : (
@@ -126,6 +136,17 @@ export function AssetThumbnailStrip({
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
+  // Collapse state persists across sessions so the editor remembers the
+  // user's preference without leaking into the global tool store
+  // (visibility.thumbnails is the kill switch; this is a UI affordance).
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("asset-strip:collapsed") === "1";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("asset-strip:collapsed", collapsed ? "1" : "0");
+  }, [collapsed]);
 
   // Plan 14 Phase 8 Task 3 — multi-select state. ``selectedAssetIds``
   // survives virtualisation because off-screen tiles unmount but their
@@ -203,6 +224,18 @@ export function AssetThumbnailStrip({
       e.preventDefault();
     }
   }, []);
+
+  // Keep the active thumbnail visible. When the user navigates between
+  // assets via the arrow keys or the prev/next buttons in the toolbar,
+  // the strip's scroll position would otherwise leave the new active
+  // tile off-screen — making the strip feel stuck. Re-centre the
+  // viewport on the active asset whenever it changes.
+  useEffect(() => {
+    if (!activeAssetId) return;
+    const idx = assets.findIndex((a) => a.id === activeAssetId);
+    if (idx < 0) return;
+    virtualizer.scrollToIndex(idx, { align: "center", behavior: "smooth" });
+  }, [activeAssetId, assets, virtualizer]);
 
   // Plan 14 Phase 8 Task 3 — anchor tracks the active asset whenever
   // the user navigates to a new one, mirroring the spec: "the anchor is
@@ -312,8 +345,49 @@ export function AssetThumbnailStrip({
 
   if (virtualCount <= 1) return null;
 
+  if (collapsed) {
+    return (
+      <div
+        role="region"
+        aria-label="Task thumbnails (collapsed)"
+        data-testid="asset-thumbnail-strip"
+        data-collapsed="true"
+        data-asset-count={virtualCount}
+        className={cn(
+          "h-[24px] shrink-0 border-b border-[var(--border-subtle)]",
+          "bg-[var(--bg-app)] flex items-center justify-between px-3",
+          "text-[11px] text-[color:var(--text-tertiary)]",
+        )}
+      >
+        <span className="inline-flex items-center gap-1.5 font-mono tabular-nums">
+          <Images className="h-3 w-3" />
+          {virtualCount} assets
+        </span>
+        <button
+          type="button"
+          aria-label="Expand thumbnail strip"
+          data-testid="asset-strip-toggle"
+          onClick={() => setCollapsed(false)}
+          className={cn(
+            "inline-flex items-center gap-1 h-5 px-1.5 rounded-[var(--radius-xs)]",
+            "hover:bg-[var(--bg-hover)] text-[color:var(--text-secondary)]",
+          )}
+        >
+          <ChevronUp className="h-3 w-3" />
+          <span className="text-[10.5px]">Show thumbnails</span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <>
+      <div
+        className={cn(
+          "relative h-[64px] shrink-0 border-b border-[var(--border-subtle)]",
+          "bg-[var(--bg-app)]",
+        )}
+      >
       <div
         ref={scrollRef}
         role="region"
@@ -323,8 +397,7 @@ export function AssetThumbnailStrip({
         data-selected-count={selectedCount}
         onWheel={onWheel}
         className={cn(
-          "h-[64px] shrink-0 border-b border-[var(--border-subtle)]",
-          "bg-[var(--bg-app)] flex items-center px-3 overflow-x-auto overflow-y-hidden",
+          "h-full flex items-center pl-3 pr-12 overflow-x-auto overflow-y-hidden",
         )}
       >
         <div
@@ -370,6 +443,27 @@ export function AssetThumbnailStrip({
             );
           })}
         </div>
+      </div>
+      {/* Collapse toggle — absolute-positioned overlay anchored to the
+          right edge of the strip wrapper (NOT inside the horizontal
+          scroll container), so it stays put regardless of scroll
+          position. The pr-12 padding on the scroll surface reserves
+          room so the button never overlaps the rightmost tile. */}
+      <button
+        type="button"
+        aria-label="Collapse thumbnail strip"
+        data-testid="asset-strip-toggle"
+        onClick={() => setCollapsed(true)}
+        className={cn(
+          "absolute right-2 top-1/2 -translate-y-1/2 z-10",
+          "h-7 w-7 grid place-items-center rounded-[var(--radius-sm)]",
+          "bg-[var(--bg-app)]/95 backdrop-blur-sm",
+          "text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)] hover:bg-[var(--bg-hover)]",
+          "border border-[var(--border-subtle)]",
+        )}
+      >
+        <ChevronDown className="h-3.5 w-3.5" />
+      </button>
       </div>
 
       {/* Plan 14 Phase 8 Task 3 — bottom-center multi-select action bar. */}

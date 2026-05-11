@@ -12,12 +12,16 @@ import {
   CheckSquare,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Eye,
   EyeOff,
   Info,
   Layers,
   Loader2,
   RefreshCw,
+  SkipBack,
+  SkipForward,
   Sliders,
   Tag,
 } from "lucide-react";
@@ -505,6 +509,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // their thumbnails. When the user hits ArrowLeft/Right the new asset's
   // query is already populated, so navigation is near-instant. v2.5 perf
   // fix.
+  //
+  // v3.29 — the image warm-up is deferred to requestIdleCallback so the
+  // in-flight prefetch fetches don't keep Chrome's tab spinner spinning
+  // after the active asset has already rendered. Detached `new Image()`
+  // requests count as page resources for the tab-load indicator until
+  // they settle; deferring them past the document `load` event makes
+  // them pure idle-time work that doesn't drive the spinner.
   useEffect(() => {
     const targets: { id: string; thumb: string | null }[] = [];
     if (prevAsset) targets.push({ id: prevAsset.id, thumb: prevAsset.thumbnail_url });
@@ -515,14 +526,35 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
         queryFn: () => assetsApi.get(t.id),
         staleTime: 5 * 60 * 1000,
       });
-      if (t.thumb) {
-        // Warm the browser image cache so the thumbnail strip + future
-        // <img> renders are an immediate cache hit. The Image() instance
-        // is GC'd as soon as the browser caches the bytes.
-        const img = new Image();
-        img.src = t.thumb;
-      }
     }
+    type IdleScheduler = (cb: () => void) => unknown;
+    const ric: IdleScheduler =
+      (window as unknown as { requestIdleCallback?: IdleScheduler })
+        .requestIdleCallback ?? ((cb) => window.setTimeout(cb, 200));
+    const handles: unknown[] = [];
+    for (const t of targets) {
+      if (!t.thumb) continue;
+      handles.push(
+        ric(() => {
+          // Warm the browser image cache so the thumbnail strip + future
+          // <img> renders are an immediate cache hit. Loading in idle
+          // time means the request does not contribute to the tab's
+          // loading indicator after the active asset has rendered.
+          const img = new Image();
+          img.decoding = "async";
+          img.src = t.thumb as string;
+        }),
+      );
+    }
+    return () => {
+      const cancelIdle = (
+        window as unknown as { cancelIdleCallback?: (h: unknown) => void }
+      ).cancelIdleCallback;
+      for (const h of handles) {
+        if (cancelIdle) cancelIdle(h);
+        else window.clearTimeout(h as number);
+      }
+    };
     // We deliberately depend on the asset ids only, not the full Asset
     // objects, so prefetch fires once per neighbour change.
   }, [prevAsset?.id, nextAsset?.id, qc]);
@@ -1680,8 +1712,40 @@ function AssetNavControls({
     }
   }, [editing]);
 
+  const STEP = 10;
+  const firstAsset = taskAssets.length > 0 ? taskAssets[0] : null;
+  const lastAsset = taskAssets.length > 0 ? taskAssets[taskAssets.length - 1] : null;
+  const stepBackAsset =
+    currentAssetIdx > 0
+      ? taskAssets[Math.max(0, currentAssetIdx - STEP)]
+      : null;
+  const stepForwardAsset =
+    currentAssetIdx >= 0 && currentAssetIdx < taskAssets.length - 1
+      ? taskAssets[Math.min(taskAssets.length - 1, currentAssetIdx + STEP)]
+      : null;
+  const canGoFirst = !!firstAsset && currentAssetIdx > 0;
+  const canGoLast = !!lastAsset && currentAssetIdx >= 0 && currentAssetIdx < taskAssets.length - 1;
+
   return (
     <div data-testid="asset-nav-buttons" className="flex items-center gap-1 mr-2">
+      <IconButton
+        aria-label="First asset"
+        size="sm"
+        variant="glass"
+        disabled={!canGoFirst}
+        onClick={() => firstAsset && onGoTo(firstAsset.id)}
+      >
+        <SkipBack className="h-4 w-4" />
+      </IconButton>
+      <IconButton
+        aria-label={`Back ${STEP} assets`}
+        size="sm"
+        variant="glass"
+        disabled={!stepBackAsset || stepBackAsset.id === taskAssets[currentAssetIdx]?.id}
+        onClick={() => stepBackAsset && onGoTo(stepBackAsset.id)}
+      >
+        <ChevronsLeft className="h-4 w-4" />
+      </IconButton>
       <IconButton
         aria-label="Previous asset"
         size="sm"
@@ -1742,6 +1806,24 @@ function AssetNavControls({
         onClick={() => nextAsset && onGoTo(nextAsset.id)}
       >
         <ChevronRight className="h-4 w-4" />
+      </IconButton>
+      <IconButton
+        aria-label={`Forward ${STEP} assets`}
+        size="sm"
+        variant="glass"
+        disabled={!stepForwardAsset || stepForwardAsset.id === taskAssets[currentAssetIdx]?.id}
+        onClick={() => stepForwardAsset && onGoTo(stepForwardAsset.id)}
+      >
+        <ChevronsRight className="h-4 w-4" />
+      </IconButton>
+      <IconButton
+        aria-label="Last asset"
+        size="sm"
+        variant="glass"
+        disabled={!canGoLast}
+        onClick={() => lastAsset && onGoTo(lastAsset.id)}
+      >
+        <SkipForward className="h-4 w-4" />
       </IconButton>
     </div>
   );

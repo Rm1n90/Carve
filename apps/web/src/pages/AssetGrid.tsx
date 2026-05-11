@@ -7,7 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Check, Search, Tag, Video, X } from "lucide-react";
+import { Check, ImageOff, Search, Tag, Video, X } from "lucide-react";
 import {
   assetsApi,
   type Asset,
@@ -460,8 +460,14 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
 
   return (
     <section className="grid gap-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex-1 min-w-[200px] max-w-md">
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-3 px-3 py-2",
+          "rounded-[var(--radius-md)] border border-[var(--border-subtle)]",
+          "bg-[var(--bg-elev)]",
+        )}
+      >
+        <div className="flex-1 min-w-[220px]">
           <Input
             type="search"
             placeholder="Search by filename…"
@@ -471,7 +477,11 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
             leftIcon={<Search className="h-4 w-4" aria-hidden />}
           />
         </div>
-        <div className="flex gap-2" role="tablist" aria-label="Asset status filter">
+        <div
+          className="flex flex-wrap gap-1.5 ml-auto"
+          role="tablist"
+          aria-label="Asset status filter"
+        >
           <FilterChip
             label="All"
             active={status === "all"}
@@ -493,7 +503,7 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-1">
         <p
           className="font-mono-data text-[11px] tracking-tight text-tertiary"
           data-testid="asset-count-summary"
@@ -575,11 +585,35 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
           ))}
         </div>
       ) : assets.length === 0 ? (
-        <p className="text-tertiary text-[13px] italic">
-          {debouncedSearch || status !== "all"
-            ? "No assets match the current filter."
-            : "No assets yet — drop some files above."}
-        </p>
+        <div
+          className={cn(
+            "flex flex-col items-center justify-center gap-3 py-12 px-4",
+            "rounded-[var(--radius-md)] border border-dashed border-[var(--border-subtle)]",
+            "bg-[var(--bg-app)] text-center",
+          )}
+          data-testid="asset-grid-empty"
+        >
+          <div
+            className={cn(
+              "grid h-10 w-10 place-items-center rounded-full",
+              "bg-[var(--bg-elev)] text-[color:var(--text-tertiary)]",
+            )}
+          >
+            <ImageOff className="h-5 w-5" />
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-[13px] font-medium text-primary">
+              {debouncedSearch || status !== "all"
+                ? "No assets match the current filter"
+                : "No assets yet"}
+            </p>
+            <p className="text-[12px] text-tertiary">
+              {debouncedSearch || status !== "all"
+                ? "Try clearing the search or switching filters."
+                : "Drop some files above to get started."}
+            </p>
+          </div>
+        </div>
       ) : (
         <div
           ref={scrollRef}
