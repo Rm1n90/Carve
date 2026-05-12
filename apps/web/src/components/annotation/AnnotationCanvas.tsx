@@ -790,6 +790,14 @@ export function AnnotationCanvas({
     gfxMap.clear();
     labelMap.clear();
     compareMap.clear();
+    // The signature cache must be wiped in lockstep with the gfx maps.
+    // Otherwise, when the user returns to a previously-visited asset
+    // the reconcile pass creates fresh (empty) Graphics, finds the
+    // stale signature still matches the draft's render inputs, skips
+    // renderBbox / renderPolygon, and the user sees no shapes until
+    // something perturbs the signature (e.g. hovering a class row).
+    shapeSigByIdRef.current.clear();
+    labelSigByIdRef.current.clear();
   }, [assetId]);
 
   // ----- Live-apply the user's "Smooth image" preference. The sampling
@@ -1258,6 +1266,12 @@ export function AnnotationCanvas({
         if (!gfxMap.has(id)) {
           gfxMap.set(id, g);
           app.shapeLayer.addChild(g);
+          // Freshly created Graphics — guarantee the signature cache
+          // doesn't short-circuit the first render onto an empty
+          // canvas (would happen if a previous mount left a matching
+          // signature behind).
+          shapeSigByIdRef.current.delete(id);
+          labelSigByIdRef.current.delete(id);
         }
         if (!visAnn || hidden || hiddenByPixels) {
           // Cached hidden-state short-circuit: skip the Graphics.clear
