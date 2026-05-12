@@ -605,25 +605,75 @@ def _collect_gpus_via_host_proc() -> list[SystemGPUInfo]:
 
 
 def _collect_gpus() -> list[SystemGPUInfo]:
-    # Order:
-    #   1. model service /gpus — full live stats (VRAM, util, temp).
-    #      Only works when --profile inference is up.
-    #   2. local nvidia-smi — if the api container ever ships with the
-    #      NVIDIA Container Toolkit (today it doesn't).
-    #   3. pynvml — same caveat.
-    #   4. host /proc/driver/nvidia — bare-minimum identity (name +
-    #      driver) read straight from the bind-mounted host. Always
-    #      works on an NVIDIA host, even with --profile inference off.
-    gpus = _collect_gpus_via_model_service()
-    if gpus:
-        return gpus
-    gpus = _collect_gpus_via_nvidia_smi()
-    if gpus:
-        return gpus
-    gpus = _collect_gpus_via_pynvml()
-    if gpus:
-        return gpus
-    return _collect_gpus_via_host_proc()
+    """Enumerate every GPU on the host, overlaying live stats where we can.
+
+    The api container has no GPU access of its own, so live stats (VRAM,
+    util, temp) come from the model service's ``/gpus`` endpoint. But
+    the model container is pinned to a single device via
+    ``device_ids: ["${SAM_GPU_ID:-1}"]`` (see docker-compose.yml — SAM
+    3.1 multiplex breaks with two visible CUDA devices), so trusting its
+    list as the canonical GPU inventory under-reports multi-GPU hosts.
+
+    The fix: enumerate the host's GPU list from ``/host/proc/driver/nvidia``
+    first — that surface lists every physical GPU regardless of which
+    one the model container was assigned — then overlay live stats from
+    the model service onto the matching host index (via ``SAM_GPU_ID``).
+    """
+    import os
+
+    host_list = _collect_gpus_via_host_proc()
+    model_list = _collect_gpus_via_model_service()
+
+    # No host-proc enumeration (bare-metal dev box without the /host
+    # bind). Fall back to the legacy chain so those environments still
+    # see something useful.
+    if not host_list:
+        if model_list:
+            return model_list
+        gpus = _collect_gpus_via_nvidia_smi()
+        if gpus:
+            return gpus
+        gpus = _collect_gpus_via_pynvml()
+        if gpus:
+            return gpus
+        return []
+
+    # When the model service sees every host GPU (NVIDIA_VISIBLE_DEVICES=all
+    # and no device_ids restriction), its indices line up with the host's
+    # so just return its richer payload verbatim.
+    if len(model_list) >= len(host_list):
+        return model_list
+
+    if not model_list:
+        return host_list
+
+    # Model service sees a strict subset (typical: pinned to one GPU).
+    # Use SAM_GPU_ID to know which host index that subset corresponds
+    # to and overlay live stats there; the other GPUs keep identity-only.
+    try:
+        sam_gpu_id = int(os.environ.get("SAM_GPU_ID", "1"))
+    except ValueError:
+        sam_gpu_id = 1
+
+    overlaid: list[SystemGPUInfo] = []
+    overlay_used = False
+    for host_gpu in host_list:
+        if not overlay_used and host_gpu.index == sam_gpu_id:
+            # Take the live stats but pin the index to the host's view
+            # so UI labels stay consistent across reloads.
+            overlaid.append(
+                model_list[0].model_copy(update={"index": host_gpu.index})
+            )
+            overlay_used = True
+        else:
+            overlaid.append(host_gpu)
+    # If SAM_GPU_ID didn't match any host index (misconfigured env),
+    # attach live stats to the first host GPU so they're at least visible.
+    if not overlay_used and overlaid:
+        overlaid[0] = model_list[0].model_copy(
+            update={"index": overlaid[0].index}
+        )
+    return overlaid
 
 
 # --------------------------------------------------------------------------

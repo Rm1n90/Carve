@@ -82,6 +82,11 @@ services:
       MODEL_BASE_URL: ${MODEL_BASE_URL:-http://model:8100}
       # /system/info path-rewrite root — see apps/api/src/carve_api/system/router.py
       HOST_ROOT: /host
+      # /system/info GPU overlay — kept as a defensive fallback for hosts
+      # where the model container is still device-pinned (older deploys
+      # or local overrides). When the model service reports every host
+      # GPU verbatim (the default now), this env is unused.
+      SAM_GPU_ID: ${SAM_GPU_ID:-1}
     volumes:
       # Read-only bind of the host root so /system/info can enumerate
       # all host disks, not just the bind-mount the api container was
@@ -149,29 +154,37 @@ services:
     # ~30-40x slower (yolov8n at ~2.7s/asset CPU vs ~70ms/asset GPU).
     # Requires nvidia-container-toolkit on the host.
     #
-    # v3.27.1 — restrict to a single GPU. SAM 3.1 multiplex video
-    # tracking (`forward_video_grounding_multigpu`) computes
+    # v3.27.1 — SAM 3.1 multiplex video tracking computes
     # `world_size = torch.cuda.device_count()` at module load; with
-    # two GPUs visible it tries to shard the language-feature buffer
-    # across both, which trips
+    # two GPUs visible to PyTorch it tries to shard the
+    # language-feature buffer across both, which trips
     #   RuntimeError: indices should be either on cpu or on the same
     #   device as the indexed tensor (cuda:1)
     # because `txt_ids` lives on cuda:0 and `language_features` on
-    # cuda:1. Pinning to one device drops world_size to 1 and the
-    # multigpu code path collapses into the single-GPU fast path. Pick
-    # the device via SAM_GPU_ID (default `1` — the higher-memory 3090
-    # on this host).
+    # cuda:1. The original v3.27.1 fix used `device_ids: [SAM_GPU_ID]`
+    # to physically hide the other GPU, but that also hid it from
+    # `nvidia-smi`, which broke the System page on multi-GPU hosts.
+    # The new approach: reserve every GPU at the container layer
+    # (so `nvidia-smi` enumerates all of them for telemetry) and
+    # restrict PyTorch via `CUDA_VISIBLE_DEVICES` further down in
+    # `environment:`. `torch.cuda.device_count()` honors that env
+    # var, so SAM 3.1 multiplex still sees world_size=1.
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${SAM_GPU_ID:-1}"]
+              count: all
               capabilities: [gpu]
     environment:
       MODEL_HOST: 0.0.0.0
       MODEL_PORT: 8100
       HF_TOKEN: ${HF_TOKEN:-}
+      # Pin PyTorch to a single GPU while keeping nvidia-smi visibility
+      # for the full set (see the `deploy:` block above for rationale).
+      # `torch.cuda.device_count()` returns 1 with this set, so SAM 3.1
+      # multiplex falls into the single-GPU fast path.
+      CUDA_VISIBLE_DEVICES: ${SAM_GPU_ID:-1}
       # v3.22 — expandable_segments lets PyTorch's CUDA allocator return
       # memory to the system between request peaks, dramatically
       # reducing fragmentation on long batch jobs (auto-annotate over
