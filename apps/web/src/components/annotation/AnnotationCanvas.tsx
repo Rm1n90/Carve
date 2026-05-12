@@ -9,8 +9,12 @@ import { TagTool } from "@/canvas/tools/TagTool";
 import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
-import { useShortcut, useShortcutHandler } from "@/state/shortcuts";
+import {
+  useShortcutHandler,
+  useShortcutsQuery,
+} from "@/state/shortcuts";
 import { matchChord } from "@/lib/shortcuts/chord";
+import { ACTIONS } from "@/lib/shortcuts/actions";
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
@@ -176,13 +180,26 @@ export function AnnotationCanvas({
   const appRef = useRef<CanvasApp | null>(null);
   const tool = useTool((s) => s.active);
   const activeClassId = useTool((s) => s.activeClassId);
-  // Live ref of the reassign_class chord so the canvas's capture-phase
-  // keydown handler can defer to the bubble-phase shortcut handler
-  // instead of stealing the keystroke for the type-to-filter feature
-  // (which seeded the trigger letter into the palette's search input).
-  const reassignChord = useShortcut("reassign_class");
-  const reassignChordRef = useRef(reassignChord);
-  reassignChordRef.current = reassignChord;
+  // Live snapshot of every registered shortcut chord (default + user
+  // overrides). The capture-phase keydown handler below checks this
+  // list and bails when the keystroke matches any binding so the
+  // bubble-phase shortcut handlers can fire normally. Without this,
+  // typing single letters like ``v`` (cursor), ``b`` (bbox), or ``p``
+  // (polygon) would be swallowed by the type-to-filter quick-reassign
+  // feature and seeded into the class palette's search input instead
+  // of selecting the corresponding tool.
+  const shortcutOverrides = useShortcutsQuery().data?.overrides;
+  const chordsRef = useRef<string[]>([]);
+  chordsRef.current = useMemo(() => {
+    const out: string[] = [];
+    for (const id of Object.keys(ACTIONS)) {
+      const override = shortcutOverrides?.[id];
+      const chord =
+        typeof override === "string" ? override : ACTIONS[id].default;
+      if (chord) out.push(chord);
+    }
+    return out;
+  }, [shortcutOverrides]);
 
   // SamTool retains state (image_hash, accumulated points) across pointer
   // event re-renders. Recreate only when the asset (or active frame) changes.
@@ -417,12 +434,13 @@ export function AnnotationCanvas({
       }
       c.position.set(lx, ly);
     }
-    // Invalidate the per-shape signature cache so the next reconcile
-    // pass (triggered by the pointerup commit) actually re-renders
-    // even though the cached signature might happen to match a
-    // previously rendered value somewhere in the cache.
-    shapeSigByIdRef.current.delete(id);
-    labelSigByIdRef.current.delete(id);
+    // Don't invalidate the signature cache here. While the drag is in
+    // flight, ``reconcile()`` skips the dragging shape entirely (see
+    // the dragRef short-circuit inside reconcile) so leaving the
+    // cached signature alone doesn't cause stale renders. After
+    // pointerup the store commit changes the draft's geometry; the
+    // newly-computed signature naturally differs from the cached one
+    // and the final reconcile redraws cleanly.
   };
   /** Snapshot the inputs renderBbox / renderPolygon need so the drag
    * move handler can run synchronously without re-reading stores. */
@@ -1327,8 +1345,23 @@ export function AnnotationCanvas({
       for (const cid of Object.keys(classNames)) {
         classLookup[cid] = { name: classNames[cid] } as unknown as ClassRow;
       }
+      // While a drag is in flight, the move handler is the source of
+      // truth for the dragging shape's geometry — it paints directly
+      // onto the existing Pixi Graphics for zero lag. Reconcile must
+      // not touch that Graphics; otherwise any store change unrelated
+      // to the drag (autosave dirty subscriber, hover toggle, etc.)
+      // would repaint the shape from the stale store geometry and
+      // produce a blink / "resize by itself" effect.
+      const activeDragId = dragRef.current?.id ?? null;
       for (const draft of sortedDrafts) {
         const id = draft.tempId;
+        if (id === activeDragId) {
+          // Keep the gfx around (cleanup pass below uses ``seen``) but
+          // leave its current pixels alone.
+          seen.add(id);
+          seenLabels.add(id);
+          continue;
+        }
         const filteredOut =
           filterApplies && !evaluateFilter(draft, classLookup, filterTree);
         const hidden =
@@ -3296,6 +3329,19 @@ export function AnnotationCanvas({
               finalGeom = clampPolygonToBounds(latest, bounds);
             }
           }
+          // Clear the drag refs BEFORE committing so the reconcile
+          // triggered by useAnnotations.update() doesn't see an active
+          // drag and skip re-rendering the shape (the in-reconcile
+          // dragRef short-circuit is what prevents the blink during
+          // the drag itself).
+          dragLatestGeomRef.current = null;
+          dragRef.current = null;
+          setDragCursor(null);
+          try {
+            host!.releasePointerCapture(e.pointerId);
+          } catch {
+            /* not all environments implement releasePointerCapture */
+          }
           if (finalGeom) {
             useAnnotations
               .getState()
@@ -3306,14 +3352,6 @@ export function AnnotationCanvas({
             // commit and snap the visual back to the pre-drag geometry
             // so the user can't ever save an out-of-bounds annotation.
             paintDragGeometry(dragId, drag.original, drag.ctx);
-          }
-          dragLatestGeomRef.current = null;
-          dragRef.current = null;
-          setDragCursor(null);
-          try {
-            host!.releasePointerCapture(e.pointerId);
-          } catch {
-            /* not all environments implement releasePointerCapture */
           }
         }
       }
@@ -3413,14 +3451,14 @@ export function AnnotationCanvas({
         !e.ctrlKey &&
         !e.altKey
       ) {
-        // Defer to the bubble-phase ``reassign_class`` shortcut handler
-        // when the user is hitting that chord — otherwise this capture-
-        // phase listener seeds the trigger letter into the palette's
-        // search input, which is exactly the keystroke the user pressed
-        // *to open it* and never wanted in the search.
-        const reassignC = reassignChordRef.current;
-        if (reassignC && matchChord(e, reassignC)) {
-          return;
+        // Defer to the bubble-phase shortcut handler whenever the
+        // keystroke matches ANY registered chord (cursor, bbox,
+        // polygon, mask, reassign, etc.). Otherwise this capture-
+        // phase listener would seed the trigger letter into the
+        // class palette's search input — when the user really meant
+        // to invoke that letter's shortcut.
+        for (const chord of chordsRef.current) {
+          if (matchChord(e, chord)) return;
         }
         const selIds = useAnnotations.getState().selectedIds;
         if (selIds.length > 0) {

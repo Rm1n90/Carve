@@ -72,6 +72,13 @@ import { showToast } from "@/lib/toast";
 import { Tag } from "lucide-react";
 import { formatRelative } from "@/lib/relativeTime";
 
+// Module-level stable references for empty fallbacks. Zustand compares
+// selector results with ``Object.is``; returning a fresh ``[]`` from a
+// selector every render is a known infinite-render-loop trigger
+// (React error #185) when the keyed entry is missing — e.g. for a
+// brand-new project that has no visit history yet.
+const EMPTY_RECENT_TASK_IDS: ReadonlyArray<string> = [];
+
 // ---------------------------------------------------------------------------
 // v3.30 — Hero block helpers: completion ring + activity pulse strip.
 // ---------------------------------------------------------------------------
@@ -1326,7 +1333,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   //   3. Most recently created task overall (covers the all-done /
   //      all-archived case so the button doesn't disappear).
   const recentTaskIds = useProjectPrefs((s) =>
-    s.recentTaskIdsByProject[projectId] ?? [],
+    s.recentTaskIdsByProject[projectId] ?? EMPTY_RECENT_TASK_IDS,
   );
   const resumeTask = useMemo<Task | null>(() => {
     const all = tasksQ.data ?? [];

@@ -125,16 +125,10 @@ export function ClassCommandPalette({
     if (!open) return;
     setQuery(initialQuery);
     setHighlight(0);
-    // Default tab = first non-empty WHOSE IDs RESOLVE to a class in the
-    // current project. Pinned/recent IDs may include rows from prior
-    // projects that no longer exist, in which case the palette would
-    // open showing an empty Pinned/Recent tab. Fall through to All.
-    const idLookup = new Map(classes.map((c) => [c.id, c]));
-    const hasValidPinned = pinnedIds.some((id) => idLookup.has(id));
-    const hasValidRecent = recentIds.some((id) => idLookup.has(id));
-    const next: PaletteTab =
-      hasValidPinned ? "pinned" : hasValidRecent ? "recent" : "all";
-    setTab(next);
+    // Default to "all" so the user lands looking at every class
+    // they can pick from. Pinned and recent remain available as
+    // explicit tabs.
+    setTab("all");
     // Defer focus past two animation frames so the keydown that
     // opened the palette (and its corresponding keypress / textInput
     // / input events) has fully drained from the browser's event

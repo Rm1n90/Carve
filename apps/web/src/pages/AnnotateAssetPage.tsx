@@ -667,15 +667,30 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       // v2.9 P2 F1 — collapse n setState calls into one pass.
       const updates = res.updated;
       if (updates.length > 0) {
-        useAnnotations.setState((s) => ({
-          byId: updates.reduce(
-            (acc, u) => ({
-              ...acc,
-              [u.id]: acc[u.id] ? { ...acc[u.id], dirty: false } : acc[u.id],
-            }),
-            s.byId,
-          ),
-        }));
+        useAnnotations.setState((s) => {
+          // ``u.id`` is the SERVER id of the updated annotation. After
+          // the dirty-safe reset preserves the local tempId across
+          // refetches, byId may key entries by tempId (not server.id).
+          // Match on either to avoid (a) missing the clear, and (b)
+          // writing ``undefined`` into byId — a previous version did
+          // ``[u.id]: acc[u.id] ? … : acc[u.id]`` which poisoned the
+          // map when the server id wasn't a key, producing the
+          // "Cannot read properties of undefined (reading 'dirty')"
+          // crash the next time anything iterated byId.
+          const updatedIds = new Set(updates.map((u) => u.id));
+          const next: typeof s.byId = {};
+          for (const [tempId, draft] of Object.entries(s.byId)) {
+            const matchesByKey = updatedIds.has(tempId);
+            const matchesByServerId =
+              draft.serverId !== null && updatedIds.has(draft.serverId);
+            if (matchesByKey || matchesByServerId) {
+              next[tempId] = { ...draft, dirty: false };
+            } else {
+              next[tempId] = draft;
+            }
+          }
+          return { byId: next };
+        });
       }
       useAnnotations.getState().clearPendingDeletes();
       qc.invalidateQueries({ queryKey: ["annotations", taskId] });

@@ -437,35 +437,68 @@ export const useAnnotations = create<State>((set, get) => ({
           },
         ]),
       );
-      // Preserve any local drafts that have unsaved edits — they may
-      // belong to a different frame than the one we're seeding (the
-      // user navigated away before the debounced autosave fired), or
-      // they may be unsaved updates to a record that's also in the
-      // server payload. Without this merge the user loses every bbox
-      // they drew on the previous frame the moment the next asset's
-      // annotations query resolves.
-      const serverIdToTempId = new Map<string, string>();
+      const serverIdToSeedKey = new Map<string, string>();
       for (const [tempId, draft] of Object.entries(seed)) {
-        if (draft.serverId) serverIdToTempId.set(draft.serverId, tempId);
+        if (draft.serverId) serverIdToSeedKey.set(draft.serverId, tempId);
       }
-      const merged: Record<string, AnnotationDraft> = { ...seed };
+      // Build the merged map keeping each annotation under its LOCAL
+      // tempId whenever a local entry already exists for it. Two
+      // motivations:
+      //
+      //   - Unsaved edits (dirty drafts) must survive across asset
+      //     switches and refetches; the local entry wins.
+      //   - Clean entries that were just persisted have a server-side
+      //     refresh waiting, but UI components (right-click context
+      //     menu, ObjectsPanel rows, etc.) cached the original local
+      //     tempId. Re-keying the entry under server.id silently
+      //     breaks every cached reference — e.g. an open context-menu
+      //     calling ``update(staleTempId, …)`` becomes a no-op after
+      //     the autosave-driven refetch.
+      const merged: Record<string, AnnotationDraft> = {};
+      const consumedServerIds = new Set<string>();
       for (const local of Object.values(s.byId)) {
-        if (!local.dirty) continue;
-        // If the local dirty draft mirrors a server row that's about
-        // to be re-seeded, drop the server copy so the user's
-        // in-flight edit wins. Match by serverId, then by tempId.
-        if (local.serverId) {
-          const sameKey = serverIdToTempId.get(local.serverId);
-          if (sameKey && sameKey !== local.tempId) {
-            delete merged[sameKey];
+        if (local.serverId && serverIdToSeedKey.has(local.serverId)) {
+          const seedKey = serverIdToSeedKey.get(local.serverId)!;
+          const serverDraft = seed[seedKey];
+          if (local.dirty) {
+            // Unsaved edits win: keep local exactly as-is.
+            merged[local.tempId] = local;
+          } else {
+            // Clean entry: hydrate fields from server but pin the
+            // key to the existing local tempId.
+            merged[local.tempId] = { ...serverDraft, tempId: local.tempId };
           }
+          consumedServerIds.add(local.serverId);
+        } else if (local.dirty && !local.serverId) {
+          // Never-saved local create — preserve under its tempId
+          // even if it doesn't appear in the server snapshot yet.
+          merged[local.tempId] = local;
         }
-        merged[local.tempId] = local;
+        // Otherwise: clean + orphan (server deleted it, or it's a
+        // different frame's data) → drop.
       }
+      // Add server entries that weren't matched to any local draft.
+      for (const draft of Object.values(seed)) {
+        if (draft.serverId && consumedServerIds.has(draft.serverId)) {
+          continue;
+        }
+        merged[draft.tempId] = draft;
+      }
+      // Preserve the existing selection for any annotation that
+      // survived the merge — otherwise an autosave-driven refetch
+      // mid-flow would silently wipe the user's selection out from
+      // under an open class palette or right-click menu (which
+      // captures selectedIds at open time but reads it again when the
+      // user clicks a class row).
+      const survivingSelectedIds = s.selectedIds.filter(
+        (id) => id in merged,
+      );
+      const survivingSelectedId =
+        s.selectedId && s.selectedId in merged ? s.selectedId : null;
       return {
         byId: merged,
-        selectedId: null,
-        selectedIds: [],
+        selectedId: survivingSelectedId,
+        selectedIds: survivingSelectedIds,
         // Preserve queued deletes — they survive frame switches so the
         // next save can flush them along with any preserved dirty
         // creates / updates above.
