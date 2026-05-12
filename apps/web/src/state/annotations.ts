@@ -126,6 +126,13 @@ interface State {
   selectAll: (frameId: string | null) => void;
   clearSelection: () => void;
   reset: (initial: AnnotationDraft[]) => void;
+  /**
+   * Drop every in-memory draft and clear the pending-delete queue.
+   * Used by the editor's "Discard and exit" flow so the user can
+   * leave with unsaved changes and the next mount seeds cleanly
+   * from server data.
+   */
+  discardLocal: () => void;
   markPersisted: (tempId: string, serverId: string) => void;
   clearPendingDeletes: () => void;
   setHiddenForClass: (classId: string, hidden: boolean) => void;
@@ -416,8 +423,9 @@ export const useAnnotations = create<State>((set, get) => ({
   clearSelection: () =>
     set({ selectedId: null, selectedIds: [], lastEditMeta: null }),
   reset: (initial) =>
-    set({
-      byId: Object.fromEntries(
+    set((s) => {
+      // Seed from server data first.
+      const seed: Record<string, AnnotationDraft> = Object.fromEntries(
         initial.map((a) => [
           a.tempId,
           {
@@ -428,7 +436,49 @@ export const useAnnotations = create<State>((set, get) => ({
             prevGeometry: a.prevGeometry ?? null,
           },
         ]),
-      ),
+      );
+      // Preserve any local drafts that have unsaved edits — they may
+      // belong to a different frame than the one we're seeding (the
+      // user navigated away before the debounced autosave fired), or
+      // they may be unsaved updates to a record that's also in the
+      // server payload. Without this merge the user loses every bbox
+      // they drew on the previous frame the moment the next asset's
+      // annotations query resolves.
+      const serverIdToTempId = new Map<string, string>();
+      for (const [tempId, draft] of Object.entries(seed)) {
+        if (draft.serverId) serverIdToTempId.set(draft.serverId, tempId);
+      }
+      const merged: Record<string, AnnotationDraft> = { ...seed };
+      for (const local of Object.values(s.byId)) {
+        if (!local.dirty) continue;
+        // If the local dirty draft mirrors a server row that's about
+        // to be re-seeded, drop the server copy so the user's
+        // in-flight edit wins. Match by serverId, then by tempId.
+        if (local.serverId) {
+          const sameKey = serverIdToTempId.get(local.serverId);
+          if (sameKey && sameKey !== local.tempId) {
+            delete merged[sameKey];
+          }
+        }
+        merged[local.tempId] = local;
+      }
+      return {
+        byId: merged,
+        selectedId: null,
+        selectedIds: [],
+        // Preserve queued deletes — they survive frame switches so the
+        // next save can flush them along with any preserved dirty
+        // creates / updates above.
+        pendingDeletes: s.pendingDeletes,
+        lockedIds: new Set<string>(),
+        clipboard: null,
+        history: { past: [], future: [] },
+        lastEditMeta: null,
+      };
+    }),
+  discardLocal: () =>
+    set(() => ({
+      byId: {},
       selectedId: null,
       selectedIds: [],
       pendingDeletes: [],
@@ -436,7 +486,7 @@ export const useAnnotations = create<State>((set, get) => ({
       clipboard: null,
       history: { past: [], future: [] },
       lastEditMeta: null,
-    }),
+    })),
   markPersisted: (tempId, serverId) =>
     set((s) => {
       const cur = s.byId[tempId];

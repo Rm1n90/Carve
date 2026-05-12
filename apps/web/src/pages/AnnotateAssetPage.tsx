@@ -1,7 +1,8 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useBlocker, useNavigate } from "@tanstack/react-router";
+import { Button } from "@/components/ui/Button";
 import { Tabs } from "@/components/ui/Tabs";
 import { Input } from "@/components/ui/Input";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -55,6 +56,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -723,8 +725,26 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     saveMutation.mutate(payload);
   }
 
+  /** Promise-returning save used by the exit guard and the asset-switch
+   * flush. Resolves once the server has acknowledged the batch (so the
+   * caller can safely navigate / unmount). Resolves immediately when
+   * there's nothing dirty. */
+  async function saveAndWait(): Promise<void> {
+    const payload = buildPayload();
+    if (
+      payload.create.length === 0 &&
+      payload.update.length === 0 &&
+      payload.delete.length === 0
+    ) {
+      return;
+    }
+    await saveMutation.mutateAsync(payload);
+  }
+
   const saveNowRef = useRef(saveNow);
   saveNowRef.current = saveNow;
+  const saveAndWaitRef = useRef(saveAndWait);
+  saveAndWaitRef.current = saveAndWait;
 
   // Debounced autosave on store changes. Debounce duration is read from
   // `useEditorSettings.autoSaveIntervalSeconds` at the moment the timer
@@ -750,6 +770,99 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       if (debounceRef.current !== null) clearTimeout(debounceRef.current);
     };
   }, []);
+
+  // Flush whatever's dirty before the next asset's annotations get
+  // seeded. The dirty-safe `useAnnotations.reset()` already preserves
+  // unsaved drafts across the asset switch, but flushing here makes the
+  // save fire immediately instead of waiting for the next debounce
+  // tick — so a fast operator drawing on frame A then jumping to
+  // frame B doesn't see the save delayed until they slow down.
+  const prevAssetIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevAssetIdRef.current && prevAssetIdRef.current !== assetId) {
+      saveNowRef.current();
+    }
+    prevAssetIdRef.current = assetId;
+  }, [assetId]);
+
+  // Live dirty-count ref read by the navigation blocker. Direct
+  // ``dirtyCount`` reads would close over the value at the time the
+  // blocker is wired and never update. We pull from the store inline
+  // each navigation attempt so the value is always current.
+  const dirtyCountRef = useRef(0);
+  useEffect(() => {
+    const compute = () => {
+      const s = useAnnotations.getState();
+      dirtyCountRef.current =
+        Object.values(s.byId).filter((d) => d.dirty).length +
+        s.pendingDeletes.length;
+    };
+    compute();
+    const unsub = useAnnotations.subscribe(compute);
+    return unsub;
+  }, []);
+
+  // Exit-confirmation dialog. The blocker's ``shouldBlockFn`` returns
+  // a Promise that resolves when the user clicks a button. Storing the
+  // resolver here lets the buttons drive the promise from React state.
+  const [exitPrompt, setExitPrompt] = useState<
+    { resolve: (block: boolean) => void } | null
+  >(null);
+  // ``true`` while a save triggered from the dialog is in flight. The
+  // dialog hides its buttons and shows a "Saving…" line so the user
+  // can't double-click and triple-fire the mutation.
+  const [exitSaving, setExitSaving] = useState(false);
+
+  useBlocker({
+    enableBeforeUnload: () => dirtyCountRef.current > 0,
+    shouldBlockFn: async ({ next }) => {
+      // Don't gate movement inside the same task editor — the
+      // asset-switch flush effect above already drains pending changes,
+      // and the dirty-safe reset preserves anything still in flight.
+      if (
+        typeof next.pathname === "string" &&
+        next.pathname.startsWith(`/projects/${projectId}/tasks/${taskId}`)
+      ) {
+        return false;
+      }
+      if (dirtyCountRef.current === 0) return false;
+      return await new Promise<boolean>((resolve) => {
+        setExitPrompt({ resolve });
+      });
+    },
+  });
+
+  async function handleExitPrompt(
+    choice: "save" | "discard" | "cancel",
+  ): Promise<void> {
+    const prompt = exitPrompt;
+    if (!prompt) return;
+    if (choice === "save") {
+      setExitSaving(true);
+      try {
+        await saveAndWaitRef.current();
+      } catch {
+        // Save failed (network / server). The store keeps dirty
+        // drafts, so the user won't lose data — but we still let
+        // them exit because they explicitly chose to leave. The
+        // next time they open the editor, the debounce retry loop
+        // resumes from the preserved dirty state.
+      } finally {
+        setExitSaving(false);
+      }
+      setExitPrompt(null);
+      prompt.resolve(false);
+      return;
+    }
+    if (choice === "discard") {
+      useAnnotations.getState().discardLocal();
+      setExitPrompt(null);
+      prompt.resolve(false);
+      return;
+    }
+    setExitPrompt(null);
+    prompt.resolve(true);
+  }
 
   // v3.21 -- only ``Esc`` (dialog-local) stays as an inline handler;
   // ``Cmd+S`` and ``Backspace/Delete`` are now customizable through the
@@ -1448,6 +1561,54 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       </div>
 
       <CommandPalette classes={classesQ.data ?? []} onSaveNow={saveNow} />
+
+      <Dialog
+        open={exitPrompt !== null}
+        onOpenChange={(o) => {
+          // Only honour close via the X / overlay click when no save is
+          // in flight; treat it the same as Cancel.
+          if (!o && !exitSaving) {
+            void handleExitPrompt("cancel");
+          }
+        }}
+      >
+        <DialogContent className="w-[min(92vw,480px)]">
+          <DialogHeader>
+            <DialogTitle>Unsaved annotations</DialogTitle>
+            <DialogDescription>
+              You have {dirtyCount} unsaved annotation
+              {dirtyCount === 1 ? "" : "s"} that won&apos;t be sent to
+              the server if you leave now. What would you like to do?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-wrap gap-2 sm:flex-nowrap">
+            <Button
+              variant="ghost"
+              onClick={() => void handleExitPrompt("cancel")}
+              disabled={exitSaving}
+              data-testid="exit-cancel"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => void handleExitPrompt("discard")}
+              disabled={exitSaving}
+              data-testid="exit-discard"
+            >
+              Discard and exit
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => void handleExitPrompt("save")}
+              loading={exitSaving}
+              data-testid="exit-save"
+            >
+              Save and exit
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <InfoDialog
         open={infoOpen}
