@@ -17,6 +17,7 @@ import { weightsApi, type UploadWeightInput, type Weight } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 
 const TASK_KINDS: UploadWeightInput["task_kind"][] = [
   "detect",
@@ -44,9 +45,16 @@ interface Props {
  */
 export function UploadWeightDialog({ open, onOpenChange, defaultProjectId }: Props) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
 
   const projectsQ = useQuery({ queryKey: ["projects"], queryFn: projectsApi.list });
   const projects = projectsQ.data ?? [];
+
+  const existingWeightsQ = useQuery({
+    queryKey: ["weights", "workspace"],
+    queryFn: weightsApi.listWorkspace,
+  });
+  const existingWeights = existingWeightsQ.data ?? [];
 
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState("");
@@ -54,15 +62,19 @@ export function UploadWeightDialog({ open, onOpenChange, defaultProjectId }: Pro
     useState<UploadWeightInput["task_kind"]>("detect");
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [overwritePending, setOverwritePending] = useState(false);
 
   const uploadM = useMutation<
     Weight,
     Error,
-    { projectId: string; input: UploadWeightInput }
+    { projectId: string; input: UploadWeightInput; overwroteId?: string }
   >({
     mutationFn: ({ projectId: pid, input }) => weightsApi.upload(pid, input),
-    onSuccess: () => {
-      showToast("Weight uploaded", { variant: "success" });
+    onSuccess: (_data, vars) => {
+      showToast(
+        vars.overwroteId ? "Weight overwritten" : "Weight uploaded",
+        { variant: "success" },
+      );
       qc.invalidateQueries({ queryKey: ["weights"] });
       qc.invalidateQueries({ queryKey: ["weights", "workspace"] });
       reset();
@@ -79,26 +91,87 @@ export function UploadWeightDialog({ open, onOpenChange, defaultProjectId }: Pro
     setTaskKind("detect");
     setProjectId(defaultProjectId ?? "");
     setErrorMsg(null);
+    setOverwritePending(false);
   }
 
   const effectiveProjectId = projectId || defaultProjectId || projects[0]?.id || "";
+  const isBusy = uploadM.isPending || overwritePending;
   const canSubmit =
-    !!file && name.trim().length > 0 && !!effectiveProjectId && !uploadM.isPending;
+    !!file && name.trim().length > 0 && !!effectiveProjectId && !isBusy;
 
-  function onSubmit(e: FormEvent) {
+  function findDuplicate(targetName: string): Weight | null {
+    const needle = targetName.trim().toLowerCase();
+    if (!needle) return null;
+    return (
+      existingWeights.find((w) => w.name.trim().toLowerCase() === needle) ??
+      null
+    );
+  }
+
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
     if (!file || !effectiveProjectId) return;
     setErrorMsg(null);
+    const trimmedName = name.trim();
+
+    const duplicate = findDuplicate(trimmedName);
+    if (duplicate) {
+      const ok = await confirm({
+        title: "Weight already exists",
+        description: (
+          <>
+            A weight named{" "}
+            <span className="font-medium text-[color:var(--text-primary)]">
+              {duplicate.name}
+            </span>{" "}
+            is already uploaded. Do you want to overwrite it with this new
+            file? The previous weight will be permanently replaced.
+          </>
+        ),
+        variant: "danger",
+        confirmLabel: "Overwrite",
+        cancelLabel: "Cancel",
+      });
+      if (!ok) return;
+
+      setOverwritePending(true);
+      try {
+        await weightsApi.delete(duplicate.id);
+      } catch (err) {
+        setOverwritePending(false);
+        setErrorMsg(
+          err instanceof Error
+            ? err.message
+            : "Failed to delete existing weight",
+        );
+        return;
+      }
+      setOverwritePending(false);
+      uploadM.mutate({
+        projectId: effectiveProjectId,
+        input: {
+          name: trimmedName,
+          task_kind: taskKind,
+          class_names: [],
+          file,
+        },
+        overwroteId: duplicate.id,
+      });
+      return;
+    }
+
     uploadM.mutate({
       projectId: effectiveProjectId,
       input: {
-        name: name.trim(),
+        name: trimmedName,
         task_kind: taskKind,
         class_names: [],
         file,
       },
     });
   }
+
+  const duplicatePreview = findDuplicate(name);
 
   if (!open) return null;
   return (
@@ -150,6 +223,15 @@ export function UploadWeightDialog({ open, onOpenChange, defaultProjectId }: Pro
             placeholder="e.g. yolov8n_traffic"
             required
           />
+          {duplicatePreview && (
+            <p
+              className="text-[12px] text-[color:var(--warning,#d97706)] -mt-1"
+              data-testid="upload-duplicate-warning"
+            >
+              A weight named “{duplicatePreview.name}” already exists. You
+              will be asked to overwrite it on upload.
+            </p>
+          )}
 
           <label className="grid gap-1.5">
             <span className="text-[12px] tracking-tight text-[color:var(--text-secondary)] font-medium">
@@ -221,11 +303,11 @@ export function UploadWeightDialog({ open, onOpenChange, defaultProjectId }: Pro
             <Button
               type="submit"
               variant="primary"
-              loading={uploadM.isPending}
+              loading={isBusy}
               disabled={!canSubmit}
-              leftIcon={!uploadM.isPending && <Upload className="h-4 w-4" />}
+              leftIcon={!isBusy && <Upload className="h-4 w-4" />}
             >
-              Upload
+              {duplicatePreview ? "Overwrite" : "Upload"}
             </Button>
           </DialogFooter>
         </form>

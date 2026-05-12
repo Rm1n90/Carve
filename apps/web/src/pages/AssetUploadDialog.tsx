@@ -83,6 +83,12 @@ interface UploadError {
   error: string;
 }
 
+interface ActiveFileProgress {
+  name: string;
+  loaded: number;
+  total: number;
+}
+
 type Phase =
   | { kind: "pick" }
   | {
@@ -100,7 +106,22 @@ type Phase =
       total: number;
       errors: UploadError[];
       retryNotice: string | null;
+      bytesCompleted: number;
+      bytesTotal: number;
+      active: Record<string, ActiveFileProgress>;
     };
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
 
 interface Props {
   projectId: string;
@@ -149,6 +170,9 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
     strategy: ExtractStrategy;
   }) => {
     const total = cfg.images.length + cfg.videos.length;
+    const bytesTotal =
+      cfg.images.reduce((a, f) => a + (f.size || 0), 0) +
+      cfg.videos.reduce((a, f) => a + (f.size || 0), 0);
     setPhase({
       kind: "uploading",
       images: cfg.images,
@@ -158,6 +182,9 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
       total,
       errors: [],
       retryNotice: null,
+      bytesCompleted: 0,
+      bytesTotal,
+      active: {},
     });
 
     const all = [...cfg.images, ...cfg.videos];
@@ -166,14 +193,31 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
     let count = 0;
     const errors: UploadError[] = [];
 
-    const uploadOne = async (file: File): Promise<void> => {
+    const uploadOne = async (file: File, fileKey: string): Promise<void> => {
       const isZip = file.name.toLowerCase().endsWith(".zip");
       const isVideo = VIDEO_RE.test(file.name);
+      const onProgress = (loaded: number, byteTotal: number) => {
+        setPhase((p) =>
+          p.kind === "uploading"
+            ? {
+                ...p,
+                active: {
+                  ...p.active,
+                  [fileKey]: {
+                    name: file.name,
+                    loaded,
+                    total: byteTotal,
+                  },
+                },
+              }
+            : p,
+        );
+      };
       let attempt = 0;
       while (true) {
         try {
           if (isZip) {
-            const created = await assetsApi.uploadZip(taskId, file);
+            const created = await assetsApi.uploadZip(taskId, file, onProgress);
             if (Array.isArray(created) && created.length === 0) {
               showToast(
                 `"${file.name}" had no images inside. ` +
@@ -182,7 +226,7 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
               );
             }
           } else {
-            const asset = await assetsApi.upload(taskId, file);
+            const asset = await assetsApi.upload(taskId, file, onProgress);
             if (isVideo && asset?.id) {
               try {
                 const needsN =
@@ -240,8 +284,9 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
         cursor += 1;
         if (idx >= all.length) return;
         const file = all[idx];
+        const fileKey = `${idx}:${file.name}`;
         try {
-          await uploadOne(file);
+          await uploadOne(file, fileKey);
         } catch (err: unknown) {
           const code =
             (err as { response?: { data?: { error?: string } } })?.response
@@ -249,11 +294,18 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
           errors.push({ name: file.name, error: code });
         } finally {
           count += 1;
-          setPhase((p) =>
-            p.kind === "uploading"
-              ? { ...p, done: count, errors: [...errors], retryNotice: null }
-              : p,
-          );
+          setPhase((p) => {
+            if (p.kind !== "uploading") return p;
+            const { [fileKey]: _finished, ...rest } = p.active;
+            return {
+              ...p,
+              done: count,
+              errors: [...errors],
+              retryNotice: null,
+              bytesCompleted: p.bytesCompleted + (file.size || 0),
+              active: rest,
+            };
+          });
         }
       }
     };
@@ -374,10 +426,78 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
 
       {phase.kind === "uploading" && (
         <>
-          <p className="flex items-center gap-2 text-tertiary text-[12px]">
-            <Upload className="h-3.5 w-3.5 animate-pulse text-[color:var(--accent)]" />
-            Uploaded {phase.done} / {phase.total}
-          </p>
+          {(() => {
+            const activeBytes = Object.values(phase.active).reduce(
+              (a, p) => a + Math.min(p.loaded, p.total),
+              0,
+            );
+            const transferred = phase.bytesCompleted + activeBytes;
+            const denominator = Math.max(phase.bytesTotal, 1);
+            const pct =
+              phase.bytesTotal > 0
+                ? Math.min(100, Math.round((transferred / denominator) * 1000) / 10)
+                : phase.total > 0
+                  ? Math.round((phase.done / phase.total) * 100)
+                  : 0;
+            return (
+              <div className="grid gap-2" data-testid="upload-progress">
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="flex items-center gap-2 text-secondary text-[12.5px]">
+                    <Upload className="h-3.5 w-3.5 animate-pulse text-[color:var(--accent)]" />
+                    Uploading {phase.done} / {phase.total} files
+                  </p>
+                  <p className="font-mono-data text-tertiary text-[11.5px]">
+                    {formatBytes(transferred)} / {formatBytes(phase.bytesTotal)}{" "}
+                    <span className="text-[color:var(--accent)] ml-1">
+                      {pct.toFixed(pct >= 100 ? 0 : 1)}%
+                    </span>
+                  </p>
+                </div>
+                <div
+                  className="h-2 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={pct}
+                  aria-label="Total upload progress"
+                >
+                  <div
+                    className="h-full bg-[color:var(--accent)] transition-[width] duration-150 ease-out"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                {Object.entries(phase.active).length > 0 && (
+                  <ul className="grid gap-1.5 mt-1">
+                    {Object.entries(phase.active).map(([key, p]) => {
+                      const filePct =
+                        p.total > 0
+                          ? Math.min(100, Math.round((p.loaded / p.total) * 100))
+                          : 0;
+                      return (
+                        <li key={key} className="grid gap-1">
+                          <div className="flex items-baseline justify-between gap-3">
+                            <span className="truncate text-[12px] text-tertiary">
+                              {p.name}
+                            </span>
+                            <span className="font-mono-data text-[11px] text-tertiary shrink-0">
+                              {formatBytes(p.loaded)} / {formatBytes(p.total)} ·{" "}
+                              {filePct}%
+                            </span>
+                          </div>
+                          <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+                            <div
+                              className="h-full bg-[color:var(--accent)]/70 transition-[width] duration-100 ease-out"
+                              style={{ width: `${filePct}%` }}
+                            />
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            );
+          })()}
           {phase.retryNotice && (
             <p
               role="status"

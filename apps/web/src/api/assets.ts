@@ -156,21 +156,53 @@ export const assetsApi = {
     ).data,
   count: async (taskId: string): Promise<AssetCountResponse> =>
     (await api.get<AssetCountResponse>(`/tasks/${taskId}/assets/count`)).data,
-  upload: async (taskId: string, file: File): Promise<Asset> => {
+  upload: async (
+    taskId: string,
+    file: File,
+    onProgress?: (loaded: number, total: number) => void,
+  ): Promise<Asset> => {
     const fd = new FormData();
     fd.append("file", file);
     return (
       await api.post<Asset>(`/tasks/${taskId}/assets`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
+        // Uploads stream large bodies (videos, zips) and can legitimately
+        // run past the global 30 s ceiling. Disable the per-request
+        // timeout for upload calls and rely on the browser network
+        // layer to abort.
+        timeout: 0,
+        onUploadProgress: onProgress
+          ? (evt) => {
+              const total =
+                typeof evt.total === "number" && evt.total > 0
+                  ? evt.total
+                  : file.size;
+              onProgress(evt.loaded ?? 0, total);
+            }
+          : undefined,
       })
     ).data;
   },
-  uploadZip: async (taskId: string, file: File): Promise<Asset[]> => {
+  uploadZip: async (
+    taskId: string,
+    file: File,
+    onProgress?: (loaded: number, total: number) => void,
+  ): Promise<Asset[]> => {
     const fd = new FormData();
     fd.append("file", file);
     return (
       await api.post<Asset[]>(`/tasks/${taskId}/assets:zip`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
+        timeout: 0,
+        onUploadProgress: onProgress
+          ? (evt) => {
+              const total =
+                typeof evt.total === "number" && evt.total > 0
+                  ? evt.total
+                  : file.size;
+              onProgress(evt.loaded ?? 0, total);
+            }
+          : undefined,
       })
     ).data;
   },
