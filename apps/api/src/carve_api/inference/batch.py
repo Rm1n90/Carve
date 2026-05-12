@@ -84,6 +84,101 @@ def build_job_payload(
     )
 
 
+# ---------------------------------------------------------------------------
+# GPU admission retry helpers — keep a single per-asset call from killing the
+# whole batch when another inference is holding the GPU's only inference slot.
+# When the model service's admission gate rejects with gpu_busy / gpu_oom_risk
+# (see ``apps/model/src/carve_model/admission.py``) we back off and retry
+# the SAME asset, posting ``status=waiting_for_gpu`` to the Redis progress
+# hash so the UI can render a "Waiting for GPU…" badge instead of treating
+# this as a per-asset failure.
+# ---------------------------------------------------------------------------
+
+_ADMISSION_CODES = frozenset({"gpu_busy", "gpu_oom_risk"})
+
+
+def _is_admission_error(exc: Exception) -> bool:
+    """True when ``exc`` is a model-side admission rejection."""
+    # GpuAdmissionError (api-side) carries a typed payload dict.
+    payload = getattr(exc, "payload", None)
+    if isinstance(payload, dict):
+        code = payload.get("code") or payload.get("error")
+        if code in _ADMISSION_CODES:
+            return True
+    # ModelServiceError carries the raw response body.
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("detail") if isinstance(body.get("detail"), dict) else body
+        if isinstance(inner, dict):
+            code = inner.get("code") or inner.get("error")
+            if code in _ADMISSION_CODES:
+                return True
+    return False
+
+
+def _set_progress_status(redis_client, job_id: str, status: str) -> None:
+    """Best-effort write of the status field on the progress hash."""
+    if redis_client is None:
+        return
+    try:
+        redis_client.hset(progress_key(job_id), "status", status)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_with_admission_retry(
+    fn,
+    *,
+    redis_client,
+    job_id: str,
+    asset_label: str,
+    max_attempts: int = 6,
+    base_delay_s: float = 1.0,
+    max_delay_s: float = 30.0,
+):
+    """Run ``fn()`` with retry-on-GPU-admission backoff.
+
+    On every ``gpu_busy`` / ``gpu_oom_risk`` rejection we publish
+    ``status=waiting_for_gpu`` to the progress hash, sleep with
+    exponential backoff (capped at ``max_delay_s``), and retry the
+    same call up to ``max_attempts`` times. Any other error bubbles
+    up to the caller's normal per-asset failure handling. After a
+    successful retry we restore ``status=running`` so the UI badge
+    clears.
+
+    Total worst-case wait at defaults: 1 + 2 + 4 + 8 + 16 + 30 = ~61 s.
+    """
+    import time
+
+    delay = base_delay_s
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            result = fn()
+            if attempt > 0:
+                _set_progress_status(redis_client, job_id, "running")
+            return result
+        except Exception as exc:  # noqa: BLE001
+            if not _is_admission_error(exc):
+                raise
+            last_exc = exc
+            _set_progress_status(redis_client, job_id, "waiting_for_gpu")
+            log.info(
+                "batch.admission.wait job=%s asset=%s attempt=%d delay=%.1fs",
+                job_id,
+                asset_label,
+                attempt + 1,
+                delay,
+            )
+            time.sleep(min(delay, max_delay_s))
+            delay = min(delay * 2.0, max_delay_s)
+    # All retries exhausted — re-raise so the caller's per-asset
+    # failure handler can record the asset as failed normally.
+    if last_exc is not None:
+        raise last_exc
+    return None  # unreachable
+
+
 def init_progress(redis_client, job_id: str, total: int) -> None:
     """Best-effort write of initial progress; swallow Redis errors.
 
@@ -366,16 +461,21 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
                     # Best-effort -- if Redis blips we keep going.
                     pass
             try:
-                result = auto_text_for_asset(
-                    session=session,
-                    asset=asset,
-                    task=task,
-                    classes=classes,
-                    threshold=payload.threshold,
-                    find_all=payload.find_all,
-                    overwrite=payload.overwrite,
-                    actor_id=actor_uuid,
-                    use_vlm_fo1=getattr(payload, "use_vlm_fo1", False),
+                result = _run_with_admission_retry(
+                    lambda: auto_text_for_asset(
+                        session=session,
+                        asset=asset,
+                        task=task,
+                        classes=classes,
+                        threshold=payload.threshold,
+                        find_all=payload.find_all,
+                        overwrite=payload.overwrite,
+                        actor_id=actor_uuid,
+                        use_vlm_fo1=getattr(payload, "use_vlm_fo1", False),
+                    ),
+                    redis_client=redis_client,
+                    job_id=payload.job_id,
+                    asset_label=str(asset.id),
                 )
                 session.commit()
                 total_created += int(result.get("annotations_created", 0))
@@ -538,16 +638,21 @@ def run_auto_visual_batch(payload: AutoVisualBatchPayload) -> dict:
                 except Exception:
                     pass
             try:
-                result = auto_visual_for_asset(
-                    session=session,
-                    asset=asset,
-                    task=task,
-                    sources=payload.sources,
-                    ref_kind=payload.ref_kind,
-                    threshold=payload.threshold,
-                    find_all=payload.find_all,
-                    overwrite=payload.overwrite,
-                    actor_id=actor_uuid,
+                result = _run_with_admission_retry(
+                    lambda: auto_visual_for_asset(
+                        session=session,
+                        asset=asset,
+                        task=task,
+                        sources=payload.sources,
+                        ref_kind=payload.ref_kind,
+                        threshold=payload.threshold,
+                        find_all=payload.find_all,
+                        overwrite=payload.overwrite,
+                        actor_id=actor_uuid,
+                    ),
+                    redis_client=redis_client,
+                    job_id=payload.job_id,
+                    asset_label=str(asset.id),
                 )
                 session.commit()
                 total_created += int(result.get("annotations_created", 0))
@@ -926,19 +1031,24 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                     frame_id = f.id
                 image_bytes = fetch_asset_bytes(asset, frame_id=frame_id)
 
-                aa_result = apply_yoloe_to_asset(
-                    session=session,
-                    actor=actor,
-                    task=task,
-                    asset=asset,
-                    image_bytes=image_bytes,
-                    mode=mode,
-                    params=typed_params,
-                    overwrite=payload.overwrite,
-                    min_confidence=min_conf,
-                    output_kind=YoloeOutputKind(
-                        getattr(payload, "output_kind", "polygon"),
+                aa_result = _run_with_admission_retry(
+                    lambda: apply_yoloe_to_asset(
+                        session=session,
+                        actor=actor,
+                        task=task,
+                        asset=asset,
+                        image_bytes=image_bytes,
+                        mode=mode,
+                        params=typed_params,
+                        overwrite=payload.overwrite,
+                        min_confidence=min_conf,
+                        output_kind=YoloeOutputKind(
+                            getattr(payload, "output_kind", "polygon"),
+                        ),
                     ),
+                    redis_client=redis_client,
+                    job_id=payload.job_id,
+                    asset_label=str(asset.id),
                 )
                 session.commit()
                 counts["done"] += 1

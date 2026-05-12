@@ -71,6 +71,43 @@ class Sam3NotEnabled(AppError):
     code = "sam3_not_enabled"
 
 
+def _admission_payload(body) -> dict | None:
+    """Mirror of ``inference/yoloe._admission_payload`` for SAM. Returns
+    the structured GPU-admission body when the model service's 503 came
+    from the admission gate; otherwise None."""
+    if not isinstance(body, dict):
+        return None
+    inner = body.get("detail") if isinstance(body.get("detail"), dict) else body
+    if not isinstance(inner, dict):
+        return None
+    code = inner.get("code") or inner.get("error")
+    if code in ("gpu_oom_risk", "gpu_busy"):
+        return inner
+    return None
+
+
+def _translate_model_error(exc: ModelServiceError, *, label: str) -> AppError:
+    """Map a ``ModelServiceError`` from a SAM call onto the right AppError.
+
+    Also raises ``GpuAdmissionError`` when the model service refused
+    the call for GPU-capacity reasons (gpu_oom_risk / gpu_busy) so the
+    frontend can surface a precise toast instead of a generic 503.
+    Callers that need site-specific 409 handling (e.g. decode's
+    ``embedding_not_loaded``) should branch on ``exc.status_code``
+    BEFORE calling this helper.
+    """
+    admission = _admission_payload(exc.body)
+    if admission is not None:
+        from carve_api.errors import GpuAdmissionError
+
+        return GpuAdmissionError(admission)
+    if exc.status_code == 409:
+        return Sam3NotEnabled(f"{label}: {exc.body!r}")
+    if exc.status_code == 503:
+        return SamModelUnreachable(f"{label}: {exc.body!r}")
+    return SamModelFailed(f"{label}: {exc.body!r}")
+
+
 def sam_encode_for_asset(
     asset: Asset, frame_id: uuid.UUID | None = None
 ) -> dict:
@@ -88,9 +125,7 @@ def sam_encode_for_asset(
     try:
         return sam_encode(b64)
     except ModelServiceError as exc:
-        if exc.status_code == 503:
-            raise SamModelUnreachable(f"encode: {exc.body!r}") from exc
-        raise SamModelFailed(f"encode: {exc.body!r}") from exc
+        raise _translate_model_error(exc, label="encode") from exc
 
 
 def sam_decode_with_hash(
@@ -110,11 +145,11 @@ def sam_decode_with_hash(
             image_hash, points, labels, box=box, epsilon_factor=epsilon_factor,
         )
     except ModelServiceError as exc:
-        if exc.status_code == 409:
-            raise SamEmbeddingMissing("embedding not loaded; call /sam/encode first") from exc
-        if exc.status_code == 503:
-            raise SamModelUnreachable(f"decode: {exc.body!r}") from exc
-        raise SamModelFailed(f"decode: {exc.body!r}") from exc
+        if exc.status_code == 409 and _admission_payload(exc.body) is None:
+            raise SamEmbeddingMissing(
+                "embedding not loaded; call /sam/encode first"
+            ) from exc
+        raise _translate_model_error(exc, label="decode") from exc
 
 
 def sam_text_prompt_for_asset(
@@ -144,11 +179,7 @@ def sam_text_prompt_for_asset(
     try:
         return sam_text_prompt(b64, text, use_vlm_fo1=use_vlm_fo1)
     except ModelServiceError as exc:
-        if exc.status_code == 409:
-            raise Sam3NotEnabled(f"text-prompt: {exc.body!r}") from exc
-        if exc.status_code == 503:
-            raise SamModelUnreachable(f"text-prompt: {exc.body!r}") from exc
-        raise SamModelFailed(f"text-prompt: {exc.body!r}") from exc
+        raise _translate_model_error(exc, label="text-prompt") from exc
 
 
 def sam_box_prompt_for_asset(
@@ -173,11 +204,7 @@ def sam_box_prompt_for_asset(
     try:
         return sam_box_prompt(b64, boxes, box_labels, text=text)
     except ModelServiceError as exc:
-        if exc.status_code == 409:
-            raise Sam3NotEnabled(f"box-prompt: {exc.body!r}") from exc
-        if exc.status_code == 503:
-            raise SamModelUnreachable(f"box-prompt: {exc.body!r}") from exc
-        raise SamModelFailed(f"box-prompt: {exc.body!r}") from exc
+        raise _translate_model_error(exc, label="box-prompt") from exc
 
 
 def sam_visual_prompt_for_asset(
@@ -217,8 +244,4 @@ def sam_visual_prompt_for_asset(
             text_hint=text_hint,
         )
     except ModelServiceError as exc:
-        if exc.status_code == 409:
-            raise Sam3NotEnabled(f"visual-prompt: {exc.body!r}") from exc
-        if exc.status_code == 503:
-            raise SamModelUnreachable(f"visual-prompt: {exc.body!r}") from exc
-        raise SamModelFailed(f"visual-prompt: {exc.body!r}") from exc
+        raise _translate_model_error(exc, label="visual-prompt") from exc

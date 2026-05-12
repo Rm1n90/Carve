@@ -38,6 +38,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { ensureSamReady } from "@/lib/samConvert";
+import { inferenceErrorMessage } from "@/lib/inferenceErrors";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
 import { useDialogPrefs } from "@/state/dialogPrefs";
 
@@ -521,13 +522,17 @@ export function AutoAnnotateDialog({
           ?.response?.data?.error ??
         (err as { response?: { data?: { detail?: string } } })?.response?.data
           ?.detail;
-      let message = "Auto-annotate failed.";
-      if (detail === "sam3_not_enabled") {
-        message = "Auto-annotate needs SAM 3. Switch in Settings -> Models.";
-      } else if (detail === "model_service_unreachable") {
-        message = "Model service is offline.";
-      } else if (detail === "no_eligible_classes") {
-        message = "Selected classes have no text prompt.";
+      // Prefer the structured admission-aware mapper so GPU OOM and
+      // GPU-busy 503s surface their own messages (with free/needed MB
+      // when available) instead of a flat "Auto-annotate failed."
+      const friendly = inferenceErrorMessage(err);
+      let message = friendly ?? "Auto-annotate failed.";
+      if (friendly === null) {
+        if (detail === "sam3_not_enabled") {
+          message = "Auto-annotate needs SAM 3. Switch in Settings -> Models.";
+        } else if (detail === "no_eligible_classes") {
+          message = "Selected classes have no text prompt.";
+        }
       }
       showToast(message, { variant: "error", duration: 5000 });
     },
@@ -1515,8 +1520,9 @@ function VisualBody({
       onSuccess?.(result.annotations_created);
       setOpen(false);
     },
-    onError: () => {
-      showToast("SAM Visual Prompt failed.", { variant: "error" });
+    onError: (err: unknown) => {
+      const friendly = inferenceErrorMessage(err);
+      showToast(friendly ?? "SAM Visual Prompt failed.", { variant: "error" });
     },
   });
 
@@ -1859,12 +1865,16 @@ function VisualBatchProgressView({
       <DialogHeader>
         <DialogTitle className="flex items-center gap-2">
           <Loader2 className="h-4 w-4 animate-spin text-[color:var(--accent)]" />
-          Running visual prompt across the task…
+          {status === "waiting_for_gpu"
+            ? "Waiting for GPU…"
+            : "Running visual prompt across the task…"}
         </DialogTitle>
         <DialogDescription>
-          {total > 0
-            ? `Asset ${done} of ${total} (${pct}%) — ${created} annotation${created === 1 ? "" : "s"} created.`
-            : "Initialising…"}
+          {status === "waiting_for_gpu"
+            ? "Another inference job is on the GPU; this batch will resume automatically when it's free."
+            : total > 0
+              ? `Asset ${done} of ${total} (${pct}%) — ${created} annotation${created === 1 ? "" : "s"} created.`
+              : "Initialising…"}
         </DialogDescription>
       </DialogHeader>
       <div className="h-2 rounded-full bg-[var(--bg-sunken)] overflow-hidden">

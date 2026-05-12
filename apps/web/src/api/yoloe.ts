@@ -111,6 +111,7 @@ export interface YoloeBatchProgress {
   status:
     | "pending"
     | "running"
+    | "waiting_for_gpu"
     | "completed"
     | "completed_with_errors"
     | "failed"

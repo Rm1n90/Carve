@@ -39,6 +39,8 @@ import numpy as np
 import xxhash
 from fastapi import APIRouter, Body, HTTPException
 from PIL import Image
+
+from carve_model.admission import CostClass, admit
 from pydantic import BaseModel, Field
 
 from carve_model.sam.codec import encode_mask_rle
@@ -120,16 +122,18 @@ def encode(payload: EncodeIn) -> EncodeOut:
 
     h = xxhash.xxh3_128(img_bytes).hexdigest()
     img = np.array(Image.open(BytesIO(img_bytes)).convert("RGB"))
-    p = get_predictor()
-    p.set_image(img)
-    shape = [int(img.shape[0]), int(img.shape[1])]
-    # Record the loaded image's hash + shape on the active session so a
-    # subsequent /sam/decode can verify the predictor still holds these
-    # encoded features. Lifecycle ops (evict, force-evict, switch) drop
-    # the session as a unit — preventing the v3.4 desync where the hash
-    # gate passed but the predictor's _raw_image had been cleared.
-    set_loaded_image(h, shape)
-    embedding_bytes = extract_embedding(p)
+    with admit(CostClass.SAM_IMAGE):
+        p = get_predictor()
+        p.set_image(img)
+        shape = [int(img.shape[0]), int(img.shape[1])]
+        # Record the loaded image's hash + shape on the active session
+        # so a subsequent /sam/decode can verify the predictor still
+        # holds these encoded features. Lifecycle ops (evict,
+        # force-evict, switch) drop the session as a unit — preventing
+        # the v3.4 desync where the hash gate passed but the
+        # predictor's _raw_image had been cleared.
+        set_loaded_image(h, shape)
+        embedding_bytes = extract_embedding(p)
     embedding_b64 = (
         base64.b64encode(embedding_bytes).decode("ascii")
         if embedding_bytes is not None
@@ -204,7 +208,7 @@ def decode(payload: DecodeIn) -> DecodeOut:
     mask_input = prev_logits if use_prev else None
 
     p = get_predictor()
-    with autocast_ctx():
+    with admit(CostClass.SAM_IMAGE), autocast_ctx():
         masks, scores, low_res_all = p.predict(
             point_coords=pts,
             point_labels=lbl,
@@ -408,13 +412,14 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
     # Forward use_vlm_fo1 only when the client opted in. Older factories
     # whose signature predates the kwarg keep working — they're called
     # exactly as before.
-    if payload.use_vlm_fo1:
-        return factory(
-            image_b64=payload.image_b64,
-            text=payload.text,
-            use_vlm_fo1=True,
-        )
-    return factory(image_b64=payload.image_b64, text=payload.text)
+    with admit(CostClass.SAM_TEXT):
+        if payload.use_vlm_fo1:
+            return factory(
+                image_b64=payload.image_b64,
+                text=payload.text,
+                use_vlm_fo1=True,
+            )
+        return factory(image_b64=payload.image_b64, text=payload.text)
 
 
 # --- SAM 3 box-prompt endpoint ----------------------------------------------
@@ -470,12 +475,13 @@ def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
                 status_code=503,
                 detail="sam3_box_predictor_not_loaded",
             ) from exc
-    return factory(
-        image_b64=payload.image_b64,
-        boxes=payload.boxes,
-        box_labels=payload.box_labels,
-        text=payload.text,
-    )
+    with admit(CostClass.SAM_BOX):
+        return factory(
+            image_b64=payload.image_b64,
+            boxes=payload.boxes,
+            box_labels=payload.box_labels,
+            text=payload.text,
+        )
 
 
 @router.post("/visual-prompt", response_model=list[VisualPromptOut])
@@ -505,13 +511,14 @@ def sam_visual_prompt(payload: VisualPromptIn) -> list[dict]:
                 status_code=503, detail="sam_visual_predictor_not_loaded",
             ) from exc
     regions = [r.model_dump(exclude_none=True) for r in payload.regions]
-    return factory(
-        target_b64=payload.target_b64,
-        refer_b64=payload.refer_b64,
-        regions=regions,
-        threshold=payload.threshold,
-        text_hint=payload.text_hint,
-    )
+    with admit(CostClass.SAM_VISUAL):
+        return factory(
+            target_b64=payload.target_b64,
+            refer_b64=payload.refer_b64,
+            regions=regions,
+            threshold=payload.threshold,
+            text_hint=payload.text_hint,
+        )
 
 
 # --- /sam/unload (admin force-evict) ----------------------------------------

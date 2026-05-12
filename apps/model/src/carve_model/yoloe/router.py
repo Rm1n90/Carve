@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from carve_model import device_prefs
+from carve_model.admission import CostClass, admit
 from carve_model.devices import MIN_FREE_MB_DEFAULTS, resolve_device
 from carve_model.yoloe.predict import (
     predict_prompt_free,
@@ -147,14 +148,15 @@ def text_predict(payload: TextPredictIn) -> dict:
     image_bytes = _decode_b64(payload.image_b64, label="image_b64")
     model = _get_model("text")
     try:
-        return predict_text(
-            model,
-            image_bytes,
-            payload.classes,
-            conf=payload.conf,
-            iou=payload.iou,
-            device=_resolve_yoloe_device(),
-        )
+        with admit(CostClass.YOLOE_TEXT):
+            return predict_text(
+                model,
+                image_bytes,
+                payload.classes,
+                conf=payload.conf,
+                iou=payload.iou,
+                device=_resolve_yoloe_device(),
+            )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -167,17 +169,18 @@ def visual_predict(payload: VisualPredictIn) -> dict:
         raise HTTPException(status_code=422, detail="bboxes_cls_length_mismatch")
     model = _get_model("text")  # visual prompts use the same checkpoint
     try:
-        return predict_visual(
-            model,
-            target,
-            refer,
-            payload.bboxes,
-            payload.cls,
-            payload.class_names,
-            conf=payload.conf,
-            iou=payload.iou,
-            device=_resolve_yoloe_device(),
-        )
+        with admit(CostClass.YOLOE_VISUAL):
+            return predict_visual(
+                model,
+                target,
+                refer,
+                payload.bboxes,
+                payload.cls,
+                payload.class_names,
+                conf=payload.conf,
+                iou=payload.iou,
+                device=_resolve_yoloe_device(),
+            )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -186,14 +189,15 @@ def visual_predict(payload: VisualPredictIn) -> dict:
 def prompt_free_predict(payload: PromptFreePredictIn) -> dict:
     image_bytes = _decode_b64(payload.image_b64, label="image_b64")
     model = _get_model("pf")
-    return predict_prompt_free(
-        model,
-        image_bytes,
-        conf=payload.conf,
-        iou=payload.iou,
-        max_detections=payload.max_detections,
-        device=_resolve_yoloe_device(),
-    )
+    with admit(CostClass.YOLOE_PF):
+        return predict_prompt_free(
+            model,
+            image_bytes,
+            conf=payload.conf,
+            iou=payload.iou,
+            max_detections=payload.max_detections,
+            device=_resolve_yoloe_device(),
+        )
 
 
 @router.post("/unload", response_model=UnloadOut)

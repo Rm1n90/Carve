@@ -35,6 +35,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from carve_model import device_prefs
+from carve_model.admission import CostClass, admit
 from carve_model.devices import MIN_FREE_MB_DEFAULTS, resolve_device
 from carve_model.yolo.predict import predict_image
 from carve_model.yolo.registry import REGISTRY
@@ -148,14 +149,15 @@ def predict(payload: PredictIn) -> dict:
         raise HTTPException(status_code=400, detail="bad_image_b64") from exc
     # v3.7.5 — explicit body field wins; otherwise fall back to env default.
     half = payload.half if payload.half is not None else _env_half_default()
-    return predict_image(
-        model,
-        image_bytes,
-        conf=payload.conf,
-        iou=payload.iou,
-        half=half,
-        device=_resolve_yolo_device(),
-    )
+    with admit(CostClass.YOLO):
+        return predict_image(
+            model,
+            image_bytes,
+            conf=payload.conf,
+            iou=payload.iou,
+            half=half,
+            device=_resolve_yolo_device(),
+        )
 
 
 class InspectOut(BaseModel):

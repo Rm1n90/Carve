@@ -343,11 +343,36 @@ def _nms_dedupe(dets: list[dict], iou_threshold: float) -> list[dict]:
     return out
 
 
+def _admission_payload(body) -> dict | None:
+    """Return the structured GPU-admission body from a model service 503,
+    or ``None`` when this isn't one of those.
+
+    FastAPI's ``HTTPException(detail=<dict>)`` serialises as
+    ``{"detail": {...}}`` in the response; older paths emit the dict at
+    the top level. Handle both shapes so the api is robust to minor
+    schema drift.
+    """
+    if not isinstance(body, dict):
+        return None
+    inner = body.get("detail") if isinstance(body.get("detail"), dict) else body
+    if not isinstance(inner, dict):
+        return None
+    code = inner.get("code") or inner.get("error")
+    if code in ("gpu_oom_risk", "gpu_busy"):
+        return inner
+    return None
+
+
 def _wrap_predict_errors(label: str, fn):
     """Run ``fn``, mapping ModelServiceError to our typed AppErrors."""
     try:
         return fn()
     except ModelServiceError as exc:
+        admission = _admission_payload(exc.body)
+        if admission is not None:
+            from carve_api.errors import GpuAdmissionError
+
+            raise GpuAdmissionError(admission) from exc
         if exc.status_code == 503:
             raise YoloeModelUnreachable(f"{label}: {exc.body!r}") from exc
         if exc.status_code in (409, 404):

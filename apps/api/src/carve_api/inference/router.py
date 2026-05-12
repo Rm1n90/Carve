@@ -64,6 +64,12 @@ def _redis_client_or_none() -> Redis | None:
 
 
 def _http(err: AppError) -> HTTPException:
+    # When the AppError carries a structured ``payload`` dict (e.g.
+    # GpuAdmissionError), surface it verbatim so the frontend can read
+    # free_mb / needed_mb / cost_class and render an informative toast.
+    payload = getattr(err, "payload", None)
+    if isinstance(payload, dict):
+        return HTTPException(status_code=err.http_status, detail=payload)
     return HTTPException(status_code=err.http_status, detail=err.code)
 
 

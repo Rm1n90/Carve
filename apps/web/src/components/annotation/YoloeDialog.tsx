@@ -49,6 +49,7 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { inferenceErrorMessage } from "@/lib/inferenceErrors";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
 import { useDialogPrefs } from "@/state/dialogPrefs";
 import { useAnnotations } from "@/state/annotations";
@@ -639,6 +640,11 @@ export function YoloeDialog({
       setOpen(false);
     },
     onError: (err: unknown) => {
+      const friendly = inferenceErrorMessage(err);
+      if (friendly) {
+        showToast(friendly, { variant: "error", duration: 5000 });
+        return;
+      }
       const msg =
         err && typeof err === "object" && "message" in err
           ? String((err as { message?: string }).message)
@@ -1333,7 +1339,7 @@ function YoloeBatchProgress({
       className="grid gap-3 p-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)]"
     >
       <div className="flex items-start gap-2">
-        {status === "running" || status === "pending" ? (
+        {status === "running" || status === "pending" || status === "waiting_for_gpu" ? (
           <Loader2 className="h-4 w-4 mt-0.5 text-[color:var(--accent)] animate-spin" />
         ) : status === "failed" || status === "canceled" ? (
           <AlertTriangle className="h-4 w-4 mt-0.5 text-[color:var(--danger)]" />
@@ -1342,11 +1348,16 @@ function YoloeBatchProgress({
         )}
         <div className="grid gap-0.5 flex-1">
           <div className="text-[12.5px] font-medium">
-            YOLOE batch {status === "running" ? "running" : status}
+            {status === "waiting_for_gpu"
+              ? "Waiting for GPU…"
+              : `YOLOE batch ${status === "running" ? "running" : status}`}
           </div>
           <div className="text-[11px] text-[color:var(--text-secondary)] font-mono tabular-nums">
             {done}/{total}
             {failed > 0 ? ` · ${failed} failed` : ""}
+            {status === "waiting_for_gpu"
+              ? " · another job is on the GPU"
+              : ""}
           </div>
         </div>
       </div>
