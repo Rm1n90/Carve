@@ -2665,6 +2665,13 @@ export function EditorToolbar({
           onFitToScreen?.();
           return;
         }
+        if (e.key === "1") {
+          // Bare "1" is reserved for class selection; the 100%-zoom
+          // command stays reachable via Cmd/Ctrl+1.
+          e.preventDefault();
+          onZoomActual?.();
+          return;
+        }
         return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -2678,14 +2685,12 @@ export function EditorToolbar({
         onZoomOut?.();
         return;
       }
-      if (e.key === "0") {
-        onFitToScreen?.();
-        return;
-      }
-      if (e.key === "1") {
-        onZoomActual?.();
-        return;
-      }
+      // Bare digits 0–9 are reserved for class selection (see
+      // ClassesPanel — pressing "1" picks the 1st class, etc.).
+      // Don't shadow them with fit/100% zoom on bare keystrokes; the
+      // modifier-prefixed variants (Cmd/Ctrl+0 / Cmd/Ctrl+1) stay
+      // wired in the metaKey/ctrlKey branch above, and the toolbar
+      // buttons / F shortcut remain available.
       const k = e.key.toLowerCase();
       if (k === "a") {
         toggleAutoApply();

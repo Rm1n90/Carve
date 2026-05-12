@@ -153,6 +153,20 @@ function SamTrackModeGate({
 export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  // Reset the toolbar to the default "Drag" (cursor) tool every time
+  // the editor mounts. `useTool` is a module-level zustand store so its
+  // state survives the SPA-level navigation back to /projects and
+  // re-entry; without this reset a previously chosen Smart Tool ▸
+  // Point / Bbox / Text / Track stays selected, which surprises users
+  // who expect a clean Drag mode on re-entry.
+  useEffect(() => {
+    const tool = useTool.getState();
+    tool.setActive("cursor");
+    tool.setSamMode("point");
+    // Mount-only: NOT on assetId / taskId change. Switching assets
+    // inside the editor should preserve the current tool choice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // v3.30 — record this task as the user's most-recently-touched
   // task in this project. Drives the Resume button on the project
   // detail page so reopening the project jumps you back to the work
@@ -894,6 +908,37 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     const ids = useAnnotations.getState().selectedIds;
     if (ids.length === 0) return;
     useAnnotations.getState().removeMany(ids);
+  });
+
+  // Ctrl/Cmd+C — copy the currently selected bbox to the clipboard
+  // slice. Other kinds (polygon, mask, tag) are intentionally ignored
+  // per user request — bboxes are by far the most common case and the
+  // single-line guard keeps the UX predictable.
+  useShortcutHandler("copy", () => {
+    const state = useAnnotations.getState();
+    const id = state.selectedId;
+    if (!id) return;
+    const ann = state.byId[id];
+    if (!ann || ann.kind !== "bbox") return;
+    state.copyToClipboard(id);
+    showToast("Bbox copied", { variant: "info", duration: 1200 });
+  });
+
+  // Ctrl/Cmd+V — paste the clipboard bbox at a small offset from the
+  // source so the duplicate is visible and selectable, ready to drag.
+  // The store auto-selects the new draft for the user.
+  useShortcutHandler("paste", () => {
+    const state = useAnnotations.getState();
+    const cb = state.clipboard;
+    if (!cb || cb.kind !== "bbox") return;
+    const src = cb.geometry;
+    if (src.kind !== "bbox") return;
+    const a = assetQ.data?.asset;
+    const bounds =
+      a && typeof a.width === "number" && typeof a.height === "number"
+        ? { w: a.width, h: a.height }
+        : undefined;
+    state.pasteFromClipboard(src.x + 16, src.y + 16, frameIdRef.current, bounds);
   });
 
   // v3.20 -- customizable shortcuts. Every action below is editable in

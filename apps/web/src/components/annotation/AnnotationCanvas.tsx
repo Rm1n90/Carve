@@ -228,6 +228,17 @@ export function AnnotationCanvas({
   // resolve so quick activations (warm session) never flash the overlay.
   const [samLoadOverlayOpen, setSamLoadOverlayOpen] = useState(false);
   const shapeGfxByIdRef = useRef<Map<string, unknown>>(new Map());
+  // Per-shape signature cache so reconcile() can skip the renderBbox /
+  // renderPolygon / renderLabel rebuild when nothing visible about a
+  // given shape has changed since the previous reconcile pass. Without
+  // this, dragging one bbox on a frame with N other shapes cost O(N)
+  // Pixi geometry-buffer rebuilds per animation frame — visibly laggy
+  // on heavy frames. The signature folds in every input renderBbox /
+  // renderPolygon / renderLabel cares about so changes elsewhere
+  // (selection flip, hover, visibility toggle, color override, label
+  // text, status) still trigger a redraw of THAT shape only.
+  const shapeSigByIdRef = useRef<Map<string, string>>(new Map());
+  const labelSigByIdRef = useRef<Map<string, string>>(new Map());
   // Plan-09 Phase 5 Task 4 — graphics nodes for the prev-geometry
   // compare overlay (one Graphics per id). Kept in a separate map so
   // the main shape pipeline can clear/reconcile its own `gfxMap`
@@ -245,14 +256,129 @@ export function AnnotationCanvas({
   const maskSpriteByIdRef = useRef<
     Map<string, { sprite: unknown; canvas: HTMLCanvasElement; texture: unknown }>
   >(new Map());
+  // Captured rendering context for the shape being dragged. Computed
+  // once at pointerdown so the move handler can re-paint the dragging
+  // Pixi Graphics SYNCHRONOUSLY without a store round-trip — the cursor
+  // and the bbox stay locked together in the same frame.
+  interface DragRenderCtx {
+    color: number;
+    fillAlpha: number;
+    selectedFillAlpha: number;
+    handleSize: number;
+    outlineColor: number | undefined;
+    showHandles: boolean;
+  }
   // Active bbox-edit drag state. Lives in a ref so updates don't re-trigger
   // the tool-routing useEffect (which would recreate every pointer handler).
   const dragRef = useRef<
-    | { mode: "translate"; id: string; offset: Point; original: Bbox }
-    | { mode: "resize"; id: string; handle: BboxHandleName; original: Bbox }
-    | { mode: "vertex"; id: string; index: number; original: Polygon }
+    | {
+        mode: "translate";
+        id: string;
+        offset: Point;
+        original: Bbox;
+        ctx: DragRenderCtx;
+      }
+    | {
+        mode: "resize";
+        id: string;
+        handle: BboxHandleName;
+        original: Bbox;
+        ctx: DragRenderCtx;
+      }
+    | {
+        mode: "vertex";
+        id: string;
+        index: number;
+        original: Polygon;
+        ctx: DragRenderCtx;
+      }
     | null
   >(null);
+  // Latest geometry computed by the drag pointermove handler. The
+  // store is NOT updated during the drag (that would re-fire every
+  // store subscriber + the canvas reconcile path on every pointer
+  // event, which was the dominant cause of cursor↔shape desync).
+  // On pointerup we read from here, clamp, and call useAnnotations
+  // .update() exactly once.
+  const dragLatestGeomRef = useRef<Bbox | Polygon | null>(null);
+  /** Synchronously redraw the dragging shape's existing Pixi Graphics
+   * with the new geometry. Bypasses the store + React + reconcile
+   * pipeline so the visual stays in lock-step with the pointer. */
+  const paintDragGeometry = (
+    id: string,
+    next: Bbox | Polygon,
+    ctx: DragRenderCtx,
+  ): void => {
+    const g = shapeGfxByIdRef.current.get(id) as
+      | Parameters<typeof renderBbox>[0]
+      | undefined;
+    if (!g) return;
+    if (next.kind === "bbox") {
+      renderBbox(
+        g,
+        next,
+        ctx.color,
+        true,
+        ctx.showHandles,
+        ctx.fillAlpha,
+        ctx.selectedFillAlpha,
+        ctx.handleSize,
+        ctx.outlineColor,
+      );
+    } else if (next.kind === "polygon") {
+      renderPolygon(
+        g,
+        next,
+        ctx.color,
+        true,
+        ctx.showHandles,
+        ctx.fillAlpha,
+        ctx.selectedFillAlpha,
+        ctx.handleSize,
+        ctx.outlineColor,
+      );
+    }
+    // Invalidate the per-shape signature cache so the next reconcile
+    // pass (triggered by the pointerup commit) actually re-renders
+    // even though the cached signature might happen to match a
+    // previously rendered value somewhere in the cache.
+    shapeSigByIdRef.current.delete(id);
+    labelSigByIdRef.current.delete(id);
+  };
+  /** Snapshot the inputs renderBbox / renderPolygon need so the drag
+   * move handler can run synchronously without re-reading stores. */
+  const captureDragCtx = (id: string): DragRenderCtx => {
+    const settings = useEditorSettings.getState();
+    const state = useAnnotations.getState();
+    const draft = state.byId[id];
+    const tool = useTool.getState();
+    let color = 0x000000;
+    if (draft) {
+      if (settings.colorBy === "instance") color = colorFromString(id);
+      else if (settings.colorBy === "group") color = DEFAULT_AMBER;
+      else
+        color = hexFromColor(
+          draft.colorOverride ?? classMap[draft.classId],
+        );
+    }
+    const rejectedAlphaMul = draft?.status === "rejected" ? 0.4 : 1;
+    return {
+      color,
+      fillAlpha: Math.max(
+        0,
+        Math.min(1, (settings.opacity / 100) * rejectedAlphaMul),
+      ),
+      selectedFillAlpha: Math.max(
+        0,
+        Math.min(1, (settings.selectedOpacity / 100) * rejectedAlphaMul),
+      ),
+      handleSize: settings.controlPointsSize,
+      outlineColor: settings.outlinedBorders
+        ? hexFromColor(settings.outlinedBorderColor)
+        : undefined,
+      showHandles: tool.active === "cursor",
+    };
+  };
   // Cursor override during a drag — clears when the drag ends.
   // Stored in a ref + applied directly to the host element's inline style,
   // not React state. AnnotationCanvas is a large component; routing every
@@ -500,6 +626,8 @@ export function AnnotationCanvas({
       imageSpriteRef.current = null;
       shapeGfxByIdRef.current.clear();
       labelGfxByIdRef.current.clear();
+      shapeSigByIdRef.current.clear();
+      labelSigByIdRef.current.clear();
       previewGfxRef.current = null;
       setPixiReady(false);
     };
@@ -1132,16 +1260,23 @@ export function AnnotationCanvas({
           app.shapeLayer.addChild(g);
         }
         if (!visAnn || hidden || hiddenByPixels) {
-          (g as { clear?: () => void }).clear?.();
-          (g as { visible?: boolean }).visible = false;
-          // Also hide an existing mask sprite when hidden by visibility.
-          const ms = maskSpriteByIdRef.current.get(id);
-          if (ms) {
-            try {
-              (ms.sprite as { visible?: boolean }).visible = false;
-            } catch {
-              /* ignore */
+          // Cached hidden-state short-circuit: skip the Graphics.clear
+          // call when this shape was already hidden on the previous
+          // reconcile pass.
+          if (shapeSigByIdRef.current.get(id) !== "H") {
+            (g as { clear?: () => void }).clear?.();
+            (g as { visible?: boolean }).visible = false;
+            // Also hide an existing mask sprite when hidden by visibility.
+            const ms = maskSpriteByIdRef.current.get(id);
+            if (ms) {
+              try {
+                (ms.sprite as { visible?: boolean }).visible = false;
+              } catch {
+                /* ignore */
+              }
             }
+            shapeSigByIdRef.current.set(id, "H");
+            labelSigByIdRef.current.delete(id);
           }
           seen.add(id);
           continue;
@@ -1180,8 +1315,31 @@ export function AnnotationCanvas({
         const isSelected =
           state.selectedId === id || state.selectedIds.includes(id);
         const isHovered = hovered === id;
+        // Geometry signature folds in every visible input renderBbox /
+        // renderPolygon depends on. If the cached signature matches and
+        // the Graphics instance is the same, no Pixi geometry-buffer
+        // rebuild is needed for this shape on this reconcile pass.
+        // This makes drag-on-heavy-frames smooth: only the dragging
+        // shape's signature changes, every other bbox short-circuits.
+        const geoKey =
+          draft.geometry.kind === "bbox"
+            ? `B|${draft.geometry.x}|${draft.geometry.y}|${draft.geometry.w}|${draft.geometry.h}`
+            : draft.geometry.kind === "polygon"
+              ? `P|${draft.geometry.points
+                  .map(([px, py]) => `${px},${py}`)
+                  .join(";")}`
+              : `${draft.geometry.kind}`;
+        const shapeSig =
+          `${geoKey}|c=${color}|sel=${isSelected ? 1 : 0}` +
+          `|hov=${isHovered ? 1 : 0}|h=${showHandles && isSelected ? 1 : 0}` +
+          `|fa=${fillAlpha.toFixed(3)}|sfa=${selectedFillAlpha.toFixed(3)}` +
+          `|cps=${settings.controlPointsSize}` +
+          `|ol=${outlineColor ?? "_"}|st=${draft.status ?? "proposed"}` +
+          `|cb=${settings.colorBy}`;
+        const prevShapeSig = shapeSigByIdRef.current.get(id);
+        const shapeUnchanged = prevShapeSig === shapeSig;
         if (draft.geometry.kind === "bbox") {
-          renderBbox(
+          if (!shapeUnchanged) renderBbox(
             g,
             draft.geometry,
             color,
@@ -1209,26 +1367,33 @@ export function AnnotationCanvas({
                 }
               }
               if (pixiText && pixiContainer) {
-                renderLabel(
-                  app.shapeLayer as unknown as { addChild: (c: never) => unknown },
-                  labelMap,
-                  id,
-                  draft.geometry,
-                  labelText,
-                  color,
-                  pixiText,
-                  pixiContainer,
-                  Graphics,
-                  settings.labelFontSize,
-                  settings.labelPosition,
-                  draft.status ?? "proposed",
-                );
+                const labelSig =
+                  `${geoKey}|t=${labelText}|c=${color}` +
+                  `|fs=${settings.labelFontSize}|lp=${settings.labelPosition}` +
+                  `|st=${draft.status ?? "proposed"}`;
+                if (labelSigByIdRef.current.get(id) !== labelSig) {
+                  renderLabel(
+                    app.shapeLayer as unknown as { addChild: (c: never) => unknown },
+                    labelMap,
+                    id,
+                    draft.geometry,
+                    labelText,
+                    color,
+                    pixiText,
+                    pixiContainer,
+                    Graphics,
+                    settings.labelFontSize,
+                    settings.labelPosition,
+                    draft.status ?? "proposed",
+                  );
+                  labelSigByIdRef.current.set(id, labelSig);
+                }
                 seenLabels.add(id);
               }
             }
           }
         } else if (draft.geometry.kind === "polygon") {
-          renderPolygon(
+          if (!shapeUnchanged) renderPolygon(
             g,
             draft.geometry,
             color,
@@ -1270,20 +1435,27 @@ export function AnnotationCanvas({
                   if (px > maxX) maxX = px;
                   if (py > maxY) maxY = py;
                 }
-                renderLabel(
-                  app.shapeLayer as unknown as { addChild: (c: never) => unknown },
-                  labelMap,
-                  id,
-                  { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
-                  labelText,
-                  color,
-                  pixiText,
-                  pixiContainer,
-                  Graphics,
-                  settings.labelFontSize,
-                  settings.labelPosition,
-                  draft.status ?? "proposed",
-                );
+                const polyLabelSig =
+                  `${geoKey}|t=${labelText}|c=${color}` +
+                  `|fs=${settings.labelFontSize}|lp=${settings.labelPosition}` +
+                  `|st=${draft.status ?? "proposed"}`;
+                if (labelSigByIdRef.current.get(id) !== polyLabelSig) {
+                  renderLabel(
+                    app.shapeLayer as unknown as { addChild: (c: never) => unknown },
+                    labelMap,
+                    id,
+                    { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
+                    labelText,
+                    color,
+                    pixiText,
+                    pixiContainer,
+                    Graphics,
+                    settings.labelFontSize,
+                    settings.labelPosition,
+                    draft.status ?? "proposed",
+                  );
+                  labelSigByIdRef.current.set(id, polyLabelSig);
+                }
                 seenLabels.add(id);
               }
             }
@@ -1302,6 +1474,10 @@ export function AnnotationCanvas({
             isSelected ? selectedFillAlpha : fillAlpha,
           );
         }
+        // Cache the freshly-rendered signature so the next reconcile
+        // pass can short-circuit when nothing visible about this shape
+        // has changed.
+        shapeSigByIdRef.current.set(id, shapeSig);
         seen.add(id);
       }
       // Remove labels for drafts that aren't visible / weren't seen.
@@ -1332,6 +1508,7 @@ export function AnnotationCanvas({
             }
           }
           labelMap.delete(id);
+          labelSigByIdRef.current.delete(id);
         }
       }
       for (const id of Array.from(gfxMap.keys())) {
@@ -1345,6 +1522,7 @@ export function AnnotationCanvas({
             }
           }
           gfxMap.delete(id);
+          shapeSigByIdRef.current.delete(id);
         }
       }
       // Remove mask sprites whose drafts are gone or no longer
@@ -2333,6 +2511,7 @@ export function AnnotationCanvas({
               id: sel.id,
               handle,
               original: sel.bbox,
+              ctx: captureDragCtx(sel.id),
             };
             setDragCursor(cursorForHandle(handle));
             try {
@@ -2348,6 +2527,7 @@ export function AnnotationCanvas({
               id: sel.id,
               offset: { x: p.x - sel.bbox.x, y: p.y - sel.bbox.y },
               original: sel.bbox,
+              ctx: captureDragCtx(sel.id),
             };
             setDragCursor("move");
             try {
@@ -2369,6 +2549,7 @@ export function AnnotationCanvas({
               id: polySel.id,
               index: idx,
               original: polySel.poly,
+              ctx: captureDragCtx(polySel.id),
             };
             setDragCursor("grabbing");
             try {
@@ -2399,6 +2580,7 @@ export function AnnotationCanvas({
                 id: polySel.id,
                 index: newIndex,
                 original: nextPoly,
+                ctx: captureDragCtx(polySel.id),
               };
               setDragCursor("grabbing");
               try {
@@ -2762,14 +2944,17 @@ export function AnnotationCanvas({
               p.y - drag.offset.y,
               null,
             );
-            useAnnotations.getState().update(drag.id, { geometry: next });
+            dragLatestGeomRef.current = next;
+            paintDragGeometry(drag.id, next, drag.ctx);
           } else if (drag.mode === "resize") {
             const next = applyResize(drag.original, drag.handle, p, null);
-            useAnnotations.getState().update(drag.id, { geometry: next });
+            dragLatestGeomRef.current = next;
+            paintDragGeometry(drag.id, next, drag.ctx);
           } else {
             // mode === "vertex"
             const next = applyVertexTranslate(drag.original, drag.index, p, null);
-            useAnnotations.getState().update(drag.id, { geometry: next });
+            dragLatestGeomRef.current = next;
+            paintDragGeometry(drag.id, next, drag.ctx);
           }
           return;
         }
@@ -2994,35 +3179,31 @@ export function AnnotationCanvas({
           return;
         }
         if (dragRef.current) {
-          // v3.24.13 — drag let the geometry travel past the image
-          // during the move (issue #2: edit handles in any direction;
-          // issue #3: free draw past frame). On release, snap the
-          // final geometry to the image bounds. Skip when bounds aren't
-          // known yet (texture not loaded) to keep behavior identical
-          // to the bound-agnostic fallback path.
           const dragId = dragRef.current.id;
+          // During the drag the store stayed unchanged — every move was
+          // painted directly onto the dragging Pixi Graphics for zero
+          // pointer-to-pixel lag. On release, commit the final geometry
+          // (clamped to image bounds when known) so the rest of the app
+          // sees it: save mutation, undo history, ObjectsPanel, etc.
+          const latest = dragLatestGeomRef.current;
           const bounds =
             imageSize.w > 1 && imageSize.h > 1 ? imageSize : null;
-          if (bounds) {
-            const ann = useAnnotations.getState().byId[dragId];
-            if (ann) {
-              if (ann.geometry.kind === "bbox") {
-                const clamped = clampBboxToBounds(ann.geometry, bounds);
-                if (clamped) {
-                  useAnnotations
-                    .getState()
-                    .update(dragId, { geometry: clamped });
-                }
-              } else if (ann.geometry.kind === "polygon") {
-                const clamped = clampPolygonToBounds(ann.geometry, bounds);
-                if (clamped) {
-                  useAnnotations
-                    .getState()
-                    .update(dragId, { geometry: clamped });
-                }
+          if (latest) {
+            let finalGeom: Bbox | Polygon = latest;
+            if (bounds) {
+              if (latest.kind === "bbox") {
+                const clamped = clampBboxToBounds(latest, bounds);
+                if (clamped) finalGeom = clamped;
+              } else if (latest.kind === "polygon") {
+                const clamped = clampPolygonToBounds(latest, bounds);
+                if (clamped) finalGeom = clamped;
               }
             }
+            useAnnotations
+              .getState()
+              .update(dragId, { geometry: finalGeom });
           }
+          dragLatestGeomRef.current = null;
           dragRef.current = null;
           setDragCursor(null);
           try {
