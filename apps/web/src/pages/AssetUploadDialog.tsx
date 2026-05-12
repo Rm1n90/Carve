@@ -466,35 +466,13 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
                     style={{ width: `${pct}%` }}
                   />
                 </div>
-                {Object.entries(phase.active).length > 0 && (
-                  <ul className="grid gap-1.5 mt-1">
-                    {Object.entries(phase.active).map(([key, p]) => {
-                      const filePct =
-                        p.total > 0
-                          ? Math.min(100, Math.round((p.loaded / p.total) * 100))
-                          : 0;
-                      return (
-                        <li key={key} className="grid gap-1">
-                          <div className="flex items-baseline justify-between gap-3">
-                            <span className="truncate text-[12px] text-tertiary">
-                              {p.name}
-                            </span>
-                            <span className="font-mono-data text-[11px] text-tertiary shrink-0">
-                              {formatBytes(p.loaded)} / {formatBytes(p.total)} ·{" "}
-                              {filePct}%
-                            </span>
-                          </div>
-                          <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
-                            <div
-                              className="h-full bg-[color:var(--accent)]/70 transition-[width] duration-100 ease-out"
-                              style={{ width: `${filePct}%` }}
-                            />
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
+                {/* One realtime aggregate progress bar is enough — the
+                    previous per-file list added/removed rows as the
+                    concurrency pool rotated through assets, which made
+                    the dialog visibly resize during upload. The single
+                    bar above already integrates every in-flight file's
+                    byte progress via
+                    ``transferred = bytesCompleted + activeBytes``. */}
               </div>
             );
           })()}

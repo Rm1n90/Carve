@@ -71,6 +71,13 @@ export function ProjectsPage() {
   const projectsQ = useQuery({
     queryKey: ["projects"],
     queryFn: projectsApi.list,
+    // The cache wipe on login/logout (auth/api.ts) handles the
+    // cross-user leak, but always-refetch-on-mount is a cheap second
+    // safety net so re-entering the projects index after any state
+    // change (invite acceptance, member promotion, etc.) shows a
+    // current list without needing a hard refresh.
+    refetchOnMount: "always",
+    staleTime: 0,
   });
   const createM = useMutation({
     mutationFn: projectsApi.create,

@@ -24,6 +24,49 @@ class RolePatchIn(BaseModel):
     role: UserRole
 
 
+class MemberProjectOut(BaseModel):
+    """One project a workspace member belongs to (owner / admin / etc.)."""
+
+    project_id: str
+    project_name: str
+    role: str
+
+
+@router.get(
+    "/projects-by-user",
+    response_model=dict[str, list[MemberProjectOut]],
+)
+def list_member_projects(
+    _user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
+    db: Session = Depends(get_db),
+) -> dict[str, list[MemberProjectOut]]:
+    """Return per-user project memberships keyed by user id (string).
+
+    Drives the Settings → Members page so an admin can see WHICH
+    projects every member has access to, instead of just the email +
+    workspace role. One round-trip for the whole workspace (small data
+    even for a 100-user / 100-project shop, which is well within v1
+    operating envelope).
+    """
+    from carve_api.projects.models import Project, ProjectMember
+
+    rows = db.execute(
+        select(ProjectMember, Project.name)
+        .join(Project, Project.id == ProjectMember.project_id)
+        .order_by(ProjectMember.user_id, Project.name)
+    ).all()
+    out: dict[str, list[MemberProjectOut]] = {}
+    for pm, project_name in rows:
+        out.setdefault(str(pm.user_id), []).append(
+            MemberProjectOut(
+                project_id=str(pm.project_id),
+                project_name=project_name,
+                role=pm.role,
+            )
+        )
+    return out
+
+
 @router.get("", response_model=list[UserOut])
 def list_members(
     user: User = Depends(get_current_user),  # noqa: ARG001 — auth required

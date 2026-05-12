@@ -2,7 +2,8 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/jetbrains-mono";
 import "@fontsource-variable/fraunces";
@@ -62,25 +63,6 @@ declare module "@tanstack/react-router" {
     router: typeof router;
   }
 }
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 30_000,
-      // v3.30 — without an explicit retry cap, React Query retries
-      // failed queries 3 times with exponential backoff. Each retry
-      // is an in-flight request, which keeps Chrome's tab spinner
-      // spinning long after the user sees the page render. Cap at 1
-      // and let the affected component decide if it needs more.
-      retry: 1,
-      // Window-focus refetches are useful for live data, but most
-      // queries in this app already use ``refetchOnWindowFocus:
-      // false`` explicitly. Disable the default so tabbing back
-      // doesn't briefly relight the spinner for stale-but-good data.
-      refetchOnWindowFocus: false,
-    },
-  },
-});
 
 const el = document.getElementById("root");
 if (!el) throw new Error("root element not found");

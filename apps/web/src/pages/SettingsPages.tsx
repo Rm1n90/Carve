@@ -444,6 +444,14 @@ export function SettingsMembersPage() {
   const qc = useQueryClient();
   const confirm = useConfirm();
   const membersQ = useQuery({ queryKey: ["members"], queryFn: membersApi.list });
+  // Per-user project memberships, so the admin row can show WHICH
+  // projects every member has access to.
+  const memberProjectsQ = useQuery({
+    queryKey: ["members", "projects-by-user"],
+    queryFn: membersApi.projectsByUser,
+    refetchOnMount: "always",
+    staleTime: 0,
+  });
   const setRoleM = useMutation({
     mutationFn: ({ id, role }: { id: string; role: Role }) =>
       membersApi.setRole(id, role),
@@ -546,6 +554,7 @@ export function SettingsMembersPage() {
                   isMe={isMe}
                   isAdmin={isAdmin}
                   canDelete={isAdmin && !isMe && !isLastAdmin}
+                  projects={memberProjectsQ.data?.[m.id] ?? []}
                   onChangeRole={(role) => setRoleM.mutate({ id: m.id, role })}
                   onDelete={async () => {
                     const ok = await confirm({
@@ -946,6 +955,7 @@ function MemberRow({
   canDelete,
   onChangeRole,
   onDelete,
+  projects = [],
 }: {
   m: Member;
   isMe: boolean;
@@ -953,14 +963,15 @@ function MemberRow({
   canDelete: boolean;
   onChangeRole: (r: Role) => void;
   onDelete: () => void;
+  projects?: import("@/api/members").MemberProject[];
 }) {
   const initial = m.email[0]?.toUpperCase() ?? "?";
   return (
-    <li className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-4 py-2.5 flex items-center gap-3">
-      <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)] text-[12px] font-medium">
+    <li className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-4 py-2.5 flex items-start gap-3">
+      <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--accent-bg)] text-[color:var(--accent)] text-[12px] font-medium mt-1">
         {initial}
       </span>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 grid gap-1">
         <p className="text-[13.5px] truncate">
           {m.email}
           {isMe && (
@@ -969,6 +980,32 @@ function MemberRow({
             </span>
           )}
         </p>
+        {projects.length > 0 ? (
+          <div
+            className="flex flex-wrap items-center gap-1.5"
+            data-testid={`member-projects-${m.id}`}
+          >
+            <span className="text-[10.5px] uppercase tracking-[0.14em] text-[color:var(--text-tertiary)]">
+              Projects
+            </span>
+            {projects.map((p) => (
+              <span
+                key={p.project_id}
+                className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-[11px] text-[color:var(--text-secondary)]"
+                title={`${p.project_name} · ${p.role}`}
+              >
+                {p.project_name}
+                <span className="text-[9.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
+                  {p.role}
+                </span>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <span className="text-[11px] text-[color:var(--text-tertiary)] italic">
+            No project access yet
+          </span>
+        )}
       </div>
       {isAdmin && !isMe ? (
         <Select

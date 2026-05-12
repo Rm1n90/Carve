@@ -404,6 +404,16 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     // the editor's canvas (and its derived classMap) doesn't need to
     // remount because the user tabbed away.
     refetchOnWindowFocus: false,
+    // Always refetch the task-effective class list on editor mount.
+    // The user may have added classes to the project and/or assigned
+    // them to this task from a separate page (ClassesEditor,
+    // ProjectDetailPage's "Assign classes" dialog, etc.) while the
+    // cached entry was still considered fresh by the global 30 s
+    // staleTime. Without this, re-entering the editor served the
+    // pre-assignment cache and the classes panel / Auto-Annotate /
+    // Smart Find rows looked empty until a hard refresh.
+    refetchOnMount: "always",
+    staleTime: 0,
   });
   // Adapt the response shape so all downstream readers keep working
   // against a flat ``ClassRow[]`` like before.

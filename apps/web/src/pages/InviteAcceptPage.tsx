@@ -62,6 +62,14 @@ export function InviteAcceptPage({ token, onAccepted }: InviteAcceptPageProps) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
 
+  // Current auth state — when the user clicking the invite link is
+  // already signed in (typical case: the inviter testing their own
+  // invite, or a returning user with a live session) we branch on
+  // whether the session matches the invite target.
+  const currentUser = useAuth((s) => s.user);
+  const currentToken = useAuth((s) => s.accessToken);
+  const isAuthed = !!currentToken && !!currentUser;
+
   useEffect(() => {
     let cancelled = false;
     invitesApi
@@ -162,10 +170,43 @@ export function InviteAcceptPage({ token, onAccepted }: InviteAcceptPageProps) {
     }
   }
 
+  async function onAcceptAsCurrentUser() {
+    if (!preview) return;
+    setSubmitError(null);
+    setSubmitting(true);
+    try {
+      const result = await invitesApi.accept({ token });
+      showToast(`Joined ${preview.project_name}`, { variant: "success" });
+      onAccepted(result);
+    } catch (err: unknown) {
+      const { status, body } = readError(err);
+      setSubmitError(pickFriendly(status, body));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function onSwitchAccount() {
+    useAuth.getState().clear();
+    // Reload the page so the in-flight auth-aware components reset
+    // and the unauthed login form renders cleanly. The token in the
+    // URL is preserved.
+    if (typeof window !== "undefined") window.location.reload();
+  }
+
+  const sameEmail =
+    isAuthed &&
+    currentUser?.email?.toLowerCase() === preview.email.toLowerCase();
+  const wrongEmail = isAuthed && !sameEmail;
+
   const title = `Join ${preview.project_name}`;
-  const description = preview.requires_password
-    ? `Create an account for ${preview.email} to accept this invitation.`
-    : `Sign in as ${preview.email} to accept this invitation.`;
+  const description = sameEmail
+    ? `You're signed in as ${preview.email}. Accept the invitation to join as ${preview.role}.`
+    : wrongEmail
+      ? `This invitation was sent to ${preview.email}, but you're signed in as ${currentUser?.email}.`
+      : preview.requires_password
+        ? `Create an account for ${preview.email} to accept this invitation.`
+        : `Sign in as ${preview.email} to accept this invitation.`;
 
   return (
     <AuthShell
@@ -173,7 +214,58 @@ export function InviteAcceptPage({ token, onAccepted }: InviteAcceptPageProps) {
       cardTitle={title}
       cardDescription={description}
     >
-      {preview.requires_password ? (
+      {sameEmail ? (
+        <div className="grid gap-3">
+          {submitError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-[var(--radius-3)] border border-[var(--danger)] bg-[var(--danger-bg)] px-3 py-2 text-[13px] text-[color:var(--danger)]"
+              data-testid="invite-submit-error"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <span>{submitError}</span>
+            </div>
+          )}
+          <Button
+            type="button"
+            variant="primary"
+            size="lg"
+            block
+            loading={submitting}
+            onClick={onAcceptAsCurrentUser}
+            data-testid="invite-accept-current"
+          >
+            {submitting ? "Joining" : `Accept invitation as ${preview.role}`}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="md"
+            block
+            onClick={onSwitchAccount}
+            data-testid="invite-switch-account"
+          >
+            Use a different account
+          </Button>
+        </div>
+      ) : wrongEmail ? (
+        <div className="grid gap-3">
+          <p className="text-[13px] text-[color:var(--text-secondary)]">
+            To accept this invitation, sign out of {currentUser?.email} and
+            sign back in as {preview.email}.
+          </p>
+          <Button
+            type="button"
+            variant="primary"
+            size="lg"
+            block
+            onClick={onSwitchAccount}
+            data-testid="invite-switch-account"
+          >
+            Sign out and switch account
+          </Button>
+        </div>
+      ) : preview.requires_password ? (
         <form onSubmit={onRegisterSubmit} className="grid gap-3" noValidate>
           <Input
             label="Email"

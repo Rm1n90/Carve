@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { api } from "@/api/client";
+import { queryClient } from "@/lib/queryClient";
 import { useAuth, type User } from "./store";
 
 interface TokenPair {
@@ -29,6 +30,10 @@ export async function login(email: string, password: string): Promise<void> {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     })
   ).data;
+  // Wipe any React Query cache left over from a previous session
+  // BEFORE the new session is set, so we never leak the prior user's
+  // projects/tasks/etc. to the new user's view.
+  queryClient.clear();
   useAuth.getState().setSession({
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
@@ -37,6 +42,9 @@ export async function login(email: string, password: string): Promise<void> {
 }
 
 export function logout(): void {
+  // Drop every cached query (the just-departing user's data) so
+  // whoever logs in next starts from a blank slate.
+  queryClient.clear();
   useAuth.getState().clear();
 }
 

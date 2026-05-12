@@ -14,9 +14,22 @@ export interface Member {
   role: Role;
 }
 
+export interface MemberProject {
+  project_id: string;
+  project_name: string;
+  role: string;
+}
+
+export type MemberProjectsByUser = Record<string, MemberProject[]>;
+
 export const membersApi = {
   list: async (): Promise<Member[]> =>
     (await api.get<Member[]>("/auth/members")).data,
+  /** Per-user project memberships for the Settings → Members admin
+   * surface, so admins can see WHICH projects each member can access. */
+  projectsByUser: async (): Promise<MemberProjectsByUser> =>
+    (await api.get<MemberProjectsByUser>("/auth/members/projects-by-user"))
+      .data,
   setRole: async (userId: string, role: Role): Promise<Member> =>
     (await api.patch<Member>(`/auth/members/${userId}/role`, { role })).data,
   /** Bug 14 — admin invites a new member (email + initial password + role). */

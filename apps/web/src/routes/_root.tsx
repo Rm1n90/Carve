@@ -12,7 +12,12 @@ const EDITOR_PATH_RX = /^\/projects\/[^/]+\/tasks\/[^/]+\/assets\/[^/]+$/;
 function RootComponent() {
   const token = useAuth((s) => s.accessToken);
   const path = useRouterState({ select: (s) => s.location.pathname });
-  const onAuthPage = path === "/login" || path === "/register";
+  // /invite/<token> uses the same full-screen AuthShell as /login and
+  // /register. Treat it as an auth surface so the AppShell (sidebar +
+  // topbar) doesn't wrap the centered invite card, which on logged-in
+  // inviters produced a blank/broken layout.
+  const onAuthPage =
+    path === "/login" || path === "/register" || path.startsWith("/invite/");
   const onEditorPage = EDITOR_PATH_RX.test(path);
 
   const bs = useQuery({
