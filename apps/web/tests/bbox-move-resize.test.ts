@@ -101,23 +101,32 @@ describe("bbox resize", () => {
     expect(g.h).toBe(45); // 100+50 - 105 = 45
   });
 
-  it("min-size clamp: dragging SE into the NW corner keeps the bbox at 4×4", () => {
+  it("SE handle dragged past NW inverts across the NW anchor", () => {
     const before = makeBbox(100, 100, 50, 50);
-    // Cursor goes way past NW corner — past origin, even.
-    const next = applyResize(before, "se", { x: -10, y: -10 });
-    expect(next.x).toBe(100); // anchor preserved
-    expect(next.y).toBe(100);
-    expect(next.w).toBe(MIN_BBOX_SIZE);
-    expect(next.h).toBe(MIN_BBOX_SIZE);
+    // Cursor goes past NW corner — bbox flips and now extends from
+    // the cursor to the original NW anchor at (100, 100).
+    const next = applyResize(before, "se", { x: 70, y: 60 });
+    expect(next.x).toBe(70);
+    expect(next.y).toBe(60);
+    expect(next.w).toBe(30); // 100 - 70
+    expect(next.h).toBe(40); // 100 - 60
   });
 
-  it("min-size clamp on NW: dragging past SE keeps bbox at 4×4 with SE anchored", () => {
+  it("NW handle dragged past SE inverts across the SE anchor", () => {
     const before = makeBbox(100, 100, 50, 50);
-    // Cursor far past SE corner.
-    const next = applyResize(before, "nw", { x: 200, y: 200 });
-    // SE corner stayed at (150, 150) — width/height clamped to MIN.
-    expect(next.x + next.w).toBe(150);
-    expect(next.y + next.h).toBe(150);
+    // Cursor goes past SE corner (150, 150) — bbox flips so the
+    // anchor SE becomes the new bbox's top-left.
+    const next = applyResize(before, "nw", { x: 200, y: 220 });
+    expect(next.x).toBe(150);
+    expect(next.y).toBe(150);
+    expect(next.w).toBe(50); // 200 - 150
+    expect(next.h).toBe(70); // 220 - 150
+  });
+
+  it("collapse-to-anchor still respects MIN_BBOX_SIZE floor", () => {
+    const before = makeBbox(100, 100, 50, 50);
+    // Cursor exactly at the SE anchor — width must not be zero.
+    const next = applyResize(before, "nw", { x: 150, y: 150 });
     expect(next.w).toBe(MIN_BBOX_SIZE);
     expect(next.h).toBe(MIN_BBOX_SIZE);
   });
@@ -228,16 +237,17 @@ describe("image-bounds clamping (v2.5.2)", () => {
     expect(next.h).toBe(50);
   });
 
-  it("resize NW: cursor past SE corner respects min-size + bounds clamp", () => {
-    // Bbox at (50, 50, w=20, h=20). NW handle dragged to (200, 200) → first
-    // clamped to image (100, 100), then min-size kicks in: NW must stay
-    // <= SE - MIN_BBOX_SIZE = (70 - 4, 70 - 4) = (66, 66). Final: x=66, y=66.
+  it("resize NW: cursor past SE corner inverts across the SE anchor within image bounds", () => {
+    // Bbox at (50, 50, w=20, h=20). NW handle dragged to (200, 200) →
+    // cursor clamped to image bounds (100, 100). The handle has now
+    // crossed past the SE anchor (70, 70), so the bbox flips: SE
+    // becomes the new top-left and the bbox extends to (100, 100).
     const before = makeBbox(50, 50, 20, 20);
     const next = applyResize(before, "nw", { x: 200, y: 200 }, { w: 100, h: 100 });
-    expect(next.x).toBe(66);
-    expect(next.y).toBe(66);
-    expect(next.w).toBe(4);
-    expect(next.h).toBe(4);
+    expect(next.x).toBe(70);
+    expect(next.y).toBe(70);
+    expect(next.w).toBe(30);
+    expect(next.h).toBe(30);
   });
 
   it("resize NW: cursor past top-left clamps NW to (0,0)", () => {

@@ -95,66 +95,82 @@ export function applyResize(
   const oRight = original.x + original.w;
   const oBottom = original.y + original.h;
 
-  // Pre-clamp the cursor to the image rectangle. Subsequent MIN_BBOX_SIZE
-  // logic still applies — these are independent invariants and either can
-  // be the binding constraint depending on cursor position.
   const cx = bounds ? clamp(cursor.x, 0, bounds.w) : cursor.x;
   const cy = bounds ? clamp(cursor.y, 0, bounds.h) : cursor.y;
 
-  let x = ox;
-  let y = oy;
-  let w = original.w;
-  let h = original.h;
-
+  // For each handle, identify which axes are movable and which edge of
+  // the original bbox is the anchor. Corner handles move both axes;
+  // edge handles move only one.
+  //
+  //   handle  | anchorX (fixed edge along x) | anchorY (fixed edge along y)
+  //   --------+------------------------------+-----------------------------
+  //   nw      | oRight  (right edge fixed)   | oBottom (bottom edge fixed)
+  //   ne      | ox      (left  edge fixed)   | oBottom (bottom edge fixed)
+  //   se      | ox      (left  edge fixed)   | oy      (top    edge fixed)
+  //   sw      | oRight  (right edge fixed)   | oy      (top    edge fixed)
+  //   n       | (x axis fixed entirely)      | oBottom (bottom edge fixed)
+  //   s       | (x axis fixed entirely)      | oy      (top    edge fixed)
+  //   e       | ox      (left  edge fixed)   | (y axis fixed entirely)
+  //   w       | oRight  (right edge fixed)   | (y axis fixed entirely)
+  //
+  // The cursor crossing the anchor edge inverts the corresponding side —
+  // matches the way every image editor draws and resizes rectangles.
+  let movableX: boolean;
+  let movableY: boolean;
+  let anchorX = ox;
+  let anchorY = oy;
   switch (handle) {
     case "nw":
-      x = Math.min(cx, oRight - MIN_BBOX_SIZE);
-      y = Math.min(cy, oBottom - MIN_BBOX_SIZE);
-      w = oRight - x;
-      h = oBottom - y;
-      break;
+      anchorX = oRight; anchorY = oBottom; movableX = true; movableY = true; break;
     case "ne":
-      y = Math.min(cy, oBottom - MIN_BBOX_SIZE);
-      w = Math.max(MIN_BBOX_SIZE, cx - ox);
-      h = oBottom - y;
-      x = ox;
-      break;
+      anchorX = ox;     anchorY = oBottom; movableX = true; movableY = true; break;
     case "se":
-      w = Math.max(MIN_BBOX_SIZE, cx - ox);
-      h = Math.max(MIN_BBOX_SIZE, cy - oy);
-      x = ox;
-      y = oy;
-      break;
+      anchorX = ox;     anchorY = oy;      movableX = true; movableY = true; break;
     case "sw":
-      x = Math.min(cx, oRight - MIN_BBOX_SIZE);
-      w = oRight - x;
-      h = Math.max(MIN_BBOX_SIZE, cy - oy);
-      y = oy;
-      break;
+      anchorX = oRight; anchorY = oy;      movableX = true; movableY = true; break;
     case "n":
-      y = Math.min(cy, oBottom - MIN_BBOX_SIZE);
-      h = oBottom - y;
-      x = ox;
-      w = original.w;
-      break;
+      anchorY = oBottom; movableX = false; movableY = true; break;
     case "s":
-      h = Math.max(MIN_BBOX_SIZE, cy - oy);
-      x = ox;
-      y = oy;
-      w = original.w;
-      break;
+      anchorY = oy;      movableX = false; movableY = true; break;
     case "e":
-      w = Math.max(MIN_BBOX_SIZE, cx - ox);
-      x = ox;
-      y = oy;
-      h = original.h;
-      break;
+      anchorX = ox;      movableX = true;  movableY = false; break;
     case "w":
-      x = Math.min(cx, oRight - MIN_BBOX_SIZE);
-      w = oRight - x;
-      y = oy;
-      h = original.h;
-      break;
+      anchorX = oRight;  movableX = true;  movableY = false; break;
+  }
+
+  let x: number;
+  let w: number;
+  if (movableX) {
+    const dx = anchorX - cx;
+    if (Math.abs(dx) < MIN_BBOX_SIZE) {
+      // Clamp width to MIN, keeping the bbox on the cursor's side so
+      // the user can see what they're doing as they drag past the
+      // anchor — never collapse to zero width.
+      w = MIN_BBOX_SIZE;
+      x = cx <= anchorX ? anchorX - MIN_BBOX_SIZE : anchorX;
+    } else {
+      w = Math.abs(dx);
+      x = Math.min(anchorX, cx);
+    }
+  } else {
+    x = ox;
+    w = original.w;
+  }
+
+  let y: number;
+  let h: number;
+  if (movableY) {
+    const dy = anchorY - cy;
+    if (Math.abs(dy) < MIN_BBOX_SIZE) {
+      h = MIN_BBOX_SIZE;
+      y = cy <= anchorY ? anchorY - MIN_BBOX_SIZE : anchorY;
+    } else {
+      h = Math.abs(dy);
+      y = Math.min(anchorY, cy);
+    }
+  } else {
+    y = oy;
+    h = original.h;
   }
 
   return { kind: "bbox", x, y, w, h };

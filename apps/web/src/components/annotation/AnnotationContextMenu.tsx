@@ -779,9 +779,23 @@ export function AnnotationContextMenu({
           classes={classes}
           activeClassId={draft?.classId ?? null}
           onPick={(classId) => {
-            if (draft?.classId !== classId) {
-              useAnnotations.getState().update(annId, { classId });
-            }
+            // Always re-read the latest draft from the store so a stale
+            // closure can never no-op the update. Skipping the
+            // equality short-circuit here makes the click reliably
+            // commit even when the dialog happened to open already
+            // pointing at the user's target class.
+            useAnnotations.getState().update(annId, { classId });
+            close();
+          }}
+        />
+      )}
+
+      {classes && classes.length > 0 && (
+        <PickClassInline
+          classes={classes}
+          activeClassId={draft?.classId ?? null}
+          onPick={(classId) => {
+            useAnnotations.getState().update(annId, { classId });
             close();
           }}
         />
@@ -1102,7 +1116,17 @@ function InlineClassSearch(props: InlineClassSearchProps) {
                   data-testid={`ctx-change-class-${c.id}`}
                   data-row-idx={i}
                   onMouseEnter={() => setHighlightIdx(i)}
-                  onClick={() => onPick(c.id)}
+                  // Fire on pointer DOWN so the click never gets lost
+                  // to a focus/blur shuffle: the input above had focus,
+                  // mouseDown on this button steals it, and on some
+                  // browsers the synthesised click event that follows
+                  // can be dropped if anything reorders between them.
+                  // Preventing the default mousedown also stops the
+                  // input from blur-flashing.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onPick(c.id);
+                  }}
                   className={cn(
                     "w-full flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12px] text-left cursor-pointer",
                     active
@@ -1131,4 +1155,97 @@ function InlineClassSearch(props: InlineClassSearchProps) {
         )}
       </div>
     );
+}
+
+/**
+ * Inline "Pick class" item: a collapsible, always-scrollable list of
+ * EVERY class. Lives inside the same menu div as the search box so the
+ * menu's native ``wheel`` listener already isolates scroll from the
+ * canvas — no zoom-on-scroll inside the class list.
+ */
+interface PickClassInlineProps {
+  classes: ClassRow[];
+  activeClassId: string | null;
+  onPick: (classId: string) => void;
+}
+
+function PickClassInline(props: PickClassInlineProps) {
+  const { classes, activeClassId, onPick } = props;
+  const [open, setOpen] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    // Scroll the active class into view when the list opens so the
+    // user lands looking at their current pick.
+    const el = listRef.current?.querySelector<HTMLElement>(
+      `[data-class-id="${activeClassId}"]`,
+    );
+    el?.scrollIntoView({ block: "nearest" });
+  }, [open, activeClassId]);
+  return (
+    <div className="mb-1" data-testid="ctx-pick-class-section">
+      <button
+        type="button"
+        data-testid="ctx-pick-class-toggle"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          setOpen((v) => !v);
+        }}
+        className={cn(
+          "w-full flex items-center gap-2 px-2 py-1.5",
+          "text-[12px] text-left rounded-[var(--radius-xs)]",
+          "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+          "hover:text-[color:var(--text-primary)]",
+        )}
+      >
+        <TagIcon className="h-3.5 w-3.5" />
+        <span className="flex-1">Pick class</span>
+        <span className="text-[10px] text-[color:var(--text-tertiary)]">
+          {open ? "▾" : "▸"} {classes.length}
+        </span>
+      </button>
+      {open && (
+        <div
+          ref={listRef}
+          className="max-h-[220px] overflow-y-auto mt-1"
+          data-testid="ctx-pick-class-list"
+        >
+          {classes.map((c) => {
+            const active = c.id === activeClassId;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                data-class-id={c.id}
+                data-testid={`ctx-pick-class-${c.id}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onPick(c.id);
+                }}
+                className={cn(
+                  "w-full flex items-center gap-2 px-2 py-1.5",
+                  "rounded-[var(--radius-xs)] text-[12px] text-left cursor-pointer",
+                  active
+                    ? "bg-[var(--accent-bg)] text-[color:var(--accent)]"
+                    : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+                )}
+              >
+                <span
+                  aria-hidden
+                  className="h-3 w-3 shrink-0 rounded-full border border-[var(--border-strong)]"
+                  style={{ background: c.color }}
+                />
+                {typeof c.idx === "number" && c.idx >= 0 && c.idx < 9 && (
+                  <span className="font-mono text-[10px] text-[color:var(--text-tertiary)] w-3 text-right">
+                    {c.idx + 1}
+                  </span>
+                )}
+                <span className="truncate flex-1">{c.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }

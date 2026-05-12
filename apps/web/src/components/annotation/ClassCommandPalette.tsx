@@ -135,8 +135,32 @@ export function ClassCommandPalette({
     const next: PaletteTab =
       hasValidPinned ? "pinned" : hasValidRecent ? "recent" : "all";
     setTab(next);
-    const t = window.setTimeout(() => inputRef.current?.focus(), 0);
-    return () => window.clearTimeout(t);
+    // Defer focus past two animation frames so the keydown that
+    // opened the palette (and its corresponding keypress / textInput
+    // / input events) has fully drained from the browser's event
+    // queue before the input becomes focusable. Without this delay
+    // the trigger character (e.g. "r" for reassign_class) lands in
+    // the focused search input. We also wipe the value once more
+    // on focus as belt-and-suspenders against stragglers.
+    let frame1 = 0;
+    let frame2 = 0;
+    frame1 = window.requestAnimationFrame(() => {
+      frame2 = window.requestAnimationFrame(() => {
+        setQuery(initialQuery);
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        try {
+          el.setSelectionRange(initialQuery.length, initialQuery.length);
+        } catch {
+          /* setSelectionRange may not exist on every input host */
+        }
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(frame1);
+      window.cancelAnimationFrame(frame2);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialQuery, classes]);
 

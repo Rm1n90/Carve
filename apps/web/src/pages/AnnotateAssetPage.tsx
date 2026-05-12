@@ -73,7 +73,9 @@ import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import { useProjectPrefs } from "@/state/projectPrefs";
-import { useShortcutHandler } from "@/state/shortcuts";
+import { useShortcutHandler, useShortcutsQuery } from "@/state/shortcuts";
+import { ACTIONS } from "@/lib/shortcuts/actions";
+import { matchChord } from "@/lib/shortcuts/chord";
 import { useResizableRightPanel } from "@/hooks/useResizableRightPanel";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
@@ -922,6 +924,65 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     if (!ann || ann.kind !== "bbox") return;
     state.copyToClipboard(id);
     showToast("Bbox copied", { variant: "info", duration: 1200 });
+  });
+
+  // Editor-wide guard: any chord that the editor binds (everything in
+  // ACTIONS plus any user override) must be eaten before Chrome can
+  // honour its native equivalent (Cmd+D bookmark, Cmd+P print, Cmd+S
+  // save-as, etc.). Individual useShortcutHandler callbacks below
+  // still run normally; this listener is purely a preventDefault
+  // catcher so unbound or input-targeted chords never reach the
+  // browser when the user is annotating.
+  const shortcutOverrides = useShortcutsQuery().data?.overrides;
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      ) {
+        // While typing, only catch chords that include a modifier
+        // (Cmd/Ctrl/Alt) — otherwise we'd swallow the user's letters.
+        if (!e.metaKey && !e.ctrlKey && !e.altKey) return;
+      }
+      for (const id of Object.keys(ACTIONS)) {
+        const override = shortcutOverrides?.[id];
+        const chord =
+          typeof override === "string" ? override : ACTIONS[id].default;
+        if (!chord) continue;
+        if (matchChord(e, chord)) {
+          e.preventDefault();
+          return;
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [shortcutOverrides]);
+
+  // Ctrl/Cmd+D — duplicate every selected annotation at a small offset.
+  // Without an explicit handler the registered chord (`mod+d`) lets
+  // Chrome's bookmark dialog open. Binding the action makes
+  // useShortcutHandler call preventDefault on the keydown so the
+  // browser default never runs.
+  useShortcutHandler("duplicate", () => {
+    const state = useAnnotations.getState();
+    const ids = state.selectedIds.length > 0
+      ? state.selectedIds
+      : state.selectedId
+        ? [state.selectedId]
+        : [];
+    if (ids.length === 0) return;
+    const a = assetQ.data?.asset;
+    const bounds =
+      a && typeof a.width === "number" && typeof a.height === "number"
+        ? { w: a.width, h: a.height }
+        : undefined;
+    for (const id of ids) {
+      state.duplicate(id, 16, 16, bounds);
+    }
   });
 
   // Ctrl/Cmd+V — paste the clipboard bbox at a small offset from the

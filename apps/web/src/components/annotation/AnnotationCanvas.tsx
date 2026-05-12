@@ -9,7 +9,8 @@ import { TagTool } from "@/canvas/tools/TagTool";
 import { SamTool } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
-import { useShortcutHandler } from "@/state/shortcuts";
+import { useShortcut, useShortcutHandler } from "@/state/shortcuts";
+import { matchChord } from "@/lib/shortcuts/chord";
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
@@ -175,6 +176,13 @@ export function AnnotationCanvas({
   const appRef = useRef<CanvasApp | null>(null);
   const tool = useTool((s) => s.active);
   const activeClassId = useTool((s) => s.activeClassId);
+  // Live ref of the reassign_class chord so the canvas's capture-phase
+  // keydown handler can defer to the bubble-phase shortcut handler
+  // instead of stealing the keystroke for the type-to-filter feature
+  // (which seeded the trigger letter into the palette's search input).
+  const reassignChord = useShortcut("reassign_class");
+  const reassignChordRef = useRef(reassignChord);
+  reassignChordRef.current = reassignChord;
 
   // SamTool retains state (image_hash, accumulated points) across pointer
   // event re-renders. Recreate only when the asset (or active frame) changes.
@@ -337,6 +345,77 @@ export function AnnotationCanvas({
         ctx.handleSize,
         ctx.outlineColor,
       );
+    }
+    // Also move the floating class label so it tracks the bbox /
+    // polygon during the drag. Without this the label sticks to the
+    // initial geometry until pointerup commits the new value.
+    const labelEntry = labelGfxByIdRef.current.get(id) as
+      | {
+          container: {
+            position: { set: (x: number, y: number) => void };
+            getBounds?: () => { width: number; height: number };
+            width?: number;
+            height?: number;
+          };
+        }
+      | undefined;
+    if (labelEntry) {
+      const settings = useEditorSettings.getState();
+      // Compute the bbox-equivalent rect for anchoring the label, then
+      // route through the same labelPosition switch the reconcile
+      // path uses (see renderLabel).
+      let rx = 0;
+      let ry = 0;
+      let rw = 0;
+      let rh = 0;
+      if (next.kind === "bbox") {
+        rx = next.x;
+        ry = next.y;
+        rw = next.w;
+        rh = next.h;
+      } else if (next.kind === "polygon" && next.points.length > 0) {
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (const [px, py] of next.points) {
+          if (px < minX) minX = px;
+          if (py < minY) minY = py;
+          if (px > maxX) maxX = px;
+          if (py > maxY) maxY = py;
+        }
+        rx = minX;
+        ry = minY;
+        rw = maxX - minX;
+        rh = maxY - minY;
+      }
+      const c = labelEntry.container;
+      const tw = (c.width ?? c.getBounds?.().width ?? 0) as number;
+      const th = (c.height ?? c.getBounds?.().height ?? 0) as number;
+      const gap = 4;
+      let lx = rx;
+      let ly = ry - th - gap;
+      switch (settings.labelPosition) {
+        case "below":
+          lx = rx;
+          ly = ry + rh + gap;
+          break;
+        case "left":
+          lx = rx - tw - gap;
+          ly = ry;
+          break;
+        case "right":
+          lx = rx + rw + gap;
+          ly = ry;
+          break;
+        case "above":
+        case "auto":
+        default:
+          lx = rx;
+          ly = ry - th - gap;
+          break;
+      }
+      c.position.set(lx, ly);
     }
     // Invalidate the per-shape signature cache so the next reconcile
     // pass (triggered by the pointerup commit) actually re-renders
@@ -2944,29 +3023,35 @@ export function AnnotationCanvas({
         }
         const drag = dragRef.current;
         if (drag) {
-          // v3.24.13 — pass `null` for bounds during the live drag so
-          // the user can move/resize past the image edge in any
-          // direction. The final geometry is clipped to the image in
-          // the cursor-tool branch of the pointerup handler below
-          // (clampBboxToBounds / clampPolygonToBounds). Keeping the
-          // anti-inversion `MIN_BBOX_SIZE` clamp inside applyResize is
-          // still desirable; that's separate from bounds-clamping.
+          // Always clamp during the drag too — with inversion enabled
+          // a corner can travel past the image edge, which previously
+          // allowed an out-of-bounds rect to ride through to commit
+          // when the final clamp returned null. Passing image bounds
+          // here keeps the bbox visually inside the image at all
+          // times and matches the pointerup-side clamp.
+          const dragBounds =
+            imageSize.w > 1 && imageSize.h > 1 ? imageSize : null;
           if (drag.mode === "translate") {
             const next = applyTranslate(
               drag.original,
               p.x - drag.offset.x,
               p.y - drag.offset.y,
-              null,
+              dragBounds,
             );
             dragLatestGeomRef.current = next;
             paintDragGeometry(drag.id, next, drag.ctx);
           } else if (drag.mode === "resize") {
-            const next = applyResize(drag.original, drag.handle, p, null);
+            const next = applyResize(drag.original, drag.handle, p, dragBounds);
             dragLatestGeomRef.current = next;
             paintDragGeometry(drag.id, next, drag.ctx);
           } else {
             // mode === "vertex"
-            const next = applyVertexTranslate(drag.original, drag.index, p, null);
+            const next = applyVertexTranslate(
+              drag.original,
+              drag.index,
+              p,
+              dragBounds,
+            );
             dragLatestGeomRef.current = next;
             paintDragGeometry(drag.id, next, drag.ctx);
           }
@@ -3193,7 +3278,8 @@ export function AnnotationCanvas({
           return;
         }
         if (dragRef.current) {
-          const dragId = dragRef.current.id;
+          const drag = dragRef.current;
+          const dragId = drag.id;
           // During the drag the store stayed unchanged — every move was
           // painted directly onto the dragging Pixi Graphics for zero
           // pointer-to-pixel lag. On release, commit the final geometry
@@ -3202,20 +3288,24 @@ export function AnnotationCanvas({
           const latest = dragLatestGeomRef.current;
           const bounds =
             imageSize.w > 1 && imageSize.h > 1 ? imageSize : null;
-          if (latest) {
-            let finalGeom: Bbox | Polygon = latest;
-            if (bounds) {
-              if (latest.kind === "bbox") {
-                const clamped = clampBboxToBounds(latest, bounds);
-                if (clamped) finalGeom = clamped;
-              } else if (latest.kind === "polygon") {
-                const clamped = clampPolygonToBounds(latest, bounds);
-                if (clamped) finalGeom = clamped;
-              }
+          let finalGeom: Bbox | Polygon | null = latest;
+          if (latest && bounds) {
+            if (latest.kind === "bbox") {
+              finalGeom = clampBboxToBounds(latest, bounds);
+            } else if (latest.kind === "polygon") {
+              finalGeom = clampPolygonToBounds(latest, bounds);
             }
+          }
+          if (finalGeom) {
             useAnnotations
               .getState()
               .update(dragId, { geometry: finalGeom });
+          } else {
+            // Clamp returned null — the rect ended up entirely outside
+            // the image (or shrunk below MIN_BBOX_SIZE). Refuse the
+            // commit and snap the visual back to the pre-drag geometry
+            // so the user can't ever save an out-of-bounds annotation.
+            paintDragGeometry(dragId, drag.original, drag.ctx);
           }
           dragLatestGeomRef.current = null;
           dragRef.current = null;
@@ -3323,6 +3413,15 @@ export function AnnotationCanvas({
         !e.ctrlKey &&
         !e.altKey
       ) {
+        // Defer to the bubble-phase ``reassign_class`` shortcut handler
+        // when the user is hitting that chord — otherwise this capture-
+        // phase listener seeds the trigger letter into the palette's
+        // search input, which is exactly the keystroke the user pressed
+        // *to open it* and never wanted in the search.
+        const reassignC = reassignChordRef.current;
+        if (reassignC && matchChord(e, reassignC)) {
+          return;
+        }
         const selIds = useAnnotations.getState().selectedIds;
         if (selIds.length > 0) {
           e.preventDefault();
