@@ -103,7 +103,17 @@ def auto_text_for_asset(
         # v3.21+ — Auto mode coverage: every class iteration honors the
         # use_vlm_fo1 flag so the toggle behaves consistently across
         # single-asset and batch surfaces.
-        results = sam_text_prompt_for_asset(asset, prompt, use_vlm_fo1=use_vlm_fo1)
+        # Also pipe the user's UI threshold all the way to SAM 3's
+        # post_process_instance_segmentation. The legacy path hardcoded
+        # 0.5 inside the model service, so the user's score gate below
+        # silently observed an already-truncated candidate list and
+        # "obvious" objects with mid-confidence scores were never seen.
+        results = sam_text_prompt_for_asset(
+            asset,
+            prompt,
+            use_vlm_fo1=use_vlm_fo1,
+            threshold=float(threshold),
+        )
 
         # Score filter.
         kept = [r for r in results if float(r.get("score", 0.0)) >= threshold]

@@ -105,7 +105,11 @@ export function AutoAnnotateDialog({
   // Search filter for the row list. Hidden until >6 rows so small
   // projects don't see unnecessary chrome.
   const [textRowQuery, setTextRowQuery] = useState("");
-  const [threshold, setThreshold] = useState<number>(0.4);
+  // SAM 3 (transformers) and SAM 3.1 (native) emit detection scores
+  // whose useful range lands around 0.20–0.60 for most concepts. The
+  // legacy 0.40 default left too many obvious objects below the floor;
+  // 0.30 is a better OOTB compromise. Users can still slide either way.
+  const [threshold, setThreshold] = useState<number>(0.3);
   const [findAll, setFindAll] = useState<boolean>(true);
   const [overwrite, setOverwrite] = useState<boolean>(false);
   // v3.21+ — VLM-FO1 precision filter opt-in. v3.22 always defaults to
@@ -319,7 +323,23 @@ export function AutoAnnotateDialog({
 
   function patchTextRow(rid: string, patch: Partial<TextRow>) {
     setTextRows((prev) =>
-      prev.map((r) => (r.rid === rid ? { ...r, ...patch } : r)),
+      prev.map((r) => {
+        if (r.rid !== rid) return r;
+        const next = { ...r, ...patch };
+        // When the user picks a DIFFERENT class via the dropdown, the
+        // row's "initial" prompt — which the dirty indicator and the
+        // save-on-Run gate compare against — must rebind to the new
+        // class's stored text_prompt. Without this, swapping shirts
+        // (text_prompt="pants") → helmet (text_prompt="") left
+        // initialPrompt stuck at "pants", the dirty check returned
+        // false, no PATCH fired, the server saw helmet.text_prompt=""
+        // and rejected the run with no_eligible_classes (or silently
+        // skipped helmet in a multi-class run).
+        if (patch.classId !== undefined && patch.classId !== r.classId) {
+          next.initialPrompt = classById.get(patch.classId)?.text_prompt ?? "";
+        }
+        return next;
+      }),
     );
   }
   function addTextRow() {
@@ -394,12 +414,19 @@ export function AutoAnnotateDialog({
           ? classById.get(validTextRows[0].classId)?.project_id
           : undefined;
       if (projectId) {
-        const dirty = validTextRows.filter(
-          (r) => r.prompt.trim() !== r.initialPrompt.trim(),
-        );
-        if (dirty.length > 0) {
+        // Compare against the LIVE class.text_prompt (not the row's
+        // captured initialPrompt) so a stale or carried-over
+        // initialPrompt — e.g. from swapping classes via the dropdown
+        // — can't make us skip a needed save. If the user's typed
+        // prompt diverges from what the server currently has for
+        // that class, we PATCH; otherwise we skip the no-op write.
+        const toSave = validTextRows.filter((r) => {
+          const stored = (classById.get(r.classId)?.text_prompt ?? "").trim();
+          return r.prompt.trim() !== stored;
+        });
+        if (toSave.length > 0) {
           await Promise.all(
-            dirty.map((r) =>
+            toSave.map((r) =>
               classesApi.update(projectId, r.classId, {
                 text_prompt: r.prompt.trim(),
               }),

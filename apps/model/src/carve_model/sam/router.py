@@ -338,6 +338,14 @@ class TextPromptIn(BaseModel):
     # when the model service has a filter registered (reflected by
     # /sam/status.vlm_fo1_available).
     use_vlm_fo1: bool = False
+    # Confidence floor passed to SAM 3's post_process_instance_segmentation
+    # so the user's UI threshold actually changes what the model returns.
+    # Without this the predictor hardcoded 0.5 (or 0.2 with VLM-FO1) and
+    # silently discarded everything below — even when the API's user-side
+    # filter was set to 0.2, SAM had already dropped sub-0.5 candidates,
+    # so "obvious" objects with mid-range scores were never surfaced.
+    # ``None`` preserves the legacy hardcoded defaults for older callers.
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class TextPromptOut(BaseModel):
@@ -409,17 +417,16 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
                 status_code=503,
                 detail="sam3_predictor_not_loaded",
             ) from exc
-    # Forward use_vlm_fo1 only when the client opted in. Older factories
-    # whose signature predates the kwarg keep working — they're called
-    # exactly as before.
+    # Forward use_vlm_fo1 / threshold only when the client supplied them
+    # so older factories whose signatures predate the kwargs keep working —
+    # they're called exactly as before.
+    kwargs: dict = {"image_b64": payload.image_b64, "text": payload.text}
+    if payload.use_vlm_fo1:
+        kwargs["use_vlm_fo1"] = True
+    if payload.threshold is not None:
+        kwargs["threshold"] = payload.threshold
     with admit(CostClass.SAM_TEXT):
-        if payload.use_vlm_fo1:
-            return factory(
-                image_b64=payload.image_b64,
-                text=payload.text,
-                use_vlm_fo1=True,
-            )
-        return factory(image_b64=payload.image_b64, text=payload.text)
+        return factory(**kwargs)
 
 
 # --- SAM 3 box-prompt endpoint ----------------------------------------------
