@@ -238,6 +238,13 @@ export function AnnotationCanvas({
   const easeStartRef = useRef<{ frame: ZoomFrame; t0: number } | null>(null);
   const easeTargetRef = useRef<ZoomFrame | null>(null);
   const previewGfxRef = useRef<unknown | null>(null);
+  // Monotonic counter bumped on every clearPreview(); drawPreviewRect
+  // captures the value at entry and bails before painting if the
+  // counter has moved on. Without this, an in-flight async drawPreviewRect
+  // (which awaits a dynamic pixi.js import) can resolve *after*
+  // pointerup's clearPreview() and silently repaint the rectangle the
+  // user just released — leaving a "stuck" preview on screen.
+  const previewVersionRef = useRef(0);
   // Persistent sprite for the loaded asset image — kept across imageUrl
   // changes so the Pixi Application doesn't have to be torn down on
   // navigation. v2.5 perf fix.
@@ -1833,6 +1840,7 @@ export function AnnotationCanvas({
   async function drawPreviewRect(rect: { x: number; y: number; w: number; h: number }) {
     const app = appRef.current;
     if (!app) return;
+    const v = previewVersionRef.current;
     let Graphics: typeof import("pixi.js").Graphics | undefined;
     try {
       const pixi = await import("pixi.js");
@@ -1840,6 +1848,10 @@ export function AnnotationCanvas({
     } catch {
       return;
     }
+    // Bail if a clearPreview() ran while we were awaiting the dynamic
+    // import — otherwise we'd repaint the rectangle the user just
+    // released.
+    if (v !== previewVersionRef.current) return;
     if (!Graphics) return;
     let g = previewGfxRef.current as InstanceType<typeof Graphics> | null;
     if (!g) {
@@ -1854,6 +1866,7 @@ export function AnnotationCanvas({
   }
 
   function clearPreview() {
+    previewVersionRef.current += 1;
     const g = previewGfxRef.current as { clear?: () => void } | null;
     if (g && typeof g.clear === "function") g.clear();
   }
@@ -2760,7 +2773,18 @@ export function AnnotationCanvas({
         }
         return;
       }
-      if (tool === "bbox") bbox.onPointerDown(p);
+      if (tool === "bbox") {
+        bbox.onPointerDown(p);
+        // Capture the pointer so pointermove/pointerup keep firing on
+        // the host even when the cursor leaves the canvas. Without
+        // this, releasing outside the image left the live preview
+        // rectangle stuck on the overlay until the user clicked again.
+        try {
+          host!.setPointerCapture(e.pointerId);
+        } catch {
+          /* setPointerCapture not always available */
+        }
+      }
       else if (tool === "polygon") {
         const r = polygon.onPointerDown(p);
         if (r.committed) {
@@ -3166,6 +3190,11 @@ export function AnnotationCanvas({
       if (tool === "bbox") {
         bbox.onPointerUp(p);
         clearPreview();
+        try {
+          host!.releasePointerCapture(e.pointerId);
+        } catch {
+          /* not all environments implement releasePointerCapture */
+        }
       } else if (tool === "mask") {
         mask.onPointerUp(p);
       } else if (tool === "sam" && samTrackBoxDraftRef.current) {
@@ -3648,6 +3677,13 @@ export function AnnotationCanvas({
       window.removeEventListener("keyup", onAltKeyUp);
       clearEdgeGhost();
       unsubSel();
+      // Reset any in-flight bbox draft when the tool changes / the
+      // asset unmounts. Without this, drawing a bbox fast and then
+      // switching to the cursor tool mid-drag left the blue preview
+      // rectangle painted on the overlay forever (bbox.onPointerUp
+      // never fired so neither cancel() nor commit() ran).
+      bbox.cancel();
+      clearPreview();
       // Reset any in-flight polygon when the tool changes / the asset
       // unmounts so the preview doesn't linger.
       polygon.cancel();
@@ -3658,6 +3694,10 @@ export function AnnotationCanvas({
       // v3.6 — drop SAM live preview overlays on tool/asset change.
       clearSamPreview();
       clearSamPoints();
+      // Clear any in-flight SAM box-draft / track-box-draft anchors
+      // that held the preview rectangle through a tool switch.
+      samBoxDraftRef.current = null;
+      samTrackBoxDraftRef.current = null;
       unsubMaskRadius();
     };
   }, [tool, activeClassId, frameId, imageSize, samTool, classMap, classesProp]);

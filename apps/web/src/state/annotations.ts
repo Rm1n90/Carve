@@ -217,6 +217,124 @@ function snapshot(s: { byId: Record<string, AnnotationDraft>; pendingDeletes: st
   return { byId: s.byId, pendingDeletes: s.pendingDeletes };
 }
 
+/**
+ * Restore a history snapshot onto the current state.
+ *
+ * The naive "replace byId + pendingDeletes" path breaks once snapshots
+ * cross save boundaries, because the snapshot's frozen draft refs no
+ * longer match the actual server state. This helper reconciles the
+ * snapshot with what's currently live, staged, or already gone:
+ *
+ *   1. Snapshot draft carries a serverId that's still LIVE in current
+ *      byId → restore it. If the snapshot's content differs from the
+ *      current draft, mark dirty=true so the next save propagates the
+ *      reverted state to the server (otherwise a refetch would silently
+ *      overwrite our undo with whatever the server has).
+ *   2. Snapshot draft carries a serverId that's currently STAGED for
+ *      delete → un-stage and restore as-is (the row still exists on
+ *      the server; we just cancel the pending delete).
+ *   3. Snapshot draft carries a serverId that's NEITHER live NOR
+ *      staged → "ghost" serverId. The row was already saved-deleted
+ *      from the server. Restore as a fresh CREATE (serverId=null,
+ *      dirty=true) so the next save POSTs a replacement.
+ *   4. Snapshot draft has no serverId but the current state has one
+ *      under the same tempId → autosave happened after the snapshot
+ *      was captured. Carry forward the live serverId and mark dirty
+ *      (so the snapshot's content goes back to the server).
+ *   5. Snapshot draft has no serverId and current state has none
+ *      either → never-saved create. Restore as-is (still dirty).
+ *
+ * pendingDeletes is recomputed from the CURRENT pendingDeletes plus
+ * any vanishing live serverIds. Seeding from snap.pendingDeletes would
+ * resurrect stale serverIds whose rows the server already deleted —
+ * the resulting batch delete would 404 and fail the entire save.
+ */
+function draftContentEqual(a: AnnotationDraft, b: AnnotationDraft): boolean {
+  if (a.classId !== b.classId) return false;
+  if (a.kind !== b.kind) return false;
+  if ((a.trackId ?? null) !== (b.trackId ?? null)) return false;
+  if ((a.zOrder ?? 0) !== (b.zOrder ?? 0)) return false;
+  if ((a.status ?? "proposed") !== (b.status ?? "proposed")) return false;
+  if ((a.colorOverride ?? null) !== (b.colorOverride ?? null)) return false;
+  return JSON.stringify(a.geometry) === JSON.stringify(b.geometry);
+}
+
+function applyHistorySnapshot(
+  s: { byId: Record<string, AnnotationDraft>; pendingDeletes: string[]; selectedId: string | null; selectedIds: string[] },
+  snap: HistorySnapshot,
+): {
+  byId: Record<string, AnnotationDraft>;
+  pendingDeletes: string[];
+  selectedId: string | null;
+  selectedIds: string[];
+} {
+  const liveServerIds = new Set<string>();
+  for (const d of Object.values(s.byId)) {
+    if (d.serverId) liveServerIds.add(d.serverId);
+  }
+  const stagedDelSet = new Set(s.pendingDeletes);
+
+  const restoredById: Record<string, AnnotationDraft> = {};
+  const restoredServerIds = new Set<string>();
+  for (const [tempId, draft] of Object.entries(snap.byId)) {
+    const cur = s.byId[tempId];
+    if (draft.serverId) {
+      if (liveServerIds.has(draft.serverId)) {
+        // Row is still live server-side. Mark dirty only if the
+        // snapshot's content differs from current — most undos are
+        // pure replays (an unrelated entry was added/deleted) and
+        // shouldn't queue no-op updates for every other annotation.
+        const dirty = !cur || !draftContentEqual(cur, draft);
+        restoredById[tempId] = dirty
+          ? { ...draft, dirty: true }
+          : { ...draft, dirty: cur ? cur.dirty : draft.dirty };
+        restoredServerIds.add(draft.serverId);
+      } else if (stagedDelSet.has(draft.serverId)) {
+        // Row exists server-side but was staged for delete — un-stage
+        // by adding to restoredServerIds (the augmented-pending pass
+        // below strips them).
+        restoredById[tempId] = draft;
+        restoredServerIds.add(draft.serverId);
+      } else {
+        // Ghost serverId — server already deleted this row. Restore
+        // as a re-create so the next save POSTs it back.
+        restoredById[tempId] = { ...draft, serverId: null, dirty: true };
+      }
+    } else if (cur?.serverId) {
+      // Snapshot pre-dates autosave. Carry forward the live serverId
+      // and mark dirty so the snapshot's content propagates to server.
+      restoredById[tempId] = { ...draft, serverId: cur.serverId, dirty: true };
+      restoredServerIds.add(cur.serverId);
+    } else {
+      restoredById[tempId] = draft;
+    }
+  }
+
+  // Recompute pendingDeletes from CURRENT pendingDeletes (live) plus
+  // vanishing live serverIds. We intentionally do NOT seed from
+  // snap.pendingDeletes — those serverIds may have been flushed by an
+  // intervening save and re-staging them would 404 the next batch.
+  const augmented = new Set<string>(s.pendingDeletes);
+  for (const draft of Object.values(s.byId)) {
+    if (draft.serverId && !restoredServerIds.has(draft.serverId)) {
+      augmented.add(draft.serverId);
+    }
+  }
+  // Anything coming BACK via the restore should not also be queued
+  // for delete.
+  for (const sid of restoredServerIds) augmented.delete(sid);
+
+  const survivingSelectedIds = s.selectedIds.filter((id) => id in restoredById);
+  const survivingSelectedId =
+    s.selectedId && s.selectedId in restoredById ? s.selectedId : null;
+  return {
+    byId: restoredById,
+    pendingDeletes: Array.from(augmented),
+    selectedId: survivingSelectedId,
+    selectedIds: survivingSelectedIds,
+  };
+}
+
 function pushPast(s: State): { past: HistorySnapshot[]; future: HistorySnapshot[] } {
   const next = [...s.history.past, snapshot(s)];
   if (next.length > HISTORY_CAP) next.shift();
@@ -478,8 +596,15 @@ export const useAnnotations = create<State>((set, get) => ({
         // different frame's data) → drop.
       }
       // Add server entries that weren't matched to any local draft.
+      // Skip anything currently staged for server-side delete —
+      // otherwise undo-staged deletes get visually re-hydrated by the
+      // next refetch before the save round-trips the deletion.
+      const stagedDeletes = new Set(s.pendingDeletes);
       for (const draft of Object.values(seed)) {
         if (draft.serverId && consumedServerIds.has(draft.serverId)) {
+          continue;
+        }
+        if (draft.serverId && stagedDeletes.has(draft.serverId)) {
           continue;
         }
         merged[draft.tempId] = draft;
@@ -505,8 +630,12 @@ export const useAnnotations = create<State>((set, get) => ({
         pendingDeletes: s.pendingDeletes,
         lockedIds: new Set<string>(),
         clipboard: null,
-        history: { past: [], future: [] },
-        lastEditMeta: null,
+        // Preserve history across same-scope refetches. The page-level
+        // effect explicitly wipes it on asset/frame switch — clearing
+        // it here made every autosave-triggered annotations refetch
+        // erase the user's Cmd+Z stack.
+        history: s.history,
+        lastEditMeta: s.lastEditMeta,
       };
     }),
   discardLocal: () =>
@@ -607,8 +736,7 @@ export const useAnnotations = create<State>((set, get) => ({
       const past = [...s.history.past];
       const last = past.pop()!;
       return {
-        byId: last.byId,
-        pendingDeletes: last.pendingDeletes,
+        ...applyHistorySnapshot(s, last),
         history: { past, future: [...s.history.future, snapshot(s)] },
         lastEditMeta: null,
       };
@@ -619,8 +747,7 @@ export const useAnnotations = create<State>((set, get) => ({
       const future = [...s.history.future];
       const next = future.pop()!;
       return {
-        byId: next.byId,
-        pendingDeletes: next.pendingDeletes,
+        ...applyHistorySnapshot(s, next),
         history: { past: [...s.history.past, snapshot(s)], future },
         lastEditMeta: null,
       };

@@ -237,6 +237,12 @@ interface EditorToolbarProps {
   onZoomActual?: () => void;
   onUndo?: () => void;
   onRedo?: () => void;
+  /**
+   * Clears every annotation on the current frame/image (classes are
+   * kept). Pops a confirm dialog at the call-site, then bulk-removes
+   * via the annotations store. Hidden when the page hasn't wired it in.
+   */
+  onClearFrame?: () => void;
   zoomPct?: number;
   /** Only present when an asset is open. */
   projectId?: string;
@@ -2574,6 +2580,7 @@ export function EditorToolbar({
   onZoomActual,
   onUndo,
   onRedo,
+  onClearFrame,
   zoomPct,
   projectId,
   taskId,
@@ -2846,6 +2853,20 @@ export function EditorToolbar({
           the upload-time dialog is the single point of frame-strategy
           choice; the original video is deleted after extraction so a
           re-extract isn't possible anyway. */}
+
+      {onClearFrame && (
+        <Tooltip content="Clear all annotations on this image">
+          <button
+            type="button"
+            onClick={onClearFrame}
+            aria-label="Clear all annotations on this image"
+            data-testid="clear-frame-trigger"
+            className="grid h-8 w-8 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] transition-colors duration-[180ms] ease-out hover:bg-[color:color-mix(in_oklch,var(--danger)_18%,transparent)] hover:text-[color:var(--danger)]"
+          >
+            <Eraser className="h-[16px] w-[16px]" />
+          </button>
+        </Tooltip>
+      )}
 
       {!isNarrow && (
         <Tooltip content={filterActive ? "Filter (active)" : "Filter annotations"}>

@@ -290,6 +290,7 @@ function ClassRowItem({
   const setActiveClassId = useTool((s) => s.setActiveClassId);
   const confirm = useConfirm();
   const rowRef = useRef<HTMLLIElement>(null);
+  const [isHover, setIsHover] = useState(false);
 
   useEffect(() => {
     if (
@@ -301,6 +302,16 @@ function ClassRowItem({
     }
   }, [hoveredAnnId, classAnnotations]);
 
+  // v3.32 — tint the row with the class's own color. Opacity ramps
+  // with state so the row feels alive without drowning the content:
+  //   default → 10%   (clearly identifiable, text fully legible)
+  //   hover   → 18%   (signals interactivity)
+  //   active  → 28%   (matches the dot, plus the left accent stripe)
+  // ``color-mix`` blends against ``transparent`` so the underlying
+  // panel surface still shows through for theme parity.
+  const tintPct = isActive ? 28 : isHover ? 18 : 10;
+  const rowTint = `color-mix(in oklch, ${cls.color} ${tintPct}%, transparent)`;
+
   return (
     <li ref={rowRef} data-testid={`class-row-${cls.id}`}>
       {/* v2.9 P1-18 — class header was a <div> with onClick; expose it
@@ -311,10 +322,14 @@ function ClassRowItem({
         className={cn(
           "group relative flex items-center gap-2 px-2.5 py-2 h-9 cursor-pointer",
           "focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]",
+          "transition-colors duration-150",
           isActive
-            ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
-            : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+            ? "text-[color:var(--text-primary)]"
+            : "text-[color:var(--text-secondary)]",
         )}
+        style={{ backgroundColor: rowTint }}
+        onMouseEnter={() => setIsHover(true)}
+        onMouseLeave={() => setIsHover(false)}
         onClick={() => setActiveClassId(cls.id)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {

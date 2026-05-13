@@ -79,6 +79,7 @@ import { matchChord } from "@/lib/shortcuts/chord";
 import { useResizableRightPanel } from "@/hooks/useResizableRightPanel";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { BackgroundJobsLeaveGuard } from "@/components/BackgroundJobsLeaveGuard";
 
 interface Props {
@@ -484,6 +485,16 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       useAnnotations.getState().reset(annotationsQ.data);
     }
   }, [annotationsQ.data]);
+
+  // Clear undo/redo history on true scope changes (asset or frame).
+  // `reset()` preserves history so autosave-driven refetches don't wipe
+  // Cmd+Z; this effect handles the legitimate "different image" case.
+  useEffect(() => {
+    useAnnotations.setState({
+      history: { past: [], future: [] },
+      lastEditMeta: null,
+    });
+  }, [assetId, frameId]);
 
   // Browser tab title — show the current asset name so multi-tab workflows
   // are tractable. Restore the default title on unmount. Audit bug R.
@@ -937,6 +948,31 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     useAnnotations.getState().removeMany(ids);
   });
 
+  const confirm = useConfirm();
+  const handleClearFrame = useCallback(async () => {
+    const fid = frameIdRef.current;
+    const all = Object.values(useAnnotations.getState().byId).filter(
+      (d) => d.frameId === fid,
+    );
+    if (all.length === 0) {
+      showToast("No annotations on this image.", { variant: "info" });
+      return;
+    }
+    const ok = await confirm({
+      title: `Clear ${all.length} annotation${all.length === 1 ? "" : "s"}?`,
+      description:
+        "All annotations on this image will be permanently removed. Classes are kept. Cmd+Z can restore them individually.",
+      variant: "danger",
+      confirmLabel: "Clear all",
+    });
+    if (!ok) return;
+    useAnnotations.getState().removeMany(all.map((d) => d.tempId));
+    showToast(
+      `Cleared ${all.length} annotation${all.length === 1 ? "" : "s"}.`,
+      { variant: "success" },
+    );
+  }, [confirm]);
+
   // Ctrl/Cmd+C — copy the currently selected bbox to the clipboard
   // slice. Other kinds (polygon, mask, tag) are intentionally ignored
   // per user request — bboxes are by far the most common case and the
@@ -1257,6 +1293,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             onFitToScreen={handleFitToScreen}
             onUndo={() => useAnnotations.getState().undo()}
             onRedo={() => useAnnotations.getState().redo()}
+            onClearFrame={handleClearFrame}
             onAfterYoloPredict={() => {
               qc.invalidateQueries({ queryKey: ["annotations", taskId] });
             }}
