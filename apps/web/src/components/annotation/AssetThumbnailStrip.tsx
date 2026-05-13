@@ -2,7 +2,6 @@
 import {
   keepPreviousData,
   useInfiniteQuery,
-  useQuery,
 } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -12,7 +11,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type WheelEvent,
 } from "react";
@@ -51,12 +49,13 @@ interface Props {
 // load. We now mount only the visible tiles + a small overscan, and we
 // fetch in 200-asset pages. Scrolling past ~80% of the loaded range
 // triggers the next page fetch.
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 500;
 const TILE_WIDTH = 80; // matches w-[80px] below
 const TILE_GAP = 8; // 0.5rem inter-tile gap
 const TILE_TOTAL = TILE_WIDTH + TILE_GAP;
-const OVERSCAN = 6;
-const PREFETCH_THRESHOLD = 0.8;
+// Large overscan so a wide window of tiles is mounted around the
+// viewport and arrow-key navigation lands on already-rendered tiles.
+const OVERSCAN = 30;
 
 function ThumbItem({
   asset,
@@ -78,13 +77,14 @@ function ThumbItem({
    */
   onClick: (e: ReactMouseEvent<HTMLAnchorElement>) => boolean;
 }) {
-  const q = useQuery({
-    queryKey: ["asset", asset.id],
-    queryFn: () => assetsApi.get(asset.id),
-    staleTime: 60_000,
-  });
-
-  const url = q.data?.url ?? asset.thumbnail_url ?? null;
+  // v3.31 — use the presigned ``thumbnail_url`` the list endpoint
+  // already returns for every asset. Previously each tile fired its
+  // own ``GET /assets/{id}`` to resolve the same URL, which meant the
+  // first screenful of the strip needed dozens of network requests
+  // and never came in fast enough for arrow-key navigation to feel
+  // smooth. Falling back to the asset's full ``url`` is unnecessary
+  // here — image tiles only need the cheaper thumbnail surface.
+  const url = asset.thumbnail_url ?? null;
 
   return (
     <Link
@@ -114,9 +114,7 @@ function ThumbItem({
         <img
           src={url}
           alt={asset.original_name}
-          loading="lazy"
           decoding="async"
-          fetchPriority="low"
           className="h-full w-full object-cover"
         />
       ) : (
@@ -183,12 +181,14 @@ export function AssetThumbnailStrip({
   );
 
   const total = pagesQ.data?.pages[0]?.total ?? assets.length;
-  // The virtualizer needs the full row count so the scroll surface is
-  // sized correctly even when only the first page is loaded. Indices
-  // beyond `assets.length` render an empty placeholder until their
-  // page fetches in.
   const virtualCount = total > 0 ? total : assets.length;
 
+  // DOM virtualisation keeps mounted-tile count bounded even for
+  // 2000+-asset tasks (the user's typical size). Combined with the
+  // background prefetch effect further down — which warms the
+  // browser image cache for every asset's thumbnail_url — the
+  // visible tiles paint from cache the moment the virtualizer
+  // mounts them, so navigation never lands on a blank tile.
   const virtualizer = useVirtualizer({
     horizontal: true,
     count: virtualCount,
@@ -196,27 +196,46 @@ export function AssetThumbnailStrip({
     estimateSize: () => TILE_TOTAL,
     overscan: OVERSCAN,
   });
+  const virtualItems = virtualizer.getVirtualItems();
 
-  const items = virtualizer.getVirtualItems();
-  const lastVisibleIndex = items.length > 0 ? items[items.length - 1].index : 0;
+  // Eagerly drain every remaining page once the strip mounts so the
+  // virtualizer always has the full asset list and the prefetch
+  // effect below can warm the browser cache for every thumbnail.
+  // Depending on the boolean ``hasNextPage`` / ``isFetchingNextPage``
+  // (not the full ``pagesQ`` object) is critical — the query object
+  // changes identity every render, which would make this effect run
+  // in a tight loop. The fetchNextPage call itself triggers a
+  // re-render with new boolean values, which advances to the next
+  // page until ``hasNextPage`` becomes false.
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = pagesQ;
+  useEffect(() => {
+    if (!hasNextPage || isFetchingNextPage) return;
+    void fetchNextPage();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  // When the user has scrolled past ~80% of the *fetched* range, kick
-  // off the next page. Compare the last visible virtual index against
-  // the loaded count (not total) so a new request only fires when more
-  // rows are actually waiting on the server.
+  // Background image-cache warm-up. For each asset's
+  // ``thumbnail_url`` we construct a hidden ``Image`` object whose
+  // sole job is to fire the HTTP request; the browser then caches
+  // the response. When the virtualizer later mounts the visible
+  // ``<img>`` with the same src, the browser serves it from cache
+  // instantly. The browser already caps concurrent connections per
+  // host (≈6 in Chrome) so 2000+ prefetches don't thunder — they
+  // queue and drain in the background while the user works.
+  //
+  // We dedupe via a ref so URLs already enqueued don't restart on
+  // every render, and we walk newly-arrived assets only.
+  const prefetchedUrls = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (assets.length === 0) return;
-    if (!pagesQ.hasNextPage || pagesQ.isFetchingNextPage) return;
-    if (lastVisibleIndex >= assets.length * PREFETCH_THRESHOLD) {
-      pagesQ.fetchNextPage();
+    for (const a of assets) {
+      const url = a.thumbnail_url;
+      if (!url || prefetchedUrls.current.has(url)) continue;
+      prefetchedUrls.current.add(url);
+      const img = new Image();
+      img.decoding = "async";
+      img.src = url;
     }
-  }, [
-    lastVisibleIndex,
-    assets.length,
-    pagesQ.hasNextPage,
-    pagesQ.isFetchingNextPage,
-    pagesQ,
-  ]);
+  }, [assets]);
 
   const onWheel = useCallback((e: WheelEvent<HTMLDivElement>) => {
     if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
@@ -230,12 +249,26 @@ export function AssetThumbnailStrip({
   // the strip's scroll position would otherwise leave the new active
   // tile off-screen — making the strip feel stuck. Re-centre the
   // viewport on the active asset whenever it changes.
+  // Stable refs for the re-center effect below. Including ``assets``
+  // and ``virtualizer`` in the dep array re-fires this effect every
+  // render — and ``behavior: "smooth"`` then queues a new animation
+  // on top of the in-flight one, which is exactly why arrow-spamming
+  // made the strip feel stuck. Recentre only when the active asset
+  // changes, and snap (no smooth animation) so rapid presses always
+  // land on the latest tile instantly.
+  const assetsRef = useRef(assets);
+  assetsRef.current = assets;
+  const virtualizerRef = useRef(virtualizer);
+  virtualizerRef.current = virtualizer;
   useEffect(() => {
     if (!activeAssetId) return;
-    const idx = assets.findIndex((a) => a.id === activeAssetId);
+    const idx = assetsRef.current.findIndex((a) => a.id === activeAssetId);
     if (idx < 0) return;
-    virtualizer.scrollToIndex(idx, { align: "center", behavior: "smooth" });
-  }, [activeAssetId, assets, virtualizer]);
+    virtualizerRef.current.scrollToIndex(idx, {
+      align: "center",
+      behavior: "auto",
+    });
+  }, [activeAssetId]);
 
   // Plan 14 Phase 8 Task 3 — anchor tracks the active asset whenever
   // the user navigates to a new one, mirroring the spec: "the anchor is
@@ -407,28 +440,27 @@ export function AssetThumbnailStrip({
             position: "relative",
           }}
         >
-          {items.map((virtualItem) => {
-            const asset = assets[virtualItem.index];
-            const style: CSSProperties = {
-              position: "absolute",
+          {virtualItems.map((vi) => {
+            const asset = assets[vi.index];
+            const style = {
+              position: "absolute" as const,
               top: 0,
               left: 0,
               width: `${TILE_WIDTH}px`,
               height: "56px",
-              transform: `translateX(${virtualItem.start}px)`,
+              transform: `translateX(${vi.start}px)`,
             };
             if (!asset) {
               return (
                 <div
-                  key={`pending-${virtualItem.index}`}
-                  data-testid={`thumb-skeleton-${virtualItem.index}`}
+                  key={`pending-${vi.index}`}
+                  data-testid={`thumb-skeleton-${vi.index}`}
                   style={style}
                   className="rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] border border-[var(--border-subtle)]"
                   aria-hidden
                 />
               );
             }
-            const idx = virtualItem.index;
             return (
               <div key={asset.id} style={style}>
                 <ThumbItem
@@ -437,7 +469,7 @@ export function AssetThumbnailStrip({
                   taskId={taskId}
                   active={asset.id === activeAssetId}
                   selected={selectedAssetIds.has(asset.id)}
-                  onClick={(e) => handleThumbClick(idx, asset, e)}
+                  onClick={(e) => handleThumbClick(vi.index, asset, e)}
                 />
               </div>
             );
