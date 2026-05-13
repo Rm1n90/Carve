@@ -100,6 +100,33 @@ def auto_text_for_asset(
 
     for cls in eligible:
         prompt = (cls.text_prompt or "").strip()
+        # Multi-concept prompts. SAM 3 / 3.1's text encoder embeds the
+        # whole string as a SINGLE concept — comma-separated lists give
+        # unpredictable results because the model isn't a vocabulary
+        # parser. We split on commas client-side and run SAM once per
+        # non-empty fragment, merging the results under the same class.
+        # Case-insensitive dedup so "Pants, pants" doesn't double-call.
+        # A single-token prompt (no commas) lands in a one-element list
+        # and runs exactly as before — fully backwards compatible.
+        fragments: list[str] = []
+        seen_lower: set[str] = set()
+        for raw in prompt.split(","):
+            frag = raw.strip()
+            if not frag:
+                continue
+            key = frag.lower()
+            if key in seen_lower:
+                continue
+            seen_lower.add(key)
+            fragments.append(frag)
+        if not fragments:
+            # Defensive — the eligible filter above already rejected
+            # empty/whitespace prompts, but a string of only commas
+            # would slip through. Skip silently rather than calling SAM
+            # with an empty string.
+            per_class[str(cls.id)] = 0
+            continue
+
         # v3.21+ — Auto mode coverage: every class iteration honors the
         # use_vlm_fo1 flag so the toggle behaves consistently across
         # single-asset and batch surfaces.
@@ -108,17 +135,24 @@ def auto_text_for_asset(
         # 0.5 inside the model service, so the user's score gate below
         # silently observed an already-truncated candidate list and
         # "obvious" objects with mid-confidence scores were never seen.
-        results = sam_text_prompt_for_asset(
-            asset,
-            prompt,
-            use_vlm_fo1=use_vlm_fo1,
-            threshold=float(threshold),
-        )
+        results: list[dict] = []
+        for fragment in fragments:
+            frag_results = sam_text_prompt_for_asset(
+                asset,
+                fragment,
+                use_vlm_fo1=use_vlm_fo1,
+                threshold=float(threshold),
+            )
+            results.extend(frag_results)
 
-        # Score filter.
+        # Score filter. Applied once across the merged candidate pool so
+        # find_all / best-only / overwrite semantics behave identically
+        # whether the class had one fragment or several.
         kept = [r for r in results if float(r.get("score", 0.0)) >= threshold]
         # Best-only collapses to argmax after filtering so the threshold
-        # still applies (best of nothing is nothing).
+        # still applies (best of nothing is nothing). With multi-fragment
+        # prompts this picks the single best match across all concepts —
+        # matching the UX promise of "Best match only".
         if not find_all and kept:
             kept = [max(kept, key=lambda r: float(r.get("score", 0.0)))]
 
