@@ -18,6 +18,7 @@ __all__ = [
     "SamVariant",
     "Sam2Variant",
     "Sam3p1Variant",
+    "SamLifecycleManager",
 ]
 
 
@@ -364,3 +365,63 @@ class Sam3p1Variant:
 
     def predict_visual(self, **kw: Any) -> list[dict]:
         raise NotImplementedError("Sam3p1Variant.predict_visual not yet migrated")
+
+
+import threading
+from contextlib import contextmanager
+
+
+class SamLifecycleManager:
+    """Single owner of the resident SAM variant.
+
+    Two locks:
+    - _inference_lock: held during the full load operation AND during each
+      inference call. Serializes everything against everything.
+    - _load_lock: short critical sections only — state field mutation.
+
+    Acquire order if both are needed: _inference_lock OUTER, _load_lock INNER.
+    """
+
+    def __init__(self) -> None:
+        self._active: SamVariant | None = None
+        self._test_variant: SamVariant | None = None
+        self._state: LoadState = LoadState.idle()
+        self._last_used_at: float | None = None
+        self._remembered_variant: str | None = None
+        self._inference_lock = threading.Lock()
+        self._load_lock = threading.Lock()
+
+    def status(self) -> LoadState:
+        with self._load_lock:
+            return self._state
+
+    def install_test_variant(self, v: SamVariant | None) -> None:
+        """Install a fake variant — bypasses load()/lease() locks entirely.
+
+        When set, lease() yields this directly without acquiring locks or
+        checking state. ensure_loaded/force_unload/evict_if_idle become
+        no-ops. Pass None to uninstall."""
+        self._test_variant = v
+
+    def remembered_variant(self) -> str | None:
+        with self._load_lock:
+            return self._remembered_variant
+
+    def _reset_for_tests(self) -> None:
+        """Pytest-only reset to a clean post-construction state."""
+        with self._inference_lock:
+            with self._load_lock:
+                self._active = None
+                self._test_variant = None
+                self._state = LoadState.idle()
+                self._last_used_at = None
+                self._remembered_variant = None
+
+    @contextmanager
+    def lease(self):
+        """Stub — replaced in Task 1.8 with full implementation."""
+        if self._test_variant is not None:
+            yield self._test_variant
+            return
+        raise SamNotReadyError(self._state.kind)
+        yield  # unreachable; satisfies the generator protocol
