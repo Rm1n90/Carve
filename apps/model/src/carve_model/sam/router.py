@@ -54,12 +54,10 @@ from carve_model.sam.predictor import (
     force_evict_predictor,
     get_box_predictor,
     get_load_state,
-    get_predictor,
     get_sam_model,
     get_sam_variant,
     get_text_predictor,
     load_predictor,
-    set_loaded_image,
 )
 from carve_model.sam.track_session import force_evict_all_sessions
 
@@ -160,24 +158,6 @@ def encode(payload: EncodeIn) -> EncodeOut:
                             embedding_bytes = None
     except SamNotReadyError as e:
         raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
-
-    # Legacy dual-write: ensure ``_SESSION`` exists and carries the
-    # loaded image hash so legacy callers (force_evict_predictor,
-    # load_predictor, session-desync tests) continue to find a session
-    # to clear. The variant's ``_cached_hash`` is the new source of
-    # truth — this dual-write is removed once Phase 3 fully owns the
-    # eviction paths. ``get_predictor()`` is idempotent for the
-    # test-predictor branch and lazily creates ``_SESSION`` when the
-    # production predictor is already loaded.
-    try:
-        get_predictor()
-        set_loaded_image(h, shape)
-    except RuntimeError:
-        # No legacy session available (e.g. no test predictor, no
-        # production load). The variant's state is still authoritative,
-        # so failing the dual-write does not break decode — only the
-        # legacy session-desync tests that exercise force_evict.
-        pass
 
     embedding_b64 = (
         base64.b64encode(embedding_bytes).decode("ascii")
