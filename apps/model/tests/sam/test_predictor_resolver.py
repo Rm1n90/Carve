@@ -33,10 +33,11 @@ def test_default_is_sam2_1_large():
     "sam2.1-small",
     "sam2.1-base-plus",
     "sam2.1-large",
-    "sam3",
+    "sam3.1",
 ])
 def test_each_allowed_model_resolves(monkeypatch, name):
     monkeypatch.setenv("SAM_MODEL", name)
+    p_mod._SAM3_WARNED = False  # noqa: SLF001 — reset warn-once for test isolation
     assert p_mod.get_sam_model() == name
 
 
@@ -54,9 +55,14 @@ def test_unknown_falls_back_to_default(monkeypatch, caplog):
 
 
 def test_legacy_sam_variant_sam3_still_works(monkeypatch):
-    """Plan 08's SAM_VARIANT=sam3 must still flip the variant."""
+    """Plan 08's ``SAM_VARIANT=sam3`` must still flip the variant.
+
+    Phase 6: ``sam3`` auto-remaps to ``sam3.1``; both still resolve to the
+    sam3 family.
+    """
     monkeypatch.setenv("SAM_VARIANT", "sam3")
-    assert p_mod.get_sam_model() == "sam3"
+    p_mod._SAM3_WARNED = False  # noqa: SLF001 — reset warn-once for test isolation
+    assert p_mod.get_sam_model() == "sam3.1"
     assert p_mod.get_sam_variant() == "sam3"
 
 

@@ -55,16 +55,33 @@ _HF_REPO_BY_MODEL = {
 }
 
 
+_SAM3_WARNED = False
+
+
 def get_sam_model() -> str:
     """Return the configured SAM model id.
 
     Reads ``SAM_MODEL`` first; falls back to the legacy ``SAM_VARIANT`` env
     (Plan 08). Unknown values fall back to ``DEFAULT_SAM_MODEL`` with a
     one-line warning.
+
+    Phase 6: ``SAM_MODEL=sam3`` is deprecated. Auto-remaps to ``sam3.1`` with
+    a one-time WARN log so existing operator configs keep working until they
+    update their env. To silence the warning, set ``SAM_MODEL=sam3.1``.
     """
+    global _SAM3_WARNED
     raw = os.getenv("SAM_MODEL") or os.getenv("SAM_VARIANT") or DEFAULT_SAM_MODEL
     if raw == "sam2":
         raw = DEFAULT_SAM_MODEL
+    if raw == "sam3":
+        if not _SAM3_WARNED:
+            log.warning(
+                "SAM_MODEL=sam3 is deprecated; remapping to sam3.1 "
+                "(same accuracy, single model on GPU). Update your env "
+                "to silence this warning."
+            )
+            _SAM3_WARNED = True
+        raw = "sam3.1"
     if raw not in ALLOWED_SAM_MODELS:
         log.warning("unknown SAM_MODEL=%r; falling back to %s", raw, DEFAULT_SAM_MODEL)
         return DEFAULT_SAM_MODEL
