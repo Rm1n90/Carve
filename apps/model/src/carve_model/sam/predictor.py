@@ -37,7 +37,6 @@ ALLOWED_SAM_MODELS = (
     "sam2.1-small",
     "sam2.1-base-plus",
     "sam2.1-large",
-    "sam3",
     "sam3.1",
 )
 DEFAULT_SAM_MODEL = "sam2.1-large"
@@ -50,7 +49,6 @@ _HF_REPO_BY_MODEL = {
     "sam2.1-small":     "facebook/sam2.1-hiera-small",
     "sam2.1-base-plus": "facebook/sam2.1-hiera-base-plus",
     "sam2.1-large":     "facebook/sam2.1-hiera-large",
-    "sam3":             "facebook/sam3",
     "sam3.1":           "facebook/sam3",
 }
 

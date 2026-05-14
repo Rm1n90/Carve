@@ -674,9 +674,10 @@ class Sam3p1Variant:
         completes the OOM-fix invariant: one Sam3p1NativeImagePredictorAdapter
         serves all four predict_* methods.
 
-        See sam3_adapter.make_sam3_visual_predictor for the algorithm pedigree
-        (CLIP-based scoring of SAM 3.1 PCS proposals with adaptive baseline
-        rescaling + greedy NMS).
+        Algorithm pedigree (CLIP-based scoring of SAM 3.1 PCS proposals with
+        adaptive baseline rescaling + greedy NMS) originated in the legacy
+        ``sam3_adapter.make_sam3_visual_predictor`` (deleted in Phase 6; see
+        git history for the original implementation).
         """
         if self._adapter is None:
             raise RuntimeError("Sam3p1Variant.predict_visual called before load()")
