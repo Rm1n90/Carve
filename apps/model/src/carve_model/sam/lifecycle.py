@@ -20,6 +20,7 @@ __all__ = [
     "Sam3p1Variant",
     "SamLifecycleManager",
     "_build_variant",
+    "manager",
 ]
 
 
@@ -703,3 +704,7 @@ class SamLifecycleManager:
         """Read SAM_MODEL env var with the production default fallback."""
         import os
         return os.environ.get("SAM_MODEL", "sam2.1-large")
+
+
+# Module-level singleton — the production manager.
+manager = SamLifecycleManager()
