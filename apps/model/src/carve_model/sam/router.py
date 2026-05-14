@@ -461,32 +461,33 @@ class VisualPromptOut(BaseModel):
 
 @router.post("/text-prompt", response_model=list[TextPromptOut])
 def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
-    if get_sam_variant() != "sam3":
-        raise HTTPException(status_code=409, detail="sam3_not_enabled")
+    # Route through the lifecycle manager — the canonical SAM entry
+    # point. The variant decides whether it supports text prompts; if
+    # not we 409 with a capability-based reason (not a variant name).
+    # SamNotReadyError → 503 with state-specific detail
+    # (sam_loading / sam_error). Pre-lease validations stay above the
+    # lease so cheap client errors don't take the inference lock.
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
     try:
-        factory = get_text_predictor()
-    except RuntimeError:
-        # v3.22 — predictor was force-evicted (e.g. via the System
-        # page's "Unload all models" button). Re-register lazily so
-        # this request rebuilds the model on demand instead of 503'ing.
-        try:
-            load_predictor(get_sam_model())
-            factory = get_text_predictor()
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=503,
-                detail="sam3_predictor_not_loaded",
-            ) from exc
-    # Forward use_vlm_fo1 / threshold only when the client supplied them
-    # so older factories whose signatures predate the kwargs keep working —
-    # they're called exactly as before.
-    kwargs: dict = {"image_b64": payload.image_b64, "text": payload.text}
-    if payload.use_vlm_fo1:
-        kwargs["use_vlm_fo1"] = True
-    if payload.threshold is not None:
-        kwargs["threshold"] = payload.threshold
-    with admit(CostClass.SAM_TEXT):
-        return factory(**kwargs)
+        with manager.lease_or_load() as sam:
+            if not sam.supports_text:
+                raise HTTPException(
+                    status_code=409,
+                    detail="text_prompt_not_supported_for_variant",
+                )
+            # Forward use_vlm_fo1 / threshold only when the client
+            # supplied them so older factories whose signatures predate
+            # the kwargs keep working — they're called exactly as before.
+            kwargs: dict = {"image_b64": payload.image_b64, "text": payload.text}
+            if payload.use_vlm_fo1:
+                kwargs["use_vlm_fo1"] = True
+            if payload.threshold is not None:
+                kwargs["threshold"] = payload.threshold
+            with admit(CostClass.SAM_TEXT):
+                return sam.predict_text(**kwargs)
+    except SamNotReadyError as e:
+        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
 
 
 # --- SAM 3 box-prompt endpoint ----------------------------------------------
@@ -518,8 +519,10 @@ class BoxPromptOut(BaseModel):
 
 @router.post("/box-prompt", response_model=list[BoxPromptOut])
 def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
-    if get_sam_variant() != "sam3":
-        raise HTTPException(status_code=409, detail="sam3_box_prompt_requires_sam3")
+    # 422 client-error validations BEFORE the lease — cheap; no need to
+    # hold the inference lock for shape/value errors that don't depend
+    # on the variant. Capability gating (409) and SamNotReadyError (503)
+    # happen inside the manager block below.
     if len(payload.boxes) != len(payload.box_labels):
         raise HTTPException(
             status_code=422,
@@ -530,62 +533,64 @@ def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
             status_code=422,
             detail="box_labels must be 0 or 1",
         )
+
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
     try:
-        factory = get_box_predictor()
-    except RuntimeError:
-        # v3.22 — same lazy-rebuild as /sam/text-prompt above.
-        try:
-            load_predictor(get_sam_model())
-            factory = get_box_predictor()
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=503,
-                detail="sam3_box_predictor_not_loaded",
-            ) from exc
-    with admit(CostClass.SAM_BOX):
-        return factory(
-            image_b64=payload.image_b64,
-            boxes=payload.boxes,
-            box_labels=payload.box_labels,
-            text=payload.text,
-        )
+        with manager.lease_or_load() as sam:
+            if not sam.supports_box:
+                raise HTTPException(
+                    status_code=409,
+                    detail="box_prompt_not_supported_for_variant",
+                )
+            with admit(CostClass.SAM_BOX):
+                return sam.predict_box(
+                    image_b64=payload.image_b64,
+                    boxes=payload.boxes,
+                    box_labels=payload.box_labels,
+                    text=payload.text,
+                )
+    except SamNotReadyError as e:
+        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
 
 
 @router.post("/visual-prompt", response_model=list[VisualPromptOut])
 def sam_visual_prompt(payload: VisualPromptIn) -> list[dict]:
     """SAM 3.1 Promptable Concept Segmentation via image exemplars.
 
-    Requires the native SAM 3.1 variant (``SAM_MODEL=sam3.1``). Other
-    variants 409 with ``sam3p1_not_enabled`` because their backbones
+    Capability-gated through the manager: only variants exposing
+    ``supports_visual`` (today, the native SAM 3.1 variant) accept
+    visual prompts. Other variants 409 with
+    ``visual_prompt_not_supported_for_variant`` because their backbones
     don't expose the dense feature pyramid the visual-prompt encoder
     needs. See spec §5.5–§5.7.
     """
-    if get_sam_model() != "sam3.1":
-        raise HTTPException(status_code=409, detail="sam3p1_not_enabled")
+    # 422 client-error validation BEFORE the lease — mixed-kind regions
+    # is a shape error that doesn't depend on the variant.
     kinds = {r.kind for r in payload.regions}
     if len(kinds) > 1:
         raise HTTPException(status_code=422, detail="mixed_ref_types")
+
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
     try:
-        from carve_model.sam.predictor import get_visual_predictor, load_predictor
-        factory = get_visual_predictor()
-    except RuntimeError:
-        try:
-            load_predictor(get_sam_model())
-            from carve_model.sam.predictor import get_visual_predictor
-            factory = get_visual_predictor()
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=503, detail="sam_visual_predictor_not_loaded",
-            ) from exc
-    regions = [r.model_dump(exclude_none=True) for r in payload.regions]
-    with admit(CostClass.SAM_VISUAL):
-        return factory(
-            target_b64=payload.target_b64,
-            refer_b64=payload.refer_b64,
-            regions=regions,
-            threshold=payload.threshold,
-            text_hint=payload.text_hint,
-        )
+        with manager.lease_or_load() as sam:
+            if not sam.supports_visual:
+                raise HTTPException(
+                    status_code=409,
+                    detail="visual_prompt_not_supported_for_variant",
+                )
+            regions = [r.model_dump(exclude_none=True) for r in payload.regions]
+            with admit(CostClass.SAM_VISUAL):
+                return sam.predict_visual(
+                    target_b64=payload.target_b64,
+                    refer_b64=payload.refer_b64,
+                    regions=regions,
+                    threshold=payload.threshold,
+                    text_hint=payload.text_hint,
+                )
+    except SamNotReadyError as e:
+        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
 
 
 # --- /sam/unload (admin force-evict) ----------------------------------------

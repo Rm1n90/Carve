@@ -1,12 +1,16 @@
 """Tests for /sam/box-prompt endpoint.
 
 The endpoint is a thin shell over the SAM 3 box-prompt capability, mirroring
-the existing /sam/text-prompt pattern. It gates on SAM_MODEL=sam3 (returns
-409 ``sam3_box_prompt_requires_sam3`` otherwise), validates the request,
-and delegates to the registered box predictor factory.
+the existing /sam/text-prompt pattern. Task 3.4 routed it through
+``manager.lease_or_load`` so the gate is now capability-based: a variant
+that does not advertise ``supports_box`` 409s with
+``box_prompt_not_supported_for_variant``. The endpoint still validates
+the request and delegates to the registered box predictor factory.
 
 The actual SAM 3 model is not loaded here — these tests exercise the wiring
-plus the input validation contract.
+plus the input validation contract. We install a point-impl stub via
+``set_test_predictor`` to keep the manager's loader away from the real
+model while still yielding a variant from the lease.
 """
 
 import base64
@@ -27,18 +31,28 @@ def _png_b64(w: int = 64, h: int = 48) -> str:
     return base64.b64encode(out.getvalue()).decode("ascii")
 
 
+def _install_point_stub() -> None:
+    """Install a no-op point predictor so ``manager.lease`` yields the
+    LegacyTestVariant (no box impl) instead of trying to load the real
+    SAM model at test time."""
+    p_mod.set_test_predictor(lambda **_: ([], [], None))
+
+
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch):
     monkeypatch.delenv("SAM_MODEL", raising=False)
     monkeypatch.delenv("SAM_VARIANT", raising=False)
     p_mod.reset_text_predictor()
     p_mod.reset_box_predictor()
+    p_mod.set_test_predictor(None)
     yield
     p_mod.reset_text_predictor()
     p_mod.reset_box_predictor()
+    p_mod.set_test_predictor(None)
 
 
-def test_box_prompt_returns_409_when_sam_variant_is_sam2():
+def test_box_prompt_returns_409_when_variant_lacks_box_capability():
+    _install_point_stub()
     r = TestClient(create_app()).post(
         "/sam/box-prompt",
         json={
@@ -48,11 +62,17 @@ def test_box_prompt_returns_409_when_sam_variant_is_sam2():
         },
     )
     assert r.status_code == 409
-    assert r.json()["detail"] == "sam3_box_prompt_requires_sam3"
+    assert r.json()["detail"] == "box_prompt_not_supported_for_variant"
 
 
-def test_box_prompt_returns_503_when_sam3_enabled_but_predictor_not_set(monkeypatch):
+def test_box_prompt_returns_409_when_box_predictor_not_registered(monkeypatch):
+    """With no box impl on the leased variant, capability is False → 409.
+
+    Pre-Task-3.4 this returned 503 ``sam3_box_predictor_not_loaded``; the
+    new contract treats absent capability as 409 because the manager
+    already knows what each variant supports."""
     monkeypatch.setenv("SAM_MODEL", "sam3")
+    _install_point_stub()  # keep the real loader out of the test path
     r = TestClient(create_app()).post(
         "/sam/box-prompt",
         json={
@@ -61,8 +81,8 @@ def test_box_prompt_returns_503_when_sam3_enabled_but_predictor_not_set(monkeypa
             "box_labels": [1],
         },
     )
-    assert r.status_code == 503
-    assert r.json()["detail"] == "sam3_box_predictor_not_loaded"
+    assert r.status_code == 409
+    assert r.json()["detail"] == "box_prompt_not_supported_for_variant"
 
 
 def test_box_prompt_calls_factory_when_sam3_enabled(monkeypatch):
