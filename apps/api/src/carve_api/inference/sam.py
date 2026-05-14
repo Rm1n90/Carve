@@ -158,6 +158,7 @@ def sam_text_prompt_for_asset(
     frame_id: uuid.UUID | None = None,
     *,
     use_vlm_fo1: bool = False,
+    threshold: float | None = None,
 ) -> list[dict]:
     """SAM 3 text-prompt entry point.
 
@@ -177,7 +178,9 @@ def sam_text_prompt_for_asset(
     body = fetch_asset_bytes(asset, frame_id=frame_id)
     b64 = base64.b64encode(body).decode("ascii")
     try:
-        return sam_text_prompt(b64, text, use_vlm_fo1=use_vlm_fo1)
+        return sam_text_prompt(
+            b64, text, use_vlm_fo1=use_vlm_fo1, threshold=threshold,
+        )
     except ModelServiceError as exc:
         raise _translate_model_error(exc, label="text-prompt") from exc
 

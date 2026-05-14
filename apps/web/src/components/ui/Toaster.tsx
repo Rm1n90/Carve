@@ -1,9 +1,26 @@
 // Armin Mehri — mehri.armin@gmail.com
 import * as ToastPrimitive from "@radix-ui/react-toast";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { subscribeToasts, type ToastEvent, type ToastVariant } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+
+/**
+ * Default auto-dismiss duration in milliseconds. Mirrors the fallback
+ * baked into `lib/toast.ts` so a toast emitted without an explicit
+ * `duration` still disappears on the same schedule as everything else.
+ */
+const DEFAULT_TOAST_DURATION_MS = 3500;
+
+/**
+ * Effectively-infinite duration passed to Radix's <Toast.Root> so its
+ * built-in auto-close timer never fires. We own the timer ourselves
+ * (see useEffect below) — Radix's timer otherwise pauses whenever the
+ * viewport is hovered or the window loses focus, which is exactly
+ * what caused some toasts in the bottom-right corner to "stick"
+ * until the user dismissed them by hand.
+ */
+const RADIX_DURATION_DISABLED = 24 * 60 * 60 * 1000;
 
 const VARIANT_ICON: Record<ToastVariant, typeof Info> = {
   info: Info,
@@ -41,16 +58,46 @@ const VARIANT_ICON_COLOR: Record<ToastVariant, string> = {
  */
 export function Toaster() {
   const [toasts, setToasts] = useState<ToastEvent[]>([]);
+  // Pending auto-dismiss timers, keyed by toast id, so manual close
+  // (X button / Esc / swipe) cancels the timer instead of leaving it
+  // dangling. Also lets the unmount cleanup tear them all down.
+  const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
 
-  useEffect(() => {
-    return subscribeToasts((evt) => {
-      setToasts((prev) => [...prev, evt]);
-    });
+  const dismiss = useCallback((id: string) => {
+    const timer = timersRef.current.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timersRef.current.delete(id);
+    }
+    setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  function dismiss(id: string) {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }
+  useEffect(() => {
+    const unsub = subscribeToasts((evt) => {
+      setToasts((prev) => [...prev, evt]);
+      // Own the timer ourselves so the toast disappears on schedule
+      // regardless of pointer-hover or window-focus state. Radix's
+      // built-in duration pauses on hover/blur, which made toasts
+      // emitted while the cursor lingered near the bottom-right
+      // viewport stick around indefinitely.
+      const ms = evt.duration ?? DEFAULT_TOAST_DURATION_MS;
+      // Non-positive / non-finite duration → treat as default; never
+      // honour a sentinel that would mean "never close".
+      const safeMs = Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_TOAST_DURATION_MS;
+      const timer = setTimeout(() => {
+        timersRef.current.delete(evt.id);
+        setToasts((prev) => prev.filter((t) => t.id !== evt.id));
+      }, safeMs);
+      timersRef.current.set(evt.id, timer);
+    });
+    return () => {
+      unsub();
+      for (const t of timersRef.current.values()) clearTimeout(t);
+      timersRef.current.clear();
+    };
+  }, []);
 
   return (
     <ToastPrimitive.Provider swipeDirection="right">
@@ -59,7 +106,11 @@ export function Toaster() {
         return (
           <ToastPrimitive.Root
             key={t.id}
-            duration={t.duration ?? 3500}
+            // Radix's auto-close is disabled — our useEffect owns the
+            // timer (see RADIX_DURATION_DISABLED comment up top). The
+            // open-change handler still fires for the X button, Esc,
+            // and swipe-to-dismiss; we route those through dismiss().
+            duration={RADIX_DURATION_DISABLED}
             onOpenChange={(open) => {
               if (!open) dismiss(t.id);
             }}

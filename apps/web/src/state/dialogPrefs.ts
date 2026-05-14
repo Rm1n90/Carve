@@ -28,6 +28,11 @@ export interface AutoAnnotateTextConfig {
   samPostMode: "off" | "to-bbox";
   scope: "this" | "all";
   useVlmFo1: boolean;
+  // Bbox-IoU floor for the per-class NMS dedup pass on the server.
+  // Optional so older localStorage entries (saved before this field
+  // existed) still load — the dialog falls back to a sensible default
+  // when missing.
+  iouThreshold?: number;
 }
 
 export interface SmartFindModeCommonConfig {

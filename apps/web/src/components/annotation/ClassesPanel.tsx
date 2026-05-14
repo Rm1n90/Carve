@@ -32,6 +32,8 @@ import type { ClassRow } from "@/api/classes";
 import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
 import { useClassRecents } from "@/state/classRecents";
+import { ClassCommandPalette } from "@/components/annotation/ClassCommandPalette";
+import { showToast } from "@/lib/toast";
 import { Kbd } from "@/components/ui/Kbd";
 import { Input } from "@/components/ui/Input";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
@@ -145,18 +147,41 @@ function ColorPickerPopover({
   );
 }
 
+// Custom MIME used by AnnotationRow → ClassRowItem drag-and-drop. Sticks
+// to a unique vendor-prefixed type so the browser doesn't try to
+// interpret the payload as a URL / file / arbitrary text in any other
+// drop target.
+const ANN_DRAG_MIME = "application/x-carve-annotations";
+const ANN_DRAG_SEP = ",";
+
+function parseAnnDragIds(dt: DataTransfer | null): string[] {
+  if (!dt) return [];
+  const raw = dt.getData(ANN_DRAG_MIME);
+  if (!raw) return [];
+  return raw.split(ANN_DRAG_SEP).filter((s) => s.length > 0);
+}
+
 function AnnotationRow({
   ann,
   classColor,
   hovered,
   selected,
   hidden,
+  selectedIds,
+  onRequestReassign,
 }: {
   ann: { tempId: string; kind: keyof typeof KIND_ICON };
   classColor: string;
   hovered: boolean;
   selected: boolean;
   hidden: boolean;
+  /** Live multi-selection from the store — used to broaden the drag /
+   *  right-click target set when the user grabs a selected row. */
+  selectedIds: string[];
+  /** Called on contextmenu/right-click with the ids to reassign (the
+   *  full selection when this row is part of it, otherwise just this
+   *  row). The panel opens the class-picker palette in response. */
+  onRequestReassign: (ids: string[]) => void;
 }) {
   const Icon = KIND_ICON[ann.kind] ?? Square;
   const setHover = useTool((s) => s.setHoveredAnnotationId);
@@ -174,6 +199,14 @@ function AnnotationRow({
     else select(ann.tempId);
   };
 
+  // When the user grabs (drag / right-click) a row that's part of the
+  // current multi-selection, target ALL selected ids; otherwise just
+  // this row. Mirrors what the canvas context-menu does for parity.
+  const resolveTargetIds = (): string[] => {
+    if (selected && selectedIds.length > 1) return [...selectedIds];
+    return [ann.tempId];
+  };
+
   return (
     // v2.9 P1-18 — keyboard parity with mouse-click selection.
     <li
@@ -182,8 +215,31 @@ function AnnotationRow({
       data-testid={`annotation-row-${ann.tempId}`}
       data-hovered={hovered ? "true" : undefined}
       data-selected={selected ? "true" : undefined}
+      draggable
       onMouseEnter={() => setHover(ann.tempId)}
       onMouseLeave={() => setHover(null)}
+      onContextMenu={(e) => {
+        // Right-click → open the class-picker palette in reassign mode.
+        // preventDefault stops the browser's native menu from racing
+        // our UI; stopPropagation keeps the canvas listener silent.
+        e.preventDefault();
+        e.stopPropagation();
+        const ids = resolveTargetIds();
+        // Make sure the row is at least visually selected when the
+        // user right-clicks an unselected row — the palette will reuse
+        // these ids verbatim.
+        if (!selected && ids.length === 1) select(ids[0]);
+        onRequestReassign(ids);
+      }}
+      onDragStart={(e) => {
+        const ids = resolveTargetIds();
+        // Vendor MIME so other drop targets don't accidentally accept
+        // our payload. Plain-text fallback also set so debugging tools
+        // can see the dragged ids.
+        e.dataTransfer.setData(ANN_DRAG_MIME, ids.join(ANN_DRAG_SEP));
+        e.dataTransfer.setData("text/plain", ids.join(ANN_DRAG_SEP));
+        e.dataTransfer.effectAllowed = "move";
+      }}
       onClick={(e) => {
         e.stopPropagation();
         handleSelect(e);
@@ -261,6 +317,8 @@ function ClassRowItem({
   hiddenAnnIds,
   isPinned,
   onTogglePin,
+  onRequestReassign,
+  onDropAnnotations,
 }: {
   cls: ClassRow;
   index: number;
@@ -286,10 +344,21 @@ function ClassRowItem({
   hoveredAnnId: string | null;
   selectedAnnIds: string[];
   hiddenAnnIds: string[];
+  /** Right-click on a contained AnnotationRow bubbles up via this. */
+  onRequestReassign: (ids: string[]) => void;
+  /** Fired when a drop lands on this class — `ids` is the tempIds
+   *  carried by the drag, `targetClassId` is this row's id. The panel
+   *  calls setActiveClassForSelected(targetClassId, ids). */
+  onDropAnnotations: (targetClassId: string, ids: string[]) => void;
 }) {
   const setActiveClassId = useTool((s) => s.setActiveClassId);
   const confirm = useConfirm();
   const rowRef = useRef<HTMLLIElement>(null);
+  const [isHover, setIsHover] = useState(false);
+  // Drop-target highlight state. Tracked locally rather than via a
+  // store so it's contained to this row — bulk class lists don't pay
+  // for re-renders elsewhere on a drag hover.
+  const [isDropTarget, setIsDropTarget] = useState(false);
 
   useEffect(() => {
     if (
@@ -301,6 +370,16 @@ function ClassRowItem({
     }
   }, [hoveredAnnId, classAnnotations]);
 
+  // v3.32 — tint the row with the class's own color. Opacity ramps
+  // with state so the row feels alive without drowning the content:
+  //   default → 10%   (clearly identifiable, text fully legible)
+  //   hover   → 18%   (signals interactivity)
+  //   active  → 28%   (matches the dot, plus the left accent stripe)
+  // ``color-mix`` blends against ``transparent`` so the underlying
+  // panel surface still shows through for theme parity.
+  const tintPct = isActive ? 28 : isHover ? 18 : 10;
+  const rowTint = `color-mix(in oklch, ${cls.color} ${tintPct}%, transparent)`;
+
   return (
     <li ref={rowRef} data-testid={`class-row-${cls.id}`}>
       {/* v2.9 P1-18 — class header was a <div> with onClick; expose it
@@ -311,16 +390,42 @@ function ClassRowItem({
         className={cn(
           "group relative flex items-center gap-2 px-2.5 py-2 h-9 cursor-pointer",
           "focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]",
+          "transition-colors duration-150",
           isActive
-            ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
-            : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+            ? "text-[color:var(--text-primary)]"
+            : "text-[color:var(--text-secondary)]",
+          isDropTarget &&
+            "ring-2 ring-inset ring-[var(--accent)] ring-offset-0",
         )}
+        style={{ backgroundColor: rowTint }}
+        onMouseEnter={() => setIsHover(true)}
+        onMouseLeave={() => setIsHover(false)}
         onClick={() => setActiveClassId(cls.id)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             setActiveClassId(cls.id);
           }
+        }}
+        // HTML5 drag-and-drop: accept annotation rows dropped from
+        // any class. dragover must preventDefault to declare this an
+        // active drop target (the browser's default is to reject).
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes(ANN_DRAG_MIME)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (!isDropTarget) setIsDropTarget(true);
+        }}
+        onDragLeave={() => {
+          if (isDropTarget) setIsDropTarget(false);
+        }}
+        onDrop={(e) => {
+          setIsDropTarget(false);
+          const ids = parseAnnDragIds(e.dataTransfer);
+          if (ids.length === 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onDropAnnotations(cls.id, ids);
         }}
         data-active={isActive ? "true" : undefined}
       >
@@ -534,6 +639,8 @@ function ClassRowItem({
                   hovered={hoveredAnnId === a.tempId}
                   selected={selectedAnnIds.includes(a.tempId)}
                   hidden={hiddenAnnIds.includes(a.tempId)}
+                  selectedIds={selectedAnnIds}
+                  onRequestReassign={onRequestReassign}
                 />
               ))}
             </ul>
@@ -677,6 +784,39 @@ export function ClassesPanel({
   const [sort, setSort] = useState<SortMode>("idx");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showAdd, setShowAdd] = useState(false);
+  // Reassign palette state. Holds the tempIds to re-class while the
+  // palette is open; null when closed. Driven by right-click on an
+  // AnnotationRow — see handleRequestReassign below.
+  const [reassignIds, setReassignIds] = useState<string[] | null>(null);
+
+  const handleRequestReassign = (ids: string[]) => {
+    if (ids.length === 0) return;
+    setReassignIds(ids);
+  };
+
+  const handleDropAnnotations = (
+    targetClassId: string,
+    ids: string[],
+  ) => {
+    if (ids.length === 0) return;
+    // Drop on the SAME class is a no-op — but we toast briefly so the
+    // user doesn't think the drop "failed silently". The store's
+    // setActiveClassForSelected already skips no-op drafts at the
+    // entry level (no history churn), so calling it unconditionally
+    // is safe; we just need user feedback when nothing changed.
+    const cur = useAnnotations.getState().byId;
+    const willChange = ids.some(
+      (id) => cur[id] && cur[id].classId !== targetClassId,
+    );
+    if (!willChange) return;
+    useAnnotations.getState().setActiveClassForSelected(targetClassId, ids);
+    const className =
+      classes.find((c) => c.id === targetClassId)?.name ?? "class";
+    showToast(
+      `Reassigned ${ids.length} annotation${ids.length === 1 ? "" : "s"} to ${className}.`,
+      { variant: "success", duration: 1800 },
+    );
+  };
   // Plan 14 Phase 8 Task 4 — when ``classes.length > 12`` collapse the
   // v3.29 — removed the "Show all (N)" expander. Large-project users
   // (≥50 classes) found the disclosure a speed bump; the outer panel
@@ -938,6 +1078,8 @@ export function ClassesPanel({
                 onTogglePin={() =>
                   projectId && togglePin(projectId, c.id)
                 }
+                onRequestReassign={handleRequestReassign}
+                onDropAnnotations={handleDropAnnotations}
               />
             );
           };
@@ -1012,6 +1154,23 @@ export function ClassesPanel({
           </button>
         )}
       </div>
+      {/* Right-click → reassign palette. Reuses the canvas-side
+          ClassCommandPalette so the search / pinned / recent UX is
+          consistent across both surfaces. ``selectedAnnotationIds``
+          drives the bulk-reassign; ``setActiveClassForSelected`` is
+          called from inside the palette on pick. */}
+      {projectId && (
+        <ClassCommandPalette
+          open={reassignIds !== null}
+          onOpenChange={(o) => {
+            if (!o) setReassignIds(null);
+          }}
+          mode="reassign"
+          projectId={projectId}
+          classes={classes}
+          selectedAnnotationIds={reassignIds ?? []}
+        />
+      )}
     </section>
   );
 }

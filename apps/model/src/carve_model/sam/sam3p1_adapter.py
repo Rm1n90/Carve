@@ -1314,7 +1314,11 @@ def make_sam3p1_text_predictor():
     """
 
     def _predict_from_text(
-        *, image_b64: str, text: str, use_vlm_fo1: bool = False,
+        *,
+        image_b64: str,
+        text: str,
+        use_vlm_fo1: bool = False,
+        threshold: float | None = None,
     ) -> list[dict]:
         import logging
         import os
@@ -1336,13 +1340,38 @@ def make_sam3p1_text_predictor():
             return []
         # Reset any prior prompts before applying the new text concept.
         adapter._processor.reset_all_prompts(state)
-        if adapter._device == "cuda":
-            with torch.no_grad():
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    adapter._processor.set_text_prompt(text, state)
+
+        # Mirror the visual-prompt path: temporarily lower the processor's
+        # internal confidence floor to the user's UI threshold so SAM 3.1
+        # returns its mid-confidence candidates. The default 0.5 used to
+        # silently wipe everything below before the api-side gate ever
+        # saw it — exactly the "obvious pants not detected even at 0.20"
+        # accuracy regression. Restore the original floor afterwards so
+        # we don't mutate global predictor state across calls.
+        processor = adapter._processor
+        if threshold is not None:
+            original_threshold = getattr(processor, "confidence_threshold", 0.5)
+            try:
+                processor.set_confidence_threshold(float(threshold))
+            except Exception:  # noqa: BLE001 — best-effort
+                original_threshold = None
         else:
-            with torch.no_grad():
-                adapter._processor.set_text_prompt(text, state)
+            original_threshold = None
+
+        try:
+            if adapter._device == "cuda":
+                with torch.no_grad():
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        processor.set_text_prompt(text, state)
+            else:
+                with torch.no_grad():
+                    processor.set_text_prompt(text, state)
+        finally:
+            if original_threshold is not None:
+                try:
+                    processor.set_confidence_threshold(original_threshold)
+                except Exception:  # noqa: BLE001
+                    pass
 
         detections = _extract_text_detections(state)
         boxes = state.get("boxes")
@@ -1364,6 +1393,25 @@ def make_sam3p1_text_predictor():
                 "polygon": polygon,
             })
         rows.sort(key=lambda r: r["score"], reverse=True)
+
+        # Diagnostic: emit the score envelope so "no matches" reports are
+        # easy to root-cause from logs (model returned zero proposals vs.
+        # model returned proposals all below the user's threshold).
+        if rows:
+            top_score = rows[0]["score"]
+            min_score = rows[-1]["score"]
+        else:
+            top_score = 0.0
+            min_score = 0.0
+        _logger.info(
+            "sam3.1 text-prompt: text=%r threshold=%s detections=%d "
+            "score_range=[%.3f, %.3f]",
+            text,
+            f"{threshold:.3f}" if threshold is not None else "default",
+            len(rows),
+            min_score,
+            top_score,
+        )
 
         # v3.22 GPU-hygiene: drop GPU tensors from the state dict
         # (masks_logits, masks, boxes, scores, text features) and run

@@ -156,6 +156,9 @@ export const samApi = {
       overwrite?: boolean;
       // v3.21+ — opt-in VLM-FO1 precision filter. Default unset (false).
       use_vlm_fo1?: boolean;
+      // Bbox-IoU floor for the per-class NMS dedup pass. Omitted →
+      // server uses its default (0.70). 1.0 effectively disables NMS.
+      iou_threshold?: number;
     },
   ): Promise<{
     annotations_created: number;
@@ -185,6 +188,10 @@ export const samApi = {
       // v3.21+ — opt-in VLM-FO1 precision filter; persists into the
       // RQ payload so every per-asset iteration honors the same toggle.
       use_vlm_fo1?: boolean;
+      // Mirrors autoText — bbox-IoU floor for the per-class NMS dedup
+      // pass. Persists into the RQ payload so every per-asset
+      // iteration honors the same overlap setting.
+      iou_threshold?: number;
     },
   ): Promise<{ job_id: string }> =>
     (

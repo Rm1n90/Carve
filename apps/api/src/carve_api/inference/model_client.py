@@ -215,7 +215,11 @@ def sam_decode(
 
 
 def sam_text_prompt(
-    image_b64: str, text: str, *, use_vlm_fo1: bool = False,
+    image_b64: str,
+    text: str,
+    *,
+    use_vlm_fo1: bool = False,
+    threshold: float | None = None,
 ) -> list[dict]:
     """POST /sam/text-prompt — SAM 3 only.
 
@@ -225,13 +229,21 @@ def sam_text_prompt(
     proxy maps it to a UI-friendly response). 503 means the predictor
     factory hasn't been registered yet.
 
-    v3.21+ — ``use_vlm_fo1`` opts into the VLM-FO1 precision filter. The
-    flag is forwarded to the model service only when True so older
-    deployments that pre-date the kwarg keep working unchanged.
+    v3.21+ — ``use_vlm_fo1`` opts into the VLM-FO1 precision filter.
+
+    ``threshold`` (0..1) controls the SAM 3 instance-segmentation
+    confidence floor — propagated all the way to the model's
+    post_process_instance_segmentation. Without it, the predictor
+    silently hardcoded 0.5, so the user-side score gate (applied later
+    in auto_text_for_asset) saw nothing below 0.5 even when set lower.
+    Both kwargs are forwarded only when supplied so older model service
+    deployments that pre-date them keep working unchanged.
     """
     body: dict = {"image_b64": image_b64, "text": text}
     if use_vlm_fo1:
         body["use_vlm_fo1"] = True
+    if threshold is not None:
+        body["threshold"] = float(threshold)
     with _wrap_unreachable("sam_text_prompt"), _client() as c:
         r = c.post("/sam/text-prompt", json=body)
         if r.status_code >= 400:

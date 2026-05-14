@@ -381,6 +381,9 @@ class SamAutoTextBatchIn(BaseModel):
     # mode batch. Persists into AutoTextBatchPayload so each per-asset
     # iteration in the worker honors the same toggle.
     use_vlm_fo1: bool = Field(default=False)
+    # Mirrors SamAutoTextIn — bbox-IoU floor for the per-class NMS dedup
+    # pass. None = server default. The worker propagates it per-asset.
+    iou_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 @task_inference_router.post("/{task_id}/sam/auto-text-batch")
@@ -424,6 +427,7 @@ def enqueue_sam_auto_text_batch(
         find_all=payload.find_all,
         overwrite=payload.overwrite,
         use_vlm_fo1=payload.use_vlm_fo1,
+        iou_threshold=payload.iou_threshold,
     )
     try:
         from rq import Queue
@@ -616,6 +620,12 @@ class SamAutoTextIn(BaseModel):
     # v3.21+ — VLM-FO1 precision filter opt-in for the Auto-mode dialog.
     # The flag fans out to every class iteration inside auto_text_for_asset.
     use_vlm_fo1: bool = Field(default=False)
+    # Bbox-IoU floor above which two SAM detections are treated as the
+    # same object and the lower-scored one is dropped. ``None`` keeps
+    # the server's default (0.70). 1.0 effectively disables NMS;
+    # values around 0.30–0.50 are aggressive. Surfaced in the dialog
+    # so operators can dial dedup strictness per class workload.
+    iou_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class SamAutoTextOut(BaseModel):
@@ -704,6 +714,7 @@ def sam_auto_text_endpoint(
             overwrite=payload.overwrite,
             actor_id=user.id,
             use_vlm_fo1=payload.use_vlm_fo1,
+            iou_threshold=payload.iou_threshold,
         )
     except AutoTextNoEligibleClasses as exc:
         raise _http(exc) from exc

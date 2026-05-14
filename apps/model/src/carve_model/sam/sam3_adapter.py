@@ -345,7 +345,11 @@ def make_sam3_text_predictor():
         _state["device"] = device
 
     def _predict_from_text(
-        *, image_b64: str, text: str, use_vlm_fo1: bool = False,
+        *,
+        image_b64: str,
+        text: str,
+        use_vlm_fo1: bool = False,
+        threshold: float | None = None,
     ) -> list[dict]:
         import base64
         import logging
@@ -375,21 +379,26 @@ def make_sam3_text_predictor():
         with torch.no_grad():
             outputs = model(**inputs)
 
-        # v3.21+ — when the request opts into VLM-FO1 we lower the SAM 3
-        # post-processing threshold so FO1 sees more candidate proposals
-        # to filter. Without FO1 the existing 0.5 default is preserved
-        # byte-for-byte (zero behavior change for existing callers).
-        if use_vlm_fo1:
+        # Caller-supplied threshold wins so the user's UI slider actually
+        # changes what SAM returns. Falls back to the legacy defaults when
+        # the caller didn't supply one:
+        #   - 0.5 baseline (preserves byte-for-byte behavior for callers
+        #     that pre-date the kwarg)
+        #   - 0.2 when VLM-FO1 is on, so the precision filter sees a wider
+        #     candidate pool to score and re-rank
+        if threshold is not None:
+            sam_threshold = float(threshold)
+        elif use_vlm_fo1:
             try:
-                threshold = float(os.environ.get("SAM3_PROPOSAL_THRESHOLD", "0.2"))
+                sam_threshold = float(os.environ.get("SAM3_PROPOSAL_THRESHOLD", "0.2"))
             except ValueError:
-                threshold = 0.2
+                sam_threshold = 0.2
         else:
-            threshold = 0.5
+            sam_threshold = 0.5
 
         results = proc.post_process_instance_segmentation(
             outputs,
-            threshold=threshold,
+            threshold=sam_threshold,
             mask_threshold=0.5,
             target_sizes=[[h, w]],
         )[0]
