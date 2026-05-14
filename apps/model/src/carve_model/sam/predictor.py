@@ -21,6 +21,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, Literal, Protocol
 
+from carve_model.sam.lifecycle import (
+    _LegacyTestVariant,
+    manager as _sam_manager,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -773,9 +778,37 @@ def load_predictor(variant: str) -> None:
     )
 
 
+def _legacy_variant() -> _LegacyTestVariant:
+    """Get or create the singleton _LegacyTestVariant installed on the manager."""
+    v = _sam_manager._test_variant
+    if not isinstance(v, _LegacyTestVariant):
+        v = _LegacyTestVariant()
+        _sam_manager.install_test_variant(v)
+    return v
+
+
+def _legacy_clear(op: str) -> None:
+    """Clear one impl on the LegacyTestVariant; uninstall when all are None."""
+    v = _sam_manager._test_variant
+    if not isinstance(v, _LegacyTestVariant):
+        return
+    setattr(v, f"_{op}_impl", None)
+    if all(
+        getattr(v, f"_{o}_impl") is None
+        for o in ("point", "text", "box", "visual")
+    ):
+        _sam_manager.install_test_variant(None)
+
+
 def set_test_predictor(p: SamPredictor | None) -> None:
     """Inject a stub for tests; pass None to clear."""
     global _TEST_PREDICTOR
+    if p is None:
+        _legacy_clear("point")
+        _TEST_PREDICTOR = None
+        _reset_singleton()
+        return
+    _legacy_variant()._point_impl = p
     _TEST_PREDICTOR = p
     # Reset the production session too so subsequent tests don't see a
     # stale predictor or stale loaded-image state.
@@ -985,6 +1018,11 @@ def set_text_predictor(fn: TextPredictor | None) -> None:
     container start when ``SAM_VARIANT=sam3``; tests pass a fake.
     """
     global _TEXT_PREDICTOR_FACTORY
+    if fn is None:
+        _legacy_clear("text")
+        _TEXT_PREDICTOR_FACTORY = None
+        return
+    _legacy_variant()._text_impl = fn
     _TEXT_PREDICTOR_FACTORY = fn
 
 
@@ -1002,6 +1040,7 @@ def get_text_predictor() -> TextPredictor:
 def reset_text_predictor() -> None:
     """Clear the text predictor factory. Used by tests."""
     global _TEXT_PREDICTOR_FACTORY
+    _legacy_clear("text")
     _TEXT_PREDICTOR_FACTORY = None
 
 
@@ -1012,6 +1051,11 @@ def set_visual_predictor(factory) -> None:
     container start when ``SAM_MODEL=sam3.1``; tests pass a fake.
     """
     global _VISUAL_PREDICTOR_FACTORY
+    if factory is None:
+        _legacy_clear("visual")
+        _VISUAL_PREDICTOR_FACTORY = None
+        return
+    _legacy_variant()._visual_impl = factory
     _VISUAL_PREDICTOR_FACTORY = factory
 
 
@@ -1029,6 +1073,7 @@ def get_visual_predictor():
 def _reset_visual_predictor_for_test() -> None:
     """Clear the visual predictor factory. Used by tests."""
     global _VISUAL_PREDICTOR_FACTORY
+    _legacy_clear("visual")
     _VISUAL_PREDICTOR_FACTORY = None
 
 
@@ -1068,6 +1113,11 @@ def set_box_predictor(fn: BoxPredictor | None) -> None:
     tests inject a fake.
     """
     global _BOX_PREDICTOR_FACTORY
+    if fn is None:
+        _legacy_clear("box")
+        _BOX_PREDICTOR_FACTORY = None
+        return
+    _legacy_variant()._box_impl = fn
     _BOX_PREDICTOR_FACTORY = fn
 
 
@@ -1085,6 +1135,7 @@ def get_box_predictor() -> BoxPredictor:
 def reset_box_predictor() -> None:
     """Clear the box predictor factory. Used by tests."""
     global _BOX_PREDICTOR_FACTORY
+    _legacy_clear("box")
     _BOX_PREDICTOR_FACTORY = None
 
 
