@@ -373,8 +373,27 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _short_repr(exc: BaseException, maxlen: int = 200) -> str:
+    s = repr(exc)
+    return s if len(s) <= maxlen else s[: maxlen - 3] + "..."
+
+
+_ALLOWED_VARIANTS = frozenset({
+    "sam2.1-tiny",
+    "sam2.1-small",
+    "sam2.1-base-plus",
+    "sam2.1-large",
+    "sam3.1",
+})
 
 
 def _import_torch() -> Any | None:
@@ -487,6 +506,85 @@ class SamLifecycleManager:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+    def ensure_loaded(self, variant: str, *, device: str | None = None) -> None:
+        """Switch the manager to `variant`. Idempotent if already loaded.
+
+        Synchronous. Callers that need a 202-style endpoint should run this
+        in a background thread.
+
+        Raises ValueError for unknown variants, SamLoadError on load failure.
+        """
+        if self._test_variant is not None:
+            return  # test mode — never touches real lifecycle
+
+        if variant not in _ALLOWED_VARIANTS:
+            raise ValueError(f"unknown SAM variant: {variant!r}")
+
+        # Fast-path: already on it
+        with self._load_lock:
+            if (
+                self._state.kind == "ready"
+                and self._active is not None
+                and self._active.name == variant
+            ):
+                self._remembered_variant = variant
+                return
+
+        # Slow-path: take inference lock first (waits for in-flight inference)
+        self._inference_lock.acquire()
+        try:
+            # Re-check under both locks
+            with self._load_lock:
+                if (
+                    self._state.kind == "ready"
+                    and self._active is not None
+                    and self._active.name == variant
+                ):
+                    self._remembered_variant = variant
+                    return
+                self._state = LoadState.loading(variant, started_at=_now_iso())
+
+            # Unload existing (if any)
+            if self._active is not None:
+                self._try_unload_locked(self._active)
+                self._active = None
+                self._run_cuda_cleanup()
+
+            # Build + load new
+            new_variant: SamVariant | None = None
+            try:
+                new_variant = _build_variant(variant)
+                resolved = self._resolve_device(device)
+                new_variant.load(device=resolved)
+            except Exception as exc:
+                if new_variant is not None:
+                    self._try_unload_locked(new_variant)
+                self._run_cuda_cleanup()
+                with self._load_lock:
+                    self._state = LoadState.error_(variant, _short_repr(exc))
+                    self._active = None
+                    self._remembered_variant = variant
+                raise SamLoadError(variant, exc) from exc
+
+            with self._load_lock:
+                self._active = new_variant
+                self._state = LoadState.ready(variant, loaded_at=_now_iso())
+                self._last_used_at = time.monotonic()
+                self._remembered_variant = variant
+        finally:
+            self._inference_lock.release()
+
+    def _try_unload_locked(self, v: SamVariant) -> None:
+        """Best-effort unload — logs and swallows exceptions."""
+        try:
+            v.unload()
+        except Exception:
+            log.exception("variant %s unload raised; continuing with GC", v.name)
+
+    def _resolve_device(self, device: str | None) -> str | None:
+        """Device resolution wiring. Phase 1 returns the caller's value as-is."""
+        return device
 
     @contextmanager
     def lease(self):
