@@ -586,9 +586,13 @@ def force_evict_predictor() -> bool:
         Without dropping this the ~6 GB transformers SAM 3 weights stay
         resident even after every other "unload" path runs.
       * ``_BOX_PREDICTOR_FACTORY`` — same shape, used by /sam/box-prompt.
-      * The sam3.1 native module-level singleton
-        ``sam3p1_adapter._NATIVE_IMAGE_PREDICTOR`` — holds the multiplex
-        ~5 GB checkpoint after the first /sam/encode + /sam/text-prompt.
+
+    Phase 5 — the sam3.1 native singleton (``_NATIVE_IMAGE_PREDICTOR``)
+    used to be cleared here too; that path was deleted alongside the
+    duplicate adapter copy in Task 5.1. The lifecycle manager now owns
+    the sole sam3.1 adapter via ``Sam3p1Variant._adapter`` and
+    ``manager.force_unload()`` (invoked by ``/sam/unload`` before this
+    function) handles the cleanup.
 
     Then runs ``gc.collect()`` (forces Python to drop refs to the now-
     orphaned closures), ``torch.cuda.empty_cache()`` (returns memory to
@@ -622,14 +626,12 @@ def force_evict_predictor() -> bool:
     if _clear_manager_image_state():
         something_freed = True
 
-    # Drop the sam3.1 native singleton too (held outside _PREDICTOR_LOCK
-    # by sam3p1_adapter — its own module-level state).
-    try:
-        from carve_model.sam.sam3p1_adapter import reset_native_image_predictor
-        if reset_native_image_predictor():
-            something_freed = True
-    except Exception:  # noqa: BLE001 — sam3p1 import optional in test env
-        pass
+    # Phase 5 — the sam3.1 native singleton (``_NATIVE_IMAGE_PREDICTOR``)
+    # was deleted in Task 5.1. The lifecycle manager owns the sole sam3.1
+    # adapter copy now via ``Sam3p1Variant._adapter``; ``/sam/unload``
+    # calls ``manager.force_unload()`` before this function (router.py)
+    # so the variant + adapter are already dropped by the time we get
+    # here.
 
     # Force Python to actually drop references to the now-orphaned
     # closures so the underlying torch tensors become collectable. The
@@ -916,8 +918,13 @@ def _default_factory() -> SamPredictor:
         from carve_model.sam import sam3_adapter, sam3p1_adapter
 
         adapter = sam3p1_adapter.build_sam3p1_image_predictor(device=sam_device)
-        set_text_predictor(sam3p1_adapter.make_sam3p1_text_predictor())
-        set_box_predictor(sam3p1_adapter.make_sam3p1_box_predictor())
+        # Phase 5 — text/box predict for sam3.1 now lives on
+        # ``Sam3p1Variant.predict_text`` / ``predict_box`` (lifecycle.py).
+        # The legacy ``make_sam3p1_text_predictor`` / ``make_sam3p1_box_predictor``
+        # factories were deleted in Task 5.1 because they built a second
+        # adapter copy (the v3 OOM bug). Routers go through
+        # ``manager.lease_or_load()``; legacy ``set_text_predictor`` /
+        # ``set_box_predictor`` shims are reserved for test injection.
         # v3.28 — visual prompt requires the native sam3p1 image adapter.
         # The factory lives in sam3_adapter.py because it composes both
         # variants' decode/RLE helpers; it builds its own sam3p1 adapter

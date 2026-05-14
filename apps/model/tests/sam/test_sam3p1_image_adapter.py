@@ -6,8 +6,12 @@ transformers-free unless ``SAM3P1_AVAILABLE=1``. Exercises:
 - adapter ``set_image`` caches state + original_size
 - adapter ``predict`` routes points / box / both into ``predict_inst``
 - adapter ``predict`` raises before ``set_image``
-- text predictor returns RLE + polygon dicts sorted by score
-- box predictor handles a single positive box
+
+Phase 5 — Task 5.1 deleted the legacy ``make_sam3p1_text_predictor`` /
+``make_sam3p1_box_predictor`` factory closures (and the
+``_NATIVE_IMAGE_PREDICTOR`` singleton). Equivalent coverage lives in
+``test_lifecycle_predict_text.py`` and ``test_lifecycle_predict_box.py``,
+which exercise ``Sam3p1Variant.predict_text`` / ``predict_box`` end-to-end.
 
 Verified state-key contract (from Plan 12 native probe inside the
 model container): post-``set_text_prompt`` state has keys
@@ -18,8 +22,6 @@ shape ``(N, 1, H, W)`` dtype=bool; ``scores`` is shape ``(N,)``.
 
 from __future__ import annotations
 
-import base64
-import io
 import sys
 import types
 from types import ModuleType, SimpleNamespace
@@ -217,33 +219,10 @@ def _install_sam3_stub(monkeypatch):
     return calls
 
 
-def _png_b64_8x8() -> str:
-    from PIL import Image
-
-    img = np.zeros((8, 8, 3), dtype=np.uint8)
-    img[2:6, 2:6] = 255
-    pil = Image.fromarray(img)
-    buf = io.BytesIO()
-    pil.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode("ascii")
-
-
-@pytest.fixture(autouse=True)
-def _reset_module_cache():
-    """Each test starts with a fresh native predictor cache."""
-    try:
-        from carve_model.sam import sam3p1_adapter
-
-        sam3p1_adapter._set_native_image_predictor_for_tests(None)
-    except Exception:  # noqa: BLE001
-        pass
-    yield
-    try:
-        from carve_model.sam import sam3p1_adapter
-
-        sam3p1_adapter._set_native_image_predictor_for_tests(None)
-    except Exception:  # noqa: BLE001
-        pass
+# Phase 5 — Task 5.1: the ``_reset_module_cache`` fixture (autouse) was
+# removed alongside ``_set_native_image_predictor_for_tests``. The
+# ``Sam3p1NativeImagePredictorAdapter`` instances built inside each test
+# are now fully local — there is no module-level singleton to reset.
 
 
 # --- tests: image adapter ---------------------------------------------------
@@ -342,62 +321,13 @@ def test_image_adapter_extract_embedding_returns_none(monkeypatch):
     assert adapter.extract_embedding() is None
 
 
-# --- tests: text predictor --------------------------------------------------
-
-
-def test_text_predictor_returns_sorted_rle_polygon(monkeypatch):
-    _install_sam3_stub(monkeypatch)
-    from carve_model.sam.sam3p1_adapter import make_sam3p1_text_predictor
-
-    fn = make_sam3p1_text_predictor()
-    rows = fn(image_b64=_png_b64_8x8(), text="square")
-    assert isinstance(rows, list)
-    assert len(rows) == 2
-    # Sorted score desc.
-    assert rows[0]["score"] >= rows[1]["score"]
-    for row in rows:
-        assert set(row.keys()) >= {"counts", "size", "score", "polygon", "bbox"}
-        assert isinstance(row["counts"], str) and row["counts"]
-        assert row["size"] == [8, 8]
-        assert isinstance(row["polygon"], list)
-        assert len(row["bbox"]) == 4
-
-
-# --- tests: box predictor ---------------------------------------------------
-
-
-def test_box_predictor_single_positive(monkeypatch):
-    calls = _install_sam3_stub(monkeypatch)
-    from carve_model.sam.sam3p1_adapter import make_sam3p1_box_predictor
-
-    fn = make_sam3p1_box_predictor()
-    rows = fn(
-        image_b64=_png_b64_8x8(),
-        boxes=[[1.0, 1.0, 5.0, 5.0]],
-        box_labels=[1],
-    )
-    assert len(rows) == 1
-    row = rows[0]
-    assert set(row.keys()) >= {"counts", "size", "score", "polygon", "bbox"}
-    assert row["bbox"] == [1.0, 1.0, 5.0, 5.0]
-
-    # Confirm we used multimask_output=False for the box prompt.
-    pi_calls = [c for c in calls if c[0] == "predict_inst"]
-    assert pi_calls and pi_calls[0][1]["multimask_output"] is False
-
-
-def test_box_predictor_negative_subtracts_from_positive(monkeypatch):
-    _install_sam3_stub(monkeypatch)
-    from carve_model.sam.sam3p1_adapter import make_sam3p1_box_predictor
-
-    fn = make_sam3p1_box_predictor()
-    rows = fn(
-        image_b64=_png_b64_8x8(),
-        boxes=[[1.0, 1.0, 5.0, 5.0], [2.0, 2.0, 4.0, 4.0]],
-        box_labels=[1, 0],
-    )
-    # Positive remains; the negative just modifies its mask.
-    assert len(rows) == 1
+# --- text / box predictor tests removed (Task 5.1) --------------------------
+#
+# The legacy factory closures ``make_sam3p1_text_predictor`` /
+# ``make_sam3p1_box_predictor`` were deleted in Phase 5. Equivalent
+# coverage lives in ``test_lifecycle_predict_text.py`` and
+# ``test_lifecycle_predict_box.py`` which test
+# ``Sam3p1Variant.predict_text`` / ``predict_box`` directly.
 
 
 # --- integration smoke (skipped unless real native sam3 is installed) -------
