@@ -154,10 +154,11 @@ class SamVariant(Protocol):
     def predict_visual(
         self,
         *,
-        image_b64: str,
-        prompt_image_b64: str,
-        prompt_box: list[float],
+        target_b64: str,
+        refer_b64: str,
+        regions: list[dict],
         threshold: float | None = None,
+        text_hint: str | None = None,
     ) -> list[dict]: ...
 
     # ---- capability flags ----
@@ -657,8 +658,264 @@ class Sam3p1Variant:
         best_score = float(np.asarray(scores)[best_idx])
         return (best_mask, best_score)
 
-    def predict_visual(self, **kw: Any) -> list[dict]:
-        raise NotImplementedError("Sam3p1Variant.predict_visual not yet migrated")
+    def predict_visual(
+        self,
+        *,
+        target_b64: str,
+        refer_b64: str,
+        regions: list[dict],
+        threshold: float | None = None,
+        text_hint: str | None = None,  # noqa: ARG002 — kept for API parity
+    ) -> list[dict]:
+        """SAM 3.1 visual prompt via CLIP image-image similarity.
+
+        Uses self._adapter — same instance as predict_point/text/box. This
+        completes the OOM-fix invariant: one Sam3p1NativeImagePredictorAdapter
+        serves all four predict_* methods.
+
+        See sam3_adapter.make_sam3_visual_predictor for the algorithm pedigree
+        (CLIP-based scoring of SAM 3.1 PCS proposals with adaptive baseline
+        rescaling + greedy NMS).
+        """
+        if self._adapter is None:
+            raise RuntimeError("Sam3p1Variant.predict_visual called before load()")
+
+        import logging as _log
+        import numpy as np
+
+        if not regions:
+            return []
+
+        log_v = _log.getLogger("carve_model.sam.visual_prompt")
+        target = _decode_image_b64_to_numpy(target_b64)
+        refer = _decode_image_b64_to_numpy(refer_b64)
+
+        # 1. Encode each refer region with CLIP — keep ALL embeddings
+        #    (max-similarity scoring over the set, not a mean prototype).
+        ref_embeds: list[Any] = []
+        for region in regions:
+            crop, mask_in_crop = _crop_refer_with_mask(
+                refer, region, pad_ratio=0.20,
+            )
+            if crop is None or crop.size == 0:
+                continue
+            emb = embed_image(crop, mask=mask_in_crop)
+            if np.linalg.norm(emb) < 1e-6:
+                continue
+            ref_embeds.append(emb)
+        if not ref_embeds:
+            log_v.warning("SAM Visual Prompt: no usable refer crops")
+            return []
+        ref_stack = np.stack(ref_embeds, axis=0)  # (R, 512)
+        log_v.info(
+            "SAM Visual Prompt: encoded %d ref region(s)", ref_stack.shape[0],
+        )
+
+        # 2. Run the SAM inference + CLIP candidate scoring in a helper
+        #    that tests can stub without torch / CLIP / SAM dependencies.
+        return self._run_visual_inference(
+            target=target,
+            ref_stack=ref_stack,
+            threshold=threshold,
+        )
+
+    def _run_visual_inference(
+        self,
+        *,
+        target: Any,
+        ref_stack: Any,
+        threshold: float | None,
+    ) -> list[dict]:
+        """Run SAM 3.1 proposals on target + CLIP-score against ref_stack.
+
+        Factored out so tests can stub without numpy/torch/CLIP dependencies.
+        Returns the rows list. Operates on self._adapter, routed through
+        self.set_image(target) for atomic cache + prev_logits refresh.
+        """
+        if self._adapter is None:
+            return []
+
+        import logging as _log
+        import numpy as np
+        torch = _import_torch()
+
+        log_v = _log.getLogger("carve_model.sam.visual_prompt")
+        adapter = self._adapter
+
+        # CRITICAL: route through self.set_image() so cache state AND
+        # _prev_logits/_prev_n_points are all atomically updated. Direct
+        # adapter.set_image() would leave stale refinement logits.
+        self.set_image(target)
+        state = adapter._state
+        if state is None:
+            return []
+
+        # Empirical (sam3.1 native): empty string is the high-recall
+        # "concept-free" mode, returning 100+ object proposals on real
+        # photos. Lower confidence floor (0.05) to see them all; CLIP
+        # filters by visual similarity afterwards.
+        original_thr = getattr(adapter._processor, "confidence_threshold", 0.5)
+        try:
+            adapter._processor.set_confidence_threshold(0.05)
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            if torch is not None:
+                with torch.inference_mode():
+                    if adapter._device == "cuda":
+                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                            adapter._processor.set_text_prompt("", state)
+                    else:
+                        adapter._processor.set_text_prompt("", state)
+            else:
+                adapter._processor.set_text_prompt("", state)
+        finally:
+            try:
+                adapter._processor.set_confidence_threshold(original_thr)
+            except Exception:  # noqa: BLE001
+                pass
+
+        masks = state.get("masks")
+        boxes = state.get("boxes")
+        if masks is None or boxes is None:
+            log_v.warning("SAM Visual Prompt: no proposals from SAM 3.1")
+            return []
+        masks_np = to_numpy_safe(masks)
+        if masks_np.ndim == 4 and masks_np.shape[1] == 1:
+            masks_np = masks_np[:, 0]
+        masks_np = (masks_np > 0).astype(np.uint8)
+        boxes_np = to_numpy_safe(boxes)
+        if masks_np.shape[0] == 0 or boxes_np.shape[0] == 0:
+            return []
+
+        # 3. Crop target at each proposal bbox + per-proposal mask. Drop
+        #    proposals that are clearly too big — SAM occasionally emits
+        #    whole-scene patches that match anything visually. 60% of
+        #    image area is the cutoff; real objects rarely exceed this in
+        #    well-framed photos.
+        H, W = target.shape[:2]
+        image_area = float(H * W)
+        MAX_PROPOSAL_AREA_FRAC = 0.60
+
+        candidate_crops: list[Any] = []
+        candidate_masks: list[Any] = []
+        valid_idx: list[int] = []
+        n_oversized = 0
+        for i, b in enumerate(boxes_np):
+            x1, y1, x2, y2 = (
+                int(max(0, b[0])), int(max(0, b[1])),
+                int(min(W, b[2])), int(min(H, b[3])),
+            )
+            if x2 - x1 < 4 or y2 - y1 < 4:
+                continue
+            box_area = float((x2 - x1) * (y2 - y1))
+            if image_area > 0 and box_area / image_area > MAX_PROPOSAL_AREA_FRAC:
+                n_oversized += 1
+                continue
+            crop = target[y1:y2, x1:x2]
+            m_full = masks_np[i]
+            if m_full.shape == (H, W):
+                m_crop = m_full[y1:y2, x1:x2]
+            else:
+                m_crop = None
+            candidate_crops.append(crop)
+            candidate_masks.append(m_crop)
+            valid_idx.append(i)
+
+        if not candidate_crops:
+            log_v.info(
+                "SAM Visual Prompt: %d proposals all degenerate (oversized: %d)",
+                len(boxes_np), n_oversized,
+            )
+            return []
+        if n_oversized:
+            log_v.info(
+                "SAM Visual Prompt: dropped %d oversized proposals (>%.0f%% of image)",
+                n_oversized, MAX_PROPOSAL_AREA_FRAC * 100,
+            )
+
+        cand_embeds = embed_image_batch(candidate_crops, masks=candidate_masks)
+        # Max-similarity over per-ref embeddings (not mean prototype).
+        all_sims = cand_embeds @ ref_stack.T  # (N, R)
+        raw_sim = all_sims.max(axis=1) if all_sims.size else np.zeros(0, dtype=np.float32)
+
+        # Adaptive per-image rescale: anchor "0 rescaled" at the median
+        # raw cosine across all candidates on this target image, "1
+        # rescaled" at 1.0. Floor the baseline at 0.70 so easy-case
+        # images still produce confident scores.
+        if raw_sim.size:
+            median_cos = float(np.median(raw_sim))
+        else:
+            median_cos = 0.70
+        baseline = max(0.70, median_cos)
+        denom = max(1e-3, 1.0 - baseline)
+        sim = np.clip((raw_sim - baseline) / denom, 0.0, 1.0)
+
+        # 4. Apply user threshold on the rescaled score. Default 0.4
+        #    mirrors the slider default.
+        sim_threshold = float(threshold) if threshold is not None else 0.4
+        keep_mask = sim >= sim_threshold
+
+        if sim.size:
+            top_idx = np.argsort(-sim)[:5]
+            top_pairs = [
+                f"{float(raw_sim[i]):.3f}/{float(sim[i]):.3f}" for i in top_idx
+            ]
+        else:
+            top_pairs = []
+        log_v.info(
+            "SAM Visual Prompt: %d proposals, %d refs, "
+            "raw cos [%.3f, %.3f] med=%.3f baseline=%.3f, "
+            "rescaled [%.3f, %.3f], top5(raw/rescaled)=%s, "
+            "threshold %.3f keeps %d",
+            len(sim), ref_stack.shape[0],
+            float(raw_sim.min()) if raw_sim.size else 0.0,
+            float(raw_sim.max()) if raw_sim.size else 0.0,
+            median_cos, baseline,
+            float(sim.min()) if sim.size else 0.0,
+            float(sim.max()) if sim.size else 0.0,
+            ", ".join(top_pairs),
+            sim_threshold, int(keep_mask.sum()),
+        )
+        if not keep_mask.any():
+            return []
+
+        kept = np.where(keep_mask)[0]
+        kept_sims = sim[kept]
+        kept_orig_idx = [valid_idx[k] for k in kept]
+        order = np.argsort(-kept_sims)[:50]
+        ordered_orig_idx = [kept_orig_idx[k] for k in order]
+        ordered_boxes = np.asarray(
+            [boxes_np[i] for i in ordered_orig_idx], dtype=np.float32,
+        )
+        ordered_sims = np.asarray([kept_sims[k] for k in order], dtype=np.float32)
+        keep_after_nms = _greedy_nms_indices(
+            ordered_boxes, ordered_sims, iou_threshold=0.5,
+        )
+
+        out: list[dict] = []
+        for k in keep_after_nms:
+            orig_idx = ordered_orig_idx[k]
+            m = masks_np[orig_idx]
+            if m.sum() == 0:
+                continue
+            counts, size = encode_mask_rle(m)
+            polygon = mask_to_polygon(m)
+            ys, xs = np.where(m)
+            tight_bbox = [
+                float(xs.min()), float(ys.min()),
+                float(xs.max() + 1), float(ys.max() + 1),
+            ]
+            out.append({
+                "counts": counts,
+                "size": list(size),
+                "score": float(ordered_sims[k]),
+                "bbox": tight_bbox,
+                "polygon": polygon,
+                "concept": "clip-image-similarity",
+            })
+        return out
 
 
 import base64
@@ -695,6 +952,37 @@ def mask_to_polygon(mask_np: Any) -> list:
 def to_numpy_safe(x: Any) -> Any:
     from carve_model.sam.perf import to_numpy_safe as _impl
     return _impl(x)
+
+
+def _crop_refer_with_mask(refer_image: Any, region: dict, *, pad_ratio: float = 0.20):
+    from carve_model.sam.sam3_adapter import _crop_refer_with_mask as _impl
+    return _impl(refer_image, region, pad_ratio=pad_ratio)
+
+
+def _greedy_nms_indices(
+    boxes: Any,
+    scores: Any,
+    *,
+    iou_threshold: float = 0.5,
+    containment_threshold: float = 0.85,
+) -> Any:
+    from carve_model.sam.sam3_adapter import _greedy_nms_indices as _impl
+    return _impl(
+        boxes,
+        scores,
+        iou_threshold=iou_threshold,
+        containment_threshold=containment_threshold,
+    )
+
+
+def embed_image(image: Any, mask: Any = None) -> Any:
+    from carve_model.sam.clip_embed import embed_image as _impl
+    return _impl(image, mask=mask)
+
+
+def embed_image_batch(images: Any, masks: Any = None) -> Any:
+    from carve_model.sam.clip_embed import embed_image_batch as _impl
+    return _impl(images, masks=masks)
 
 
 def _now_iso() -> str:

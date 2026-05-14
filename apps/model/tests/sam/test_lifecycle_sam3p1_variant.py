@@ -72,13 +72,3 @@ def test_sam3p1_variant_capability_flags_all_true():
     assert v.supports_text is True
     assert v.supports_box is True
     assert v.supports_visual is True
-
-
-def test_sam3p1_variant_visual_not_implemented_yet(fake_adapter):
-    # predict_text (Task 2.1) and predict_box (Task 2.2) are migrated;
-    # only predict_visual remains stubbed.
-    with patch("carve_model.sam.lifecycle._build_sam3p1_adapter", return_value=fake_adapter):
-        v = Sam3p1Variant()
-        v.load(device="cuda")
-        with pytest.raises(NotImplementedError):
-            v.predict_visual(image_b64="", prompt_image_b64="", prompt_box=[0, 0, 1, 1])
