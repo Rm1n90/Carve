@@ -16,6 +16,7 @@ __all__ = [
     "LoadStateKind",
     "LoadState",
     "SamVariant",
+    "Sam2Variant",
 ]
 
 
@@ -162,3 +163,105 @@ class SamVariant(Protocol):
     def supports_box(self) -> bool: ...
     @property
     def supports_visual(self) -> bool: ...
+
+
+import hashlib
+
+
+def _build_sam2_adapter(name: str, *, device: str | None) -> Any:
+    """Thin indirection so tests can patch this name without importing torch."""
+    from carve_model.sam import sam2_adapter
+    return sam2_adapter.build_sam2_image_predictor(name, device=device)
+
+
+def _hash_image(image: Any) -> str:
+    """sha256 of an HxWx3 RGB uint8 numpy array (image-content-addressed cache key)."""
+    return hashlib.sha256(memoryview(image).tobytes()).hexdigest()
+
+
+class Sam2Variant:
+    """SAM 2.x image predictor variant — point + box prompts, no text/visual."""
+
+    supports_text = False
+    supports_box = False
+    supports_visual = False
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.device: str | None = None
+        self.build_key: tuple[str, str, str] = (name, "fp32", "sdpa")
+        self._adapter: Any | None = None
+        self._cached_hash: str | None = None
+        self._cached_shape: tuple[int, int] | None = None
+        self._prev_logits: Any | None = None
+        self._prev_n_points: int = 0
+
+    def load(self, device: str | None) -> None:
+        self._adapter = _build_sam2_adapter(self.name, device=device)
+        self.device = device
+
+    def unload(self) -> None:
+        self._adapter = None
+        self._cached_hash = None
+        self._cached_shape = None
+        self._prev_logits = None
+        self._prev_n_points = 0
+
+    def set_image(self, image: Any) -> str:
+        if self._adapter is None:
+            raise RuntimeError("Sam2Variant.set_image called before load()")
+        self._adapter.set_image(image)
+        h = _hash_image(image)
+        self._cached_hash = h
+        self._cached_shape = (int(image.shape[0]), int(image.shape[1]))
+        self._prev_logits = None
+        self._prev_n_points = 0
+        return h
+
+    def cached_image_hash(self) -> str | None:
+        return self._cached_hash
+
+    def cached_image_shape(self) -> tuple[int, int] | None:
+        return self._cached_shape
+
+    def extract_embedding(self) -> bytes | None:
+        if self._adapter is None:
+            return None
+        getter = getattr(self._adapter, "extract_embedding", None)
+        if getter is None:
+            return None
+        return getter()
+
+    def set_prev_logits(self, low_res_logits: Any | None, n_points: int) -> None:
+        self._prev_logits = low_res_logits
+        self._prev_n_points = int(n_points)
+
+    def get_prev_logits(self) -> tuple[Any | None, int]:
+        return (self._prev_logits, self._prev_n_points)
+
+    def predict_point(
+        self, *,
+        point_coords: Any | None,
+        point_labels: Any | None,
+        box: Any | None = None,
+        mask_input: Any | None = None,
+        multimask_output: bool = True,
+    ) -> tuple[Any, Any, Any]:
+        if self._adapter is None:
+            raise RuntimeError("Sam2Variant.predict_point called before load()")
+        return self._adapter.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            box=box,
+            mask_input=mask_input,
+            multimask_output=multimask_output,
+        )
+
+    def predict_text(self, **kw: Any) -> list[dict]:
+        raise SamCapabilityError("sam2 variants do not support text prompts")
+
+    def predict_box(self, **kw: Any) -> list[dict]:
+        raise SamCapabilityError("sam2 variants do not support /sam/box-prompt")
+
+    def predict_visual(self, **kw: Any) -> list[dict]:
+        raise SamCapabilityError("sam2 variants do not support visual prompts")
