@@ -15,6 +15,7 @@ __all__ = [
     "SamLoadError",
     "LoadStateKind",
     "LoadState",
+    "SamVariant",
 ]
 
 
@@ -84,3 +85,80 @@ class LoadState:
     @classmethod
     def error_(cls, variant: str | None, error: str) -> LoadState:
         return cls(kind="error", variant=variant, error=error)
+
+
+from typing import Any, Iterator, Protocol, runtime_checkable
+
+
+@runtime_checkable
+class SamVariant(Protocol):
+    """One SAM model variant. Owns its weights, image cache, and the four
+    inference paths.
+
+    The manager holds at most one of these. Implementations:
+    Sam2Variant (no text/box/visual), Sam3p1Variant (all four).
+    """
+
+    name: str
+    device: str | None
+    build_key: tuple[str, str, str]
+
+    # ---- lifecycle ----
+    def load(self, device: str | None) -> None: ...
+    def unload(self) -> None: ...
+
+    # ---- image cache ----
+    def set_image(self, image: "Any") -> str: ...
+    def cached_image_hash(self) -> str | None: ...
+    def cached_image_shape(self) -> tuple[int, int] | None: ...
+    def extract_embedding(self) -> bytes | None: ...
+
+    # ---- iterative-refinement state ----
+    def set_prev_logits(self, low_res_logits: Any | None, n_points: int) -> None: ...
+    def get_prev_logits(self) -> tuple[Any | None, int]: ...
+
+    # ---- inference ----
+    def predict_point(
+        self,
+        *,
+        point_coords: Any | None,
+        point_labels: Any | None,
+        box: Any | None = None,
+        mask_input: Any | None = None,
+        multimask_output: bool = True,
+    ) -> tuple[Any, Any, Any]: ...
+
+    def predict_text(
+        self,
+        *,
+        image_b64: str,
+        text: str,
+        threshold: float | None = None,
+        use_vlm_fo1: bool = False,
+    ) -> list[dict]: ...
+
+    def predict_box(
+        self,
+        *,
+        image_b64: str,
+        boxes: list[list[float]],
+        box_labels: list[int],
+        text: str | None = None,
+    ) -> list[dict]: ...
+
+    def predict_visual(
+        self,
+        *,
+        image_b64: str,
+        prompt_image_b64: str,
+        prompt_box: list[float],
+        threshold: float | None = None,
+    ) -> list[dict]: ...
+
+    # ---- capability flags ----
+    @property
+    def supports_text(self) -> bool: ...
+    @property
+    def supports_box(self) -> bool: ...
+    @property
+    def supports_visual(self) -> bool: ...
