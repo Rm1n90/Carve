@@ -17,6 +17,7 @@ __all__ = [
     "LoadState",
     "SamVariant",
     "Sam2Variant",
+    "Sam3p1Variant",
 ]
 
 
@@ -265,3 +266,101 @@ class Sam2Variant:
 
     def predict_visual(self, **kw: Any) -> list[dict]:
         raise SamCapabilityError("sam2 variants do not support visual prompts")
+
+
+def _build_sam3p1_adapter(*, device: str | None) -> Any:
+    """Thin indirection for testing."""
+    from carve_model.sam import sam3p1_adapter
+    return sam3p1_adapter.build_sam3p1_image_predictor(device=device)
+
+
+class Sam3p1Variant:
+    """SAM 3.1 native predictor variant — point + box + text + visual, all
+    four modes served by a single Sam3p1NativeImagePredictorAdapter
+    instance. This unification is the structural fix for the double-load
+    OOM bug."""
+
+    name = "sam3.1"
+    supports_text = True
+    supports_box = True
+    supports_visual = True
+
+    def __init__(self) -> None:
+        self.device: str | None = None
+        self.build_key: tuple[str, str, str] = ("sam3.1", "bf16", "sdpa")
+        self._adapter: Any | None = None
+        self._cached_hash: str | None = None
+        self._cached_shape: tuple[int, int] | None = None
+        self._prev_logits: Any | None = None
+        self._prev_n_points: int = 0
+
+    def load(self, device: str | None) -> None:
+        self._adapter = _build_sam3p1_adapter(device=device)
+        self.device = device
+
+    def unload(self) -> None:
+        if self._adapter is not None:
+            for attr in ("_state", "_model", "_processor", "_features"):
+                try:
+                    setattr(self._adapter, attr, None)
+                except Exception:
+                    pass
+        self._adapter = None
+        self._cached_hash = None
+        self._cached_shape = None
+        self._prev_logits = None
+        self._prev_n_points = 0
+
+    def set_image(self, image: Any) -> str:
+        if self._adapter is None:
+            raise RuntimeError("Sam3p1Variant.set_image called before load()")
+        self._adapter.set_image(image)
+        h = _hash_image(image)
+        self._cached_hash = h
+        self._cached_shape = (int(image.shape[0]), int(image.shape[1]))
+        self._prev_logits = None
+        self._prev_n_points = 0
+        return h
+
+    def cached_image_hash(self) -> str | None:
+        return self._cached_hash
+
+    def cached_image_shape(self) -> tuple[int, int] | None:
+        return self._cached_shape
+
+    def extract_embedding(self) -> bytes | None:
+        return None
+
+    def set_prev_logits(self, low_res_logits: Any | None, n_points: int) -> None:
+        self._prev_logits = low_res_logits
+        self._prev_n_points = int(n_points)
+
+    def get_prev_logits(self) -> tuple[Any | None, int]:
+        return (self._prev_logits, self._prev_n_points)
+
+    def predict_point(
+        self, *,
+        point_coords: Any | None,
+        point_labels: Any | None,
+        box: Any | None = None,
+        mask_input: Any | None = None,
+        multimask_output: bool = True,
+    ) -> tuple[Any, Any, Any]:
+        if self._adapter is None:
+            raise RuntimeError("Sam3p1Variant.predict_point called before load()")
+        return self._adapter.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            box=box,
+            mask_input=mask_input,
+            multimask_output=multimask_output,
+        )
+
+    def predict_text(self, **kw: Any) -> list[dict]:
+        raise NotImplementedError("Sam3p1Variant.predict_text not yet migrated")
+
+    def predict_box(self, **kw: Any) -> list[dict]:
+        raise NotImplementedError("Sam3p1Variant.predict_box not yet migrated")
+
+    def predict_visual(self, **kw: Any) -> list[dict]:
+        raise NotImplementedError("Sam3p1Variant.predict_visual not yet migrated")
