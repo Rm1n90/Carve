@@ -19,6 +19,7 @@ __all__ = [
     "Sam2Variant",
     "Sam3p1Variant",
     "SamLifecycleManager",
+    "_build_variant",
 ]
 
 
@@ -367,8 +368,27 @@ class Sam3p1Variant:
         raise NotImplementedError("Sam3p1Variant.predict_visual not yet migrated")
 
 
+import gc
 import threading
 from contextlib import contextmanager
+
+
+def _import_torch() -> Any | None:
+    """Lazy torch import for cleanup helpers. Returns None when torch is absent."""
+    try:
+        import torch  # type: ignore[import-not-found]
+        return torch
+    except Exception:
+        return None
+
+
+def _build_variant(name: str) -> SamVariant:
+    """Build a fresh variant instance for `name`. Does not call load()."""
+    if name.startswith("sam2"):
+        return Sam2Variant(name)
+    if name == "sam3.1":
+        return Sam3p1Variant()
+    raise ValueError(f"unknown SAM variant: {name!r}")
 
 
 class SamLifecycleManager:
@@ -416,6 +436,44 @@ class SamLifecycleManager:
                 self._state = LoadState.idle()
                 self._last_used_at = None
                 self._remembered_variant = None
+
+    def _run_cuda_cleanup(self) -> None:
+        """Full eviction cleanup: 3x gc + sync + empty_cache + ipc_collect + dynamo.reset.
+
+        Same sequence as predictor.py's force_evict_predictor() — centralized
+        here so every unload path (idle, force, switch) gets identical cleanup."""
+        torch = _import_torch()
+        for _ in range(3):
+            gc.collect()
+            if torch is not None:
+                try:
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+        try:
+            import torch._dynamo  # type: ignore[import-not-found]
+            torch._dynamo.reset()
+        except Exception:
+            pass
+        if torch is not None:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.ipc_collect()
+            except Exception:
+                pass
+
+    def _run_cuda_cleanup_light(self) -> None:
+        """Best-effort empty_cache only. Used after inference OOM."""
+        torch = _import_torch()
+        if torch is None:
+            return
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     @contextmanager
     def lease(self):
