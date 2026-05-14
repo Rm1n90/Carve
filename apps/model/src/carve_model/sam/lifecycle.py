@@ -434,6 +434,8 @@ class SamLifecycleManager:
     Acquire order if both are needed: _inference_lock OUTER, _load_lock INNER.
     """
 
+    DEFAULT_IDLE_TIMEOUT_S = 15 * 60  # 15 minutes
+
     def __init__(self) -> None:
         self._active: SamVariant | None = None
         self._test_variant: SamVariant | None = None
@@ -614,4 +616,66 @@ class SamLifecycleManager:
         finally:
             with self._load_lock:
                 self._last_used_at = time.monotonic()
+            self._inference_lock.release()
+
+    def _idle_timeout_s(self) -> int:
+        """Return SAM_IDLE_TIMEOUT_S env var (default 900s; 0 disables)."""
+        import os
+        raw = os.environ.get("SAM_IDLE_TIMEOUT_S", str(self.DEFAULT_IDLE_TIMEOUT_S))
+        try:
+            v = int(raw)
+            return max(0, v)
+        except ValueError:
+            return self.DEFAULT_IDLE_TIMEOUT_S
+
+    def force_unload(self) -> bool:
+        """Drop the active variant + run GPU cleanup. Returns True iff freed."""
+        if self._test_variant is not None:
+            return False
+        self._inference_lock.acquire()
+        try:
+            with self._load_lock:
+                if self._active is None and self._state.kind == "idle":
+                    return False
+                old = self._active
+                self._active = None
+            if old is not None:
+                self._try_unload_locked(old)
+            self._run_cuda_cleanup()
+            with self._load_lock:
+                self._state = LoadState.idle()
+                self._last_used_at = None
+            return True
+        finally:
+            self._inference_lock.release()
+
+    def evict_if_idle(self) -> bool:
+        """No-op when not idle, when timeout=0, or when last_used is fresh."""
+        if self._test_variant is not None:
+            return False
+        timeout = self._idle_timeout_s()
+        if timeout == 0:
+            return False
+        with self._load_lock:
+            if self._active is None or self._last_used_at is None:
+                return False
+            if (time.monotonic() - self._last_used_at) < timeout:
+                return False
+        self._inference_lock.acquire()
+        try:
+            with self._load_lock:
+                if self._active is None or self._last_used_at is None:
+                    return False
+                if (time.monotonic() - self._last_used_at) < timeout:
+                    return False
+                old = self._active
+                self._active = None
+            self._try_unload_locked(old)
+            self._run_cuda_cleanup()
+            with self._load_lock:
+                self._state = LoadState.idle()
+                self._last_used_at = None
+            log.info("sam_lifecycle: evicted_on_idle variant=%s", old.name)
+            return True
+        finally:
             self._inference_lock.release()
