@@ -6,10 +6,15 @@ See docs/superpowers/specs/2026-05-14-sam-lifecycle-manager-design.md.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 __all__ = [
     "SamCapabilityError",
     "SamNotReadyError",
     "SamLoadError",
+    "LoadStateKind",
+    "LoadState",
 ]
 
 
@@ -44,3 +49,38 @@ class SamLoadError(Exception):
     def __init__(self, variant: str, cause: BaseException) -> None:
         super().__init__(f"load failed for {variant}: {cause!r}")
         self.variant = variant
+
+
+LoadStateKind = Literal["idle", "loading", "ready", "error"]
+
+
+@dataclass(frozen=True)
+class LoadState:
+    """Immutable snapshot of the manager's current load state.
+
+    Mirrors the shape that today's predictor.py LoadState exposes; routers
+    that today read from p_mod._LOAD_STATE will read manager.status() and
+    get this object.
+    """
+
+    kind: LoadStateKind
+    variant: str | None = None
+    loaded_at: str | None = None
+    started_at: str | None = None
+    error: str | None = None
+
+    @classmethod
+    def idle(cls) -> LoadState:
+        return cls(kind="idle")
+
+    @classmethod
+    def loading(cls, variant: str, *, started_at: str) -> LoadState:
+        return cls(kind="loading", variant=variant, started_at=started_at)
+
+    @classmethod
+    def ready(cls, variant: str, *, loaded_at: str) -> LoadState:
+        return cls(kind="ready", variant=variant, loaded_at=loaded_at)
+
+    @classmethod
+    def error_(cls, variant: str | None, error: str) -> LoadState:
+        return cls(kind="error", variant=variant, error=error)
