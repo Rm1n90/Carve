@@ -359,8 +359,148 @@ class Sam3p1Variant:
             multimask_output=multimask_output,
         )
 
-    def predict_text(self, **kw: Any) -> list[dict]:
-        raise NotImplementedError("Sam3p1Variant.predict_text not yet migrated")
+    def predict_text(
+        self,
+        *,
+        image_b64: str,
+        text: str,
+        threshold: float | None = None,
+        use_vlm_fo1: bool = False,
+    ) -> list[dict]:
+        """Run a text prompt and return [{counts, size, score, bbox, polygon}, ...]
+        sorted by score desc.
+
+        Uses self._adapter — the same instance as predict_point. No second
+        Sam3p1NativeImagePredictorAdapter is built; this is the structural
+        fix for the double-load OOM bug.
+        """
+        if self._adapter is None:
+            raise RuntimeError("Sam3p1Variant.predict_text called before load()")
+
+        torch = _import_torch()
+
+        image_np = _decode_image_b64_to_numpy(image_b64)
+        # CRITICAL: route through self.set_image() so cache state AND
+        # _prev_logits/_prev_n_points are all atomically updated.
+        # Direct adapter.set_image() would leave stale refinement logits.
+        self.set_image(image_np)
+
+        adapter = self._adapter  # local alias after set_image succeeded
+        state = adapter._state
+        if state is None:
+            return []
+
+        adapter._processor.reset_all_prompts(state)
+
+        processor = adapter._processor
+        original_threshold = None
+        if threshold is not None:
+            original_threshold = getattr(processor, "confidence_threshold", 0.5)
+            try:
+                processor.set_confidence_threshold(float(threshold))
+            except Exception:
+                original_threshold = None
+
+        try:
+            if adapter._device == "cuda" and torch is not None:
+                with torch.no_grad():
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        processor.set_text_prompt(text, state)
+            else:
+                if torch is not None:
+                    with torch.no_grad():
+                        processor.set_text_prompt(text, state)
+                else:
+                    processor.set_text_prompt(text, state)
+        finally:
+            if original_threshold is not None:
+                try:
+                    processor.set_confidence_threshold(original_threshold)
+                except Exception:
+                    pass
+
+        detections = _extract_text_detections(state)
+        boxes = state.get("boxes")
+        boxes_np = to_numpy_safe(boxes) if boxes is not None else None
+
+        rows: list[dict] = []
+        for i, (mask_np, score) in enumerate(detections):
+            counts, size = encode_mask_rle(mask_np)
+            polygon = mask_to_polygon(mask_np)
+            if boxes_np is not None and i < len(boxes_np):
+                bbox = [float(x) for x in boxes_np[i].tolist()]
+            else:
+                bbox = [0.0, 0.0, 0.0, 0.0]
+            rows.append({
+                "counts": counts,
+                "size": size,
+                "score": score,
+                "bbox": bbox,
+                "polygon": polygon,
+            })
+        rows.sort(key=lambda r: r["score"], reverse=True)
+
+        top_score = rows[0]["score"] if rows else 0.0
+        min_score = rows[-1]["score"] if rows else 0.0
+        log.info(
+            "sam3.1 text-prompt: text=%r threshold=%s detections=%d "
+            "score_range=[%.3f, %.3f]",
+            text,
+            f"{threshold:.3f}" if threshold is not None else "default",
+            len(rows),
+            min_score,
+            top_score,
+        )
+
+        # GPU-hygiene: drop state tensors before next call
+        if "masks_logits" in state: state["masks_logits"] = None
+        if "masks" in state: state["masks"] = None
+        if "boxes" in state: state["boxes"] = None
+        if "scores" in state: state["scores"] = None
+        if adapter._device == "cuda" and torch is not None:
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        if not use_vlm_fo1 or not rows:
+            return rows
+
+        import os
+        try:
+            top_k = int(os.environ.get("SAM3_TOPK_PROPOSALS", "64"))
+        except ValueError:
+            top_k = 64
+        if top_k > 0 and len(rows) > top_k:
+            rows = rows[:top_k]
+
+        from carve_model.sam import predictor as p_mod
+        vlm_filter = p_mod.get_vlm_fo1_filter()
+        if vlm_filter is None:
+            return rows
+
+        try:
+            from io import BytesIO
+            from PIL import Image  # type: ignore[import-not-found]
+            img_bytes = base64.b64decode(image_b64)
+            pil = Image.open(BytesIO(img_bytes)).convert("RGB")
+            boxes_xyxy = [list(r["bbox"]) for r in rows]
+            indexes = vlm_filter(image=pil, text=text, boxes=boxes_xyxy)
+        except Exception as exc:
+            log.warning("vlm_fo1 filter failed (%s); degrading to passthrough", exc)
+            return rows
+
+        seen: set[int] = set()
+        clean: list[int] = []
+        for idx in indexes:
+            try:
+                ii = int(idx)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= ii < len(rows) and ii not in seen:
+                seen.add(ii)
+                clean.append(ii)
+        return [rows[i] for i in clean]
 
     def predict_box(self, **kw: Any) -> list[dict]:
         raise NotImplementedError("Sam3p1Variant.predict_box not yet migrated")
@@ -369,6 +509,7 @@ class Sam3p1Variant:
         raise NotImplementedError("Sam3p1Variant.predict_visual not yet migrated")
 
 
+import base64
 import gc
 import logging
 import threading
@@ -377,6 +518,31 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
+
+
+def _extract_text_detections(state: dict) -> list[tuple[Any, float]]:
+    from carve_model.sam.sam3p1_adapter import _extract_text_detections as _impl
+    return _impl(state)
+
+
+def _decode_image_b64_to_numpy(image_b64: str) -> Any:
+    from carve_model.sam.sam3p1_adapter import _decode_image_b64_to_numpy as _impl
+    return _impl(image_b64)
+
+
+def encode_mask_rle(mask_np: Any) -> tuple[str, list[int]]:
+    from carve_model.sam.codec import encode_mask_rle as _impl
+    return _impl(mask_np)
+
+
+def mask_to_polygon(mask_np: Any) -> list:
+    from carve_model.sam.polygonize import mask_to_polygon as _impl
+    return _impl(mask_np)
+
+
+def to_numpy_safe(x: Any) -> Any:
+    from carve_model.sam.perf import to_numpy_safe as _impl
+    return _impl(x)
 
 
 def _now_iso() -> str:
