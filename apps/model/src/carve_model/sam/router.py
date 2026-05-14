@@ -57,11 +57,9 @@ from carve_model.sam.predictor import (
     get_predictor,
     get_sam_model,
     get_sam_variant,
-    get_session,
     get_text_predictor,
     load_predictor,
     set_loaded_image,
-    set_prev_logits,
 )
 from carve_model.sam.track_session import force_evict_all_sessions
 
@@ -122,18 +120,65 @@ def encode(payload: EncodeIn) -> EncodeOut:
 
     h = xxhash.xxh3_128(img_bytes).hexdigest()
     img = np.array(Image.open(BytesIO(img_bytes)).convert("RGB"))
-    with admit(CostClass.SAM_IMAGE):
-        p = get_predictor()
-        p.set_image(img)
-        shape = [int(img.shape[0]), int(img.shape[1])]
-        # Record the loaded image's hash + shape on the active session
-        # so a subsequent /sam/decode can verify the predictor still
-        # holds these encoded features. Lifecycle ops (evict,
-        # force-evict, switch) drop the session as a unit — preventing
-        # the v3.4 desync where the hash gate passed but the
-        # predictor's _raw_image had been cleared.
+    shape = [int(img.shape[0]), int(img.shape[1])]
+
+    # Route through the lifecycle manager — the canonical SAM entry
+    # point. The manager hands us the active variant (or a test variant
+    # installed via predictor.set_test_predictor), and we delegate the
+    # image-set + embedding extraction to the variant. We pass the
+    # xxhash-derived ``h`` as the cache key so the wire format stays
+    # stable; the variant stores it as its ``cached_image_hash`` and a
+    # subsequent /sam/decode can verify the embedding is still loaded.
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
+    try:
+        with admit(CostClass.SAM_IMAGE):
+            with manager.lease_or_load() as sam:
+                sam.set_image(img, image_hash=h)
+                embedding_bytes = sam.extract_embedding()
+                # Fallback for sam2.x and legacy test fakes: when the
+                # variant returns None, fall back to the legacy
+                # module-level helper that unpacks
+                # ``_features['image_embed']`` from the underlying
+                # predictor object. This preserves the existing
+                # browser-side ONNX decoder contract.
+                #
+                # - Sam2Variant: real SAM 2 adapter doesn't expose
+                #   ``.extract_embedding()`` so the variant returns
+                #   None; the adapter holds ``_features``.
+                # - _LegacyTestVariant: fake test predictors may set
+                #   ``_features`` on the injected point impl directly.
+                if embedding_bytes is None:
+                    raw: Any = (
+                        getattr(sam, "_adapter", None)
+                        or getattr(sam, "_point_impl", None)
+                    )
+                    if raw is not None:
+                        try:
+                            embedding_bytes = extract_embedding(raw)
+                        except Exception:  # noqa: BLE001
+                            embedding_bytes = None
+    except SamNotReadyError as e:
+        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
+
+    # Legacy dual-write: ensure ``_SESSION`` exists and carries the
+    # loaded image hash so legacy callers (force_evict_predictor,
+    # load_predictor, session-desync tests) continue to find a session
+    # to clear. The variant's ``_cached_hash`` is the new source of
+    # truth — this dual-write is removed once Phase 3 fully owns the
+    # eviction paths. ``get_predictor()`` is idempotent for the
+    # test-predictor branch and lazily creates ``_SESSION`` when the
+    # production predictor is already loaded.
+    try:
+        get_predictor()
         set_loaded_image(h, shape)
-        embedding_bytes = extract_embedding(p)
+    except RuntimeError:
+        # No legacy session available (e.g. no test predictor, no
+        # production load). The variant's state is still authoritative,
+        # so failing the dual-write does not break decode — only the
+        # legacy session-desync tests that exercise force_evict.
+        pass
+
     embedding_b64 = (
         base64.b64encode(embedding_bytes).decode("ascii")
         if embedding_bytes is not None
@@ -144,14 +189,12 @@ def encode(payload: EncodeIn) -> EncodeOut:
 
 @router.post("/decode", response_model=DecodeOut)
 def decode(payload: DecodeIn) -> DecodeOut:
-    session = get_session()
-    if session is None or session.loaded_hash != payload.image_hash:
-        raise HTTPException(
-            status_code=409,
-            detail="embedding_not_loaded; call /sam/encode again",
-        )
+    # --- 422 validations (cheap, no lock needed) ---------------------
     if len(payload.points) != len(payload.labels):
-        raise HTTPException(status_code=422, detail="points and labels must have equal length")
+        raise HTTPException(
+            status_code=422,
+            detail="points and labels must have equal length",
+        )
     if not payload.points and payload.box is None:
         raise HTTPException(
             status_code=422,
@@ -162,9 +205,6 @@ def decode(payload: DecodeIn) -> DecodeOut:
             status_code=422,
             detail="box must be [x1, y1, x2, y2]",
         )
-
-    pts = np.asarray(payload.points) if payload.points else np.zeros((0, 2), dtype=np.float32)
-    lbl = np.asarray(payload.labels) if payload.labels else np.zeros((0,), dtype=np.int64)
 
     # v3.22 — multimask semantics + iterative-refinement (mask_input).
     #
@@ -188,10 +228,10 @@ def decode(payload: DecodeIn) -> DecodeOut:
     #    just sees one positive + one negative and picks whatever
     #    high-score candidate matches the positives best.
     #
-    # ``prev_logits`` is taken from the session — populated by the
-    # previous /sam/decode call. We only use it when the click set
-    # has strictly grown (``n_now > prev_n``); otherwise (undo, or a
-    # fresh chain) we treat the call as a fresh prompt.
+    # ``prev_logits`` is taken from the active variant — stored there
+    # by the previous /sam/decode call. We only use it when the click
+    # set has strictly grown (``n_now > prev_n``); otherwise (undo, or
+    # a fresh chain) we treat the call as a fresh prompt.
     has_negative = bool(payload.labels) and 0 in payload.labels
     n_now = len(payload.points)
     is_refinement = (
@@ -201,62 +241,102 @@ def decode(payload: DecodeIn) -> DecodeOut:
     )
     multimask = not is_refinement
 
-    sess = get_session()
-    prev_logits = sess.prev_low_res_logits if sess is not None else None
-    prev_n = sess.prev_n_points if sess is not None else 0
-    use_prev = is_refinement and prev_logits is not None and n_now > prev_n
-    mask_input = prev_logits if use_prev else None
+    pts = (
+        np.asarray(payload.points)
+        if payload.points
+        else np.zeros((0, 2), dtype=np.float32)
+    )
+    lbl = (
+        np.asarray(payload.labels)
+        if payload.labels
+        else np.zeros((0,), dtype=np.int64)
+    )
 
-    p = get_predictor()
-    with admit(CostClass.SAM_IMAGE), autocast_ctx():
-        masks, scores, low_res_all = p.predict(
-            point_coords=pts,
-            point_labels=lbl,
-            multimask_output=multimask,
-            box=payload.box,
-            mask_input=mask_input,
-        )
+    # --- Inference under the manager lease ---------------------------
+    # All variant access happens inside the lease block:
+    #   * cached_image_hash() check — embedding must match payload's hash
+    #   * get_prev_logits() — iterative refinement input
+    #   * predict_point(**kw) — the actual inference
+    #   * set_prev_logits(chosen, n_now) — stash for next call
+    # Building ``kw`` conditionally keeps legacy test fakes happy —
+    # their narrow signatures (e.g. predict(point_coords, point_labels,
+    # multimask_output=True, box=None, mask_input=None)) accept these
+    # names, while a fake without ``mask_input``/``box`` would only
+    # receive the kwargs we pass.
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
 
-    masks_np = _to_numpy(masks)
-    scores_np = _to_numpy(scores)
-    if masks_np.ndim != 3 or scores_np.ndim < 1:
-        raise HTTPException(status_code=500, detail="unexpected_predictor_output")
-    best = int(np.argmax(scores_np))
-    best_mask = masks_np[best]
+    try:
+        with admit(CostClass.SAM_IMAGE), autocast_ctx():
+            with manager.lease_or_load() as sam:
+                if sam.cached_image_hash() != payload.image_hash:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="embedding_not_loaded; call /sam/encode again",
+                    )
 
-    # Stash the chosen channel of the new low-res logits on the session
-    # so the NEXT /sam/decode call can use it as ``mask_input``. This
-    # is what makes multi-click refinement converge on a single mask
-    # instead of fighting itself.
-    chosen_low_res: Any = None
-    if low_res_all is not None and hasattr(low_res_all, "shape"):
-        try:
-            shape = tuple(low_res_all.shape)
-            if len(shape) == 5:
-                # Sam2 / Sam3 transformers: [B=1, num_obj=1, K, H, W].
-                # ``input_masks`` flows into ``mask_embed`` (a Conv2d)
-                # which expects 4D [B, 1, H, W]. Slice the chosen K
-                # channel and squeeze it out so the result is 4D.
-                #
-                # Pre-fix shape was 5D [1, 1, 1, H, W] which crashed
-                # with "Expected 3D or 4D input to conv2d, but got
-                # input of size: [1, 1, 1, H, W]".
-                sliced = low_res_all[:, :, best : best + 1, :, :]
-                # squeeze(2) drops the K=1 dim. Result: [1, 1, H, W].
-                chosen_low_res = sliced.squeeze(2)
-                if hasattr(chosen_low_res, "detach"):
-                    chosen_low_res = chosen_low_res.detach()
-                if hasattr(chosen_low_res, "contiguous"):
-                    chosen_low_res = chosen_low_res.contiguous()
-            elif len(shape) == 3:
-                # sam3.1 native predictor: (K, H, W). The native
-                # SAM2 InteractivePredictor.predict accepts
-                # mask_input shape (1, H, W) — slice to a single
-                # K=1 channel.
-                chosen_low_res = low_res_all[best : best + 1]
-        except Exception:  # noqa: BLE001 — best-effort; absence is OK
-            chosen_low_res = None
-    set_prev_logits(chosen_low_res, n_now)
+                prev_logits, prev_n = sam.get_prev_logits()
+                use_prev = (
+                    is_refinement
+                    and prev_logits is not None
+                    and n_now > prev_n
+                )
+                mask_input = prev_logits if use_prev else None
+
+                kw: dict[str, Any] = {
+                    "point_coords": pts,
+                    "point_labels": lbl,
+                    "multimask_output": multimask,
+                }
+                if payload.box is not None:
+                    kw["box"] = payload.box
+                if mask_input is not None:
+                    kw["mask_input"] = mask_input
+
+                masks, scores, low_res_all = sam.predict_point(**kw)
+
+                # Compute chosen_low_res while we still hold the lease
+                # so set_prev_logits stays atomic with the inference
+                # that produced it. Pure CPU post-processing (cleanup,
+                # RLE, polygon) runs after the lease releases.
+                masks_np = _to_numpy(masks)
+                scores_np = _to_numpy(scores)
+                if masks_np.ndim != 3 or scores_np.ndim < 1:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="unexpected_predictor_output",
+                    )
+                best = int(np.argmax(scores_np))
+                best_mask = masks_np[best]
+
+                chosen_low_res: Any = None
+                if low_res_all is not None and hasattr(low_res_all, "shape"):
+                    try:
+                        lr_shape = tuple(low_res_all.shape)
+                        if len(lr_shape) == 5:
+                            # Sam2 / Sam3 transformers: [B=1, num_obj=1,
+                            # K, H, W]. ``input_masks`` flows into
+                            # ``mask_embed`` (a Conv2d) which expects 4D
+                            # [B, 1, H, W]. Slice the chosen K channel
+                            # and squeeze it out so the result is 4D.
+                            sliced = low_res_all[:, :, best : best + 1, :, :]
+                            chosen_low_res = sliced.squeeze(2)
+                            if hasattr(chosen_low_res, "detach"):
+                                chosen_low_res = chosen_low_res.detach()
+                            if hasattr(chosen_low_res, "contiguous"):
+                                chosen_low_res = chosen_low_res.contiguous()
+                        elif len(lr_shape) == 3:
+                            # sam3.1 native predictor: (K, H, W). The
+                            # native SAM2 InteractivePredictor.predict
+                            # accepts mask_input shape (1, H, W) —
+                            # slice to a single K=1 channel.
+                            chosen_low_res = low_res_all[best : best + 1]
+                    except Exception:  # noqa: BLE001 — best-effort
+                        chosen_low_res = None
+
+                sam.set_prev_logits(chosen_low_res, n_now)
+                best_score = float(scores_np[best])
+    except SamNotReadyError as e:
+        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
 
     # v3.22 — clean the mask once (delete sub-pixel-wide spikes,
     # keep only the largest connected component, optionally fill
@@ -282,7 +362,7 @@ def decode(payload: DecodeIn) -> DecodeOut:
     return DecodeOut(
         counts=counts,
         size=size,
-        score=float(scores_np[best]),
+        score=best_score,
         polygon=polygon,
     )
 

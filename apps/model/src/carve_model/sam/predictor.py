@@ -614,6 +614,14 @@ def force_evict_predictor() -> bool:
             _BOX_PREDICTOR_FACTORY = None
             something_freed = True
 
+    # Clear image-cache state on the manager's variant(s) so the next
+    # /sam/decode returns 409 (embedding_not_loaded) instead of running
+    # inference against a stale ``_cached_hash``. Without this, a force
+    # evict would drop ``_SESSION`` but leave the variant's hash in
+    # place — the v3.5 desync regression in a Phase 3 disguise.
+    if _clear_manager_image_state():
+        something_freed = True
+
     # Drop the sam3.1 native singleton too (held outside _PREDICTOR_LOCK
     # by sam3p1_adapter — its own module-level state).
     try:
@@ -711,10 +719,14 @@ def load_predictor(variant: str) -> None:
     global _SESSION
     if _TEST_PREDICTOR is not None:
         os.environ["SAM_MODEL"] = variant
-        # Clear any prior session so the test fake's loaded-image state
-        # doesn't leak across switches.
+        # Clear any prior session AND the manager-variant's
+        # ``_cached_hash`` so the test fake's loaded-image state doesn't
+        # leak across switches. The variant clear mirrors what the real
+        # ensure_loaded path does (unload + reload) — for test mode we
+        # only need the cache cleared, not the variant rebuilt.
         with _PREDICTOR_LOCK:
             _SESSION = None
+        _clear_manager_image_state()
         # Reflect the test-fake "switch complete" in the status machine
         # so frontend polling tests see a ready state.
         _set_load_state(
@@ -798,6 +810,31 @@ def _legacy_clear(op: str) -> None:
         for o in ("point", "text", "box", "visual")
     ):
         _sam_manager.install_test_variant(None)
+
+
+def _clear_manager_image_state() -> bool:
+    """Reset image-cache + refinement state on the manager's active variant.
+
+    Used by legacy eviction paths (``force_evict_predictor``,
+    ``load_predictor`` test-fake branch) to ensure that when ``_SESSION``
+    is dropped, the variant's ``_cached_hash`` / ``_prev_logits`` follow
+    — so subsequent ``/sam/decode`` calls return 409 instead of running
+    inference against a stale embedding.
+
+    Touches both the production active variant and any installed
+    _LegacyTestVariant. Returns True if either had state to clear.
+    """
+    changed = False
+    for v in (_sam_manager._active, _sam_manager._test_variant):
+        if v is None:
+            continue
+        if getattr(v, "_cached_hash", None) is not None:
+            v._cached_hash = None
+            v._cached_shape = None
+            v._prev_logits = None
+            v._prev_n_points = 0
+            changed = True
+    return changed
 
 
 def set_test_predictor(p: SamPredictor | None) -> None:

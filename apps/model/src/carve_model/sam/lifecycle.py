@@ -114,7 +114,7 @@ class SamVariant(Protocol):
     def unload(self) -> None: ...
 
     # ---- image cache ----
-    def set_image(self, image: "Any") -> str: ...
+    def set_image(self, image: "Any", *, image_hash: str | None = None) -> str: ...
     def cached_image_hash(self) -> str | None: ...
     def cached_image_shape(self) -> tuple[int, int] | None: ...
     def extract_embedding(self) -> bytes | None: ...
@@ -213,11 +213,11 @@ class Sam2Variant:
         self._prev_logits = None
         self._prev_n_points = 0
 
-    def set_image(self, image: Any) -> str:
+    def set_image(self, image: Any, *, image_hash: str | None = None) -> str:
         if self._adapter is None:
             raise RuntimeError("Sam2Variant.set_image called before load()")
         self._adapter.set_image(image)
-        h = _hash_image(image)
+        h = image_hash if image_hash is not None else _hash_image(image)
         self._cached_hash = h
         self._cached_shape = (int(image.shape[0]), int(image.shape[1]))
         self._prev_logits = None
@@ -316,11 +316,11 @@ class Sam3p1Variant:
         self._prev_logits = None
         self._prev_n_points = 0
 
-    def set_image(self, image: Any) -> str:
+    def set_image(self, image: Any, *, image_hash: str | None = None) -> str:
         if self._adapter is None:
             raise RuntimeError("Sam3p1Variant.set_image called before load()")
         self._adapter.set_image(image)
-        h = _hash_image(image)
+        h = image_hash if image_hash is not None else _hash_image(image)
         self._cached_hash = h
         self._cached_shape = (int(image.shape[0]), int(image.shape[1]))
         self._prev_logits = None
@@ -1349,8 +1349,8 @@ class _LegacyTestVariant:
     def load(self, device): pass
     def unload(self): pass
 
-    def set_image(self, image: Any) -> str:
-        h = _hash_image(image)
+    def set_image(self, image: Any, *, image_hash: str | None = None) -> str:
+        h = image_hash if image_hash is not None else _hash_image(image)
         self._cached_hash = h
         self._cached_shape = (int(image.shape[0]), int(image.shape[1]))
         if self._point_impl is not None and hasattr(self._point_impl, "set_image"):
