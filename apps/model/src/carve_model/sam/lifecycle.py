@@ -502,8 +502,160 @@ class Sam3p1Variant:
                 clean.append(ii)
         return [rows[i] for i in clean]
 
-    def predict_box(self, **kw: Any) -> list[dict]:
-        raise NotImplementedError("Sam3p1Variant.predict_box not yet migrated")
+    def predict_box(
+        self,
+        *,
+        image_b64: str,
+        boxes: list[list[float]],
+        box_labels: list[int],
+        text: str | None = None,
+    ) -> list[dict]:
+        """For each positive box (label=1), run predict_inst with
+        multimask_output=False and keep the resulting mask. Optional text
+        is applied first via set_text_prompt to bias the concept. Negative
+        boxes (label=0) subtract from the union of positive masks.
+
+        Uses self._adapter — same instance as predict_point/predict_text.
+        """
+        if self._adapter is None:
+            raise RuntimeError("Sam3p1Variant.predict_box called before load()")
+
+        import numpy as np
+        torch = _import_torch()
+
+        image_np = _decode_image_b64_to_numpy(image_b64)
+        # Route through self.set_image() to atomically refresh cache + clear prev_logits
+        self.set_image(image_np)
+
+        adapter = self._adapter
+        state = adapter._state
+        if state is None:
+            return []
+
+        adapter._processor.reset_all_prompts(state)
+
+        if text:
+            if adapter._device == "cuda" and torch is not None:
+                with torch.no_grad():
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        adapter._processor.set_text_prompt(text, state)
+            else:
+                if torch is not None:
+                    with torch.no_grad():
+                        adapter._processor.set_text_prompt(text, state)
+                else:
+                    adapter._processor.set_text_prompt(text, state)
+
+        positive_masks: list[Any] = []
+        negative_masks: list[Any] = []
+        positive_scores: list[float] = []
+        positive_boxes: list[list[float]] = []
+
+        for box, label in zip(boxes, box_labels, strict=False):
+            box_arr = np.asarray(box, dtype=np.float32).reshape(-1)
+            result = self._run_box_predict_inst(state=state, box_arr=box_arr)
+            if not result:
+                continue
+            best_mask, best_score = result
+            if int(label) == 1:
+                positive_masks.append(best_mask)
+                positive_scores.append(best_score)
+                positive_boxes.append([float(x) for x in box_arr.tolist()])
+            else:
+                negative_masks.append(best_mask)
+
+        if not positive_masks:
+            return []
+
+        # Subtract union of negatives from each positive mask
+        if negative_masks:
+            neg_union = negative_masks[0].copy()
+            for m in negative_masks[1:]:
+                neg_union = np.logical_or(neg_union, m).astype(np.uint8)
+            for i, m in enumerate(positive_masks):
+                positive_masks[i] = np.logical_and(
+                    m, np.logical_not(neg_union),
+                ).astype(np.uint8)
+
+        rows: list[dict] = []
+        for mask_np, score, bbox in zip(
+            positive_masks, positive_scores, positive_boxes, strict=False,
+        ):
+            counts, size = encode_mask_rle(mask_np)
+            polygon = mask_to_polygon(mask_np)
+            rows.append({
+                "counts": counts,
+                "size": size,
+                "score": score,
+                "bbox": bbox,
+                "polygon": polygon,
+            })
+        rows.sort(key=lambda r: r["score"], reverse=True)
+
+        # GPU-hygiene: clear state-dict tensors + empty_cache
+        if "masks_logits" in state: state["masks_logits"] = None
+        if "masks" in state: state["masks"] = None
+        if "boxes" in state: state["boxes"] = None
+        if "scores" in state: state["scores"] = None
+        if adapter._device == "cuda" and torch is not None:
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        return rows
+
+    def _run_box_predict_inst(
+        self,
+        *,
+        state: dict,
+        box_arr: Any,
+    ) -> tuple[Any, float] | None:
+        """Run one box prediction via adapter._model.predict_inst. Returns
+        (best_mask, best_score) or None when no mask produced. Factored
+        out so tests can stub without importing torch."""
+        if self._adapter is None:
+            return None
+
+        import numpy as np
+        torch = _import_torch()
+        adapter = self._adapter
+
+        if adapter._device == "cuda" and torch is not None:
+            with torch.no_grad():
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    masks, scores, _ = adapter._model.predict_inst(
+                        state,
+                        point_coords=None,
+                        point_labels=None,
+                        box=box_arr,
+                        multimask_output=False,
+                    )
+        else:
+            if torch is not None:
+                with torch.no_grad():
+                    masks, scores, _ = adapter._model.predict_inst(
+                        state,
+                        point_coords=None,
+                        point_labels=None,
+                        box=box_arr,
+                        multimask_output=False,
+                    )
+            else:
+                masks, scores, _ = adapter._model.predict_inst(
+                    state,
+                    point_coords=None,
+                    point_labels=None,
+                    box=box_arr,
+                    multimask_output=False,
+                )
+
+        if masks is None or len(masks) == 0:
+            return None
+        best_idx = int(np.argmax(np.asarray(scores)))
+        best_mask = np.asarray(masks[best_idx]).astype(np.uint8)
+        best_score = float(np.asarray(scores)[best_idx])
+        return (best_mask, best_score)
 
     def predict_visual(self, **kw: Any) -> list[dict]:
         raise NotImplementedError("Sam3p1Variant.predict_visual not yet migrated")
