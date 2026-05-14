@@ -955,9 +955,64 @@ def to_numpy_safe(x: Any) -> Any:
     return _impl(x)
 
 
-def _crop_refer_with_mask(refer_image: Any, region: dict, *, pad_ratio: float = 0.20):
-    from carve_model.sam.sam3_adapter import _crop_refer_with_mask as _impl
-    return _impl(refer_image, region, pad_ratio=pad_ratio)
+def _crop_refer_with_mask(
+    refer_image: Any,
+    region: dict,
+    *,
+    pad_ratio: float = 0.20,
+):
+    """Crop the refer image at a bbox/polygon region, returning the
+    crop AND a foreground mask aligned to the crop coordinates.
+
+    For ``bbox`` regions the mask is ``None`` (the whole crop is the
+    object — there's no foreground/background distinction the user
+    intended).
+
+    For ``polygon`` regions the mask is the rasterised polygon shifted
+    into the cropped frame, so the caller can fade out background pixels
+    inside the bbox-but-outside-the-polygon.
+
+    Relocated from ``sam3_adapter.py`` so the helper survives the
+    Task 6.3 deletion of that module.
+    """
+    import numpy as np
+    from carve_model.sam.visual_prompt_preprocess import rasterise_polygon
+
+    H, W = refer_image.shape[:2]
+    if region["kind"] == "bbox":
+        x1, y1, x2, y2 = (float(v) for v in region["xyxy"])
+        polygon_pts = None
+    elif region["kind"] == "polygon":
+        pts = np.asarray(region["points"], dtype=float)
+        if pts.size == 0:
+            return None, None
+        x1, y1 = pts[:, 0].min(), pts[:, 1].min()
+        x2, y2 = pts[:, 0].max(), pts[:, 1].max()
+        polygon_pts = pts
+    else:
+        return None, None
+
+    w = x2 - x1
+    h = y2 - y1
+    pad_x = w * pad_ratio
+    pad_y = h * pad_ratio
+    cx1 = max(0, int(x1 - pad_x))
+    cy1 = max(0, int(y1 - pad_y))
+    cx2 = min(W, int(x2 + pad_x))
+    cy2 = min(H, int(y2 + pad_y))
+    if cx2 <= cx1 or cy2 <= cy1:
+        return None, None
+    crop = refer_image[cy1:cy2, cx1:cx2]
+    if polygon_pts is None:
+        return crop, None
+
+    # Shift the polygon into crop coordinates and rasterise at crop size.
+    shifted = polygon_pts.copy()
+    shifted[:, 0] -= cx1
+    shifted[:, 1] -= cy1
+    crop_h, crop_w = crop.shape[:2]
+    mask = rasterise_polygon(shifted.tolist(), crop_h, crop_w)
+    return crop, mask
 
 
 def _greedy_nms_indices(
@@ -967,13 +1022,51 @@ def _greedy_nms_indices(
     iou_threshold: float = 0.5,
     containment_threshold: float = 0.85,
 ) -> Any:
-    from carve_model.sam.sam3_adapter import _greedy_nms_indices as _impl
-    return _impl(
-        boxes,
-        scores,
-        iou_threshold=iou_threshold,
-        containment_threshold=containment_threshold,
-    )
+    """Greedy suppression that handles two failure modes plain IoU misses:
+
+    1. **Nested boxes** (small inside big, or big around small). Plain
+       IoU is small/big which can be far below the threshold even when
+       one box is fully inside the other. We add ``containment`` =
+       ``inter / min(area_a, area_b)`` which goes to 1.0 when one box
+       is contained in the other regardless of relative size, and
+       suppress when ``containment >= containment_threshold``.
+    2. **Slightly-different segmentations of the same object**. Two
+       SAM proposals for the same object may have IoU ~ 0.4-0.5 from
+       boundary jitter alone. Suppressing on ``max(iou, containment)``
+       and a slightly looser IoU threshold (default 0.5 still) catches
+       both cases.
+
+    ``boxes`` is (N, 4) xyxy. Returns kept indices (highest-score-first).
+
+    Relocated from ``sam3_adapter.py`` so the helper survives the
+    Task 6.3 deletion of that module.
+    """
+    import numpy as np
+    if boxes.shape[0] == 0:
+        return np.zeros((0,), dtype=np.int64)
+    x1 = boxes[:, 0]; y1 = boxes[:, 1]
+    x2 = boxes[:, 2]; y2 = boxes[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+    order = np.argsort(-scores)
+    keep: list[int] = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(x1[i], x1[rest])
+        yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest])
+        yy2 = np.minimum(y2[i], y2[rest])
+        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
+        union = areas[i] + areas[rest] - inter
+        iou = np.where(union > 0, inter / union, 0.0)
+        smaller = np.minimum(areas[i], areas[rest])
+        containment = np.where(smaller > 0, inter / smaller, 0.0)
+        suppress = (iou >= iou_threshold) | (containment >= containment_threshold)
+        order = rest[~suppress]
+    return np.asarray(keep, dtype=np.int64)
 
 
 def embed_image(image: Any, mask: Any = None) -> Any:

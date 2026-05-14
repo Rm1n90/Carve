@@ -573,16 +573,11 @@ def _default_factory() -> Any:
 
     model = get_sam_model()
     if model == "sam3.1":
-        from carve_model.sam import sam3_adapter, sam3p1_adapter
-        adapter = sam3p1_adapter.build_sam3p1_image_predictor(device=sam_device)
-        set_visual_predictor(sam3_adapter.make_sam3_visual_predictor())
-        return adapter
-    if model == "sam3":
-        from carve_model.sam import sam3_adapter
-        adapter = sam3_adapter.build_sam3_image_predictor(device=sam_device)
-        set_text_predictor(sam3_adapter.make_sam3_text_predictor())
-        set_box_predictor(sam3_adapter.make_sam3_box_predictor())
-        return adapter
+        # sam3 was dropped in Task 6.x; ``Sam3p1Variant.predict_visual`` is
+        # the manager-path replacement for the legacy
+        # ``set_visual_predictor(make_sam3_visual_predictor())`` registration.
+        from carve_model.sam import sam3p1_adapter
+        return sam3p1_adapter.build_sam3p1_image_predictor(device=sam_device)
     if model.startswith("sam2"):
         from carve_model.sam import sam2_adapter
         return sam2_adapter.build_sam2_image_predictor(model, device=sam_device)
