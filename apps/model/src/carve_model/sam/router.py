@@ -678,13 +678,23 @@ class UnloadOut(BaseModel):
 @router.post("/unload", response_model=UnloadOut)
 def unload(payload: UnloadIn = Body(default_factory=UnloadIn)) -> UnloadOut:
     """Force-unload SAM models from GPU memory. Idempotent."""
+    from carve_model.sam.lifecycle import manager
     from carve_model.sam.predictor import _gpu_used_bytes
 
     before = _gpu_used_bytes()
     evicted: list[str] = []
     sessions_released = 0
     if payload.which in ("image", "all"):
-        if force_evict_predictor():
+        # Task 3.5 — route through the lifecycle manager directly. The
+        # manager's force_unload() drops the active variant + runs the
+        # full CUDA cleanup (3x gc + synchronize + empty_cache +
+        # ipc_collect + dynamo.reset). Legacy ``force_evict_predictor``
+        # is still called below to mop up any closure-cached factories
+        # and the legacy ``_SESSION`` that pre-migration code paths may
+        # still populate. Both are idempotent.
+        manager_freed = manager.force_unload()
+        legacy_freed = force_evict_predictor()
+        if manager_freed or legacy_freed:
             evicted.append("image")
     if payload.which in ("tracker", "all"):
         sessions_released = force_evict_all_sessions()
@@ -772,9 +782,17 @@ def sam_status() -> StatusOut:
       ready   — predictor is loaded and ready to encode/decode
       error   — last load attempt failed; ``error`` carries the detail
     """
+    from carve_model.sam.lifecycle import manager
     from carve_model.sam.predictor import get_vlm_fo1_filter, get_visual_predictor
 
-    state = get_load_state()
+    # Task 3.5 — read load state directly from the lifecycle manager
+    # (the canonical source post-refactor). Until Task 3.6 finishes
+    # migrating /sam/switch, the legacy ``predictor._LOAD_STATE`` may
+    # still hold state from the switch worker; if the manager reports
+    # idle, fall back to the legacy snapshot so the HTTP contract
+    # (and the editor's polling overlay) stays intact across the cut.
+    state = manager.status()
+    legacy = get_load_state() if state.kind == "idle" else None
     # In-process GPU memory readout — uses memory_allocated (truly
     # in-use) so the editor / System page can verify that exactly one
     # variant's weights are resident after a /sam/switch.
@@ -801,14 +819,38 @@ def sam_status() -> StatusOut:
         except RuntimeError:
             pass
 
+    # The new lifecycle.LoadState does not carry progress_bytes /
+    # progress_total / job_id — those were UI hints wired up to the
+    # legacy HF-download progress hooks. While Task 3.6 is pending, we
+    # still surface them when the legacy state is the active source so
+    # the overlay's downloading shimmer keeps working. Once /sam/switch
+    # routes through the manager too, these reduce to constant None
+    # (the wire shape stays unchanged — spec goal #6).
+    if legacy is not None:
+        kind = legacy.kind
+        variant = legacy.variant or get_sam_model()
+        progress_bytes = legacy.progress_bytes
+        progress_total = legacy.progress_total
+        loaded_at = legacy.loaded_at
+        error = legacy.error
+        job_id = legacy.job_id
+    else:
+        kind = state.kind
+        variant = state.variant or get_sam_model()
+        progress_bytes = None
+        progress_total = None
+        loaded_at = state.loaded_at
+        error = state.error
+        job_id = None
+
     return StatusOut(
-        state=state.kind,
-        variant=state.variant or get_sam_model(),
-        progress_bytes=state.progress_bytes,
-        progress_total=state.progress_total,
-        loaded_at=state.loaded_at,
-        error=state.error,
-        job_id=state.job_id,
+        state=kind,
+        variant=variant,
+        progress_bytes=progress_bytes,
+        progress_total=progress_total,
+        loaded_at=loaded_at,
+        error=error,
+        job_id=job_id,
         vlm_fo1_available=get_vlm_fo1_filter() is not None,
         visual_prompt_available=visual_prompt_available,
         gpu_allocated_mb=gpu_allocated_mb,
