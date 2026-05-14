@@ -679,3 +679,27 @@ class SamLifecycleManager:
             return True
         finally:
             self._inference_lock.release()
+
+    @contextmanager
+    def lease_or_load(self):
+        """Canonical router entry point: lease the active variant; lazily
+        load the last-known variant if currently idle.
+
+        Other not-ready states (loading, error) propagate as SamNotReadyError.
+        """
+        try:
+            with self.lease() as sam:
+                yield sam
+                return
+        except SamNotReadyError as e:
+            if e.state != "idle":
+                raise
+        variant = self.remembered_variant() or self._env_default_variant()
+        self.ensure_loaded(variant)
+        with self.lease() as sam:
+            yield sam
+
+    def _env_default_variant(self) -> str:
+        """Read SAM_MODEL env var with the production default fallback."""
+        import os
+        return os.environ.get("SAM_MODEL", "sam2.1-large")
