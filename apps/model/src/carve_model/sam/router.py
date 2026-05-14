@@ -1,4 +1,21 @@
-"""SAM 2 HTTP endpoints.
+"""SAM HTTP endpoints.
+
+All endpoints route through the lifecycle manager
+(``carve_model.sam.lifecycle.manager``), which is the canonical entry
+point for variant selection, load/unload, and lease acquisition. The
+manager raises ``SamNotReadyError`` when a lease is requested while the
+manager is not in ``ready`` state; the router maps it to HTTP 503 with a
+spec-aligned detail string:
+
+  - ``idle``    → ``sam_not_loaded``
+  - ``loading`` → ``sam_loading``
+  - ``error``   → ``sam_load_failed: <error>`` (preserving the manager's
+                  stored error message)
+
+Capability gating is variant-agnostic: when the active variant does not
+support a prompt mode (e.g. sam2.x asked for text/box/visual), the
+endpoint returns HTTP 409 with
+``<op>_prompt_not_supported_for_variant``.
 
 POST /sam/encode  — accepts {image_b64} → returns {image_hash, shape}.
                     The encoder runs once per image; the predictor is sticky
@@ -9,23 +26,25 @@ POST /sam/decode  — accepts {image_hash, points, labels} → returns
                     {counts, size, score}. Returns 409 if the embedding for
                     image_hash isn't currently loaded (caller must re-encode).
 
-POST /sam/text-prompt — SAM 3 only. Accepts {image_b64, text} → returns
+POST /sam/text-prompt — Accepts {image_b64, text} → returns
                     [{counts, size, score, bbox}]. Returns 409
-                    ``sam3_not_enabled`` when the configured SAM model is
-                    not ``sam3``; 503 ``sam3_predictor_not_loaded`` when
-                    SAM 3 is on but no predictor factory has been
-                    registered.
+                    ``text_prompt_not_supported_for_variant`` when the
+                    active variant doesn't expose text prompting (e.g.
+                    sam2.x).
 
-POST /sam/box-prompt — SAM 3 only (one-shot). Accepts
+POST /sam/box-prompt — One-shot. Accepts
                     {image_b64, boxes, box_labels, text?} → returns
                     [{counts, size, score, bbox}]. Boxes are xyxy floats;
                     box_labels are 1 (positive include) or 0 (negative
                     exclude). The optional ``text`` field combines with
                     boxes to refine a concept (e.g., text + negative
-                    box). Returns 409 ``sam3_box_prompt_requires_sam3``
-                    when SAM 3 is not the active model; 503
-                    ``sam3_box_predictor_not_loaded`` when SAM 3 is on
-                    but no box predictor factory has been registered.
+                    box). Returns 409
+                    ``box_prompt_not_supported_for_variant`` when the
+                    active variant doesn't expose box prompting.
+
+POST /sam/visual-prompt — SAM 3.1 only. Returns 409
+                    ``visual_prompt_not_supported_for_variant`` when the
+                    active variant doesn't expose visual prompting.
 """
 
 import base64
@@ -62,6 +81,28 @@ from carve_model.sam.predictor import (
 from carve_model.sam.track_session import force_evict_all_sessions
 
 router = APIRouter(prefix="/sam", tags=["sam"])
+
+
+def _sam_not_ready_detail(state: str, error: str | None) -> str:
+    """Map a ``SamNotReadyError`` state to the spec-defined HTTP 503 detail.
+
+    Spec §7 (Error handling — HTTP mapping):
+      - ``idle``    → ``sam_not_loaded``
+      - ``loading`` → ``sam_loading``
+      - ``error``   → ``sam_load_failed: <error>`` (preserving the
+        manager's stored error message; falls back to bare
+        ``sam_load_failed`` when no message is available).
+
+    Any unrecognised state falls through to ``sam_<state>`` so future
+    states surface diagnostically rather than silently dropping.
+    """
+    if state == "idle":
+        return "sam_not_loaded"
+    if state == "loading":
+        return "sam_loading"
+    if state == "error":
+        return f"sam_load_failed: {error}" if error else "sam_load_failed"
+    return f"sam_{state}"
 
 
 class EncodeIn(BaseModel):
@@ -157,7 +198,11 @@ def encode(payload: EncodeIn) -> EncodeOut:
                         except Exception:  # noqa: BLE001
                             embedding_bytes = None
     except SamNotReadyError as e:
-        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
 
     embedding_b64 = (
         base64.b64encode(embedding_bytes).decode("ascii")
@@ -316,7 +361,11 @@ def decode(payload: DecodeIn) -> DecodeOut:
                 sam.set_prev_logits(chosen_low_res, n_now)
                 best_score = float(scores_np[best])
     except SamNotReadyError as e:
-        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
 
     # v3.22 — clean the mask once (delete sub-pixel-wide spikes,
     # keep only the largest connected component, optionally fill
@@ -487,7 +536,11 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
             with admit(CostClass.SAM_TEXT):
                 return sam.predict_text(**kwargs)
     except SamNotReadyError as e:
-        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
 
 
 # --- SAM 3 box-prompt endpoint ----------------------------------------------
@@ -551,7 +604,11 @@ def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
                     text=payload.text,
                 )
     except SamNotReadyError as e:
-        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
 
 
 @router.post("/visual-prompt", response_model=list[VisualPromptOut])
@@ -590,7 +647,11 @@ def sam_visual_prompt(payload: VisualPromptIn) -> list[dict]:
                     text_hint=payload.text_hint,
                 )
     except SamNotReadyError as e:
-        raise HTTPException(status_code=503, detail=f"sam_{e.state}") from e
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
 
 
 # --- /sam/unload (admin force-evict) ----------------------------------------
