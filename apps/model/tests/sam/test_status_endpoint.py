@@ -219,27 +219,9 @@ def test_status_progress_fields_are_none_post_task_36(monkeypatch) -> None:
     blocker.set()
 
 
-def test_set_load_progress_preserves_other_state_fields() -> None:
-    """``_set_load_progress`` is a partial-update — kind, variant,
-    job_id, etc. must survive a progress write.
-    """
-    p_mod._set_load_state(
-        kind="loading",
-        variant="sam2.1-large",
-        job_id="job-abc",
-    )
-    p_mod._set_load_progress(progress_bytes=0, progress_total=-1)
-    state = p_mod.get_load_state()
-    assert state.kind == "loading"
-    assert state.variant == "sam2.1-large"
-    assert state.job_id == "job-abc"
-    assert state.progress_bytes == 0
-    assert state.progress_total == -1
-    p_mod._set_load_progress(progress_bytes=None, progress_total=None)
-    state = p_mod.get_load_state()
-    assert state.progress_bytes is None
-    assert state.progress_total is None
-    # Other fields untouched.
-    assert state.kind == "loading"
-    assert state.variant == "sam2.1-large"
-    assert state.job_id == "job-abc"
+# ``test_set_load_progress_preserves_other_state_fields`` was deleted in
+# Task 5.2 — the legacy ``predictor._LOAD_STATE`` carried extra fields
+# (progress_bytes / progress_total / job_id) that the manager's
+# LoadState no longer tracks. ``_set_load_progress`` is now a no-op
+# (adapters still call it during HF download; the new /sam/status wire
+# response keeps the progress fields constant None).
