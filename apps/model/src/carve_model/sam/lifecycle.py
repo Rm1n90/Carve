@@ -21,6 +21,7 @@ __all__ = [
     "SamLifecycleManager",
     "_build_variant",
     "manager",
+    "_LegacyTestVariant",
 ]
 
 
@@ -1314,3 +1315,82 @@ class SamLifecycleManager:
 
 # Module-level singleton — the production manager.
 manager = SamLifecycleManager()
+
+
+class _LegacyTestVariant:
+    """Aggregator that wraps the four old test-injection callables into one
+    SamVariant. Used by predictor.py back-compat shims so existing tests
+    work unchanged while the routers migrate to manager.lease_or_load().
+
+    Each _<op>_impl is initially None; capability flags follow `is not None`.
+    """
+
+    name = "legacy-test"
+    device = None
+    build_key = ("legacy-test", "fp32", "sdpa")
+
+    def __init__(self) -> None:
+        self._point_impl: Any | None = None
+        self._text_impl: Any | None = None
+        self._box_impl: Any | None = None
+        self._visual_impl: Any | None = None
+        self._cached_hash: str | None = None
+        self._cached_shape: tuple[int, int] | None = None
+        self._prev_logits: Any | None = None
+        self._prev_n_points: int = 0
+
+    @property
+    def supports_text(self) -> bool: return self._text_impl is not None
+    @property
+    def supports_box(self) -> bool: return self._box_impl is not None
+    @property
+    def supports_visual(self) -> bool: return self._visual_impl is not None
+
+    def load(self, device): pass
+    def unload(self): pass
+
+    def set_image(self, image: Any) -> str:
+        h = _hash_image(image)
+        self._cached_hash = h
+        self._cached_shape = (int(image.shape[0]), int(image.shape[1]))
+        if self._point_impl is not None and hasattr(self._point_impl, "set_image"):
+            self._point_impl.set_image(image)
+        return h
+
+    def cached_image_hash(self) -> str | None: return self._cached_hash
+    def cached_image_shape(self) -> tuple[int, int] | None: return self._cached_shape
+
+    def extract_embedding(self) -> bytes | None:
+        if self._point_impl is None:
+            return None
+        getter = getattr(self._point_impl, "extract_embedding", None)
+        return getter() if getter is not None else None
+
+    def set_prev_logits(self, low_res_logits, n_points):
+        self._prev_logits = low_res_logits
+        self._prev_n_points = int(n_points)
+
+    def get_prev_logits(self):
+        return (self._prev_logits, self._prev_n_points)
+
+    def predict_point(self, **kw):
+        if self._point_impl is None:
+            raise SamCapabilityError("legacy variant: no point impl injected")
+        if callable(self._point_impl):
+            return self._point_impl(**kw)
+        return self._point_impl.predict(**kw)
+
+    def predict_text(self, **kw):
+        if self._text_impl is None:
+            raise SamCapabilityError("legacy variant: no text impl injected")
+        return self._text_impl(**kw)
+
+    def predict_box(self, **kw):
+        if self._box_impl is None:
+            raise SamCapabilityError("legacy variant: no box impl injected")
+        return self._box_impl(**kw)
+
+    def predict_visual(self, **kw):
+        if self._visual_impl is None:
+            raise SamCapabilityError("legacy variant: no visual impl injected")
+        return self._visual_impl(**kw)
