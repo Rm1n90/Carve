@@ -46,6 +46,74 @@ class AutoTextNoEligibleClasses(AppError):
     code = "no_eligible_classes"
 
 
+# IoU floor above which two SAM detections are treated as the same object.
+# 0.70 is the standard "near-duplicate" line — true duplicates land at
+# 0.85+, while two adjacent same-class instances (e.g. two pants on two
+# people standing close) typically sit well under 0.50. Picking 0.70
+# keeps real instances and drops the SAM-side near-duplicate masks the
+# model occasionally emits for a single object.
+_NMS_IOU_THRESHOLD = 0.70
+
+
+def _iou_xyxy(a: list[float], b: list[float]) -> float:
+    """Intersection-over-Union for two xyxy bboxes.
+
+    Degenerate / zero-area boxes return 0.0 (rather than NaN or
+    raising) so the NMS pass treats them as non-overlapping.
+    """
+    if len(a) < 4 or len(b) < 4:
+        return 0.0
+    ax1, ay1, ax2, ay2 = a[0], a[1], a[2], a[3]
+    bx1, by1, bx2, by2 = b[0], b[1], b[2], b[3]
+    inter_w = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    inter_h = max(0.0, min(ay2, by2) - max(ay1, by1))
+    inter = inter_w * inter_h
+    if inter <= 0.0:
+        return 0.0
+    a_area = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    b_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = a_area + b_area - inter
+    if union <= 0.0:
+        return 0.0
+    return inter / union
+
+
+def _nms_dedupe(
+    candidates: list[dict], iou_threshold: float = _NMS_IOU_THRESHOLD,
+) -> list[dict]:
+    """Drop near-duplicate detections by bbox IoU, keeping highest score.
+
+    SAM 3 / 3.1's grounding head can emit multiple overlapping proposals
+    for the same object (especially with multi-fragment prompts where
+    each fragment may rediscover the same region). Without this pass
+    the editor renders 2–3 near-identical polygons on the same object —
+    confusing and a chore to clean up manually.
+
+    Bbox IoU is cheap and a good proxy for mask similarity at this
+    overlap threshold; mask-level IoU would be more precise but would
+    require materialising the masks here.
+    """
+    if len(candidates) <= 1:
+        return list(candidates)
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda r: float(r.get("score", 0.0)),
+        reverse=True,
+    )
+    kept: list[dict] = []
+    for r in sorted_candidates:
+        rbox = r.get("bbox") or [0.0, 0.0, 0.0, 0.0]
+        is_duplicate = False
+        for k in kept:
+            kbox = k.get("bbox") or [0.0, 0.0, 0.0, 0.0]
+            if _iou_xyxy(rbox, kbox) >= iou_threshold:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            kept.append(r)
+    return kept
+
+
 def auto_text_for_asset(
     *,
     session: Session,
@@ -57,6 +125,7 @@ def auto_text_for_asset(
     overwrite: bool,
     actor_id: uuid.UUID | None,
     use_vlm_fo1: bool = False,
+    iou_threshold: float | None = None,
 ) -> dict:
     """Run SAM 3 text-prompt for each selected class and persist results.
 
@@ -149,6 +218,19 @@ def auto_text_for_asset(
         # find_all / best-only / overwrite semantics behave identically
         # whether the class had one fragment or several.
         kept = [r for r in results if float(r.get("score", 0.0)) >= threshold]
+        # Drop near-duplicate detections (same object, multiple overlapping
+        # masks) by bbox-IoU NMS. Runs before find_all so "Best match only"
+        # still picks one annotation across the deduplicated pool. The
+        # user-configurable iou_threshold lets operators dial how
+        # aggressive the dedupe is — high (e.g. 0.85) only collapses
+        # nearly-identical masks; low (e.g. 0.30) treats anything with
+        # meaningful overlap as the same object.
+        kept = _nms_dedupe(
+            kept,
+            iou_threshold=iou_threshold
+            if iou_threshold is not None
+            else _NMS_IOU_THRESHOLD,
+        )
         # Best-only collapses to argmax after filtering so the threshold
         # still applies (best of nothing is nothing). With multi-fragment
         # prompts this picks the single best match across all concepts —

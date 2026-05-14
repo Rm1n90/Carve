@@ -361,6 +361,10 @@ class AutoTextBatchPayload:
     # Default False ensures payloads pickled before this field exists
     # still deserialize (dataclass default kicks in).
     use_vlm_fo1: bool = False
+    # Bbox-IoU floor for the per-class NMS dedup pass. None = server
+    # default. Default None so payloads pickled before this field
+    # existed still deserialize via the dataclass default.
+    iou_threshold: float | None = None
 
 
 def build_auto_text_payload(
@@ -372,6 +376,7 @@ def build_auto_text_payload(
     find_all: bool,
     overwrite: bool,
     use_vlm_fo1: bool = False,
+    iou_threshold: float | None = None,
 ) -> AutoTextBatchPayload:
     return AutoTextBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -382,6 +387,9 @@ def build_auto_text_payload(
         find_all=bool(find_all),
         overwrite=bool(overwrite),
         use_vlm_fo1=bool(use_vlm_fo1),
+        iou_threshold=(
+            float(iou_threshold) if iou_threshold is not None else None
+        ),
     )
 
 
@@ -472,6 +480,7 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
                         overwrite=payload.overwrite,
                         actor_id=actor_uuid,
                         use_vlm_fo1=getattr(payload, "use_vlm_fo1", False),
+                        iou_threshold=getattr(payload, "iou_threshold", None),
                     ),
                     redis_client=redis_client,
                     job_id=payload.job_id,

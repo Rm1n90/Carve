@@ -110,6 +110,11 @@ export function AutoAnnotateDialog({
   // legacy 0.40 default left too many obvious objects below the floor;
   // 0.30 is a better OOTB compromise. Users can still slide either way.
   const [threshold, setThreshold] = useState<number>(0.3);
+  // Bbox-IoU floor for the server-side NMS dedup pass. Matches the
+  // server's _NMS_IOU_THRESHOLD default. Lower = more aggressive dedup
+  // (collapses anything with meaningful overlap); higher = only true
+  // near-duplicates collapse; 1.0 effectively disables NMS.
+  const [iouThreshold, setIouThreshold] = useState<number>(0.7);
   const [findAll, setFindAll] = useState<boolean>(true);
   const [overwrite, setOverwrite] = useState<boolean>(false);
   // v3.21+ — VLM-FO1 precision filter opt-in. v3.22 always defaults to
@@ -226,6 +231,9 @@ export function AutoAnnotateDialog({
       }
       setTextRows(restored);
       setThreshold(stored.threshold);
+      // Optional in the persisted shape — older entries that pre-date
+      // the IoU slider fall back to the server's default (0.70).
+      setIouThreshold(stored.iouThreshold ?? 0.7);
       setFindAll(stored.findAll);
       setOverwrite(stored.overwrite);
       setSamPostMode(stored.samPostMode);
@@ -263,6 +271,7 @@ export function AutoAnnotateDialog({
       text: {
         rows: textRows.map((r) => ({ classId: r.classId, prompt: r.prompt })),
         threshold,
+        iouThreshold,
         findAll,
         overwrite,
         samPostMode,
@@ -275,6 +284,7 @@ export function AutoAnnotateDialog({
     taskId,
     textRows,
     threshold,
+    iouThreshold,
     findAll,
     overwrite,
     samPostMode,
@@ -292,6 +302,7 @@ export function AutoAnnotateDialog({
     ]);
     setTextRowQuery("");
     setThreshold(0.4);
+    setIouThreshold(0.7);
     setFindAll(true);
     setOverwrite(false);
     setSamPostMode("off");
@@ -472,6 +483,7 @@ export function AutoAnnotateDialog({
           threshold,
           find_all: findAll,
           overwrite,
+          iou_threshold: iouThreshold,
           ...(wireUseVlmFo1 ? { use_vlm_fo1: true } : {}),
         });
         return { kind: "batch", job_id: r.job_id } as const;
@@ -482,6 +494,7 @@ export function AutoAnnotateDialog({
         threshold,
         find_all: findAll,
         overwrite,
+        iou_threshold: iouThreshold,
         ...(wireUseVlmFo1 ? { use_vlm_fo1: true } : {}),
       });
       return { kind: "sync", ...r } as const;
@@ -1061,6 +1074,32 @@ export function AutoAnnotateDialog({
             onChange={(e) => setThreshold(parseFloat(e.target.value))}
             data-testid="auto-annotate-threshold"
           />
+        </div>
+
+        {/* IoU threshold (per-class NMS dedup) */}
+        <div className="grid gap-2 mb-4">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
+              Overlap (IoU) &ge;
+            </span>
+            <span className="font-mono text-[12px] text-[color:var(--text-primary)]">
+              {iouThreshold >= 1 ? "off" : iouThreshold.toFixed(2)}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={iouThreshold}
+            onChange={(e) => setIouThreshold(parseFloat(e.target.value))}
+            data-testid="auto-annotate-iou-threshold"
+          />
+          <p className="text-[11px] leading-snug text-[color:var(--text-tertiary)]">
+            Two detections with bbox-IoU above this are treated as the
+            same object and the lower-scored one is dropped. Lower =
+            more aggressive dedup. 1.00 turns NMS off.
+          </p>
         </div>
 
         {/* Scope */}
