@@ -369,8 +369,12 @@ class Sam3p1Variant:
 
 
 import gc
+import logging
 import threading
+import time
 from contextlib import contextmanager
+
+log = logging.getLogger(__name__)
 
 
 def _import_torch() -> Any | None:
@@ -389,6 +393,15 @@ def _build_variant(name: str) -> SamVariant:
     if name == "sam3.1":
         return Sam3p1Variant()
     raise ValueError(f"unknown SAM variant: {name!r}")
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """Best-effort detection of torch.cuda.OutOfMemoryError without importing torch."""
+    cls_name = type(exc).__name__
+    if "OutOfMemory" in cls_name:
+        return True
+    msg = str(exc).lower()
+    return "out of memory" in msg or "cuda oom" in msg
 
 
 class SamLifecycleManager:
@@ -477,9 +490,30 @@ class SamLifecycleManager:
 
     @contextmanager
     def lease(self):
-        """Stub — replaced in Task 1.8 with full implementation."""
+        """Acquire exclusive use of the active variant.
+
+        Yields the SamVariant. Acquires _inference_lock; ticks _last_used_at
+        on enter and exit. Raises SamNotReadyError when not in 'ready' state.
+        CUDA OOM during the lease block triggers a light cleanup before reraising.
+        """
         if self._test_variant is not None:
             yield self._test_variant
             return
-        raise SamNotReadyError(self._state.kind)
-        yield  # unreachable; satisfies the generator protocol
+        self._inference_lock.acquire()
+        try:
+            with self._load_lock:
+                if self._state.kind != "ready" or self._active is None:
+                    raise SamNotReadyError(self._state.kind)
+                self._last_used_at = time.monotonic()
+                active = self._active
+            try:
+                yield active
+            except Exception as exc:
+                if _is_cuda_oom(exc):
+                    self._run_cuda_cleanup_light()
+                    log.warning("inference OOM in %s: %s", active.name, exc)
+                raise
+        finally:
+            with self._load_lock:
+                self._last_used_at = time.monotonic()
+            self._inference_lock.release()
