@@ -67,16 +67,13 @@ from carve_model.sam.polygonize import mask_to_polygon
 from carve_model.sam.predictor import (
     ALLOWED_SAM_MODELS,
     _reset_singleton,
-    _set_load_state,
     autocast_ctx,
     extract_embedding,
     force_evict_predictor,
     get_box_predictor,
-    get_load_state,
     get_sam_model,
     get_sam_variant,
     get_text_predictor,
-    load_predictor,
 )
 from carve_model.sam.track_session import force_evict_all_sessions
 
@@ -742,9 +739,9 @@ def sam_vlm_fo1_unload() -> dict[str, bool | int | None]:
 #
 # v3.5 Phase C — surfaces the predictor's load state so the editor UI can
 # show a "Loading SAM…" overlay during the 5-30s HF weight download / build.
-# Mutated by ``predictor.get_predictor`` (lazy build), ``load_predictor``
-# (variant switch), and ``force_evict_predictor`` (drop). The API service
-# proxies this via ``GET /models/sam-status`` for the frontend.
+# Sourced from ``lifecycle.manager.status()`` — the manager is the single
+# source of truth post-Task 3.6. The API service proxies this via
+# ``GET /models/sam-status`` for the frontend.
 
 
 class StatusOut(BaseModel):
@@ -785,14 +782,12 @@ def sam_status() -> StatusOut:
     from carve_model.sam.lifecycle import manager
     from carve_model.sam.predictor import get_vlm_fo1_filter, get_visual_predictor
 
-    # Task 3.5 — read load state directly from the lifecycle manager
-    # (the canonical source post-refactor). Until Task 3.6 finishes
-    # migrating /sam/switch, the legacy ``predictor._LOAD_STATE`` may
-    # still hold state from the switch worker; if the manager reports
-    # idle, fall back to the legacy snapshot so the HTTP contract
-    # (and the editor's polling overlay) stays intact across the cut.
+    # Task 3.6 — the lifecycle manager is the single source of truth for
+    # load state. Every router endpoint (encode/decode/switch/unload/…)
+    # now mutates state via the manager, so the legacy
+    # ``predictor._LOAD_STATE`` fallback added in 3.5 is no longer
+    # needed.
     state = manager.status()
-    legacy = get_load_state() if state.kind == "idle" else None
     # In-process GPU memory readout — uses memory_allocated (truly
     # in-use) so the editor / System page can verify that exactly one
     # variant's weights are resident after a /sam/switch.
@@ -807,9 +802,6 @@ def sam_status() -> StatusOut:
     except Exception:  # noqa: BLE001
         pass
 
-    # If the state machine has never been touched but the env already
-    # names a variant (e.g. operator preset SAM_MODEL but nobody hit
-    # encode yet), fall back to that name so the response is informative.
     # Check if visual prompts are available (requires SAM 3.1 + factory).
     visual_prompt_available = False
     if get_sam_model() == "sam3.1":
@@ -821,36 +813,16 @@ def sam_status() -> StatusOut:
 
     # The new lifecycle.LoadState does not carry progress_bytes /
     # progress_total / job_id — those were UI hints wired up to the
-    # legacy HF-download progress hooks. While Task 3.6 is pending, we
-    # still surface them when the legacy state is the active source so
-    # the overlay's downloading shimmer keeps working. Once /sam/switch
-    # routes through the manager too, these reduce to constant None
-    # (the wire shape stays unchanged — spec goal #6).
-    if legacy is not None:
-        kind = legacy.kind
-        variant = legacy.variant or get_sam_model()
-        progress_bytes = legacy.progress_bytes
-        progress_total = legacy.progress_total
-        loaded_at = legacy.loaded_at
-        error = legacy.error
-        job_id = legacy.job_id
-    else:
-        kind = state.kind
-        variant = state.variant or get_sam_model()
-        progress_bytes = None
-        progress_total = None
-        loaded_at = state.loaded_at
-        error = state.error
-        job_id = None
-
+    # legacy HF-download progress hooks. The wire shape stays unchanged
+    # (spec goal #6); these fields are now constant None.
     return StatusOut(
-        state=kind,
-        variant=variant,
-        progress_bytes=progress_bytes,
-        progress_total=progress_total,
-        loaded_at=loaded_at,
-        error=error,
-        job_id=job_id,
+        state=state.kind,
+        variant=state.variant or get_sam_model(),
+        progress_bytes=None,
+        progress_total=None,
+        loaded_at=state.loaded_at,
+        error=state.error,
+        job_id=None,
         vlm_fo1_available=get_vlm_fo1_filter() is not None,
         visual_prompt_available=visual_prompt_available,
         gpu_allocated_mb=gpu_allocated_mb,
@@ -895,34 +867,26 @@ def _job_id_for(variant: str) -> str:
 
 
 def _spawn_switch(variant: str, job_id: str) -> None:
-    """Run ``load_predictor`` in a worker thread; reflect status into machine."""
+    """Run ``manager.ensure_loaded`` in a worker thread.
+
+    The manager updates its ``LoadState`` (idle → loading → ready |
+    error) internally; the worker just kicks it off and clears the
+    inflight job on completion. The ``job_id`` is preserved at the
+    router level for the 202 wire contract — the new
+    ``lifecycle.LoadState`` does not carry it (the client correlates
+    via /sam/status polling).
+    """
+    from carve_model.sam.lifecycle import manager
 
     def _worker() -> None:
         global _SWITCH_INFLIGHT_JOB
         try:
-            # ``load_predictor`` itself updates _LOAD_STATE (idle/loading
-            # → ready/error). We wrap it once more here so the job_id is
-            # exposed via /sam/status while the load is in flight.
-            current = get_load_state()
-            _set_load_state(
-                kind="loading",
-                variant=variant,
-                progress_bytes=current.progress_bytes,
-                progress_total=current.progress_total,
-                job_id=job_id,
-            )
-            load_predictor(variant)
-        except Exception as exc:  # noqa: BLE001
-            # ``load_predictor`` already wrote an error state, but make
-            # absolutely sure the job_id rides along so the client can
-            # correlate.
-            current = get_load_state()
-            _set_load_state(
-                kind="error",
-                variant=variant,
-                error=current.error or str(exc),
-                job_id=job_id,
-            )
+            manager.ensure_loaded(variant)
+        except Exception:  # noqa: BLE001
+            # ``ensure_loaded`` already wrote ``state=error`` on
+            # failure. There is no caller to report to — the client
+            # correlates via /sam/status polling.
+            pass
         finally:
             with _SWITCH_INFLIGHT_LOCK:
                 _SWITCH_INFLIGHT_JOB = None
@@ -956,14 +920,6 @@ def switch(payload: SwitchIn) -> SwitchOut:
         job_id = _job_id_for(payload.variant)
         _SWITCH_INFLIGHT_JOB = job_id
 
-    # Pre-flip the state machine so an immediate /sam/status read after
-    # this 202 already reads "loading" (eliminates the race where the
-    # worker thread hasn't started yet).
-    _set_load_state(
-        kind="loading",
-        variant=payload.variant,
-        job_id=job_id,
-    )
     _spawn_switch(payload.variant, job_id)
 
     return SwitchOut(job_id=job_id, state="loading", variant=payload.variant)
