@@ -191,6 +191,30 @@ export class SamTool {
     await this.activate();
   }
 
+  /**
+   * Drop every cached piece of state tied to the previously-encoded
+   * model: the image hash, any in-flight decode, and the live preview.
+   * Used when the user hot-swaps SAM variants — the new model has its
+   * own embedding cache, so the old hash would otherwise round-trip
+   * as a 409 (handled fine, but adds a flicker). Calling this from
+   * the canvas's variant-switch listener pre-empts the round-trip so
+   * the first click after load goes straight to encode→decode.
+   *
+   * Also recovers the tool from a stuck "imageHash=null" state when
+   * an earlier ``activate()`` failed (e.g. user clicked during the
+   * brief model-swap window and got a 503 ``sam_not_ready``). The
+   * next pointer interaction will re-attempt ``activate()`` against
+   * the now-loaded variant via the auto-activate branch in
+   * ``addClick`` / ``setBox`` / ``popLastClick``.
+   */
+  invalidateEncoding(): void {
+    this.imageHash = null;
+    this.encodedFrameId = null;
+    this.lastResult = null;
+    this.inFlight?.abort();
+    this.inFlight = null;
+  }
+
   /** v1.1 hook: returns whether a local in-browser decode is provisioned. */
   isLocalDecodeReady(): boolean {
     return this.localDecodeReady;
@@ -295,7 +319,14 @@ export class SamTool {
    */
   async setBox(box: SamBox): Promise<SamDecodeResult | null> {
     if (this.mode !== "box") return null;
-    if (this.imageHash === null) return null;
+    // Self-healing: if a prior activate() failed (e.g. the user clicked
+    // during a variant hot-swap and got a 503 sam_not_ready), re-attempt
+    // encoding now. Any failure propagates upward so describeSamError
+    // can surface a friendly toast instead of silently no-op'ing.
+    if (this.imageHash === null) {
+      await this.activate();
+      if (this.imageHash === null) return null;
+    }
     this.boxes = [box];
     // Box-only decode: no points, no labels.
     this.positives = [];
@@ -321,7 +352,7 @@ export class SamTool {
       if (ac.signal.aborted) return this.lastResult;
       const status = getStatusCode(err);
       if (status !== 409) throw err;
-      this.onResync?.("Re-syncing SAM — try again");
+      this.onResync?.("Re-syncing SAM…");
       await this.reencode();
       if (this.imageHash === null) throw err;
       const retry = await samApi.decode(
@@ -473,7 +504,12 @@ export class SamTool {
    * caller's normal error handling.
    */
   async addClick(p: Point, button: ToolButton): Promise<SamDecodeResult | null> {
-    if (this.imageHash === null) return null;
+    // Self-healing: same rationale as setBox — recover from a stuck
+    // imageHash=null state caused by an earlier failed activate().
+    if (this.imageHash === null) {
+      await this.activate();
+      if (this.imageHash === null) return null;
+    }
     // Plan-20.14 — a right-click before any positive point exists used
     // to send /sam/decode with points=[neg], labels=[0]. SAM
     // interprets that as 'mask of everything that is NOT this point'
@@ -532,7 +568,7 @@ export class SamTool {
       if (status !== 409) throw err;
       // 409 = the model worker no longer has this image's embedding.
       // Notify the UI, re-encode, and retry the decode once.
-      this.onResync?.("Re-syncing SAM — try again");
+      this.onResync?.("Re-syncing SAM…");
       await this.reencode();
       if (this.imageHash === null) {
         throw err;

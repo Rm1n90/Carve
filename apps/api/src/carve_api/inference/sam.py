@@ -71,6 +71,72 @@ class Sam3NotEnabled(AppError):
     code = "sam3_not_enabled"
 
 
+class SamNotReady(AppError):
+    """Active SAM variant isn't ready — loading, never loaded, or last load failed.
+
+    Distinct from ``SamModelUnreachable`` (which means the model
+    container is unreachable at the network layer). The model service's
+    ``SamLifecycleManager`` emits 503 with one of three detail strings;
+    we preserve them as a structured payload so the frontend can branch
+    on ``state`` ("loading" / "idle" / "error") and render actionable
+    copy ("SAM is loading the model…", "Pick a model variant",
+    "SAM failed to load: <reason>") instead of the misleading
+    "model service is offline" message that we previously surfaced for
+    every 503 from the upstream.
+
+    Wire shape (response body at top level):
+
+      {
+        "error": "sam_not_ready",
+        "state": "loading" | "idle" | "error",
+        "detail": "<the raw model-service detail string>"
+      }
+    """
+
+    http_status = 503
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        # Surface the state slug on ``code`` so plain
+        # ``HTTPException(detail=err.code)`` paths still produce
+        # something meaningful when payload-aware handlers aren't in
+        # the codepath.
+        self.code = str(payload.get("state") or "sam_not_ready")
+        super().__init__(str(payload.get("detail") or self.code))
+
+
+# Detail-string prefixes the model service uses to signal lifecycle
+# state. Order matters: ``sam_load_failed`` is listed before
+# ``sam_loading`` because ``startswith`` would otherwise match the
+# shorter ``sam_load`` prefix on ``sam_load_failed: <error>`` strings
+# if we tried to share a prefix. Each entry maps a prefix → state slug.
+_LIFECYCLE_STATE_BY_PREFIX: tuple[tuple[str, str], ...] = (
+    ("sam_load_failed", "error"),
+    ("sam_loading", "loading"),
+    ("sam_not_loaded", "idle"),
+)
+
+
+def _lifecycle_payload(body: object) -> dict | None:
+    """Detect a lifecycle 503 body and re-pack it as a structured payload.
+
+    The model service emits ``{"detail": "sam_loading"}``,
+    ``{"detail": "sam_not_loaded"}``, or
+    ``{"detail": "sam_load_failed: <error>"}``. Returns ``None`` for
+    anything else so the caller can fall back to ``SamModelUnreachable``
+    (which is reserved for genuinely-offline upstreams).
+    """
+    if not isinstance(body, dict):
+        return None
+    detail = body.get("detail")
+    if not isinstance(detail, str):
+        return None
+    for prefix, state in _LIFECYCLE_STATE_BY_PREFIX:
+        if detail.startswith(prefix):
+            return {"error": "sam_not_ready", "state": state, "detail": detail}
+    return None
+
+
 def _admission_payload(body) -> dict | None:
     """Mirror of ``inference/yoloe._admission_payload`` for SAM. Returns
     the structured GPU-admission body when the model service's 503 came
@@ -104,6 +170,15 @@ def _translate_model_error(exc: ModelServiceError, *, label: str) -> AppError:
     if exc.status_code == 409:
         return Sam3NotEnabled(f"{label}: {exc.body!r}")
     if exc.status_code == 503:
+        # Distinguish a SAM lifecycle 503 ("model is loading", "not
+        # loaded yet", "last load failed") from a genuinely-offline
+        # upstream (``model_service_unreachable``). Preserving the
+        # distinction lets the editor surface accurate copy instead of
+        # showing "model service is not running" the moment the user
+        # tries to use SAM during a hot-swap.
+        lifecycle = _lifecycle_payload(exc.body)
+        if lifecycle is not None:
+            return SamNotReady(lifecycle)
         return SamModelUnreachable(f"{label}: {exc.body!r}")
     return SamModelFailed(f"{label}: {exc.body!r}")
 

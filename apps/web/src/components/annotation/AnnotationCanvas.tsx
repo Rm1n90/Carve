@@ -628,6 +628,37 @@ export function AnnotationCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [samMode, samTool]);
 
+  // SAM variant hot-swap listeners — pair with SamVariantSwitcher's
+  // dispatched events.
+  //
+  //   "carve:sam-variant-switching" → drop the encoding cache so any
+  //       in-flight decode against the old variant's hash is aborted
+  //       and the next click forces a fresh activate() on the new model.
+  //   "carve:sam-variant-ready"     → pre-warm: if the user has SAM
+  //       point/box mode active when the new variant finishes loading,
+  //       eagerly encode the open asset so the first click has no
+  //       perceptible latency. Errors are swallowed — the user will
+  //       see the friendly toast via the existing addClick/setBox
+  //       catch path on their next interaction.
+  useEffect(() => {
+    function onSwitching() {
+      samTool.invalidateEncoding();
+    }
+    function onReady() {
+      const mode = useTool.getState().samMode;
+      if (mode !== "point" && mode !== "box") return;
+      void samTool.activate().catch(() => {
+        /* surfaced on next interaction via describeSamError */
+      });
+    }
+    window.addEventListener("carve:sam-variant-switching", onSwitching);
+    window.addEventListener("carve:sam-variant-ready", onReady);
+    return () => {
+      window.removeEventListener("carve:sam-variant-switching", onSwitching);
+      window.removeEventListener("carve:sam-variant-ready", onReady);
+    };
+  }, [samTool]);
+
   // v3.8 Phase 3 — class auto-fill removed. The "Use class prompt"
   // button on the floating Text panel is the explicit way to copy the
   // active class's stored text_prompt into the input.
@@ -4738,27 +4769,65 @@ function toolCursor(t: ToolName): string {
  * generic SAM failure.
  */
 export function describeSamError(err: unknown): string {
-  // Axios error shape: ``err.response.data.{error,detail}``.
+  // Axios error shape: ``err.response.data.{error,state,detail}``. The
+  // api wraps structured payloads at the response root (FastAPI's
+  // exception_handler unwraps a dict ``detail`` into the body), so
+  // ``data.error``/``data.state``/``data.detail`` sit at the top level
+  // when the api produced a structured response.
   const errObj = err as {
     response?: {
       status?: number;
-      data?: { error?: string; detail?: string };
+      data?: { error?: string; state?: string; detail?: string };
     };
     message?: string;
   };
   const status = errObj?.response?.status;
   const data = errObj?.response?.data;
   const errorCode = data?.error;
+  const state = data?.state;
   const detail = typeof data?.detail === "string" ? data.detail : undefined;
-  if (status === 503 || errorCode === "model_service_unreachable") {
+
+  // SAM lifecycle 503 — the model service is reachable but the variant
+  // isn't ready. The api distinguishes this from
+  // ``model_service_unreachable`` so we can surface accurate copy.
+  // "loading" / "idle" / "error" each get their own actionable message
+  // instead of the misleading "model service is not running".
+  if (errorCode === "sam_not_ready") {
+    if (state === "loading") {
+      return "SAM is loading the model. Try again in a few seconds.";
+    }
+    if (state === "idle") {
+      return "No SAM model loaded yet. Pick a variant from the toolbar.";
+    }
+    if (state === "error") {
+      const reason = (detail ?? "").replace(/^sam_load_failed:?\s*/, "");
+      return reason
+        ? `SAM failed to load: ${reason}`
+        : "SAM failed to load. Try switching variants again.";
+    }
+    return "SAM isn't ready yet. Try again in a few seconds.";
+  }
+
+  // model_service_unreachable: the api couldn't even open a socket to
+  // the model container. Distinct from a lifecycle 503 above.
+  if (errorCode === "model_service_unreachable") {
     return "SAM unavailable — model service is not running.";
   }
+
   // v3.8 Phase 3 — Text mode requires SAM 3 specifically. Surface the
   // actionable hint instead of a generic "SAM unavailable" toast so
   // the user knows where to switch.
   if (status === 409 && errorCode === "sam3_not_enabled") {
     return "Text mode needs SAM 3. Switch the active model in Settings → Models.";
   }
+
+  // Fallback for pre-lifecycle 503s (older api / model deployments
+  // that don't emit the structured payload). Keep the prior copy so we
+  // don't regress the "container down" case.
+  if (status === 503) {
+    return "SAM unavailable — model service is not running.";
+  }
+
   // v3.8 Phase 4-video step F7 — bubble the server's detail string when
   // present. The api/model service emit "tracker_init_failed: ...",
   // "add_object_failed: ...", etc. — those are far more actionable than

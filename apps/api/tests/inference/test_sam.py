@@ -238,3 +238,90 @@ def test_sam_encode_raises_503_when_model_service_down(db_session, monkeypatch) 
         assert r.json()["error"] == "model_service_unreachable"
     finally:
         model_client_mod.set_test_transport(None)
+
+
+def test_sam_encode_translates_lifecycle_loading_to_sam_not_ready(
+    db_session, monkeypatch,
+) -> None:
+    """A model-service ``503 {"detail": "sam_loading"}`` (variant is mid
+    hot-swap) used to be collapsed to ``model_service_unreachable`` and
+    rendered as "model service is offline" in the editor — confusing the
+    user because the service *is* running, the variant is just loading.
+
+    The api now re-packs the lifecycle detail into ``error=sam_not_ready``
+    with a ``state`` slug so the frontend can show "SAM is loading the
+    model. Try again in a few seconds." instead.
+    """
+    client = _client(db_session)
+    token, aid = _setup_asset(client, monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sam/encode":
+            return httpx.Response(503, json={"detail": "sam_loading"})
+        return httpx.Response(404)
+
+    model_client_mod.set_test_transport(httpx.MockTransport(handler))
+    try:
+        r = client.post(f"/assets/{aid}/sam/encode", headers=_hdr(token))
+        assert r.status_code == 503, r.text
+        body = r.json()
+        assert body["error"] == "sam_not_ready", body
+        assert body["state"] == "loading", body
+        assert body["detail"] == "sam_loading", body
+    finally:
+        model_client_mod.set_test_transport(None)
+
+
+def test_sam_encode_translates_lifecycle_idle_to_sam_not_ready(
+    db_session, monkeypatch,
+) -> None:
+    """``503 {"detail": "sam_not_loaded"}`` → ``state="idle"`` so the editor
+    can prompt the user to pick a variant instead of suggesting the
+    model container is down."""
+    client = _client(db_session)
+    token, aid = _setup_asset(client, monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sam/encode":
+            return httpx.Response(503, json={"detail": "sam_not_loaded"})
+        return httpx.Response(404)
+
+    model_client_mod.set_test_transport(httpx.MockTransport(handler))
+    try:
+        r = client.post(f"/assets/{aid}/sam/encode", headers=_hdr(token))
+        assert r.status_code == 503, r.text
+        body = r.json()
+        assert body["error"] == "sam_not_ready"
+        assert body["state"] == "idle"
+        assert body["detail"] == "sam_not_loaded"
+    finally:
+        model_client_mod.set_test_transport(None)
+
+
+def test_sam_encode_translates_lifecycle_load_failed_to_sam_not_ready(
+    db_session, monkeypatch,
+) -> None:
+    """``503 {"detail": "sam_load_failed: <reason>"}`` → ``state="error"``
+    with the original reason preserved in ``detail`` so the editor can
+    surface the actual failure (e.g. ``CUDA out of memory``) instead of a
+    generic "service unavailable" toast."""
+    client = _client(db_session)
+    token, aid = _setup_asset(client, monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sam/encode":
+            return httpx.Response(
+                503, json={"detail": "sam_load_failed: CUDA out of memory"},
+            )
+        return httpx.Response(404)
+
+    model_client_mod.set_test_transport(httpx.MockTransport(handler))
+    try:
+        r = client.post(f"/assets/{aid}/sam/encode", headers=_hdr(token))
+        assert r.status_code == 503, r.text
+        body = r.json()
+        assert body["error"] == "sam_not_ready"
+        assert body["state"] == "error"
+        assert "CUDA out of memory" in body["detail"]
+    finally:
+        model_client_mod.set_test_transport(None)

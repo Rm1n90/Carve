@@ -82,6 +82,17 @@ export function SamVariantSwitcher({
     onMutate: (next) => {
       setPendingVariant(next);
       setOverlayOpen(true);
+      // Broadcast switch-start so the canvas can invalidate its
+      // SamTool encoding cache immediately — the old image hash is
+      // tied to the previous variant's embedding and will round-trip
+      // as a 409 on the first post-switch click. Pre-empting the
+      // round-trip means the next click goes straight to encode +
+      // decode against the new model with no flicker.
+      window.dispatchEvent(
+        new CustomEvent("carve:sam-variant-switching", {
+          detail: { variant: next },
+        }),
+      );
     },
     onSuccess: (result) => {
       // 202 — the load is now happening in the background. The overlay
@@ -142,6 +153,25 @@ export function SamVariantSwitcher({
       onError={(detail) => {
         if (detail && detail !== "model_load_failed") {
           showToast(`SAM load failed: ${detail}`, { variant: "error" });
+        }
+      }}
+      onReady={() => {
+        // Broadcast variant-ready so the canvas can pre-warm its SAM
+        // tool against the just-loaded model. Without this, the first
+        // post-load click pays a re-encode round-trip (handled, but
+        // adds a visible "Re-syncing SAM…" flicker).
+        const readyVariant =
+          pendingVariant ?? data?.active ?? null;
+        window.dispatchEvent(
+          new CustomEvent("carve:sam-variant-ready", {
+            detail: { variant: readyVariant },
+          }),
+        );
+        if (readyVariant) {
+          showToast(`SAM ${readyVariant} ready`, {
+            variant: "success",
+            duration: 2000,
+          });
         }
       }}
       variantHint={overlayHint}

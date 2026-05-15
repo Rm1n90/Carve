@@ -33,6 +33,15 @@ export interface ModelLoadingOverlayProps {
   onClose: () => void;
   /** Fired when state transitions to ``error``; receives the error detail. */
   onError?: (error: string) => void;
+  /**
+   * Fired exactly once when state transitions to ``ready``. Distinct
+   * from ``onClose`` (which also fires on user-cancel) so callers can
+   * react to a successful load without conflating it with a dismiss.
+   * SamVariantSwitcher uses this to broadcast a window event the
+   * canvas listens to, pre-warming the next click against the
+   * just-loaded variant.
+   */
+  onReady?: () => void;
   /** Optional override variant label. Used while the switch mutation is
    *  in flight before the status endpoint reflects the new variant. */
   variantHint?: string;
@@ -63,6 +72,7 @@ function ModelLoadingOverlayInner({
   open,
   onClose,
   onError,
+  onReady,
   variantHint,
 }: ModelLoadingOverlayProps) {
   const statusQ = useQuery<SamLoadStatus>({
@@ -86,18 +96,19 @@ function ModelLoadingOverlayInner({
     ? Math.min(100, Math.round((progressBytes! / progressTotal!) * 100))
     : null;
 
-  // Auto-dismiss on terminal states. Fire onError BEFORE onClose so
-  // callers can latch the error message before the modal unmounts.
+  // Auto-dismiss on terminal states. Fire onReady / onError BEFORE
+  // onClose so callers can latch the outcome before the modal unmounts.
   useEffect(() => {
     if (!open) return;
     if (state === "ready") {
+      onReady?.();
       onClose();
     } else if (state === "error") {
       const detail = status?.error || "model_load_failed";
       onError?.(detail);
       onClose();
     }
-  }, [open, state, status?.error, onClose, onError]);
+  }, [open, state, status?.error, onClose, onError, onReady]);
 
   if (!open) return null;
 
