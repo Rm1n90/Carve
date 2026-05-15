@@ -1,8 +1,8 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useDropzone, type FileRejection } from "react-dropzone";
 import { useQueryClient } from "@tanstack/react-query";
-import { Upload, FileImage, ArrowLeft } from "lucide-react";
+import { Upload, FileImage, ArrowLeft, X } from "lucide-react";
 
 import { assetsApi } from "@/api/assets";
 import { Button } from "@/components/ui/Button";
@@ -109,6 +109,11 @@ type Phase =
       bytesCompleted: number;
       bytesTotal: number;
       active: Record<string, ActiveFileProgress>;
+      /** ``true`` once the user clicked Cancel — the worker pool stops
+       *  picking new files, in-flight requests are aborted via the
+       *  ``AbortController``, and the dialog auto-closes after the
+       *  remaining workers drain. */
+      cancelled: boolean;
     };
 
 function formatBytes(n: number): string {
@@ -143,6 +148,17 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
   const qc = useQueryClient();
   const addJob = useBackgroundJobs((s) => s.add);
   const [phase, setPhase] = useState<Phase>({ kind: "pick" });
+  // AbortController lives in a ref so the Cancel handler can fire
+  // from any render without stale-closure issues. ``cancelledRef``
+  // mirrors the cancelled flag so the worker loop sees it the moment
+  // it's flipped, not on the next React render.
+  const abortRef = useRef<AbortController | null>(null);
+  const cancelledRef = useRef(false);
+
+  const invalidateAssetQueries = () => {
+    qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
+    qc.invalidateQueries({ queryKey: ["task-assets-count", taskId] });
+  };
 
   const onDrop = (files: File[]) => {
     if (files.length === 0) return;
@@ -185,12 +201,27 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
       bytesCompleted: 0,
       bytesTotal,
       active: {},
+      cancelled: false,
     });
+
+    // Fresh AbortController per upload run. The Cancel handler calls
+    // ``.abort()`` on it; in-flight ``assetsApi.upload`` requests see
+    // the signal and reject with an axios cancel error which we treat
+    // as a quiet exit rather than a per-file failure toast.
+    abortRef.current = new AbortController();
+    cancelledRef.current = false;
 
     const all = [...cfg.images, ...cfg.videos];
     const CONCURRENCY = 6;
+    // Re-invalidate the asset list every N successful completions so
+    // partial progress appears in the grid as it lands — without this
+    // the user has to wait for the entire batch (or refresh the page)
+    // to see anything.
+    const INVALIDATE_EVERY = 10;
     let cursor = 0;
     let count = 0;
+    let succeeded = 0;
+    let sinceInvalidate = 0;
     const errors: UploadError[] = [];
 
     const uploadOne = async (file: File, fileKey: string): Promise<void> => {
@@ -216,8 +247,14 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
       let attempt = 0;
       while (true) {
         try {
+          const signal = abortRef.current?.signal;
           if (isZip) {
-            const created = await assetsApi.uploadZip(taskId, file, onProgress);
+            const created = await assetsApi.uploadZip(
+              taskId,
+              file,
+              onProgress,
+              signal,
+            );
             if (Array.isArray(created) && created.length === 0) {
               showToast(
                 `"${file.name}" had no images inside. ` +
@@ -226,7 +263,12 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
               );
             }
           } else {
-            const asset = await assetsApi.upload(taskId, file, onProgress);
+            const asset = await assetsApi.upload(
+              taskId,
+              file,
+              onProgress,
+              signal,
+            );
             if (isVideo && asset?.id) {
               try {
                 const needsN =
@@ -280,20 +322,43 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
     // Plan-20.11 — parallel upload pool.
     const worker = async () => {
       while (true) {
+        // Honour cancel without waiting for a render: workers refuse
+        // to claim a new index the moment the user clicks Cancel.
+        if (cancelledRef.current) return;
         const idx = cursor;
         cursor += 1;
         if (idx >= all.length) return;
         const file = all[idx];
         const fileKey = `${idx}:${file.name}`;
+        let ok = false;
+        let aborted = false;
         try {
           await uploadOne(file, fileKey);
+          ok = true;
         } catch (err: unknown) {
-          const code =
-            (err as { response?: { data?: { error?: string } } })?.response
-              ?.data?.error ?? "upload_failed";
-          errors.push({ name: file.name, error: code });
+          // Axios surfaces an aborted request via either ``name ===
+          // "CanceledError"`` or ``code === "ERR_CANCELED"``. Treat
+          // these as silent — the user explicitly cancelled, so don't
+          // push a per-file "upload_failed" into the error list.
+          const e = err as { name?: string; code?: string };
+          if (
+            cancelledRef.current ||
+            e?.name === "CanceledError" ||
+            e?.code === "ERR_CANCELED"
+          ) {
+            aborted = true;
+          } else {
+            const code =
+              (err as { response?: { data?: { error?: string } } })?.response
+                ?.data?.error ?? "upload_failed";
+            errors.push({ name: file.name, error: code });
+          }
         } finally {
-          count += 1;
+          if (!aborted) count += 1;
+          if (ok) {
+            succeeded += 1;
+            sinceInvalidate += 1;
+          }
           setPhase((p) => {
             if (p.kind !== "uploading") return p;
             const { [fileKey]: _finished, ...rest } = p.active;
@@ -302,10 +367,20 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
               done: count,
               errors: [...errors],
               retryNotice: null,
-              bytesCompleted: p.bytesCompleted + (file.size || 0),
+              bytesCompleted: aborted
+                ? p.bytesCompleted
+                : p.bytesCompleted + (file.size || 0),
               active: rest,
             };
           });
+          // Surface partial progress in the asset grid every N
+          // completions instead of waiting for the whole batch to
+          // drain. The user cancelled-and-refreshed bug was caused
+          // by ONLY invalidating after the pool exhausted.
+          if (sinceInvalidate >= INVALIDATE_EVERY) {
+            sinceInvalidate = 0;
+            invalidateAssetQueries();
+          }
         }
       }
     };
@@ -314,10 +389,18 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
       Array.from({ length: Math.min(CONCURRENCY, all.length) }, () => worker()),
     );
 
-    qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
-    qc.invalidateQueries({ queryKey: ["task-assets-count", taskId] });
+    // Always invalidate after the pool drains so the asset grid
+    // reflects the final state — covers both clean completion and a
+    // mid-batch cancel.
+    invalidateAssetQueries();
 
-    if (errors.length === 0) {
+    if (cancelledRef.current) {
+      showToast(
+        `Upload cancelled — ${succeeded} of ${total} file${total === 1 ? "" : "s"} uploaded.`,
+        { variant: "info", duration: 4000 },
+      );
+      setTimeout(() => setPhase({ kind: "pick" }), 800);
+    } else if (errors.length === 0) {
       showToast(
         cfg.videos.length > 0
           ? `Uploaded ${total} files; extracting frames in background.`
@@ -328,6 +411,21 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
       // its "uploading" phase so the user can read the per-file errors.
       setTimeout(() => setPhase({ kind: "pick" }), 1000);
     }
+  };
+
+  /** Cancel handler — flips the cancelled flag, aborts every in-flight
+   *  request, and lets the worker pool drain. The final invalidate +
+   *  toast happens at the end of ``runUpload`` so partial state shows
+   *  up in the asset grid as soon as the workers settle. */
+  const cancelUpload = () => {
+    cancelledRef.current = true;
+    abortRef.current?.abort();
+    setPhase((p) =>
+      p.kind === "uploading" ? { ...p, cancelled: true, active: {} } : p,
+    );
+    // Eagerly invalidate so the grid starts showing whatever has
+    // already landed; the post-drain invalidate covers stragglers.
+    invalidateAssetQueries();
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -496,6 +594,18 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
               ))}
             </ul>
           )}
+          <div className="flex items-center justify-end pt-1">
+            <Button
+              variant="ghost"
+              size="md"
+              data-testid="upload-cancel-during"
+              leftIcon={<X className="h-3.5 w-3.5" />}
+              disabled={phase.cancelled}
+              onClick={cancelUpload}
+            >
+              {phase.cancelled ? "Cancelling…" : "Cancel upload"}
+            </Button>
+          </div>
         </>
       )}
     </section>

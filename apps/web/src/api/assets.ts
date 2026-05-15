@@ -160,6 +160,7 @@ export const assetsApi = {
     taskId: string,
     file: File,
     onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<Asset> => {
     const fd = new FormData();
     fd.append("file", file);
@@ -171,6 +172,13 @@ export const assetsApi = {
         // timeout for upload calls and rely on the browser network
         // layer to abort.
         timeout: 0,
+        // ``signal`` is the standard AbortSignal — axios honours it via
+        // the underlying transport, aborting the network request
+        // immediately when ``controller.abort()`` is called. The bulk
+        // upload dialog uses this so closing / cancelling mid-upload
+        // stops the worker pool instead of silently pushing files in
+        // the background.
+        signal,
         onUploadProgress: onProgress
           ? (evt) => {
               const total =
@@ -187,6 +195,7 @@ export const assetsApi = {
     taskId: string,
     file: File,
     onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<Asset[]> => {
     const fd = new FormData();
     fd.append("file", file);
@@ -194,6 +203,7 @@ export const assetsApi = {
       await api.post<Asset[]>(`/tasks/${taskId}/assets:zip`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
         timeout: 0,
+        signal,
         onUploadProgress: onProgress
           ? (evt) => {
               const total =
