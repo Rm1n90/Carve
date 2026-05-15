@@ -199,6 +199,44 @@ def try_reprioritize_rq_job(
         return "error"
 
 
+def clear_failed_jobs(client) -> int:
+    """Remove every failed job across the priority lanes.
+
+    Iterates each lane's ``FailedJobRegistry``, deletes each job from
+    Redis, and returns the total count cleared. Running and queued
+    jobs are not touched. Best-effort per job: a job whose hash
+    vanished mid-iteration is skipped rather than failing the whole
+    sweep.
+    """
+    from rq.job import Job  # type: ignore
+    from rq.registry import FailedJobRegistry  # type: ignore
+
+    cleared = 0
+    for lane in _LANES:
+        try:
+            registry = FailedJobRegistry(lane, connection=client)
+            ids = list(registry.get_job_ids())
+        except Exception:  # noqa: BLE001
+            continue
+        for jid in ids:
+            try:
+                # ``registry.remove(..., delete_job=True)`` ensures both
+                # the registry membership and the job hash are wiped.
+                # Falls back to ``Job.fetch().delete()`` when remove
+                # raises (e.g. the job was already pruned by RQ's TTL).
+                try:
+                    registry.remove(jid, delete_job=True)
+                except Exception:  # noqa: BLE001
+                    try:
+                        Job.fetch(jid, connection=client).delete()
+                    except Exception:  # noqa: BLE001
+                        continue
+                cleared += 1
+            except Exception:  # noqa: BLE001
+                continue
+    return cleared
+
+
 def iter_jobs(client, failed_limit: int = 50) -> list[dict]:
     """Enumerate jobs across the priority lanes for the admin Jobs page.
 

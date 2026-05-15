@@ -32,4 +32,10 @@ export const jobsApi = {
         `/jobs/${encodeURIComponent(id)}/reprioritize`,
       )
     ).data,
+  /** Remove every failed job from the FailedJobRegistry across all
+   *  priority lanes. Running and queued jobs are untouched. Returns
+   *  the total count cleared so the caller can show a count-aware
+   *  toast. */
+  clearFailed: async (): Promise<{ cleared: number }> =>
+    (await api.post<{ cleared: number }>("/jobs/failed:clear")).data,
 };

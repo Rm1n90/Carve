@@ -24,6 +24,7 @@ from carve_api.auth.models import User
 from carve_api.config import get_settings
 from carve_api.deps import get_current_admin_user
 from carve_api.jobs.queue import (
+    clear_failed_jobs,
     iter_jobs,
     try_cancel_rq_job,
     try_reprioritize_rq_job,
@@ -135,3 +136,22 @@ def reprioritize_job(
     if result == "error":
         raise HTTPException(status_code=502, detail="reprioritize_failed")
     return {"job_id": job_id, "result": result}
+
+
+@router.post("/failed:clear")
+def clear_failed(
+    user: User = Depends(get_current_admin_user),  # noqa: ARG001
+) -> dict:
+    """Remove every failed job across the priority lanes.
+
+    Running and queued jobs are untouched — this purges only the
+    failed registry that the admin Jobs page surfaces. Returns the
+    total count cleared so the UI can show a count-aware toast.
+    """
+    client = _redis_or_503()
+    try:
+        cleared = clear_failed_jobs(client)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("jobs.clear_failed: sweep failed")
+        raise HTTPException(status_code=502, detail="clear_failed_jobs_failed") from exc
+    return {"cleared": cleared}

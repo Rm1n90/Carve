@@ -1,11 +1,12 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, ArrowUp, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowUp, Trash2, X } from "lucide-react";
 
 import { jobsApi, type JobRow } from "@/api/jobs";
 import { Badge, Card } from "@/components/ui";
 import { Button } from "@/components/ui/Button";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { showToast } from "@/lib/toast";
 import { SettingsLayout } from "@/pages/SettingsPages";
 
@@ -84,6 +85,41 @@ export function JobsPage() {
     onError: () => showToast("Failed to reprioritize.", { variant: "error" }),
   });
 
+  const confirm = useConfirm();
+  const clearFailedMut = useMutation({
+    mutationFn: () => jobsApi.clearFailed(),
+    onSuccess: (r) => {
+      showToast(
+        r.cleared > 0
+          ? `Cleared ${r.cleared} failed job${r.cleared === 1 ? "" : "s"}.`
+          : "No failed jobs to clear.",
+        {
+          variant: r.cleared > 0 ? "success" : "info",
+          duration: 3000,
+        },
+      );
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: () =>
+      showToast("Failed to clear failed jobs.", { variant: "error" }),
+  });
+
+  async function handleClearFailed() {
+    if (counts.failed === 0) {
+      showToast("No failed jobs to clear.", { variant: "info", duration: 2500 });
+      return;
+    }
+    const ok = await confirm({
+      title: `Clear ${counts.failed} failed job${counts.failed === 1 ? "" : "s"}?`,
+      description:
+        "Removes the failed entries from the queue. Running and queued jobs are not affected. This can't be undone.",
+      confirmLabel: "Clear failed",
+      variant: "danger",
+    });
+    if (!ok) return;
+    clearFailedMut.mutate();
+  }
+
   const status = (query.error as { response?: { status?: number } })?.response
     ?.status;
   const forbidden = status === 403;
@@ -119,27 +155,50 @@ export function JobsPage() {
             the single worker runs it next.
           </p>
         </div>
-        <div className="flex items-center gap-2 text-[11.5px] text-[color:var(--text-tertiary)]">
-          <span
-            className="h-1.5 w-1.5 rounded-full"
-            style={{
-              backgroundColor: query.isFetching
-                ? "var(--accent)"
-                : "var(--success)",
-              transition: "background-color 200ms ease",
-            }}
-            aria-hidden
-          />
-          <Activity className="h-3.5 w-3.5" aria-hidden />
-          <span className="tabular-nums">
-            {query.data
-              ? `${counts.running} running · ${counts.queued} queued · ${counts.failed} failed`
-              : forbidden
-                ? "Admins only"
-                : query.isError
-                  ? "Update failed"
-                  : "Loading…"}
-          </span>
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2 text-[11.5px] text-[color:var(--text-tertiary)]">
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                backgroundColor: query.isFetching
+                  ? "var(--accent)"
+                  : "var(--success)",
+                transition: "background-color 200ms ease",
+              }}
+              aria-hidden
+            />
+            <Activity className="h-3.5 w-3.5" aria-hidden />
+            <span className="tabular-nums">
+              {query.data
+                ? `${counts.running} running · ${counts.queued} queued · ${counts.failed} failed`
+                : forbidden
+                  ? "Admins only"
+                  : query.isError
+                    ? "Update failed"
+                    : "Loading…"}
+            </span>
+          </div>
+          {!forbidden && (
+            <Button
+              variant="ghost"
+              size="sm"
+              leftIcon={<Trash2 className="h-3.5 w-3.5" />}
+              disabled={counts.failed === 0 || clearFailedMut.isPending}
+              onClick={handleClearFailed}
+              data-testid="jobs-clear-failed"
+              title={
+                counts.failed === 0
+                  ? "No failed jobs to clear"
+                  : `Clear ${counts.failed} failed job${counts.failed === 1 ? "" : "s"}`
+              }
+            >
+              {clearFailedMut.isPending
+                ? "Clearing…"
+                : counts.failed > 0
+                  ? `Clear failed (${counts.failed})`
+                  : "Clear failed"}
+            </Button>
+          )}
         </div>
       </div>
 
