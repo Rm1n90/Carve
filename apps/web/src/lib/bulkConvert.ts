@@ -3,9 +3,10 @@
 // Selection-aware bulk Convert ▸ BBox helper. Shared between the
 // right-click context menu and the `C` keyboard shortcut so both code
 // paths agree on what "selected" means and produce matching toasts.
-import { useAnnotations } from "@/state/annotations";
+import { useAnnotations, type Geometry } from "@/state/annotations";
 import { bboxOfGeometry } from "@/lib/geometryConvert";
 import { showToast } from "@/lib/toast";
+import { annotationsApi, type AnnotationRaw } from "@/api/annotations";
 
 export interface BulkConvertResult {
   converted: number;
@@ -67,4 +68,115 @@ export function bulkConvertSelectedToBboxWithToast(
     });
   }
   return { converted, skipped };
+}
+
+/**
+ * Count the polygon annotations on a given frame currently held in the
+ * annotations store. Used by the editor toolbar's Convert button to
+ * decide whether to enable / disable the "Convert on this image" menu
+ * item without spinning up a subscription.
+ */
+export function countPolygonsOnFrame(frameId: string | null): number {
+  let n = 0;
+  for (const a of Object.values(useAnnotations.getState().byId)) {
+    if (a.kind === "polygon" && a.frameId === frameId) n++;
+  }
+  return n;
+}
+
+/**
+ * Convert every polygon currently on ``frameId`` to its enclosing
+ * bounding box, locally in the store. Autosave picks up the resulting
+ * dirty drafts and persists them. Mirrors the per-annotation path used
+ * by the right-click "Convert ▸ BBox" submenu.
+ */
+export function bulkConvertPolygonsOnFrameToBboxWithToast(
+  frameId: string | null,
+): BulkConvertResult {
+  const ids: string[] = [];
+  for (const a of Object.values(useAnnotations.getState().byId)) {
+    if (a.kind === "polygon" && a.frameId === frameId) ids.push(a.tempId);
+  }
+  if (ids.length === 0) {
+    showToast("No polygons on this image.", { variant: "info" });
+    return { converted: 0, skipped: 0 };
+  }
+  return bulkConvertSelectedToBboxWithToast(ids);
+}
+
+/**
+ * Task-wide polygon → bbox conversion. The caller is expected to have
+ * already fetched the task's annotations (so the confirm dialog can
+ * surface the exact count). The helper:
+ *
+ *   1. Computes the enclosing bbox for each polygon and drops any that
+ *      collapse to <1px (degenerate point/line geometry).
+ *   2. Sends a single batch update through ``annotationsApi.batch``.
+ *   3. Mirrors the server's response into the local store so any
+ *      annotations open in the current asset reflect the new state
+ *      without waiting for a query refetch.
+ *
+ * Returns the same ``BulkConvertResult`` shape as the selection
+ * helpers so the caller can react (close menu, show extra toast, etc.).
+ */
+export async function bulkConvertPolygonsInTaskToBboxWithToast(
+  taskId: string,
+  polygons: ReadonlyArray<AnnotationRaw>,
+): Promise<BulkConvertResult> {
+  let skipped = 0;
+  const updates = polygons.flatMap((a) => {
+    const box = bboxOfGeometry(a.geometry as unknown as Geometry);
+    if (!box || box.w < 1 || box.h < 1) {
+      skipped++;
+      return [];
+    }
+    return [
+      {
+        id: a.id,
+        kind: "bbox" as const,
+        geometry: box as unknown as Record<string, unknown>,
+      },
+    ];
+  });
+
+  if (updates.length === 0) {
+    showToast("No convertible polygons found.", { variant: "info" });
+    return { converted: 0, skipped };
+  }
+
+  try {
+    const out = await annotationsApi.batch(taskId, {
+      create: [],
+      update: updates,
+      delete: [],
+    });
+    // Local store sync — only entries currently mounted in the open
+    // asset have a ``serverId``; the rest live on disk only and will
+    // refresh whenever the user navigates to them.
+    const byServerId = new Map(out.updated.map((a) => [a.id, a]));
+    const state = useAnnotations.getState();
+    for (const draft of Object.values(state.byId)) {
+      if (!draft.serverId) continue;
+      const upd = byServerId.get(draft.serverId);
+      if (!upd) continue;
+      state.update(draft.tempId, {
+        kind: upd.kind,
+        geometry: upd.geometry as unknown as Geometry,
+        dirty: false,
+      });
+    }
+    const converted = updates.length;
+    showToast(
+      `Converted ${converted} ${converted === 1 ? "polygon" : "polygons"} to bbox${
+        skipped > 0 ? ` (${skipped} skipped)` : ""
+      }.`,
+      { variant: "success" },
+    );
+    return { converted, skipped };
+  } catch {
+    showToast("Failed to convert polygons. Check your connection.", {
+      variant: "error",
+    });
+    return { converted: 0, skipped: polygons.length };
+  }
 }

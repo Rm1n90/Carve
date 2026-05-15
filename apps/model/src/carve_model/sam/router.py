@@ -1,4 +1,21 @@
-"""SAM 2 HTTP endpoints.
+"""SAM HTTP endpoints.
+
+All endpoints route through the lifecycle manager
+(``carve_model.sam.lifecycle.manager``), which is the canonical entry
+point for variant selection, load/unload, and lease acquisition. The
+manager raises ``SamNotReadyError`` when a lease is requested while the
+manager is not in ``ready`` state; the router maps it to HTTP 503 with a
+spec-aligned detail string:
+
+  - ``idle``    → ``sam_not_loaded``
+  - ``loading`` → ``sam_loading``
+  - ``error``   → ``sam_load_failed: <error>`` (preserving the manager's
+                  stored error message)
+
+Capability gating is variant-agnostic: when the active variant does not
+support a prompt mode (e.g. sam2.x asked for text/box/visual), the
+endpoint returns HTTP 409 with
+``<op>_prompt_not_supported_for_variant``.
 
 POST /sam/encode  — accepts {image_b64} → returns {image_hash, shape}.
                     The encoder runs once per image; the predictor is sticky
@@ -9,23 +26,25 @@ POST /sam/decode  — accepts {image_hash, points, labels} → returns
                     {counts, size, score}. Returns 409 if the embedding for
                     image_hash isn't currently loaded (caller must re-encode).
 
-POST /sam/text-prompt — SAM 3 only. Accepts {image_b64, text} → returns
+POST /sam/text-prompt — Accepts {image_b64, text} → returns
                     [{counts, size, score, bbox}]. Returns 409
-                    ``sam3_not_enabled`` when the configured SAM model is
-                    not ``sam3``; 503 ``sam3_predictor_not_loaded`` when
-                    SAM 3 is on but no predictor factory has been
-                    registered.
+                    ``text_prompt_not_supported_for_variant`` when the
+                    active variant doesn't expose text prompting (e.g.
+                    sam2.x).
 
-POST /sam/box-prompt — SAM 3 only (one-shot). Accepts
+POST /sam/box-prompt — One-shot. Accepts
                     {image_b64, boxes, box_labels, text?} → returns
                     [{counts, size, score, bbox}]. Boxes are xyxy floats;
                     box_labels are 1 (positive include) or 0 (negative
                     exclude). The optional ``text`` field combines with
                     boxes to refine a concept (e.g., text + negative
-                    box). Returns 409 ``sam3_box_prompt_requires_sam3``
-                    when SAM 3 is not the active model; 503
-                    ``sam3_box_predictor_not_loaded`` when SAM 3 is on
-                    but no box predictor factory has been registered.
+                    box). Returns 409
+                    ``box_prompt_not_supported_for_variant`` when the
+                    active variant doesn't expose box prompting.
+
+POST /sam/visual-prompt — SAM 3.1 only. Returns 409
+                    ``visual_prompt_not_supported_for_variant`` when the
+                    active variant doesn't expose visual prompting.
 """
 
 import base64
@@ -48,24 +67,39 @@ from carve_model.sam.polygonize import mask_to_polygon
 from carve_model.sam.predictor import (
     ALLOWED_SAM_MODELS,
     _reset_singleton,
-    _set_load_state,
     autocast_ctx,
     extract_embedding,
     force_evict_predictor,
     get_box_predictor,
-    get_load_state,
-    get_predictor,
     get_sam_model,
     get_sam_variant,
-    get_session,
     get_text_predictor,
-    load_predictor,
-    set_loaded_image,
-    set_prev_logits,
 )
 from carve_model.sam.track_session import force_evict_all_sessions
 
 router = APIRouter(prefix="/sam", tags=["sam"])
+
+
+def _sam_not_ready_detail(state: str, error: str | None) -> str:
+    """Map a ``SamNotReadyError`` state to the spec-defined HTTP 503 detail.
+
+    Spec §7 (Error handling — HTTP mapping):
+      - ``idle``    → ``sam_not_loaded``
+      - ``loading`` → ``sam_loading``
+      - ``error``   → ``sam_load_failed: <error>`` (preserving the
+        manager's stored error message; falls back to bare
+        ``sam_load_failed`` when no message is available).
+
+    Any unrecognised state falls through to ``sam_<state>`` so future
+    states surface diagnostically rather than silently dropping.
+    """
+    if state == "idle":
+        return "sam_not_loaded"
+    if state == "loading":
+        return "sam_loading"
+    if state == "error":
+        return f"sam_load_failed: {error}" if error else "sam_load_failed"
+    return f"sam_{state}"
 
 
 class EncodeIn(BaseModel):
@@ -122,18 +156,51 @@ def encode(payload: EncodeIn) -> EncodeOut:
 
     h = xxhash.xxh3_128(img_bytes).hexdigest()
     img = np.array(Image.open(BytesIO(img_bytes)).convert("RGB"))
-    with admit(CostClass.SAM_IMAGE):
-        p = get_predictor()
-        p.set_image(img)
-        shape = [int(img.shape[0]), int(img.shape[1])]
-        # Record the loaded image's hash + shape on the active session
-        # so a subsequent /sam/decode can verify the predictor still
-        # holds these encoded features. Lifecycle ops (evict,
-        # force-evict, switch) drop the session as a unit — preventing
-        # the v3.4 desync where the hash gate passed but the
-        # predictor's _raw_image had been cleared.
-        set_loaded_image(h, shape)
-        embedding_bytes = extract_embedding(p)
+    shape = [int(img.shape[0]), int(img.shape[1])]
+
+    # Route through the lifecycle manager — the canonical SAM entry
+    # point. The manager hands us the active variant (or a test variant
+    # installed via predictor.set_test_predictor), and we delegate the
+    # image-set + embedding extraction to the variant. We pass the
+    # xxhash-derived ``h`` as the cache key so the wire format stays
+    # stable; the variant stores it as its ``cached_image_hash`` and a
+    # subsequent /sam/decode can verify the embedding is still loaded.
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
+    try:
+        with admit(CostClass.SAM_IMAGE):
+            with manager.lease_or_load() as sam:
+                sam.set_image(img, image_hash=h)
+                embedding_bytes = sam.extract_embedding()
+                # Fallback for sam2.x and legacy test fakes: when the
+                # variant returns None, fall back to the legacy
+                # module-level helper that unpacks
+                # ``_features['image_embed']`` from the underlying
+                # predictor object. This preserves the existing
+                # browser-side ONNX decoder contract.
+                #
+                # - Sam2Variant: real SAM 2 adapter doesn't expose
+                #   ``.extract_embedding()`` so the variant returns
+                #   None; the adapter holds ``_features``.
+                # - _LegacyTestVariant: fake test predictors may set
+                #   ``_features`` on the injected point impl directly.
+                if embedding_bytes is None:
+                    raw: Any = (
+                        getattr(sam, "_adapter", None)
+                        or getattr(sam, "_point_impl", None)
+                    )
+                    if raw is not None:
+                        try:
+                            embedding_bytes = extract_embedding(raw)
+                        except Exception:  # noqa: BLE001
+                            embedding_bytes = None
+    except SamNotReadyError as e:
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
+
     embedding_b64 = (
         base64.b64encode(embedding_bytes).decode("ascii")
         if embedding_bytes is not None
@@ -144,14 +211,12 @@ def encode(payload: EncodeIn) -> EncodeOut:
 
 @router.post("/decode", response_model=DecodeOut)
 def decode(payload: DecodeIn) -> DecodeOut:
-    session = get_session()
-    if session is None or session.loaded_hash != payload.image_hash:
-        raise HTTPException(
-            status_code=409,
-            detail="embedding_not_loaded; call /sam/encode again",
-        )
+    # --- 422 validations (cheap, no lock needed) ---------------------
     if len(payload.points) != len(payload.labels):
-        raise HTTPException(status_code=422, detail="points and labels must have equal length")
+        raise HTTPException(
+            status_code=422,
+            detail="points and labels must have equal length",
+        )
     if not payload.points and payload.box is None:
         raise HTTPException(
             status_code=422,
@@ -162,9 +227,6 @@ def decode(payload: DecodeIn) -> DecodeOut:
             status_code=422,
             detail="box must be [x1, y1, x2, y2]",
         )
-
-    pts = np.asarray(payload.points) if payload.points else np.zeros((0, 2), dtype=np.float32)
-    lbl = np.asarray(payload.labels) if payload.labels else np.zeros((0,), dtype=np.int64)
 
     # v3.22 — multimask semantics + iterative-refinement (mask_input).
     #
@@ -188,10 +250,10 @@ def decode(payload: DecodeIn) -> DecodeOut:
     #    just sees one positive + one negative and picks whatever
     #    high-score candidate matches the positives best.
     #
-    # ``prev_logits`` is taken from the session — populated by the
-    # previous /sam/decode call. We only use it when the click set
-    # has strictly grown (``n_now > prev_n``); otherwise (undo, or a
-    # fresh chain) we treat the call as a fresh prompt.
+    # ``prev_logits`` is taken from the active variant — stored there
+    # by the previous /sam/decode call. We only use it when the click
+    # set has strictly grown (``n_now > prev_n``); otherwise (undo, or
+    # a fresh chain) we treat the call as a fresh prompt.
     has_negative = bool(payload.labels) and 0 in payload.labels
     n_now = len(payload.points)
     is_refinement = (
@@ -201,62 +263,106 @@ def decode(payload: DecodeIn) -> DecodeOut:
     )
     multimask = not is_refinement
 
-    sess = get_session()
-    prev_logits = sess.prev_low_res_logits if sess is not None else None
-    prev_n = sess.prev_n_points if sess is not None else 0
-    use_prev = is_refinement and prev_logits is not None and n_now > prev_n
-    mask_input = prev_logits if use_prev else None
+    pts = (
+        np.asarray(payload.points)
+        if payload.points
+        else np.zeros((0, 2), dtype=np.float32)
+    )
+    lbl = (
+        np.asarray(payload.labels)
+        if payload.labels
+        else np.zeros((0,), dtype=np.int64)
+    )
 
-    p = get_predictor()
-    with admit(CostClass.SAM_IMAGE), autocast_ctx():
-        masks, scores, low_res_all = p.predict(
-            point_coords=pts,
-            point_labels=lbl,
-            multimask_output=multimask,
-            box=payload.box,
-            mask_input=mask_input,
-        )
+    # --- Inference under the manager lease ---------------------------
+    # All variant access happens inside the lease block:
+    #   * cached_image_hash() check — embedding must match payload's hash
+    #   * get_prev_logits() — iterative refinement input
+    #   * predict_point(**kw) — the actual inference
+    #   * set_prev_logits(chosen, n_now) — stash for next call
+    # Building ``kw`` conditionally keeps legacy test fakes happy —
+    # their narrow signatures (e.g. predict(point_coords, point_labels,
+    # multimask_output=True, box=None, mask_input=None)) accept these
+    # names, while a fake without ``mask_input``/``box`` would only
+    # receive the kwargs we pass.
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
 
-    masks_np = _to_numpy(masks)
-    scores_np = _to_numpy(scores)
-    if masks_np.ndim != 3 or scores_np.ndim < 1:
-        raise HTTPException(status_code=500, detail="unexpected_predictor_output")
-    best = int(np.argmax(scores_np))
-    best_mask = masks_np[best]
+    try:
+        with admit(CostClass.SAM_IMAGE), autocast_ctx():
+            with manager.lease_or_load() as sam:
+                if sam.cached_image_hash() != payload.image_hash:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="embedding_not_loaded; call /sam/encode again",
+                    )
 
-    # Stash the chosen channel of the new low-res logits on the session
-    # so the NEXT /sam/decode call can use it as ``mask_input``. This
-    # is what makes multi-click refinement converge on a single mask
-    # instead of fighting itself.
-    chosen_low_res: Any = None
-    if low_res_all is not None and hasattr(low_res_all, "shape"):
-        try:
-            shape = tuple(low_res_all.shape)
-            if len(shape) == 5:
-                # Sam2 / Sam3 transformers: [B=1, num_obj=1, K, H, W].
-                # ``input_masks`` flows into ``mask_embed`` (a Conv2d)
-                # which expects 4D [B, 1, H, W]. Slice the chosen K
-                # channel and squeeze it out so the result is 4D.
-                #
-                # Pre-fix shape was 5D [1, 1, 1, H, W] which crashed
-                # with "Expected 3D or 4D input to conv2d, but got
-                # input of size: [1, 1, 1, H, W]".
-                sliced = low_res_all[:, :, best : best + 1, :, :]
-                # squeeze(2) drops the K=1 dim. Result: [1, 1, H, W].
-                chosen_low_res = sliced.squeeze(2)
-                if hasattr(chosen_low_res, "detach"):
-                    chosen_low_res = chosen_low_res.detach()
-                if hasattr(chosen_low_res, "contiguous"):
-                    chosen_low_res = chosen_low_res.contiguous()
-            elif len(shape) == 3:
-                # sam3.1 native predictor: (K, H, W). The native
-                # SAM2 InteractivePredictor.predict accepts
-                # mask_input shape (1, H, W) — slice to a single
-                # K=1 channel.
-                chosen_low_res = low_res_all[best : best + 1]
-        except Exception:  # noqa: BLE001 — best-effort; absence is OK
-            chosen_low_res = None
-    set_prev_logits(chosen_low_res, n_now)
+                prev_logits, prev_n = sam.get_prev_logits()
+                use_prev = (
+                    is_refinement
+                    and prev_logits is not None
+                    and n_now > prev_n
+                )
+                mask_input = prev_logits if use_prev else None
+
+                kw: dict[str, Any] = {
+                    "point_coords": pts,
+                    "point_labels": lbl,
+                    "multimask_output": multimask,
+                }
+                if payload.box is not None:
+                    kw["box"] = payload.box
+                if mask_input is not None:
+                    kw["mask_input"] = mask_input
+
+                masks, scores, low_res_all = sam.predict_point(**kw)
+
+                # Compute chosen_low_res while we still hold the lease
+                # so set_prev_logits stays atomic with the inference
+                # that produced it. Pure CPU post-processing (cleanup,
+                # RLE, polygon) runs after the lease releases.
+                masks_np = _to_numpy(masks)
+                scores_np = _to_numpy(scores)
+                if masks_np.ndim != 3 or scores_np.ndim < 1:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="unexpected_predictor_output",
+                    )
+                best = int(np.argmax(scores_np))
+                best_mask = masks_np[best]
+
+                chosen_low_res: Any = None
+                if low_res_all is not None and hasattr(low_res_all, "shape"):
+                    try:
+                        lr_shape = tuple(low_res_all.shape)
+                        if len(lr_shape) == 5:
+                            # Sam2 / Sam3 transformers: [B=1, num_obj=1,
+                            # K, H, W]. ``input_masks`` flows into
+                            # ``mask_embed`` (a Conv2d) which expects 4D
+                            # [B, 1, H, W]. Slice the chosen K channel
+                            # and squeeze it out so the result is 4D.
+                            sliced = low_res_all[:, :, best : best + 1, :, :]
+                            chosen_low_res = sliced.squeeze(2)
+                            if hasattr(chosen_low_res, "detach"):
+                                chosen_low_res = chosen_low_res.detach()
+                            if hasattr(chosen_low_res, "contiguous"):
+                                chosen_low_res = chosen_low_res.contiguous()
+                        elif len(lr_shape) == 3:
+                            # sam3.1 native predictor: (K, H, W). The
+                            # native SAM2 InteractivePredictor.predict
+                            # accepts mask_input shape (1, H, W) —
+                            # slice to a single K=1 channel.
+                            chosen_low_res = low_res_all[best : best + 1]
+                    except Exception:  # noqa: BLE001 — best-effort
+                        chosen_low_res = None
+
+                sam.set_prev_logits(chosen_low_res, n_now)
+                best_score = float(scores_np[best])
+    except SamNotReadyError as e:
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
 
     # v3.22 — clean the mask once (delete sub-pixel-wide spikes,
     # keep only the largest connected component, optionally fill
@@ -282,7 +388,7 @@ def decode(payload: DecodeIn) -> DecodeOut:
     return DecodeOut(
         counts=counts,
         size=size,
-        score=float(scores_np[best]),
+        score=best_score,
         polygon=polygon,
     )
 
@@ -401,32 +507,37 @@ class VisualPromptOut(BaseModel):
 
 @router.post("/text-prompt", response_model=list[TextPromptOut])
 def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
-    if get_sam_variant() != "sam3":
-        raise HTTPException(status_code=409, detail="sam3_not_enabled")
+    # Route through the lifecycle manager — the canonical SAM entry
+    # point. The variant decides whether it supports text prompts; if
+    # not we 409 with a capability-based reason (not a variant name).
+    # SamNotReadyError → 503 with state-specific detail
+    # (sam_loading / sam_error). Pre-lease validations stay above the
+    # lease so cheap client errors don't take the inference lock.
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
     try:
-        factory = get_text_predictor()
-    except RuntimeError:
-        # v3.22 — predictor was force-evicted (e.g. via the System
-        # page's "Unload all models" button). Re-register lazily so
-        # this request rebuilds the model on demand instead of 503'ing.
-        try:
-            load_predictor(get_sam_model())
-            factory = get_text_predictor()
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=503,
-                detail="sam3_predictor_not_loaded",
-            ) from exc
-    # Forward use_vlm_fo1 / threshold only when the client supplied them
-    # so older factories whose signatures predate the kwargs keep working —
-    # they're called exactly as before.
-    kwargs: dict = {"image_b64": payload.image_b64, "text": payload.text}
-    if payload.use_vlm_fo1:
-        kwargs["use_vlm_fo1"] = True
-    if payload.threshold is not None:
-        kwargs["threshold"] = payload.threshold
-    with admit(CostClass.SAM_TEXT):
-        return factory(**kwargs)
+        with manager.lease_or_load() as sam:
+            if not sam.supports_text:
+                raise HTTPException(
+                    status_code=409,
+                    detail="text_prompt_not_supported_for_variant",
+                )
+            # Forward use_vlm_fo1 / threshold only when the client
+            # supplied them so older factories whose signatures predate
+            # the kwargs keep working — they're called exactly as before.
+            kwargs: dict = {"image_b64": payload.image_b64, "text": payload.text}
+            if payload.use_vlm_fo1:
+                kwargs["use_vlm_fo1"] = True
+            if payload.threshold is not None:
+                kwargs["threshold"] = payload.threshold
+            with admit(CostClass.SAM_TEXT):
+                return sam.predict_text(**kwargs)
+    except SamNotReadyError as e:
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
 
 
 # --- SAM 3 box-prompt endpoint ----------------------------------------------
@@ -458,8 +569,10 @@ class BoxPromptOut(BaseModel):
 
 @router.post("/box-prompt", response_model=list[BoxPromptOut])
 def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
-    if get_sam_variant() != "sam3":
-        raise HTTPException(status_code=409, detail="sam3_box_prompt_requires_sam3")
+    # 422 client-error validations BEFORE the lease — cheap; no need to
+    # hold the inference lock for shape/value errors that don't depend
+    # on the variant. Capability gating (409) and SamNotReadyError (503)
+    # happen inside the manager block below.
     if len(payload.boxes) != len(payload.box_labels):
         raise HTTPException(
             status_code=422,
@@ -470,62 +583,72 @@ def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
             status_code=422,
             detail="box_labels must be 0 or 1",
         )
+
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
     try:
-        factory = get_box_predictor()
-    except RuntimeError:
-        # v3.22 — same lazy-rebuild as /sam/text-prompt above.
-        try:
-            load_predictor(get_sam_model())
-            factory = get_box_predictor()
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=503,
-                detail="sam3_box_predictor_not_loaded",
-            ) from exc
-    with admit(CostClass.SAM_BOX):
-        return factory(
-            image_b64=payload.image_b64,
-            boxes=payload.boxes,
-            box_labels=payload.box_labels,
-            text=payload.text,
-        )
+        with manager.lease_or_load() as sam:
+            if not sam.supports_box:
+                raise HTTPException(
+                    status_code=409,
+                    detail="box_prompt_not_supported_for_variant",
+                )
+            with admit(CostClass.SAM_BOX):
+                return sam.predict_box(
+                    image_b64=payload.image_b64,
+                    boxes=payload.boxes,
+                    box_labels=payload.box_labels,
+                    text=payload.text,
+                )
+    except SamNotReadyError as e:
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
 
 
 @router.post("/visual-prompt", response_model=list[VisualPromptOut])
 def sam_visual_prompt(payload: VisualPromptIn) -> list[dict]:
     """SAM 3.1 Promptable Concept Segmentation via image exemplars.
 
-    Requires the native SAM 3.1 variant (``SAM_MODEL=sam3.1``). Other
-    variants 409 with ``sam3p1_not_enabled`` because their backbones
+    Capability-gated through the manager: only variants exposing
+    ``supports_visual`` (today, the native SAM 3.1 variant) accept
+    visual prompts. Other variants 409 with
+    ``visual_prompt_not_supported_for_variant`` because their backbones
     don't expose the dense feature pyramid the visual-prompt encoder
     needs. See spec §5.5–§5.7.
     """
-    if get_sam_model() != "sam3.1":
-        raise HTTPException(status_code=409, detail="sam3p1_not_enabled")
+    # 422 client-error validation BEFORE the lease — mixed-kind regions
+    # is a shape error that doesn't depend on the variant.
     kinds = {r.kind for r in payload.regions}
     if len(kinds) > 1:
         raise HTTPException(status_code=422, detail="mixed_ref_types")
+
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
     try:
-        from carve_model.sam.predictor import get_visual_predictor, load_predictor
-        factory = get_visual_predictor()
-    except RuntimeError:
-        try:
-            load_predictor(get_sam_model())
-            from carve_model.sam.predictor import get_visual_predictor
-            factory = get_visual_predictor()
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=503, detail="sam_visual_predictor_not_loaded",
-            ) from exc
-    regions = [r.model_dump(exclude_none=True) for r in payload.regions]
-    with admit(CostClass.SAM_VISUAL):
-        return factory(
-            target_b64=payload.target_b64,
-            refer_b64=payload.refer_b64,
-            regions=regions,
-            threshold=payload.threshold,
-            text_hint=payload.text_hint,
-        )
+        with manager.lease_or_load() as sam:
+            if not sam.supports_visual:
+                raise HTTPException(
+                    status_code=409,
+                    detail="visual_prompt_not_supported_for_variant",
+                )
+            regions = [r.model_dump(exclude_none=True) for r in payload.regions]
+            with admit(CostClass.SAM_VISUAL):
+                return sam.predict_visual(
+                    target_b64=payload.target_b64,
+                    refer_b64=payload.refer_b64,
+                    regions=regions,
+                    threshold=payload.threshold,
+                    text_hint=payload.text_hint,
+                )
+    except SamNotReadyError as e:
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
 
 
 # --- /sam/unload (admin force-evict) ----------------------------------------
@@ -552,13 +675,23 @@ class UnloadOut(BaseModel):
 @router.post("/unload", response_model=UnloadOut)
 def unload(payload: UnloadIn = Body(default_factory=UnloadIn)) -> UnloadOut:
     """Force-unload SAM models from GPU memory. Idempotent."""
+    from carve_model.sam.lifecycle import manager
     from carve_model.sam.predictor import _gpu_used_bytes
 
     before = _gpu_used_bytes()
     evicted: list[str] = []
     sessions_released = 0
     if payload.which in ("image", "all"):
-        if force_evict_predictor():
+        # Task 3.5 — route through the lifecycle manager directly. The
+        # manager's force_unload() drops the active variant + runs the
+        # full CUDA cleanup (3x gc + synchronize + empty_cache +
+        # ipc_collect + dynamo.reset). Legacy ``force_evict_predictor``
+        # is still called below to mop up any closure-cached factories
+        # and the legacy ``_SESSION`` that pre-migration code paths may
+        # still populate. Both are idempotent.
+        manager_freed = manager.force_unload()
+        legacy_freed = force_evict_predictor()
+        if manager_freed or legacy_freed:
             evicted.append("image")
     if payload.which in ("tracker", "all"):
         sessions_released = force_evict_all_sessions()
@@ -606,9 +739,9 @@ def sam_vlm_fo1_unload() -> dict[str, bool | int | None]:
 #
 # v3.5 Phase C — surfaces the predictor's load state so the editor UI can
 # show a "Loading SAM…" overlay during the 5-30s HF weight download / build.
-# Mutated by ``predictor.get_predictor`` (lazy build), ``load_predictor``
-# (variant switch), and ``force_evict_predictor`` (drop). The API service
-# proxies this via ``GET /models/sam-status`` for the frontend.
+# Sourced from ``lifecycle.manager.status()`` — the manager is the single
+# source of truth post-Task 3.6. The API service proxies this via
+# ``GET /models/sam-status`` for the frontend.
 
 
 class StatusOut(BaseModel):
@@ -646,9 +779,15 @@ def sam_status() -> StatusOut:
       ready   — predictor is loaded and ready to encode/decode
       error   — last load attempt failed; ``error`` carries the detail
     """
-    from carve_model.sam.predictor import get_vlm_fo1_filter, get_visual_predictor
+    from carve_model.sam.lifecycle import manager
+    from carve_model.sam.predictor import get_vlm_fo1_filter
 
-    state = get_load_state()
+    # Task 3.6 — the lifecycle manager is the single source of truth for
+    # load state. Every router endpoint (encode/decode/switch/unload/…)
+    # now mutates state via the manager, so the legacy
+    # ``predictor._LOAD_STATE`` fallback added in 3.5 is no longer
+    # needed.
+    state = manager.status()
     # In-process GPU memory readout — uses memory_allocated (truly
     # in-use) so the editor / System page can verify that exactly one
     # variant's weights are resident after a /sam/switch.
@@ -663,26 +802,27 @@ def sam_status() -> StatusOut:
     except Exception:  # noqa: BLE001
         pass
 
-    # If the state machine has never been touched but the env already
-    # names a variant (e.g. operator preset SAM_MODEL but nobody hit
-    # encode yet), fall back to that name so the response is informative.
-    # Check if visual prompts are available (requires SAM 3.1 + factory).
-    visual_prompt_available = False
-    if get_sam_model() == "sam3.1":
-        try:
-            get_visual_predictor()
-            visual_prompt_available = True
-        except RuntimeError:
-            pass
+    # Visual-prompt capability gate: ask the active variant directly.
+    # After Phase 6 (sam3_adapter deletion) nothing registers the legacy
+    # _VISUAL_PREDICTOR_FACTORY in production, so the old factory probe
+    # always returned False — hiding the Visual tab in the editor even
+    # though /sam/visual-prompt worked end-to-end. The manager's variant
+    # is the single source of truth for capability.
+    _v = manager._test_variant or manager._active
+    visual_prompt_available = bool(_v and getattr(_v, "supports_visual", False))
 
+    # The new lifecycle.LoadState does not carry progress_bytes /
+    # progress_total / job_id — those were UI hints wired up to the
+    # legacy HF-download progress hooks. The wire shape stays unchanged
+    # (spec goal #6); these fields are now constant None.
     return StatusOut(
         state=state.kind,
         variant=state.variant or get_sam_model(),
-        progress_bytes=state.progress_bytes,
-        progress_total=state.progress_total,
+        progress_bytes=None,
+        progress_total=None,
         loaded_at=state.loaded_at,
         error=state.error,
-        job_id=state.job_id,
+        job_id=None,
         vlm_fo1_available=get_vlm_fo1_filter() is not None,
         visual_prompt_available=visual_prompt_available,
         gpu_allocated_mb=gpu_allocated_mb,
@@ -727,34 +867,26 @@ def _job_id_for(variant: str) -> str:
 
 
 def _spawn_switch(variant: str, job_id: str) -> None:
-    """Run ``load_predictor`` in a worker thread; reflect status into machine."""
+    """Run ``manager.ensure_loaded`` in a worker thread.
+
+    The manager updates its ``LoadState`` (idle → loading → ready |
+    error) internally; the worker just kicks it off and clears the
+    inflight job on completion. The ``job_id`` is preserved at the
+    router level for the 202 wire contract — the new
+    ``lifecycle.LoadState`` does not carry it (the client correlates
+    via /sam/status polling).
+    """
+    from carve_model.sam.lifecycle import manager
 
     def _worker() -> None:
         global _SWITCH_INFLIGHT_JOB
         try:
-            # ``load_predictor`` itself updates _LOAD_STATE (idle/loading
-            # → ready/error). We wrap it once more here so the job_id is
-            # exposed via /sam/status while the load is in flight.
-            current = get_load_state()
-            _set_load_state(
-                kind="loading",
-                variant=variant,
-                progress_bytes=current.progress_bytes,
-                progress_total=current.progress_total,
-                job_id=job_id,
-            )
-            load_predictor(variant)
-        except Exception as exc:  # noqa: BLE001
-            # ``load_predictor`` already wrote an error state, but make
-            # absolutely sure the job_id rides along so the client can
-            # correlate.
-            current = get_load_state()
-            _set_load_state(
-                kind="error",
-                variant=variant,
-                error=current.error or str(exc),
-                job_id=job_id,
-            )
+            manager.ensure_loaded(variant)
+        except Exception:  # noqa: BLE001
+            # ``ensure_loaded`` already wrote ``state=error`` on
+            # failure. There is no caller to report to — the client
+            # correlates via /sam/status polling.
+            pass
         finally:
             with _SWITCH_INFLIGHT_LOCK:
                 _SWITCH_INFLIGHT_JOB = None
@@ -788,14 +920,6 @@ def switch(payload: SwitchIn) -> SwitchOut:
         job_id = _job_id_for(payload.variant)
         _SWITCH_INFLIGHT_JOB = job_id
 
-    # Pre-flip the state machine so an immediate /sam/status read after
-    # this 202 already reads "loading" (eliminates the race where the
-    # worker thread hasn't started yet).
-    _set_load_state(
-        kind="loading",
-        variant=payload.variant,
-        job_id=job_id,
-    )
     _spawn_switch(payload.variant, job_id)
 
     return SwitchOut(job_id=job_id, state="loading", variant=payload.variant)

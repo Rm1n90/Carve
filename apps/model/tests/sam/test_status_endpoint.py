@@ -1,7 +1,9 @@
 """Tests for ``GET /sam/status`` (load-state inspection endpoint).
 
 v3.5 Phase C — the editor polls this endpoint while the variant-switch
-overlay is open. We exercise the state machine via the public surface:
+overlay is open. Task 3.6 moves the canonical state to
+``lifecycle.manager.status()`` (no legacy fallback). We exercise the
+state machine via the public surface:
 
 - idle initially (no predictor loaded)
 - loading state while a switch worker is in flight
@@ -22,6 +24,7 @@ from fastapi.testclient import TestClient
 from carve_model.main import create_app
 from carve_model.sam import predictor as p_mod
 from carve_model.sam import router as r_mod
+from carve_model.sam.lifecycle import LoadState, manager
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +32,7 @@ def _reset(monkeypatch):
     p_mod.set_test_predictor(None)
     p_mod._set_test_session(None)
     p_mod._reset_load_state()
+    manager._reset_for_tests()
     r_mod._reset_switch_inflight_for_test()
     monkeypatch.delenv("SAM_MODEL", raising=False)
     monkeypatch.delenv("SAM_VARIANT", raising=False)
@@ -36,6 +40,7 @@ def _reset(monkeypatch):
     p_mod.set_test_predictor(None)
     p_mod._set_test_session(None)
     p_mod._reset_load_state()
+    manager._reset_for_tests()
     r_mod._reset_switch_inflight_for_test()
 
 
@@ -78,13 +83,18 @@ def test_status_loading_during_switch(monkeypatch) -> None:
     blocker = threading.Event()
     started = threading.Event()
 
-    def slow_load(variant: str) -> None:
-        started.set()
-        # Block until the test releases us — the status endpoint should
+    def slow_ensure_loaded(variant: str, *, device: str | None = None) -> None:
+        # Mirror the real ensure_loaded: flip to loading before the
+        # expensive build step, then block. The status endpoint should
         # report "loading" the whole time.
+        manager._state = LoadState.loading(
+            variant,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+        started.set()
         blocker.wait(timeout=2.0)
 
-    monkeypatch.setattr(r_mod, "load_predictor", slow_load)
+    monkeypatch.setattr(manager, "ensure_loaded", slow_ensure_loaded)
 
     client = _client()
     r = client.post("/sam/switch", json={"variant": "sam2.1-tiny"})
@@ -94,26 +104,27 @@ def test_status_loading_during_switch(monkeypatch) -> None:
     status = _wait_for_state(client, expected=("loading",))
     assert status["state"] == "loading"
     assert status["variant"] == "sam2.1-tiny"
-    assert status["job_id"]
+    # job_id is no longer carried in the manager's LoadState; the wire
+    # field is preserved (as None) for backwards-compatibility (Task 3.6).
+    assert status["job_id"] is None
 
     # Release worker so teardown is clean.
     blocker.set()
 
 
 def test_status_ready_after_load_completes(monkeypatch) -> None:
-    """After load_predictor finishes, /sam/status reports ``ready``."""
+    """After ensure_loaded finishes, /sam/status reports ``ready``."""
     finished = threading.Event()
 
-    def fake_load(variant: str) -> None:
-        # Mirror what the real load_predictor does on success.
-        p_mod._set_load_state(
-            kind="ready",
-            variant=variant,
+    def fake_ensure_loaded(variant: str, *, device: str | None = None) -> None:
+        # Mirror what the real ensure_loaded does on success.
+        manager._state = LoadState.ready(
+            variant,
             loaded_at=datetime.now(timezone.utc).isoformat(),
         )
         finished.set()
 
-    monkeypatch.setattr(r_mod, "load_predictor", fake_load)
+    monkeypatch.setattr(manager, "ensure_loaded", fake_ensure_loaded)
 
     client = _client()
     r = client.post("/sam/switch", json={"variant": "sam2.1-small"})
@@ -129,10 +140,13 @@ def test_status_ready_after_load_completes(monkeypatch) -> None:
 def test_status_error_on_failed_load(monkeypatch) -> None:
     """When the worker raises, /sam/status reports ``error`` with the message."""
 
-    def boom(variant: str) -> None:
+    def boom(variant: str, *, device: str | None = None) -> None:
+        # Real ensure_loaded writes error state before raising
+        # SamLoadError; mirror that here.
+        manager._state = LoadState.error_(variant, "HF download failed: connection reset")
         raise RuntimeError("HF download failed: connection reset")
 
-    monkeypatch.setattr(r_mod, "load_predictor", boom)
+    monkeypatch.setattr(manager, "ensure_loaded", boom)
 
     client = _client()
     r = client.post("/sam/switch", json={"variant": "sam2.1-large"})
@@ -148,11 +162,15 @@ def test_switch_409_on_concurrent_attempt(monkeypatch) -> None:
     blocker = threading.Event()
     started = threading.Event()
 
-    def slow_load(variant: str) -> None:
+    def slow_ensure_loaded(variant: str, *, device: str | None = None) -> None:
+        manager._state = LoadState.loading(
+            variant,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
         started.set()
         blocker.wait(timeout=2.0)
 
-    monkeypatch.setattr(r_mod, "load_predictor", slow_load)
+    monkeypatch.setattr(manager, "ensure_loaded", slow_ensure_loaded)
 
     client = _client()
     r1 = client.post("/sam/switch", json={"variant": "sam2.1-tiny"})
@@ -166,75 +184,44 @@ def test_switch_409_on_concurrent_attempt(monkeypatch) -> None:
     blocker.set()
 
 
-def test_status_progress_fields_populated_during_download(monkeypatch) -> None:
-    """v3.6 — while build_sam2_image_predictor is mid-flight (HF download),
-    /sam/status reports the indeterminate progress sentinel
-    (progress_bytes=0, progress_total=-1) so the editor overlay can show
-    a "downloading" shimmer instead of "loading…" text alone.
+def test_status_progress_fields_are_none_post_task_36(monkeypatch) -> None:
+    """Task 3.6 — progress_bytes/progress_total are constant None.
+
+    The legacy HF-download progress sentinel (progress_bytes=0,
+    progress_total=-1) was wired into ``predictor._LOAD_STATE``, which is
+    no longer read by /sam/status. The wire shape preserves the fields
+    (spec goal #6) but they never populate. This test pins the new
+    contract so the editor's overlay can rely on None as a safe default.
     """
     blocker = threading.Event()
     started = threading.Event()
 
-    def slow_load(variant: str) -> None:
-        # Simulate what the real load_predictor does: flips to loading,
-        # then build_sam2_image_predictor sets the progress sentinel,
-        # blocks on HF for ~30s, then clears it.
-        p_mod._set_load_state(kind="loading", variant=variant)
-        p_mod._set_load_progress(progress_bytes=0, progress_total=-1)
+    def slow_ensure_loaded(variant: str, *, device: str | None = None) -> None:
+        manager._state = LoadState.loading(
+            variant,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
         started.set()
         blocker.wait(timeout=2.0)
-        p_mod._set_load_progress(progress_bytes=None, progress_total=None)
 
-    monkeypatch.setattr(r_mod, "load_predictor", slow_load)
+    monkeypatch.setattr(manager, "ensure_loaded", slow_ensure_loaded)
 
     client = _client()
     r = client.post("/sam/switch", json={"variant": "sam2.1-tiny"})
     assert r.status_code == 202
     assert started.wait(timeout=1.0)
 
-    # While the worker is blocked, status should show the progress sentinel.
     body = client.get("/sam/status").json()
     assert body["state"] == "loading"
-    assert body["progress_bytes"] == 0
-    assert body["progress_total"] == -1
-
-    # Release worker; the progress fields clear back to None.
-    blocker.set()
-    # Small busy-wait for the worker to clear. The status_endpoint test
-    # already validates the ready-transition path; here we only need the
-    # post-clear assertion to pass.
-    deadline = time.monotonic() + 1.0
-    body = {}
-    while time.monotonic() < deadline:
-        body = client.get("/sam/status").json()
-        if body["progress_bytes"] is None and body["progress_total"] is None:
-            break
-        time.sleep(0.02)
     assert body["progress_bytes"] is None
     assert body["progress_total"] is None
 
+    blocker.set()
 
-def test_set_load_progress_preserves_other_state_fields() -> None:
-    """``_set_load_progress`` is a partial-update — kind, variant,
-    job_id, etc. must survive a progress write.
-    """
-    p_mod._set_load_state(
-        kind="loading",
-        variant="sam2.1-large",
-        job_id="job-abc",
-    )
-    p_mod._set_load_progress(progress_bytes=0, progress_total=-1)
-    state = p_mod.get_load_state()
-    assert state.kind == "loading"
-    assert state.variant == "sam2.1-large"
-    assert state.job_id == "job-abc"
-    assert state.progress_bytes == 0
-    assert state.progress_total == -1
-    p_mod._set_load_progress(progress_bytes=None, progress_total=None)
-    state = p_mod.get_load_state()
-    assert state.progress_bytes is None
-    assert state.progress_total is None
-    # Other fields untouched.
-    assert state.kind == "loading"
-    assert state.variant == "sam2.1-large"
-    assert state.job_id == "job-abc"
+
+# ``test_set_load_progress_preserves_other_state_fields`` was deleted in
+# Task 5.2 — the legacy ``predictor._LOAD_STATE`` carried extra fields
+# (progress_bytes / progress_total / job_id) that the manager's
+# LoadState no longer tracks. ``_set_load_progress`` is now a no-op
+# (adapters still call it during HF download; the new /sam/status wire
+# response keeps the progress fields constant None).

@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 from carve_model.devices_router import router as devices_router
 from carve_model.gpu import get_device
-from carve_model.sam.predictor import evict_predictor_if_idle
+from carve_model.sam.lifecycle import manager as sam_manager
 from carve_model.sam.router import router as sam_router
 # v3.27 — legacy /sam-track/* track_router + tracker.py removed.
 from carve_model.sam.track_router import router as track_router
@@ -38,7 +38,7 @@ def _sweep_loop() -> None:
     """Idle-eviction loop. Swallows all exceptions so it never crashes the app."""
     while not _SWEEPER_STOP.wait(_SWEEP_INTERVAL_S):
         try:
-            evict_predictor_if_idle()
+            sam_manager.evict_if_idle()
             from carve_model.sam.track_session import evict_idle_sessions as _evict_track_sessions
             _evict_track_sessions()
             # v3.23 — also free idle YOLOE checkpoints. Both the

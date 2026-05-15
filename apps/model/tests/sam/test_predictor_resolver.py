@@ -33,10 +33,11 @@ def test_default_is_sam2_1_large():
     "sam2.1-small",
     "sam2.1-base-plus",
     "sam2.1-large",
-    "sam3",
+    "sam3.1",
 ])
 def test_each_allowed_model_resolves(monkeypatch, name):
     monkeypatch.setenv("SAM_MODEL", name)
+    p_mod._SAM3_WARNED = False  # noqa: SLF001 — reset warn-once for test isolation
     assert p_mod.get_sam_model() == name
 
 
@@ -54,9 +55,14 @@ def test_unknown_falls_back_to_default(monkeypatch, caplog):
 
 
 def test_legacy_sam_variant_sam3_still_works(monkeypatch):
-    """Plan 08's SAM_VARIANT=sam3 must still flip the variant."""
+    """Plan 08's ``SAM_VARIANT=sam3`` must still flip the variant.
+
+    Phase 6: ``sam3`` auto-remaps to ``sam3.1``; both still resolve to the
+    sam3 family.
+    """
     monkeypatch.setenv("SAM_VARIANT", "sam3")
-    assert p_mod.get_sam_model() == "sam3"
+    p_mod._SAM3_WARNED = False  # noqa: SLF001 — reset warn-once for test isolation
+    assert p_mod.get_sam_model() == "sam3.1"
     assert p_mod.get_sam_variant() == "sam3"
 
 
@@ -139,34 +145,24 @@ def test_default_factory_uses_transformers_path_for_each_sam2_variant(
     assert fake_transformers_sam2_modules["model_class"] == "Sam2Model"
 
 
-def test_default_factory_routes_sam3_through_sam3_adapter(monkeypatch):
-    """``SAM_MODEL=sam3`` must always route through the SAM 3 adapter,
-    independent of how SAM 2 is wired."""
-    monkeypatch.setenv("SAM_MODEL", "sam3")
+def test_default_factory_routes_sam3p1_through_sam3p1_adapter(monkeypatch):
+    """``SAM_MODEL=sam3.1`` must route through the SAM 3.1 adapter.
+
+    Task 6.2 removed the legacy ``sam3`` branch from ``_default_factory``;
+    ``SAM_MODEL=sam3`` is auto-remapped to ``sam3.1`` via the deprecation
+    logic in ``get_sam_model``.
+    """
+    monkeypatch.setenv("SAM_MODEL", "sam3.1")
 
     called = {"build": False}
 
-    def _fake_build():
+    def _fake_build(device=None):
         called["build"] = True
         return object()
 
-    def _noop_text():
-        return lambda **_: []
-
-    def _noop_box():
-        return lambda **_: []
-
     monkeypatch.setattr(
-        "carve_model.sam.sam3_adapter.build_sam3_image_predictor",
+        "carve_model.sam.sam3p1_adapter.build_sam3p1_image_predictor",
         _fake_build,
-    )
-    monkeypatch.setattr(
-        "carve_model.sam.sam3_adapter.make_sam3_text_predictor",
-        _noop_text,
-    )
-    monkeypatch.setattr(
-        "carve_model.sam.sam3_adapter.make_sam3_box_predictor",
-        _noop_box,
     )
 
     p_mod._default_factory()  # noqa: SLF001

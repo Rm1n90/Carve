@@ -543,7 +543,10 @@ export function SettingsMembersPage() {
         {membersQ.isLoading ? (
           <p className="text-[13px] text-[color:var(--text-tertiary)]">Loading…</p>
         ) : (
-          <ul className="grid gap-2" data-testid="members-list">
+          <ul
+            className="grid gap-2 max-h-[clamp(280px,55vh,520px)] overflow-y-auto pr-1"
+            data-testid="members-list"
+          >
             {members.map((m) => {
               const isMe = m.id === me?.id;
               const isLastAdmin = m.role === "admin" && adminCount <= 1;
@@ -611,7 +614,10 @@ function ProjectMembersSection() {
           you receive can be shared with the recipient.
         </p>
       </div>
-      <ul className="grid gap-6" data-testid="project-members-list">
+      <ul
+        className="grid gap-6 max-h-[clamp(320px,65vh,640px)] overflow-y-auto pr-1"
+        data-testid="project-members-list"
+      >
         {projects.map((p) => (
           <ProjectMembersRow key={p.id} project={p} />
         ))}
@@ -829,6 +835,17 @@ function InviteMemberDialog({
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<CreateRole>("member");
 
+  // Reset whenever the dialog (re)opens — the success path closes the
+  // dialog by flipping the parent's `open` prop directly, which bypasses
+  // Radix's `onOpenChange`, so a close-time reset alone isn't enough.
+  useEffect(() => {
+    if (open) {
+      setEmail("");
+      setPassword("");
+      setRole("member");
+    }
+  }, [open]);
+
   const trimmedEmail = email.trim();
   const passwordTooShort =
     password.length > 0 && password.length < MIN_INVITE_PASSWORD_LENGTH;
@@ -838,11 +855,6 @@ function InviteMemberDialog({
     !pending;
 
   function handleOpenChange(next: boolean) {
-    if (!next) {
-      setEmail("");
-      setPassword("");
-      setRole("member");
-    }
     onOpenChange(next);
   }
 

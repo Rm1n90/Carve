@@ -1,7 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Trash2, Plus, ClipboardPaste } from "lucide-react";
+import { Copy, Trash2, Plus, ClipboardPaste, Pencil, Check, X } from "lucide-react";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { projectsApi, type Project } from "@/api/projects";
 import { Button } from "@/components/ui/Button";
@@ -16,6 +16,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/Dialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/Popover";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
 import { PALETTE_HEX, nextUnusedColor } from "@/lib/swatch";
@@ -60,6 +65,31 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
   const remove = useMutation({
     mutationFn: (cid: string) => classesApi.delete(projectId, cid),
     onSuccess: () => invalidateClassDependents(),
+  });
+  // Inline rename / recolor. Same 409 conflict detail surfaces here as
+  // for create, so we reuse the toast message keyed on the attempted
+  // name. Caller wraps mutateAsync so it can roll back the local draft.
+  const update = useMutation({
+    mutationFn: ({
+      cid,
+      patch,
+    }: {
+      cid: string;
+      patch: { name?: string; color?: string };
+    }) => classesApi.update(projectId, cid, patch),
+    onSuccess: () => invalidateClassDependents(),
+    onError: (err: unknown, variables) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail;
+      if (detail === "class_idx_or_name_conflict" && variables.patch.name) {
+        showToast(
+          `A class named "${variables.patch.name}" already exists in this project.`,
+          { variant: "error" },
+        );
+      } else {
+        showToast("Failed to update class.", { variant: "error" });
+      }
+    },
   });
   // v3.30 — `updatePrompt` mutation removed alongside the per-class
   // prompt input. Prompt edits now flow through Auto-Annotate /
@@ -235,62 +265,40 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
           )}
           <ul className="grid gap-1">
             {q.data?.map((c: ClassRow) => (
-              <li
+              <ClassEditorRow
                 key={c.id}
-                className={cn(
-                  "grid gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] px-3 py-1.5",
-                  "transition-colors hover:border-[var(--border-strong)]",
-                )}
-              >
-                <div className="flex items-center gap-2.5">
-                  <span
-                    aria-label={`Class ${c.idx} color`}
-                    className="h-3 w-3 shrink-0 rounded-full border border-[var(--border-strong)]"
-                    style={{ background: c.color }}
-                  />
-                  <span className="font-mono text-[10px] text-[color:var(--text-tertiary)] w-6">
-                    #{c.idx}
-                  </span>
-                  <span className="flex-1 text-[13px] tracking-tight text-[color:var(--text-primary)] truncate">
-                    {c.name}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const ok = await confirm({
-                        title: "Delete class?",
-                        description: (
-                          <>
-                            Remove the class{" "}
-                            <span className="font-medium text-[color:var(--text-primary)]">
-                              {c.name}
-                            </span>
-                            ? Every annotation that uses it across the
-                            entire project will be{" "}
-                            <span className="font-medium text-[color:var(--danger)]">
-                              permanently deleted
-                            </span>
-                            . The remaining classes will be renumbered so
-                            their order stays contiguous. This action is
-                            irreversible.
-                          </>
-                        ),
-                        variant: "danger",
-                        confirmLabel: "Delete",
-                      });
-                      if (ok) remove.mutate(c.id);
-                    }}
-                    aria-label={`Delete class ${c.name}`}
-                    className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] transition-colors hover:bg-[var(--danger-bg)] hover:text-[color:var(--danger)]"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                {/* v3.30 — per-class SAM text prompt input removed.
-                    Auto-Annotate and Smart Find now expose inline
-                    class+prompt rows in their dialogs, so this
-                    permanently-visible sub-row was redundant chrome. */}
-              </li>
+                cls={c}
+                onRename={(next) =>
+                  update.mutateAsync({ cid: c.id, patch: { name: next } })
+                }
+                onChangeColor={(next) =>
+                  update.mutateAsync({ cid: c.id, patch: { color: next } })
+                }
+                onDelete={async () => {
+                  const ok = await confirm({
+                    title: "Delete class?",
+                    description: (
+                      <>
+                        Remove the class{" "}
+                        <span className="font-medium text-[color:var(--text-primary)]">
+                          {c.name}
+                        </span>
+                        ? Every annotation that uses it across the
+                        entire project will be{" "}
+                        <span className="font-medium text-[color:var(--danger)]">
+                          permanently deleted
+                        </span>
+                        . The remaining classes will be renumbered so
+                        their order stays contiguous. This action is
+                        irreversible.
+                      </>
+                    ),
+                    variant: "danger",
+                    confirmLabel: "Delete",
+                  });
+                  if (ok) remove.mutate(c.id);
+                }}
+              />
             ))}
           </ul>
         </div>
@@ -368,6 +376,272 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
         </form>
       </div>
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-row inline editor. Click the swatch → palette popover. Click the
+// name (or the pencil) → input becomes editable; Enter commits, Esc
+// cancels, blur commits. Both flows go through ``classesApi.update``;
+// the row reverts its local draft if the server rejects (e.g. 409
+// duplicate-name) so the displayed value never drifts from the server.
+// ---------------------------------------------------------------------------
+
+interface ClassEditorRowProps {
+  cls: ClassRow;
+  onRename: (next: string) => Promise<unknown>;
+  onChangeColor: (next: string) => Promise<unknown>;
+  onDelete: () => void;
+}
+
+function ClassEditorRow({
+  cls,
+  onRename,
+  onChangeColor,
+  onDelete,
+}: ClassEditorRowProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(cls.name);
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Keep the draft in sync with the server-provided name whenever it
+  // changes externally (refetch, optimistic invalidation, another tab).
+  useEffect(() => {
+    if (!editing) setDraft(cls.name);
+  }, [cls.name, editing]);
+
+  function startEdit() {
+    setDraft(cls.name);
+    setEditing(true);
+    // Defer to ensure the input is mounted before we try to focus it.
+    queueMicrotask(() => inputRef.current?.select());
+  }
+
+  function cancelEdit() {
+    setDraft(cls.name);
+    setEditing(false);
+  }
+
+  async function commitEdit() {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === cls.name) {
+      cancelEdit();
+      return;
+    }
+    setSaving(true);
+    try {
+      await onRename(trimmed);
+      setEditing(false);
+    } catch {
+      // Mutation's onError surfaces the toast; revert the draft so the
+      // user can see why the rename didn't stick.
+      setDraft(cls.name);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <li
+      className={cn(
+        "grid gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] px-3 py-1.5",
+        "transition-colors hover:border-[var(--border-strong)]",
+        "group",
+      )}
+    >
+      <div className="flex items-center gap-2.5">
+        <ClassColorPopover
+          color={cls.color}
+          ariaLabel={`Change color of class ${cls.name}`}
+          onChange={(next) => {
+            if (next.toLowerCase() === cls.color.toLowerCase()) return;
+            onChangeColor(next).catch(() => {
+              /* mutation's onError surfaces the toast */
+            });
+          }}
+        />
+        <span className="font-mono text-[10px] text-[color:var(--text-tertiary)] w-6">
+          #{cls.idx}
+        </span>
+        {editing ? (
+          <div className="flex-1 flex items-center gap-1.5">
+            <input
+              ref={inputRef}
+              type="text"
+              value={draft}
+              maxLength={120}
+              autoFocus
+              disabled={saving}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void commitEdit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelEdit();
+                }
+              }}
+              onBlur={() => {
+                // Don't fire if the user is clicking the inline Save/Cancel
+                // buttons — those handle the commit themselves. A small
+                // setTimeout lets the click-handler win the race.
+                setTimeout(() => {
+                  if (document.activeElement !== inputRef.current && editing) {
+                    void commitEdit();
+                  }
+                }, 0);
+              }}
+              aria-label={`Rename class ${cls.name}`}
+              data-testid={`class-name-input-${cls.id}`}
+              className={cn(
+                "flex-1 min-w-0 h-7 px-2 text-[13px] tracking-tight",
+                "bg-[var(--bg-elev)] text-[color:var(--text-primary)]",
+                "rounded-[var(--radius-sm)] border border-[var(--accent)]",
+                "focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:ring-offset-0",
+                "disabled:opacity-60",
+              )}
+            />
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void commitEdit()}
+              disabled={saving}
+              aria-label="Save class name"
+              data-testid={`class-name-save-${cls.id}`}
+              className={cn(
+                "grid h-7 w-7 place-items-center rounded-[var(--radius-sm)]",
+                "text-[color:var(--accent)] hover:bg-[var(--accent-bg)]",
+                "disabled:opacity-60 disabled:cursor-not-allowed",
+              )}
+            >
+              <Check className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={cancelEdit}
+              disabled={saving}
+              aria-label="Cancel rename"
+              data-testid={`class-name-cancel-${cls.id}`}
+              className={cn(
+                "grid h-7 w-7 place-items-center rounded-[var(--radius-sm)]",
+                "text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+                "disabled:opacity-60 disabled:cursor-not-allowed",
+              )}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={startEdit}
+              onDoubleClick={startEdit}
+              aria-label={`Rename class ${cls.name}`}
+              data-testid={`class-name-${cls.id}`}
+              className={cn(
+                "flex-1 min-w-0 text-left text-[13px] tracking-tight text-[color:var(--text-primary)] truncate",
+                "rounded-[var(--radius-xs)] px-1 -mx-1",
+                "hover:bg-[var(--bg-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+              )}
+            >
+              {cls.name}
+            </button>
+            <button
+              type="button"
+              onClick={startEdit}
+              aria-label={`Rename class ${cls.name}`}
+              data-testid={`class-rename-${cls.id}`}
+              className={cn(
+                "grid h-7 w-7 place-items-center rounded-[var(--radius-sm)]",
+                "text-[color:var(--text-tertiary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity",
+              )}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label={`Delete class ${cls.name}`}
+          className="grid h-7 w-7 place-items-center rounded-[var(--radius-sm)] text-[color:var(--text-tertiary)] transition-colors hover:bg-[var(--danger-bg)] hover:text-[color:var(--danger)]"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </li>
+  );
+}
+
+// Swatch popover — preset palette + native custom picker, mirroring the
+// add-class form's color UI. Selecting a color fires ``onChange`` even
+// when the popover stays open so consumers can decide whether to close
+// it (the dropdown closes naturally on outside click).
+interface ClassColorPopoverProps {
+  color: string;
+  ariaLabel: string;
+  onChange: (next: string) => void;
+}
+
+function ClassColorPopover({ color, ariaLabel, onChange }: ClassColorPopoverProps) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={ariaLabel}
+          data-testid="class-color-swatch"
+          className={cn(
+            "h-4 w-4 shrink-0 rounded-full border border-[var(--border-strong)]",
+            "transition-transform hover:scale-110",
+            "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-1",
+          )}
+          style={{ background: color }}
+        />
+      </PopoverTrigger>
+      <PopoverContent align="start" sideOffset={6} className="grid gap-2 p-2">
+        <div className="grid grid-cols-6 gap-1">
+          {PALETTE_HEX.map((c) => {
+            const isSelected = c.toLowerCase() === color.toLowerCase();
+            return (
+              <button
+                key={c}
+                type="button"
+                aria-label={`Set color ${c}`}
+                data-testid={`class-color-preset-${c}`}
+                data-selected={isSelected ? "true" : undefined}
+                onClick={() => onChange(c)}
+                className={cn(
+                  "h-6 w-6 rounded-[var(--radius-xs)] border border-[var(--border-subtle)]",
+                  "transition-transform hover:scale-110",
+                  isSelected && "ring-2 ring-[var(--accent)] ring-offset-1",
+                )}
+                style={{ background: c }}
+              />
+            );
+          })}
+        </div>
+        <div className="flex items-center gap-2 border-t border-[var(--border-subtle)] pt-2">
+          <span className="text-[11px] tracking-tight text-[color:var(--text-tertiary)]">
+            Custom
+          </span>
+          <input
+            type="color"
+            aria-label="Custom color"
+            data-testid="class-color-custom"
+            value={color}
+            onChange={(e) => onChange(e.target.value)}
+            className="h-6 w-10 cursor-pointer rounded-[var(--radius-xs)] border border-[var(--border-subtle)] bg-transparent p-0"
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

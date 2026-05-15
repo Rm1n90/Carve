@@ -236,10 +236,13 @@ def test_sam_active_post_422_when_model_service_422(
 
     _install_mock_transport(monkeypatch, handler)
 
-    # Use a variant the API allow-list accepts so it reaches the model service
+    # Phase 6 removed "sam3" from the API allow-list (matches the model
+    # service's). To test that the API proxies a 422 from the model service,
+    # pass a variant accepted by the API allow-list and rely on the mock
+    # handler above to return 422 unconditionally.
     r = client.post(
         "/models/sam-active",
-        json={"variant": "sam3"},
+        json={"variant": "sam2.1-tiny"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 422

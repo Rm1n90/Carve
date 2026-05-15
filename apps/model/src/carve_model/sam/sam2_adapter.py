@@ -1,11 +1,12 @@
 """SAM 2 adapters that conform to the SamPredictor + TrackerProtocol contracts.
 
 This module is the **transformers-backed** path for SAM 2.x, mirroring the
-SAM 3 adapter pattern in ``sam3_adapter.py``. Since v3.4 commit 6 it is
-the only path: the legacy ``sam2`` git-package install was removed and
-the ``predictor.py`` / ``tracker.py`` factories route every SAM 2.x model
-(``sam2.1-tiny``, ``sam2.1-small``, ``sam2.1-base-plus``, ``sam2.1-large``)
-through these adapters unconditionally.
+adapter pattern originally established in the legacy ``sam3_adapter.py``
+(deleted in Phase 6). Since v3.4 commit 6 it is the only path: the legacy
+``sam2`` git-package install was removed and the ``predictor.py`` /
+``tracker.py`` factories route every SAM 2.x model (``sam2.1-tiny``,
+``sam2.1-small``, ``sam2.1-base-plus``, ``sam2.1-large``) through these
+adapters unconditionally.
 
 The transformers SAM 2 API surface used here:
 
@@ -17,8 +18,8 @@ The transformers SAM 2 API surface used here:
 CRITICAL contract: ``Sam2ImagePredictorAdapter`` MUST expose
 ``_features = {"image_embed": tensor}`` after ``set_image()`` runs, so
 ``carve_model.sam.predictor.extract_embedding`` keeps producing bytes for
-the browser-side ONNX decoder. SAM 3 does the same at
-``sam3_adapter.py:101``.
+the browser-side ONNX decoder. The sam3.1 adapter (``sam3p1_adapter.py``)
+upholds the same contract.
 
 Imports of torch + transformers + PIL are deferred to method bodies so
 this module can be imported in environments where those heavy deps are

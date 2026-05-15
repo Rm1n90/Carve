@@ -174,10 +174,13 @@ license and provide an HF token before enabling it.
   `{"which": "image" | "tracker" | "all"}` (default `"all"`); the
   response lists what was actually freed.
 
-When SAM 3 is **disabled** (any non-`sam3` value, default `sam2.1-large`),
-the `POST /sam/text-prompt` endpoint returns `409 sam3_not_enabled`. The
-rest of the SAM 2 surface (`/sam/encode`, `/sam/decode`, sam-track) is
-unaffected.
+When the active SAM variant does not support text prompts (e.g. the
+default `sam2.1-large`, or any sam2.x variant), the
+`POST /sam/text-prompt` endpoint returns
+`409 text_prompt_not_supported_for_variant`. The rest of the SAM 2
+surface (`/sam/encode`, `/sam/decode`, sam-track) is unaffected. The
+gate is capability-based, not variant-name-based — switch to a variant
+whose adapter advertises `supports_text` (e.g. `sam3`) to enable it.
 
 ### Enable
 
@@ -247,7 +250,10 @@ License + weights: AGPL-3.0 / Enterprise. Same model weights
   `{image_b64, boxes, box_labels, text?}`. Boxes are xyxy floats;
   `box_labels` are 1 (positive) or 0 (negative). Combining `text` with
   a negative box refines a concept by excluding a region. Returns 409
-  `sam3_box_prompt_requires_sam3` when SAM 3 is not the active model.
+  `box_prompt_not_supported_for_variant` when the active variant does
+  not expose box prompting (e.g. any sam2.x variant). The gate is
+  capability-based — any variant whose adapter advertises
+  `supports_box` will satisfy this route.
 - **Video tracking** (`/sam-track/start`): accepts EITHER `points` +
   `labels` (numeric clicks → `Sam3TrackerVideoModel.add_inputs_to_inference_session`)
   OR `text` (concept → `Sam3VideoModel.add_text_prompt`). When neither

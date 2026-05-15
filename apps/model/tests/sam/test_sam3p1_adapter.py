@@ -419,24 +419,15 @@ def test_default_factory_routes_to_multiplex_when_env_set_and_native_available(
 
 @pytest.mark.unit
 def test_default_factory_falls_back_when_native_sam3_missing(monkeypatch):
-    monkeypatch.setenv("SAM_VIDEO_BACKEND", "multiplex")
-
-    def _raise():
-        raise ImportError("no native sam3")
-
-    monkeypatch.setattr(
-        "carve_model.sam.sam3p1_adapter.build_sam3p1_multiplex_video_tracker",
-        _raise,
+    """Task 6.2 dropped the legacy ``sam3_adapter.build_sam3_video_tracker``
+    fallback. The ``tracker`` module is also no longer part of the public
+    sam package, so this test is preserved as a marker of historical
+    behaviour and skipped — Task 6.3 deletes ``sam3_adapter.py`` entirely.
+    """
+    pytest.skip(
+        "legacy sam3 video-tracker fallback removed in Task 6.2; "
+        "tracker module no longer present in carve_model.sam"
     )
-
-    fallback_sentinel = object()
-    monkeypatch.setattr(
-        "carve_model.sam.sam3_adapter.build_sam3_video_tracker",
-        lambda: fallback_sentinel,
-    )
-
-    result = t_mod._default_factory()  # noqa: SLF001
-    assert result is fallback_sentinel
 
 
 # --- integration smoke test (requires native sam3) -------------------------
