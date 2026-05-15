@@ -246,9 +246,27 @@ def batch(
                 z_order=u.z_order,
             )
             updated.append(a)
+        # DELETE is idempotent (REST semantics): a request to remove an
+        # annotation that's already gone is a success, not an error.
+        # Without this, the autosave batch loop can deadlock — e.g.
+        # user deletes polygon P, autosave fires twice for the same
+        # edit, the second call sees P already gone and 404s the WHOLE
+        # batch (the entire payload rolls back), and the stale
+        # ``pendingDeletes`` entry keeps poisoning every subsequent
+        # autosave until the user refreshes. The 404 deadlock is also
+        # reachable when an auto-annotate run's ``overwrite=true``
+        # removes an annotation the user already had queued for
+        # deletion.
         deleted: list[str] = []
+        from carve_api.annotations.service import AnnotationNotFound
         for ann_id in payload.delete:
-            svc.delete(task=task, annotation_id=uuid.UUID(ann_id))
+            try:
+                svc.delete(task=task, annotation_id=uuid.UUID(ann_id))
+            except AnnotationNotFound:
+                # Already gone — treat as success so the client clears
+                # the id from its pendingDeletes queue and stops
+                # retrying.
+                pass
             deleted.append(ann_id)
     except AppError as exc:
         raise _http(exc) from exc
