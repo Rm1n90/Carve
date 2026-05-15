@@ -1826,7 +1826,46 @@ export function AnnotationCanvas({
       }
     }
 
-    void reconcile(useAnnotations.getState());
+    // ---- Reconcile mutex --------------------------------------------
+    // ``reconcile()`` is async — it awaits ``import("pixi.js")`` once
+    // at the top, and again inside the polygon/bbox label block. When
+    // two store events fire in quick succession (e.g. SAM auto-annotate's
+    // ``markPersisted`` followed by ``invalidateQueries`` triggering a
+    // refetch-merge), two reconciles enter concurrently and interleave
+    // across the awaits. The interleave can produce a torn final state
+    // where one pass adds a Graphics + sets its shapeSig, while the
+    // other pass's cleanup loop deletes that Graphics from
+    // ``shapeLayer`` (because its older snapshot didn't see the new
+    // annotation in ``seen``). Net effect: shapeSig is set so the next
+    // reconcile short-circuits — the annotation exists in the store
+    // and the Graphics object lives in ``gfxMap``, but it's detached
+    // from the scene. The user sees an "invisible" polygon until a
+    // hover-driven signature change forces a redraw.
+    //
+    // Fix: serialize reconciles via a single-slot pending queue.
+    //   * If no reconcile is running, run one immediately.
+    //   * If one is running, mark "dirty" and run exactly ONE more
+    //     when it finishes (collapses storms of subscriber fires).
+    let running = false;
+    let pending = false;
+    const runReconcile = async () => {
+      if (running) {
+        pending = true;
+        return;
+      }
+      running = true;
+      try {
+        do {
+          pending = false;
+          if (!mounted) return;
+          await reconcile(useAnnotations.getState());
+        } while (pending && mounted);
+      } finally {
+        running = false;
+      }
+    };
+
+    void runReconcile();
     const unsubA = useAnnotations.subscribe(() => {
       // v3.24.15 — read fresh state on each fire instead of using the
       // snapshot Zustand passes to the listener. `reconcile` is async
@@ -1834,28 +1873,28 @@ export function AnnotationCanvas({
       // quick succession the closure'd snapshot can be older than
       // what's on disk by the time the await resolves, causing
       // already-removed labels to be re-rendered into shapeLayer.
-      void reconcile(useAnnotations.getState());
+      void runReconcile();
     });
     const unsubT = useTool.subscribe(() => {
-      void reconcile(useAnnotations.getState());
+      void runReconcile();
     });
     // Re-render when editor settings change (opacity, colorBy, font size,
     // smoothImage, canvasBgColor — see Settings dialog).
     const unsubS = useEditorSettings.subscribe(() => {
-      void reconcile(useAnnotations.getState());
+      void runReconcile();
     });
     // Re-render when the active annotation filter changes (v2.6).
     // Without this, applying a filter via the dialog wouldn't trigger
     // a reconcile pass — the canvas would only update on the next
     // unrelated state change.
     const unsubF = useFilter.subscribe(() => {
-      void reconcile(useAnnotations.getState());
+      void runReconcile();
     });
     // Plan-09 Phase 5 Task 4 — re-render when the prev-revision compare
     // bridge (hovered / pinned ids) changes. Subscribed here so a
     // hover-on/off in <ReviewPanel> repaints the dashed overlay.
     const unsubC = useReviewCompare.subscribe(() => {
-      void reconcile(useAnnotations.getState());
+      void runReconcile();
     });
     return () => {
       mounted = false;
