@@ -780,7 +780,7 @@ def sam_status() -> StatusOut:
       error   — last load attempt failed; ``error`` carries the detail
     """
     from carve_model.sam.lifecycle import manager
-    from carve_model.sam.predictor import get_vlm_fo1_filter, get_visual_predictor
+    from carve_model.sam.predictor import get_vlm_fo1_filter
 
     # Task 3.6 — the lifecycle manager is the single source of truth for
     # load state. Every router endpoint (encode/decode/switch/unload/…)
@@ -802,14 +802,14 @@ def sam_status() -> StatusOut:
     except Exception:  # noqa: BLE001
         pass
 
-    # Check if visual prompts are available (requires SAM 3.1 + factory).
-    visual_prompt_available = False
-    if get_sam_model() == "sam3.1":
-        try:
-            get_visual_predictor()
-            visual_prompt_available = True
-        except RuntimeError:
-            pass
+    # Visual-prompt capability gate: ask the active variant directly.
+    # After Phase 6 (sam3_adapter deletion) nothing registers the legacy
+    # _VISUAL_PREDICTOR_FACTORY in production, so the old factory probe
+    # always returned False — hiding the Visual tab in the editor even
+    # though /sam/visual-prompt worked end-to-end. The manager's variant
+    # is the single source of truth for capability.
+    _v = manager._test_variant or manager._active
+    visual_prompt_available = bool(_v and getattr(_v, "supports_visual", False))
 
     # The new lifecycle.LoadState does not carry progress_bytes /
     # progress_total / job_id — those were UI hints wired up to the
