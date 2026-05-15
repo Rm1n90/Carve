@@ -18,13 +18,13 @@
  *   - react-query invalidation of ["sam-active"]
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Check, Layers, Sparkles } from "lucide-react";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
-import { modelsApi, type SamLoadStatus } from "@/api/phase2";
+import { modelsApi } from "@/api/phase2";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { ModelLoadingOverlay } from "./ModelLoadingOverlay";
@@ -76,78 +76,24 @@ export function SamVariantSwitcher({
   // immediately (before the 202 response comes back) and onSuccess can
   // keep it open for status polling.
   const [overlayOpen, setOverlayOpen] = useState(false);
-
-  // Background poll for switch completion. Lives at the switcher level
-  // — NOT inside the overlay — so dismissing the overlay with
-  // "Continue without waiting" does not silence the ready/error
-  // notification. The "carve:sam-variant-ready" window event + the
-  // "SAM <variant> ready" toast both originate here, exactly once per
-  // terminal transition.
-  const [switchInFlight, setSwitchInFlight] = useState(false);
-  const lastStateRef = useRef<string | null>(null);
-  const statusPollQ = useQuery<SamLoadStatus>({
-    queryKey: ["sam-switch-poll"],
-    queryFn: () => modelsApi.samStatus(),
-    enabled: switchInFlight,
-    refetchInterval: switchInFlight ? 1500 : false,
-    refetchIntervalInBackground: false,
-    staleTime: 0,
-  });
-  const pollState = statusPollQ.data?.state;
-  const pollVariant = statusPollQ.data?.variant;
-  const pollError = statusPollQ.data?.error;
-  useEffect(() => {
-    if (!switchInFlight) {
-      lastStateRef.current = null;
-      return;
-    }
-    const prev = lastStateRef.current;
-    if (pollState && pollState !== prev) {
-      lastStateRef.current = pollState;
-      if (pollState === "ready") {
-        setSwitchInFlight(false);
-        const variant = pollVariant ?? pendingVariant ?? null;
-        window.dispatchEvent(
-          new CustomEvent("carve:sam-variant-ready", {
-            detail: { variant },
-          }),
-        );
-        if (variant) {
-          showToast(`SAM ${variant} ready`, {
-            variant: "success",
-            duration: 2200,
-          });
-        }
-        void qc.invalidateQueries({ queryKey: ["sam-active"] });
-      } else if (pollState === "error") {
-        setSwitchInFlight(false);
-        const detail = pollError || "model_load_failed";
-        if (detail && detail !== "model_load_failed") {
-          showToast(`SAM load failed: ${detail}`, { variant: "error" });
-        } else {
-          showToast("SAM load failed. Try switching variants again.", {
-            variant: "error",
-          });
-        }
-      }
-    }
-  }, [switchInFlight, pollState, pollVariant, pollError, pendingVariant, qc]);
+  // The ready/error toast + ``carve:sam-variant-ready`` event are
+  // emitted by ``SamSwitchWatcher`` (mounted in AppShell/AppShellBleed)
+  // so they survive this component being unmounted — the compact
+  // switcher lives inside a popover that closes the moment the user
+  // clicks outside it. ``onMutate`` below still dispatches
+  // ``carve:sam-variant-switching`` so the watcher knows to start
+  // polling.
 
   const switchM = useMutation({
     mutationFn: (next: string) => modelsApi.samSetActive(next),
     onMutate: (next) => {
       setPendingVariant(next);
       setOverlayOpen(true);
-      // Start the background poll so the ready/error notification
-      // survives the overlay being dismissed.
-      lastStateRef.current = null;
-      setSwitchInFlight(true);
-      // Broadcast switch-start so the canvas can invalidate its
-      // SamTool encoding cache immediately — the old image hash is
-      // tied to the previous variant's embedding and will round-trip
-      // as a 409 on the first post-switch click. Pre-empting the
-      // round-trip means the next click goes straight to encode +
-      // decode against the new model with no flicker.
+      // Broadcast switch-start. The canvas listens to invalidate the
+      // SamTool encoding cache (the old image hash is tied to the
+      // previous variant). ``SamSwitchWatcher`` in AppShell listens
+      // to start its own ready/error background poll — surviving any
+      // unmount of this popover-hosted component.
       window.dispatchEvent(
         new CustomEvent("carve:sam-variant-switching", {
           detail: { variant: next },
@@ -168,7 +114,6 @@ export function SamVariantSwitcher({
     onError: () => {
       showToast("Failed to switch SAM variant", { variant: "error" });
       setOverlayOpen(false);
-      setSwitchInFlight(false);
     },
     onSettled: () => {
       setPendingVariant(null);
