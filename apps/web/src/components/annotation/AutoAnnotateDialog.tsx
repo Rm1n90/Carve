@@ -38,6 +38,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { ensureSamReady } from "@/lib/samConvert";
+import { currentPolygonEpsilonFactor } from "@/lib/polygon-approx";
 import { inferenceErrorMessage } from "@/lib/inferenceErrors";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
 import { useDialogPrefs } from "@/state/dialogPrefs";
@@ -476,6 +477,12 @@ export function AutoAnnotateDialog({
       // supports it AND the user opted in. Sending the flag to a server
       // without the capability is harmless but pointless.
       const wireUseVlmFo1 = vlmFo1Available && useVlmFo1;
+      // Read the polygon-approximation slider at SEND time (the user
+      // may have nudged it between opening the dialog and clicking
+      // Run). Without this the auto-annotate path used the model
+      // service default regardless of the slider — the bug Armin
+      // reported when setting 25 or 75 produced no visible change.
+      const epsilonFactor = currentPolygonEpsilonFactor();
       if (scope === "all") {
         if (!taskId) throw new Error("no_task");
         const r = await samApi.autoTextBatch(taskId, {
@@ -484,6 +491,7 @@ export function AutoAnnotateDialog({
           find_all: findAll,
           overwrite,
           iou_threshold: iouThreshold,
+          epsilon_factor: epsilonFactor,
           ...(wireUseVlmFo1 ? { use_vlm_fo1: true } : {}),
         });
         return { kind: "batch", job_id: r.job_id } as const;
@@ -495,6 +503,7 @@ export function AutoAnnotateDialog({
         find_all: findAll,
         overwrite,
         iou_threshold: iouThreshold,
+        epsilon_factor: epsilonFactor,
         ...(wireUseVlmFo1 ? { use_vlm_fo1: true } : {}),
       });
       return { kind: "sync", ...r } as const;
@@ -1595,6 +1604,9 @@ function VisualBody({
         threshold,
         find_all: findAll,
         overwrite,
+        // Honour the editor's "Polygon approximation points" slider
+        // for visual-prompt auto-annotate too. Mirrors the text path.
+        epsilon_factor: currentPolygonEpsilonFactor(),
       };
       // v3.30 — pre-flight SAM load. Mirrors the text-mode Run path
       // so the visual flow never 503s on a cold backend.

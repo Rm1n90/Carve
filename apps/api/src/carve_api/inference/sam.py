@@ -234,6 +234,7 @@ def sam_text_prompt_for_asset(
     *,
     use_vlm_fo1: bool = False,
     threshold: float | None = None,
+    epsilon_factor: float | None = None,
 ) -> list[dict]:
     """SAM 3 text-prompt entry point.
 
@@ -254,7 +255,11 @@ def sam_text_prompt_for_asset(
     b64 = base64.b64encode(body).decode("ascii")
     try:
         return sam_text_prompt(
-            b64, text, use_vlm_fo1=use_vlm_fo1, threshold=threshold,
+            b64,
+            text,
+            use_vlm_fo1=use_vlm_fo1,
+            threshold=threshold,
+            epsilon_factor=epsilon_factor,
         )
     except ModelServiceError as exc:
         raise _translate_model_error(exc, label="text-prompt") from exc
@@ -266,6 +271,8 @@ def sam_box_prompt_for_asset(
     box_labels: list[int],
     text: str | None = None,
     frame_id: uuid.UUID | None = None,
+    *,
+    epsilon_factor: float | None = None,
 ) -> list[dict]:
     """SAM 3 box-prompt entry point.
 
@@ -280,7 +287,13 @@ def sam_box_prompt_for_asset(
     body = fetch_asset_bytes(asset, frame_id=frame_id)
     b64 = base64.b64encode(body).decode("ascii")
     try:
-        return sam_box_prompt(b64, boxes, box_labels, text=text)
+        return sam_box_prompt(
+            b64,
+            boxes,
+            box_labels,
+            text=text,
+            epsilon_factor=epsilon_factor,
+        )
     except ModelServiceError as exc:
         raise _translate_model_error(exc, label="box-prompt") from exc
 
@@ -294,6 +307,7 @@ def sam_visual_prompt_for_asset(
     text_hint: str | None = None,
     target_frame_id: uuid.UUID | None = None,
     refer_frame_id: uuid.UUID | None = None,
+    epsilon_factor: float | None = None,
 ) -> list[dict]:
     """SAM 3.1 visual-prompt entry point.
 
@@ -320,6 +334,7 @@ def sam_visual_prompt_for_asset(
             target_b64=target_b64,
             threshold=threshold,
             text_hint=text_hint,
+            epsilon_factor=epsilon_factor,
         )
     except ModelServiceError as exc:
         raise _translate_model_error(exc, label="visual-prompt") from exc

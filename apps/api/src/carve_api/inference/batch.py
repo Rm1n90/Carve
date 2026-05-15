@@ -397,6 +397,10 @@ class AutoTextBatchPayload:
     # default. Default None so payloads pickled before this field
     # existed still deserialize via the dataclass default.
     iou_threshold: float | None = None
+    # Douglas-Peucker tolerance for the polygon simplification. None
+    # keeps the polygonize default. Default None preserves backwards
+    # compat with payloads pickled before this field existed.
+    epsilon_factor: float | None = None
 
 
 def build_auto_text_payload(
@@ -409,6 +413,7 @@ def build_auto_text_payload(
     overwrite: bool,
     use_vlm_fo1: bool = False,
     iou_threshold: float | None = None,
+    epsilon_factor: float | None = None,
 ) -> AutoTextBatchPayload:
     return AutoTextBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -421,6 +426,9 @@ def build_auto_text_payload(
         use_vlm_fo1=bool(use_vlm_fo1),
         iou_threshold=(
             float(iou_threshold) if iou_threshold is not None else None
+        ),
+        epsilon_factor=(
+            float(epsilon_factor) if epsilon_factor is not None else None
         ),
     )
 
@@ -513,6 +521,7 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
                         actor_id=actor_uuid,
                         use_vlm_fo1=getattr(payload, "use_vlm_fo1", False),
                         iou_threshold=getattr(payload, "iou_threshold", None),
+                        epsilon_factor=getattr(payload, "epsilon_factor", None),
                     ),
                     redis_client=redis_client,
                     job_id=payload.job_id,
@@ -598,6 +607,10 @@ class AutoVisualBatchPayload:
     threshold: float
     find_all: bool
     overwrite: bool
+    # Douglas-Peucker tolerance for polygon simplification. None keeps
+    # the polygonize default. Default None preserves backwards compat
+    # with payloads pickled before this field existed.
+    epsilon_factor: float | None = None
 
 
 def build_auto_visual_payload(
@@ -609,6 +622,7 @@ def build_auto_visual_payload(
     threshold: float,
     find_all: bool,
     overwrite: bool,
+    epsilon_factor: float | None = None,
 ) -> AutoVisualBatchPayload:
     return AutoVisualBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -619,6 +633,9 @@ def build_auto_visual_payload(
         threshold=float(threshold),
         find_all=bool(find_all),
         overwrite=bool(overwrite),
+        epsilon_factor=(
+            float(epsilon_factor) if epsilon_factor is not None else None
+        ),
     )
 
 
@@ -690,6 +707,7 @@ def run_auto_visual_batch(payload: AutoVisualBatchPayload) -> dict:
                         find_all=payload.find_all,
                         overwrite=payload.overwrite,
                         actor_id=actor_uuid,
+                        epsilon_factor=getattr(payload, "epsilon_factor", None),
                     ),
                     redis_client=redis_client,
                     job_id=payload.job_id,

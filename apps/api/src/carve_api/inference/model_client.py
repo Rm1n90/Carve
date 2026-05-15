@@ -220,6 +220,7 @@ def sam_text_prompt(
     *,
     use_vlm_fo1: bool = False,
     threshold: float | None = None,
+    epsilon_factor: float | None = None,
 ) -> list[dict]:
     """POST /sam/text-prompt — SAM 3 only.
 
@@ -244,6 +245,8 @@ def sam_text_prompt(
         body["use_vlm_fo1"] = True
     if threshold is not None:
         body["threshold"] = float(threshold)
+    if epsilon_factor is not None:
+        body["epsilon_factor"] = float(epsilon_factor)
     with _wrap_unreachable("sam_text_prompt"), _client() as c:
         r = c.post("/sam/text-prompt", json=body)
         if r.status_code >= 400:
@@ -258,6 +261,7 @@ def sam_visual_prompt(
     target_b64: str,
     threshold: float | None = None,
     text_hint: str | None = None,
+    epsilon_factor: float | None = None,
 ) -> list[dict]:
     """POST /sam/visual-prompt — SAM 3.1 cosine-similarity visual prompt.
 
@@ -281,6 +285,8 @@ def sam_visual_prompt(
         body["threshold"] = float(threshold)
     if text_hint:
         body["text_hint"] = str(text_hint)
+    if epsilon_factor is not None:
+        body["epsilon_factor"] = float(epsilon_factor)
     with _wrap_unreachable("sam_visual_prompt"), _client() as c:
         r = c.post("/sam/visual-prompt", json=body)
         if r.status_code >= 400:
@@ -456,6 +462,8 @@ def sam_box_prompt(
     boxes: list[list[float]],
     box_labels: list[int],
     text: str | None = None,
+    *,
+    epsilon_factor: float | None = None,
 ) -> list[dict]:
     """POST /sam/box-prompt — SAM 3 only (one-shot).
 
@@ -471,6 +479,8 @@ def sam_box_prompt(
     }
     if text is not None:
         body["text"] = text
+    if epsilon_factor is not None:
+        body["epsilon_factor"] = float(epsilon_factor)
     with _wrap_unreachable("sam_box_prompt"), _client() as c:
         r = c.post("/sam/box-prompt", json=body)
         if r.status_code >= 400:

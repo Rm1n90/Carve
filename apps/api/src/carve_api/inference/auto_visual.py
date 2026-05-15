@@ -51,6 +51,7 @@ def auto_visual_for_asset(
     find_all: bool,
     overwrite: bool,
     actor_id: uuid.UUID | None,
+    epsilon_factor: float | None = None,
 ) -> dict:
     """Run SAM 3.1 visual prompt for each (source asset, class) group.
 
@@ -137,6 +138,7 @@ def auto_visual_for_asset(
                 regions=grp["refs"],
                 threshold=threshold,
                 text_hint=text_hint or None,
+                epsilon_factor=epsilon_factor,
             )
             kept = [r for r in results if float(r.get("score", 0.0)) >= threshold]
             if not find_all and kept:

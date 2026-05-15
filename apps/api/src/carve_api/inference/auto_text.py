@@ -126,6 +126,7 @@ def auto_text_for_asset(
     actor_id: uuid.UUID | None,
     use_vlm_fo1: bool = False,
     iou_threshold: float | None = None,
+    epsilon_factor: float | None = None,
 ) -> dict:
     """Run SAM 3 text-prompt for each selected class and persist results.
 
@@ -211,6 +212,7 @@ def auto_text_for_asset(
                 fragment,
                 use_vlm_fo1=use_vlm_fo1,
                 threshold=float(threshold),
+                epsilon_factor=epsilon_factor,
             )
             results.extend(frag_results)
 

@@ -404,6 +404,10 @@ class SamAutoTextBatchIn(BaseModel):
     # Mirrors SamAutoTextIn — bbox-IoU floor for the per-class NMS dedup
     # pass. None = server default. The worker propagates it per-asset.
     iou_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Mirrors SamAutoTextIn — Douglas-Peucker tolerance for the polygon
+    # simplification. Persists into the batch payload so each per-asset
+    # iteration uses the user's slider setting.
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
 
 
 @task_inference_router.post("/{task_id}/sam/auto-text-batch")
@@ -448,6 +452,7 @@ def enqueue_sam_auto_text_batch(
         overwrite=payload.overwrite,
         use_vlm_fo1=payload.use_vlm_fo1,
         iou_threshold=payload.iou_threshold,
+        epsilon_factor=payload.epsilon_factor,
     )
     # Enqueue MUST surface failures loudly. Previously this was a
     # best-effort try/except that silently swallowed every error and
@@ -652,6 +657,11 @@ class SamAutoTextIn(BaseModel):
     # values around 0.30–0.50 are aggressive. Surfaced in the dialog
     # so operators can dial dedup strictness per class workload.
     iou_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Douglas-Peucker tolerance for the returned polygons. Maps from
+    # the editor's "Polygon approximation points" slider; ``None``
+    # keeps the polygonize default. Mirrors the /sam/decode contract
+    # so the slider affects auto-annotate output too.
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
 
 
 class SamAutoTextOut(BaseModel):
@@ -682,6 +692,8 @@ class SamAutoVisualIn(BaseModel):
     threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     find_all: bool = Field(default=True)
     overwrite: bool = Field(default=False)
+    # Douglas-Peucker tolerance — see ``SamAutoTextIn.epsilon_factor``.
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
 
 
 class SamAutoVisualOut(BaseModel):
@@ -741,6 +753,7 @@ def sam_auto_text_endpoint(
             actor_id=user.id,
             use_vlm_fo1=payload.use_vlm_fo1,
             iou_threshold=payload.iou_threshold,
+            epsilon_factor=payload.epsilon_factor,
         )
     except AutoTextNoEligibleClasses as exc:
         raise _http(exc) from exc
@@ -819,6 +832,7 @@ def sam_auto_visual_endpoint(
             find_all=payload.find_all,
             overwrite=payload.overwrite,
             actor_id=user.id,
+            epsilon_factor=payload.epsilon_factor,
         )
     except (AutoVisualMixedRefs, AutoVisualNoClass, AutoVisualNoRefs) as exc:
         raise _http(exc) from exc
@@ -870,6 +884,7 @@ def enqueue_sam_auto_visual_batch(
         threshold=payload.threshold,
         find_all=payload.find_all,
         overwrite=payload.overwrite,
+        epsilon_factor=payload.epsilon_factor,
     )
     from rq import Queue
     from carve_api.jobs.queue import enqueue_with_defaults

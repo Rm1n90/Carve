@@ -452,6 +452,11 @@ class TextPromptIn(BaseModel):
     # so "obvious" objects with mid-range scores were never surfaced.
     # ``None`` preserves the legacy hardcoded defaults for older callers.
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Douglas-Peucker tolerance for the returned polygon. Mirrors the
+    # /sam/decode contract so the editor's "Polygon approximation
+    # points" slider affects auto-annotate output too (previously this
+    # path ignored the slider). ``None`` keeps the polygonize default.
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
 
 
 class TextPromptOut(BaseModel):
@@ -491,6 +496,9 @@ class VisualPromptIn(BaseModel):
     # v3.28 — fallback text concept when FO1 captioning fails or returns
     # blank. The api supplies the project class's text_prompt or name.
     text_hint: str | None = Field(default=None, max_length=300)
+    # Douglas-Peucker tolerance for the returned polygon — see
+    # TextPromptIn.epsilon_factor for the full rationale.
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
 
 
 class VisualPromptOut(BaseModel):
@@ -522,14 +530,17 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
                     status_code=409,
                     detail="text_prompt_not_supported_for_variant",
                 )
-            # Forward use_vlm_fo1 / threshold only when the client
-            # supplied them so older factories whose signatures predate
-            # the kwargs keep working — they're called exactly as before.
+            # Forward use_vlm_fo1 / threshold / epsilon_factor only when
+            # the client supplied them so older factories whose
+            # signatures predate the kwargs keep working — they're
+            # called exactly as before.
             kwargs: dict = {"image_b64": payload.image_b64, "text": payload.text}
             if payload.use_vlm_fo1:
                 kwargs["use_vlm_fo1"] = True
             if payload.threshold is not None:
                 kwargs["threshold"] = payload.threshold
+            if payload.epsilon_factor is not None:
+                kwargs["epsilon_factor"] = payload.epsilon_factor
             with admit(CostClass.SAM_TEXT):
                 return sam.predict_text(**kwargs)
     except SamNotReadyError as e:
@@ -555,6 +566,9 @@ class BoxPromptIn(BaseModel):
     boxes: list[list[float]] = Field(min_length=1)  # each [x1, y1, x2, y2]
     box_labels: list[int] = Field(min_length=1)     # 1=positive, 0=negative
     text: str | None = Field(default=None, max_length=200)
+    # Douglas-Peucker tolerance for the returned polygon — see
+    # TextPromptIn.epsilon_factor for the full rationale.
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
 
 
 class BoxPromptOut(BaseModel):
@@ -594,12 +608,15 @@ def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
                     detail="box_prompt_not_supported_for_variant",
                 )
             with admit(CostClass.SAM_BOX):
-                return sam.predict_box(
-                    image_b64=payload.image_b64,
-                    boxes=payload.boxes,
-                    box_labels=payload.box_labels,
-                    text=payload.text,
-                )
+                box_kwargs: dict = {
+                    "image_b64": payload.image_b64,
+                    "boxes": payload.boxes,
+                    "box_labels": payload.box_labels,
+                    "text": payload.text,
+                }
+                if payload.epsilon_factor is not None:
+                    box_kwargs["epsilon_factor"] = payload.epsilon_factor
+                return sam.predict_box(**box_kwargs)
     except SamNotReadyError as e:
         err_msg = manager.status().error
         raise HTTPException(
@@ -636,13 +653,16 @@ def sam_visual_prompt(payload: VisualPromptIn) -> list[dict]:
                 )
             regions = [r.model_dump(exclude_none=True) for r in payload.regions]
             with admit(CostClass.SAM_VISUAL):
-                return sam.predict_visual(
-                    target_b64=payload.target_b64,
-                    refer_b64=payload.refer_b64,
-                    regions=regions,
-                    threshold=payload.threshold,
-                    text_hint=payload.text_hint,
-                )
+                visual_kwargs: dict = {
+                    "target_b64": payload.target_b64,
+                    "refer_b64": payload.refer_b64,
+                    "regions": regions,
+                    "threshold": payload.threshold,
+                    "text_hint": payload.text_hint,
+                }
+                if payload.epsilon_factor is not None:
+                    visual_kwargs["epsilon_factor"] = payload.epsilon_factor
+                return sam.predict_visual(**visual_kwargs)
     except SamNotReadyError as e:
         err_msg = manager.status().error
         raise HTTPException(

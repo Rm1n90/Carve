@@ -60,6 +60,10 @@ export interface SamAutoVisualBody {
   threshold: number;
   find_all: boolean;
   overwrite: boolean;
+  // Douglas-Peucker tolerance from the editor's polygon-approximation
+  // slider; omitted keeps the polygonize default. Persists into the
+  // RQ batch payload via autoVisualBatch too.
+  epsilon_factor?: number;
 }
 export interface SamAutoVisualResult {
   annotations_created: number;
@@ -122,6 +126,10 @@ export const samApi = {
     text: string,
     frameId?: string | null,
     useVlmFo1?: boolean,
+    // Douglas-Peucker tolerance for the returned polygon, derived from
+    // the editor's "Polygon approximation points" slider. ``null`` /
+    // omitted keeps the model service default.
+    epsilonFactor?: number | null,
   ): Promise<SamPromptResult[]> => {
     const body: Record<string, unknown> = { text };
     if (frameId) {
@@ -132,6 +140,9 @@ export const samApi = {
     // compatible because the field is simply absent.
     if (useVlmFo1) {
       body.use_vlm_fo1 = true;
+    }
+    if (epsilonFactor != null) {
+      body.epsilon_factor = epsilonFactor;
     }
     return (
       await api.post<SamPromptResult[]>(
@@ -159,6 +170,9 @@ export const samApi = {
       // Bbox-IoU floor for the per-class NMS dedup pass. Omitted →
       // server uses its default (0.70). 1.0 effectively disables NMS.
       iou_threshold?: number;
+      // Douglas-Peucker tolerance from the editor's polygon-
+      // approximation slider; omitted keeps the polygonize default.
+      epsilon_factor?: number;
     },
   ): Promise<{
     annotations_created: number;
@@ -192,6 +206,10 @@ export const samApi = {
       // pass. Persists into the RQ payload so every per-asset
       // iteration honors the same overlap setting.
       iou_threshold?: number;
+      // Mirrors autoText — Douglas-Peucker tolerance for the polygon
+      // simplification. Persists into the RQ payload so every
+      // per-asset iteration honors the slider setting.
+      epsilon_factor?: number;
     },
   ): Promise<{ job_id: string }> =>
     (
@@ -241,6 +259,9 @@ export const samApi = {
     boxLabels: number[],
     text?: string,
     frameId?: string | null,
+    // Douglas-Peucker tolerance from the editor slider; omitted keeps
+    // the polygonize default.
+    epsilonFactor?: number | null,
   ): Promise<SamPromptResult[]> => {
     const body: Record<string, unknown> = {
       boxes,
@@ -248,6 +269,7 @@ export const samApi = {
     };
     if (text !== undefined) body.text = text;
     if (frameId) body.frame_id = frameId;
+    if (epsilonFactor != null) body.epsilon_factor = epsilonFactor;
     return (
       await api.post<SamPromptResult[]>(
         `/assets/${assetId}/sam/box-prompt`,

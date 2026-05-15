@@ -381,6 +381,7 @@ class Sam3p1Variant:
         text: str,
         threshold: float | None = None,
         use_vlm_fo1: bool = False,
+        epsilon_factor: float | None = None,
     ) -> list[dict]:
         """Run a text prompt and return [{counts, size, score, bbox, polygon}, ...]
         sorted by score desc.
@@ -388,6 +389,13 @@ class Sam3p1Variant:
         Uses self._adapter — the same instance as predict_point. No second
         Sam3p1NativeImagePredictorAdapter is built; this is the structural
         fix for the double-load OOM bug.
+
+        ``epsilon_factor`` is the Douglas-Peucker simplification tolerance
+        the editor sends from its "Polygon approximation points" slider
+        (0..100 → 0.01..0.0001 via the frontend formula). ``None`` keeps
+        the polygonize default. Previously this auto-annotate path
+        ignored the slider — the bug Armin reported when setting 25 or
+        75 had no visible effect on auto-annotated polygons.
         """
         if self._adapter is None:
             raise RuntimeError("Sam3p1Variant.predict_text called before load()")
@@ -441,7 +449,7 @@ class Sam3p1Variant:
         rows: list[dict] = []
         for i, (mask_np, score) in enumerate(detections):
             counts, size = encode_mask_rle(mask_np)
-            polygon = mask_to_polygon(mask_np)
+            polygon = mask_to_polygon(mask_np, epsilon_factor=epsilon_factor)
             if boxes_np is not None and i < len(boxes_np):
                 bbox = [float(x) for x in boxes_np[i].tolist()]
             else:
@@ -524,6 +532,7 @@ class Sam3p1Variant:
         boxes: list[list[float]],
         box_labels: list[int],
         text: str | None = None,
+        epsilon_factor: float | None = None,
     ) -> list[dict]:
         """For each positive box (label=1), run predict_inst with
         multimask_output=False and keep the resulting mask. Optional text
@@ -531,6 +540,10 @@ class Sam3p1Variant:
         boxes (label=0) subtract from the union of positive masks.
 
         Uses self._adapter — same instance as predict_point/predict_text.
+
+        ``epsilon_factor`` — Douglas-Peucker tolerance from the editor's
+        polygon-approximation slider; ``None`` keeps the polygonize
+        default. See ``predict_text`` for the full rationale.
         """
         if self._adapter is None:
             raise RuntimeError("Sam3p1Variant.predict_box called before load()")
@@ -597,7 +610,7 @@ class Sam3p1Variant:
             positive_masks, positive_scores, positive_boxes, strict=False,
         ):
             counts, size = encode_mask_rle(mask_np)
-            polygon = mask_to_polygon(mask_np)
+            polygon = mask_to_polygon(mask_np, epsilon_factor=epsilon_factor)
             rows.append({
                 "counts": counts,
                 "size": size,
@@ -680,6 +693,7 @@ class Sam3p1Variant:
         regions: list[dict],
         threshold: float | None = None,
         text_hint: str | None = None,  # noqa: ARG002 — kept for API parity
+        epsilon_factor: float | None = None,
     ) -> list[dict]:
         """SAM 3.1 visual prompt via CLIP image-image similarity.
 
@@ -732,6 +746,7 @@ class Sam3p1Variant:
             target=target,
             ref_stack=ref_stack,
             threshold=threshold,
+            epsilon_factor=epsilon_factor,
         )
 
     def _run_visual_inference(
@@ -740,6 +755,7 @@ class Sam3p1Variant:
         target: Any,
         ref_stack: Any,
         threshold: float | None,
+        epsilon_factor: float | None = None,
     ) -> list[dict]:
         """Run SAM 3.1 proposals on target + CLIP-score against ref_stack.
 
@@ -916,7 +932,7 @@ class Sam3p1Variant:
             if m.sum() == 0:
                 continue
             counts, size = encode_mask_rle(m)
-            polygon = mask_to_polygon(m)
+            polygon = mask_to_polygon(m, epsilon_factor=epsilon_factor)
             ys, xs = np.where(m)
             tight_bbox = [
                 float(xs.min()), float(ys.min()),
@@ -959,9 +975,19 @@ def encode_mask_rle(mask_np: Any) -> tuple[str, list[int]]:
     return _impl(mask_np)
 
 
-def mask_to_polygon(mask_np: Any) -> list:
+def mask_to_polygon(
+    mask_np: Any,
+    *,
+    epsilon_factor: float | None = None,
+) -> list:
+    """Wrapper used by the auto-annotate paths (predict_text/box/visual)
+    so they honour the editor's "Polygon approximation points" slider.
+    ``None`` keeps the polygonize default; otherwise the value is
+    forwarded as the Douglas-Peucker tolerance."""
     from carve_model.sam.polygonize import mask_to_polygon as _impl
-    return _impl(mask_np)
+    if epsilon_factor is None:
+        return _impl(mask_np)
+    return _impl(mask_np, epsilon_factor=epsilon_factor)
 
 
 def to_numpy_safe(x: Any) -> Any:
