@@ -38,6 +38,7 @@ import {
   Info,
   Crosshair,
   Search,
+  BoxSelect,
 } from "lucide-react";
 import { EditorSettingsDialog } from "@/components/annotation/EditorSettingsDialog";
 import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog";
@@ -243,6 +244,25 @@ interface EditorToolbarProps {
    * via the annotations store. Hidden when the page hasn't wired it in.
    */
   onClearFrame?: () => void;
+  /**
+   * Converts every polygon on the current frame/image to its enclosing
+   * axis-aligned bounding box. Wired by the page; confirm + toast live
+   * at the call-site so the toolbar stays pure UI.
+   */
+  onConvertPolygonsOnImage?: () => void;
+  /**
+   * Converts every polygon across every asset in this task to its
+   * enclosing bounding box (task-wide). Slower than the per-image
+   * variant — the call-site usually shows a count-aware confirm dialog
+   * before invoking.
+   */
+  onConvertPolygonsInTask?: () => void;
+  /**
+   * Polygon count on the current frame. Drives the disabled state +
+   * count badge on the per-image menu item. ``undefined`` hides the
+   * count (treated as 0 for the disabled check).
+   */
+  polygonCountOnImage?: number;
   zoomPct?: number;
   /** Only present when an asset is open. */
   projectId?: string;
@@ -2589,6 +2609,9 @@ export function EditorToolbar({
   onAfterYoloPredict,
   classes: classesProp,
   rightSlot,
+  onConvertPolygonsOnImage,
+  onConvertPolygonsInTask,
+  polygonCountOnImage = 0,
 }: EditorToolbarProps) {
   const active = useTool((s) => s.active);
   const setActive = useTool((s) => s.setActive);
@@ -2866,6 +2889,79 @@ export function EditorToolbar({
             <Eraser className="h-[16px] w-[16px]" />
           </button>
         </Tooltip>
+      )}
+
+      {(onConvertPolygonsOnImage || onConvertPolygonsInTask) && (
+        <DropdownMenu.Root>
+          <Tooltip content="Convert polygons → bbox">
+            <DropdownMenu.Trigger asChild>
+              <button
+                type="button"
+                aria-label="Convert polygons to bounding boxes"
+                data-testid="convert-polygons-trigger"
+                className="grid h-8 w-8 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] transition-colors duration-[180ms] ease-out hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]"
+              >
+                <BoxSelect className="h-[16px] w-[16px]" />
+              </button>
+            </DropdownMenu.Trigger>
+          </Tooltip>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={6}
+              data-testid="convert-polygons-content"
+              className={cn(
+                "z-[1000] min-w-[240px] rounded-[var(--radius-6)] p-1",
+                "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                "shadow-[var(--shadow-card)]",
+              )}
+            >
+              {onConvertPolygonsOnImage && (
+                <DropdownMenu.Item
+                  data-testid="convert-polygons-on-image"
+                  disabled={polygonCountOnImage === 0}
+                  onSelect={(e) => {
+                    if (polygonCountOnImage === 0) {
+                      e.preventDefault();
+                      return;
+                    }
+                    onConvertPolygonsOnImage();
+                  }}
+                  className={cn(
+                    "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] outline-none",
+                    "data-[highlighted]:bg-[var(--bg-hover)]",
+                    "data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed",
+                    polygonCountOnImage > 0
+                      ? "cursor-pointer text-[color:var(--text-primary)]"
+                      : "text-[color:var(--text-tertiary)]",
+                  )}
+                >
+                  <BoxSelect className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                  <span className="flex-1">Convert polygons on this image</span>
+                  {polygonCountOnImage > 0 && (
+                    <span className="font-mono text-[10.5px] tabular-nums text-[color:var(--text-tertiary)]">
+                      {polygonCountOnImage}
+                    </span>
+                  )}
+                </DropdownMenu.Item>
+              )}
+              {onConvertPolygonsInTask && (
+                <DropdownMenu.Item
+                  data-testid="convert-polygons-in-task"
+                  onSelect={() => onConvertPolygonsInTask()}
+                  className={cn(
+                    "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none",
+                    "text-[color:var(--text-primary)]",
+                    "data-[highlighted]:bg-[var(--bg-hover)]",
+                  )}
+                >
+                  <BoxSelect className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                  <span className="flex-1">Convert polygons in all assets…</span>
+                </DropdownMenu.Item>
+              )}
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
       )}
 
       {!isNarrow && (

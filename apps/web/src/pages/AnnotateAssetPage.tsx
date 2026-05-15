@@ -62,7 +62,12 @@ import {
   DialogTitle,
 } from "@/components/ui/Dialog";
 import { annotationsApi, type BatchPayload } from "@/api/annotations";
-import { bulkConvertSelectedToBboxWithToast } from "@/lib/bulkConvert";
+import {
+  bulkConvertSelectedToBboxWithToast,
+  bulkConvertPolygonsOnFrameToBboxWithToast,
+  bulkConvertPolygonsInTaskToBboxWithToast,
+  countPolygonsOnFrame,
+} from "@/lib/bulkConvert";
 import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
@@ -973,6 +978,67 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     );
   }, [confirm]);
 
+  // Live polygon count on the current frame — drives the disabled state
+  // + count badge on the toolbar's "Convert polygons on this image"
+  // menu item. Recomputed on every store mutation so the count stays in
+  // sync as the user draws / deletes polygons.
+  const polygonCountOnImage = useAnnotations((s) => {
+    let n = 0;
+    for (const a of Object.values(s.byId)) {
+      if (a.kind === "polygon" && a.frameId === frameId) n++;
+    }
+    return n;
+  });
+
+  const handleConvertPolygonsOnImage = useCallback(async () => {
+    const fid = frameIdRef.current;
+    const count = countPolygonsOnFrame(fid);
+    if (count === 0) {
+      showToast("No polygons on this image.", { variant: "info" });
+      return;
+    }
+    const ok = await confirm({
+      title: `Convert ${count} polygon${count === 1 ? "" : "s"} to bbox?`,
+      description:
+        "Polygon detail will be replaced with the enclosing axis-aligned bounding box on this image. Cmd+Z can undo individual conversions.",
+      confirmLabel: "Convert",
+    });
+    if (!ok) return;
+    bulkConvertPolygonsOnFrameToBboxWithToast(fid);
+  }, [confirm]);
+
+  const handleConvertPolygonsInTask = useCallback(async () => {
+    if (dirtyCount > 0) {
+      showToast(
+        "Save your unsaved changes before converting all assets.",
+        { variant: "error" },
+      );
+      return;
+    }
+    let polygons;
+    try {
+      const all = await annotationsApi.listForTaskRaw(taskId);
+      polygons = all.filter((a) => a.kind === "polygon");
+    } catch {
+      showToast("Failed to fetch annotations.", { variant: "error" });
+      return;
+    }
+    if (polygons.length === 0) {
+      showToast("No polygons to convert in this task.", { variant: "info" });
+      return;
+    }
+    const ok = await confirm({
+      title: `Convert ${polygons.length} polygon${polygons.length === 1 ? "" : "s"} across this task?`,
+      description:
+        "Every polygon on every asset in this task will be replaced with its enclosing bounding box. This affects assets that aren't currently open and cannot be undone with Cmd+Z.",
+      variant: "danger",
+      confirmLabel: "Convert all",
+    });
+    if (!ok) return;
+    await bulkConvertPolygonsInTaskToBboxWithToast(taskId, polygons);
+    qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+  }, [confirm, dirtyCount, qc, taskId]);
+
   // Ctrl/Cmd+C — copy the currently selected bbox to the clipboard
   // slice. Other kinds (polygon, mask, tag) are intentionally ignored
   // per user request — bboxes are by far the most common case and the
@@ -1294,6 +1360,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             onUndo={() => useAnnotations.getState().undo()}
             onRedo={() => useAnnotations.getState().redo()}
             onClearFrame={handleClearFrame}
+            onConvertPolygonsOnImage={handleConvertPolygonsOnImage}
+            onConvertPolygonsInTask={handleConvertPolygonsInTask}
+            polygonCountOnImage={polygonCountOnImage}
             onAfterYoloPredict={() => {
               qc.invalidateQueries({ queryKey: ["annotations", taskId] });
             }}
