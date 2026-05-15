@@ -1,4 +1,5 @@
 # Armin Mehri — mehri.armin@gmail.com
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -50,6 +51,9 @@ task_inference_router = APIRouter(prefix="/tasks", tags=["auto-annotate"])
 # v3.23 — YOLOE capability probe + (future) any non-asset/task scoped
 # endpoints. Mounted alongside the other two via main.py.
 inference_yoloe_router = APIRouter(prefix="/inference", tags=["yoloe"])
+
+
+log = logging.getLogger(__name__)
 
 
 def _redis_client_or_none() -> Redis | None:
@@ -299,33 +303,36 @@ def enqueue_batch_auto_annotate(
         class_overrides=overrides_for_payload,
     )
 
-    # Best-effort enqueue — if Redis/RQ are not reachable, return the job_id anyway
-    # so callers can poll later when Redis is back up. Production has Redis up by
-    # docker-compose health gates.
+    # Enqueue MUST surface failures loudly — the previous best-effort
+    # try/except returned a phantom job_id when Redis was unreachable
+    # or the RQ enqueue raised. The frontend then polled forever showing
+    # "Initialising…". 503 lets the user retry instead.
+    from rq import Queue
+
+    from carve_api.jobs.queue import enqueue_with_defaults
+
+    client = _redis_client_or_none()
+    if client is None:
+        raise HTTPException(status_code=503, detail="redis_unavailable")
     try:
-        from rq import Queue
-
-        from carve_api.jobs.queue import enqueue_with_defaults
-
-        client = _redis_client_or_none()
-        if client is not None:
-            q = Queue("default", connection=client)
-            # plan-09 task-09 — predict batches can run long; bump
-            # job_timeout to 2h so RQ doesn't reap the worker mid-batch.
-            # v3.22 — pin RQ's job_id to our progress key so the cancel
-            # endpoint can ``send_stop_job_command`` and free the
-            # single-worker queue immediately, instead of waiting for
-            # the in-flight asset's HTTP call to the model service to
-            # return at the next per-asset cancel checkpoint.
-            enqueue_with_defaults(
-                q,
-                run_batch_auto_annotate,
-                payload,
-                job_id=payload.job_id,
-                job_timeout=2 * 3600,
-            )
-    except Exception:
-        pass
+        q = Queue("default", connection=client)
+        # plan-09 task-09 — predict batches can run long; bump
+        # job_timeout to 2h so RQ doesn't reap the worker mid-batch.
+        # v3.22 — pin RQ's job_id to our progress key so the cancel
+        # endpoint can ``send_stop_job_command`` and free the
+        # single-worker queue immediately, instead of waiting for
+        # the in-flight asset's HTTP call to the model service to
+        # return at the next per-asset cancel checkpoint.
+        enqueue_with_defaults(
+            q,
+            run_batch_auto_annotate,
+            payload,
+            job_id=payload.job_id,
+            job_timeout=2 * 3600,
+        )
+    except Exception as exc:
+        log.exception("yolo_batch: enqueue failed")
+        raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     return {"job_id": payload.job_id}
 
 
@@ -429,22 +436,30 @@ def enqueue_sam_auto_text_batch(
         use_vlm_fo1=payload.use_vlm_fo1,
         iou_threshold=payload.iou_threshold,
     )
+    # Enqueue MUST surface failures loudly. Previously this was a
+    # best-effort try/except that silently swallowed every error and
+    # returned a phantom job_id — the frontend then polled a job that
+    # never existed forever, rendering "Initialising…" with no error
+    # toast. Surface 503 so the user can retry.
+    from rq import Queue
+    from carve_api.jobs.queue import enqueue_with_defaults
+
+    client = _redis_client_or_none()
+    if client is None:
+        raise HTTPException(status_code=503, detail="redis_unavailable")
     try:
-        from rq import Queue
-        from carve_api.jobs.queue import enqueue_with_defaults
-        client = _redis_client_or_none()
-        if client is not None:
-            q = Queue("default", connection=client)
-            # v3.22 — pin RQ's job_id (see YOLO enqueue above) so cancel
-            # can ``send_stop_job_command`` and free the worker.
-            enqueue_with_defaults(
-                q,
-                run_auto_text_batch,
-                job_payload,
-                job_id=job_payload.job_id,
-            )
-    except Exception:
-        pass
+        q = Queue("default", connection=client)
+        # v3.22 — pin RQ's job_id (see YOLO enqueue above) so cancel
+        # can ``send_stop_job_command`` and free the worker.
+        enqueue_with_defaults(
+            q,
+            run_auto_text_batch,
+            job_payload,
+            job_id=job_payload.job_id,
+        )
+    except Exception as exc:
+        log.exception("sam_auto_text_batch: enqueue failed")
+        raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     return {"job_id": job_payload.job_id}
 
 
@@ -845,20 +860,23 @@ def enqueue_sam_auto_visual_batch(
         find_all=payload.find_all,
         overwrite=payload.overwrite,
     )
+    from rq import Queue
+    from carve_api.jobs.queue import enqueue_with_defaults
+
+    client = _redis_client_or_none()
+    if client is None:
+        raise HTTPException(status_code=503, detail="redis_unavailable")
     try:
-        from rq import Queue
-        from carve_api.jobs.queue import enqueue_with_defaults
-        client = _redis_client_or_none()
-        if client is not None:
-            q = Queue("default", connection=client)
-            enqueue_with_defaults(
-                q,
-                run_auto_visual_batch,
-                job_payload,
-                job_id=job_payload.job_id,
-            )
-    except Exception:
-        pass
+        q = Queue("default", connection=client)
+        enqueue_with_defaults(
+            q,
+            run_auto_visual_batch,
+            job_payload,
+            job_id=job_payload.job_id,
+        )
+    except Exception as exc:
+        log.exception("sam_auto_visual_batch: enqueue failed")
+        raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     return {"job_id": job_payload.job_id}
 
 
@@ -1466,23 +1484,25 @@ def enqueue_yoloe_batch(
         min_confidence=payload.min_confidence,
         output_kind=payload.output_kind,
     )
+    from rq import Queue
+
+    from carve_api.jobs.queue import enqueue_with_defaults
+
+    client = _redis_client_or_none()
+    if client is None:
+        raise HTTPException(status_code=503, detail="redis_unavailable")
     try:
-        from rq import Queue
-
-        from carve_api.jobs.queue import enqueue_with_defaults
-
-        client = _redis_client_or_none()
-        if client is not None:
-            q = Queue("default", connection=client)
-            enqueue_with_defaults(
-                q,
-                run_yoloe_batch,
-                job_payload,
-                job_id=job_payload.job_id,
-                job_timeout=2 * 3600,
-            )
-    except Exception:  # noqa: BLE001 — same best-effort enqueue as the YOLO batch
-        pass
+        q = Queue("default", connection=client)
+        enqueue_with_defaults(
+            q,
+            run_yoloe_batch,
+            job_payload,
+            job_id=job_payload.job_id,
+            job_timeout=2 * 3600,
+        )
+    except Exception as exc:
+        log.exception("yoloe_batch: enqueue failed")
+        raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     return {"job_id": job_payload.job_id}
 
 
