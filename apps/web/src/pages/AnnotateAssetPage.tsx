@@ -78,6 +78,12 @@ import { useAuth } from "@/auth/store";
 import { useTool } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import { useProjectPrefs } from "@/state/projectPrefs";
+import { useFilter } from "@/state/annotationFilter";
+import { hasMeaningfulRules } from "@/lib/annotation-filter";
+import {
+  computeFilteredNeighbours,
+  computeMatchingAssetIds,
+} from "@/lib/annotation-filter-nav";
 import { useShortcutHandler, useShortcutsQuery } from "@/state/shortcuts";
 import { ACTIONS } from "@/lib/shortcuts/actions";
 import { matchChord } from "@/lib/shortcuts/chord";
@@ -545,13 +551,46 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
 
   // Prev/next asset navigation — wraps both the ArrowLeft/ArrowRight handler
   // below and the IconButtons in the editor top bar.
+  //
+  // v3.x — filter-aware: when an annotation filter is active
+  // (e.g. ``label == bus``) arrow navigation must skip non-matching
+  // assets so the user lands on the next image that actually contains
+  // a Bus instead of stepping through every blank image first.
+  // The fallback (plain adjacency) is preserved when no filter rule
+  // has a non-empty value.
   const taskAssets = taskAssetsQ.data ?? [];
   const currentAssetIdx = taskAssets.findIndex((a) => a.id === assetId);
-  const prevAsset = currentAssetIdx > 0 ? taskAssets[currentAssetIdx - 1] : null;
-  const nextAsset =
-    currentAssetIdx >= 0 && currentAssetIdx < taskAssets.length - 1
-      ? taskAssets[currentAssetIdx + 1]
-      : null;
+
+  const activeFilter = useFilter((s) => s.filter);
+  const filterActive = useMemo(
+    () => hasMeaningfulRules(activeFilter),
+    [activeFilter],
+  );
+
+  // Raw annotations across the entire task — required to group by
+  // ``asset_id`` so we can ask "which assets contain a Bus?". Gated on
+  // ``filterActive`` so unfiltered sessions don't pay the network /
+  // memory cost. ``staleTime: 0`` keeps the matching set fresh after
+  // edits; React Query dedupes against the per-frame query so the
+  // network savings are real for warm caches.
+  const taskAnnotationsRawQ = useQuery({
+    queryKey: ["task-annotations-raw", taskId],
+    queryFn: () => annotationsApi.listForTaskRaw(taskId),
+    enabled: filterActive,
+    staleTime: 0,
+  });
+
+  const matchingAssetIds = useMemo(() => {
+    if (!filterActive) return new Set<string>();
+    const raw = taskAnnotationsRawQ.data ?? [];
+    return computeMatchingAssetIds(raw, classByIdMap, activeFilter);
+  }, [filterActive, taskAnnotationsRawQ.data, classByIdMap, activeFilter]);
+
+  const { prev: prevAsset, next: nextAsset } = useMemo(
+    () => computeFilteredNeighbours(taskAssets, currentAssetIdx, matchingAssetIds),
+    [taskAssets, currentAssetIdx, matchingAssetIds],
+  );
+
   const navAssetRef = useRef<{ prev: typeof prevAsset; next: typeof nextAsset }>({
     prev: prevAsset,
     next: nextAsset,

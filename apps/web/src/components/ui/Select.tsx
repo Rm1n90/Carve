@@ -98,8 +98,15 @@ const SelectContent = forwardRef<HTMLDivElement, SelectContentProps>(
           ref={ref}
           position="popper"
           sideOffset={4}
+          // Collision-aware sizing: Radix exposes the available height
+          // (vertical room from trigger to viewport edge) via the CSS
+          // var below. Without this the dropdown happily extends past
+          // the editor's viewport and the bottom-most options are
+          // unreachable — the bug Armin reported for the Filter dialog
+          // when many classes exist.
           className={cn(
             "z-[1200] min-w-[var(--radix-select-trigger-width)]",
+            "max-h-[var(--radix-select-content-available-height)]",
             // DESIGN.md §1 — no glass on form controls; solid panel
             // with the standard card-tier shadow. 6px radius keeps the
             // popover compact and matches §5's "compact buttons and
@@ -110,7 +117,16 @@ const SelectContent = forwardRef<HTMLDivElement, SelectContentProps>(
             className,
           )}
         >
-          <SelectPrimitive.Viewport>{children}</SelectPrimitive.Viewport>
+          {/*
+           * Viewport owns the scroll. ``max-h-full`` lets it stretch to
+           * the Content's collision-aware max-height; overflow-y-auto
+           * gives the user a normal scroll path for long class lists.
+           */}
+          <SelectPrimitive.Viewport
+            className="max-h-full overflow-y-auto"
+          >
+            {children}
+          </SelectPrimitive.Viewport>
         </SelectPrimitive.Content>
       </SelectPrimitive.Portal>
     );
