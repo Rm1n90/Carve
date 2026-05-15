@@ -52,6 +52,7 @@ const TABS: { to: string; label: string; adminOnly?: boolean }[] = [
   { to: "/settings/api-keys", label: "API Keys" },
   { to: "/settings/shortcuts", label: "Shortcuts" },
   { to: "/settings/members", label: "Members", adminOnly: true },
+  { to: "/settings/jobs", label: "Jobs", adminOnly: true },
   { to: "/settings/workspace", label: "Workspace" },
 ];
 

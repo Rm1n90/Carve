@@ -22,6 +22,8 @@ from carve_api.inference.autoannotate import (
 from carve_api.inference.batch import (
     build_auto_text_payload,
     build_job_payload,
+    count_assets_for_task,
+    prepare_progress,
     read_progress,
     run_auto_text_batch,
     run_batch_auto_annotate,
@@ -333,6 +335,17 @@ def enqueue_batch_auto_annotate(
     except Exception as exc:
         log.exception("yolo_batch: enqueue failed")
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
+    # Seed the progress hash now (status=queued, total=N) so the polling
+    # endpoint returns a real state immediately instead of an empty
+    # "Initialising…" until the (single, possibly busy) worker starts.
+    # Best-effort: the job is already queued; the worker re-inits on
+    # start, so a blip here only costs a brief "Initialising…".
+    try:
+        prepare_progress(
+            client, payload.job_id, count_assets_for_task(db, task_id)
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("yolo_batch: prepare_progress failed", exc_info=True)
     return {"job_id": payload.job_id}
 
 
@@ -460,6 +473,12 @@ def enqueue_sam_auto_text_batch(
     except Exception as exc:
         log.exception("sam_auto_text_batch: enqueue failed")
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
+    try:
+        prepare_progress(
+            client, job_payload.job_id, count_assets_for_task(db, task_id)
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("sam_auto_text_batch: prepare_progress failed", exc_info=True)
     return {"job_id": job_payload.job_id}
 
 
@@ -513,7 +532,7 @@ def cancel_auto_annotate_batch(
     # Without this, a follow-up Predict click sits in the RQ queue for
     # the remainder of the in-flight asset (often 10-30s) before the
     # single worker is free to pick up the new job.
-    _try_send_stop(client, job_id)
+    _try_cancel_rq_job(client, job_id)
     return {"job_id": job_id, "status": "canceled"}
 
 
@@ -543,30 +562,22 @@ def cancel_sam_auto_text_batch(
         client.hset(progress_key(job_id), "status", "canceled")
     except Exception:
         raise HTTPException(status_code=502, detail="cancel_failed") from None
-    _try_send_stop(client, job_id)
+    _try_cancel_rq_job(client, job_id)
     return {"job_id": job_id, "status": "canceled"}
 
 
-def _try_send_stop(client, rq_job_id: str) -> None:
-    """v3.22.1 — best-effort ``rq.command.send_stop_job_command``.
+def _try_cancel_rq_job(client, rq_job_id: str) -> None:
+    """Thin delegator to the centralized RQ-cancel mechanics.
 
-    The cooperative Redis flag is the source of truth for "this batch
-    was canceled — keep already-committed annotations". The stop
-    command is purely a latency optimization: it interrupts the
-    worker's in-flight HTTP call to the model service so a follow-up
-    Predict can start immediately on the same single worker.
-
-    Tolerates: missing job (already finished), worker not listening,
-    older RQ versions without ``send_stop_job_command``.
+    The implementation lives in ``carve_api.jobs.queue`` so the batch
+    endpoints here and the admin Jobs page share one source of truth
+    (a past bug was 4 cancel endpoints each re-implementing this and
+    only one getting the queued-job case right). Kept under this name
+    so the existing batch-endpoint call sites stay unchanged.
     """
-    try:
-        from rq.command import send_stop_job_command  # type: ignore
-        send_stop_job_command(client, rq_job_id)
-    except Exception:  # noqa: BLE001
-        # Job may have already finished, or the worker isn't running
-        # this job_id, or the RQ version doesn't expose the command.
-        # The Redis ``canceled`` flag still wins at the next checkpoint.
-        pass
+    from carve_api.jobs.queue import try_cancel_rq_job
+
+    try_cancel_rq_job(client, rq_job_id)
 
 
 class SamDecodeIn(BaseModel):
@@ -877,6 +888,12 @@ def enqueue_sam_auto_visual_batch(
     except Exception as exc:
         log.exception("sam_auto_visual_batch: enqueue failed")
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
+    try:
+        prepare_progress(
+            client, job_payload.job_id, count_assets_for_task(db, task_id)
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("sam_auto_visual_batch: prepare_progress failed", exc_info=True)
     return {"job_id": job_payload.job_id}
 
 
@@ -919,7 +936,7 @@ def cancel_sam_auto_visual_batch(
         client.hset(progress_key(job_id), "status", "canceled")
     except Exception:
         raise HTTPException(status_code=502, detail="cancel_failed") from None
-    _try_send_stop(client, job_id)
+    _try_cancel_rq_job(client, job_id)
     return {"job_id": job_id, "status": "canceled"}
 
 
@@ -1503,6 +1520,12 @@ def enqueue_yoloe_batch(
     except Exception as exc:
         log.exception("yoloe_batch: enqueue failed")
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
+    try:
+        prepare_progress(
+            client, job_payload.job_id, count_assets_for_task(db, task_id)
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("yoloe_batch: prepare_progress failed", exc_info=True)
     return {"job_id": job_payload.job_id}
 
 
@@ -1563,5 +1586,5 @@ def cancel_yoloe_batch(
         raise
     except Exception:
         raise HTTPException(status_code=502, detail="cancel_failed") from None
-    _try_send_stop(client, job_id)
+    _try_cancel_rq_job(client, job_id)
     return {"job_id": job_id, "status": "canceled"}

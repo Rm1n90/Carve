@@ -12,6 +12,7 @@ import { SettingsShortcutsPage } from "@/pages/SettingsShortcutsPage";
 import { ModelsYoloPage, ModelsSamPage, TrashPage } from "@/pages/Phase2Pages";
 import { AboutPage } from "@/pages/AboutPage";
 import { SystemPage } from "@/pages/SystemPage";
+import { JobsPage } from "@/pages/JobsPage";
 
 // ---------------------------- Settings family ----------------------------
 
@@ -72,6 +73,16 @@ export const settingsShortcutsRoute = createRoute({
   component: () => (
     <RequireAuth>
       <SettingsShortcutsPage />
+    </RequireAuth>
+  ),
+});
+
+export const settingsJobsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/jobs",
+  component: () => (
+    <RequireAuth>
+      <JobsPage />
     </RequireAuth>
   ),
 });

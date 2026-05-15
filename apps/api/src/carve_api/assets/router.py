@@ -36,15 +36,19 @@ _MAX_PAGE_LIMIT = 5000
 def _enqueue_post_upload(asset) -> None:
     """Best-effort enqueue of post-upload work; swallow Redis errors so HTTP returns succeed even if Redis is down."""
     try:
-        from carve_api.jobs.queue import get_queue
+        from carve_api.jobs.queue import enqueue_with_defaults, get_queue
         from carve_api.jobs.thumbs import generate_image_thumbnail, probe_video_metadata
         ext = asset.original_name.rsplit(".", 1)[-1] if "." in asset.original_name else "bin"
+        # Route via enqueue_with_defaults so these land on the ``low``
+        # lane (see _JOB_QUEUES). A bulk upload enqueues one of these per
+        # asset; on the shared ``default`` queue that flood starved the
+        # user-blocking inference batches behind it.
         q = get_queue()
         if asset.kind == AssetKind.image:
             # Pass asset_id so the worker can persist the thumbnail key.
-            q.enqueue(generate_image_thumbnail, asset.xxh3_128, ext, asset_id=str(asset.id))
+            enqueue_with_defaults(q, generate_image_thumbnail, asset.xxh3_128, ext, asset_id=str(asset.id))
         else:
-            q.enqueue(probe_video_metadata, str(asset.id), asset.xxh3_128, ext)
+            enqueue_with_defaults(q, probe_video_metadata, str(asset.id), asset.xxh3_128, ext)
     except Exception:
         # Redis may be unreachable in test/dev; treat job-enqueue failure as non-fatal.
         pass

@@ -47,6 +47,10 @@ def create_app() -> FastAPI:
     from carve_api.system.router import router as system_router
     app.include_router(system_router)
 
+    # Admin-only RQ queue inspection + control (/jobs).
+    from carve_api.jobs.router import router as jobs_router
+    app.include_router(jobs_router)
+
     # v3.20 -- per-user keyboard shortcut overrides (/me/shortcuts).
     from carve_api.shortcuts.router import router as shortcuts_router
     app.include_router(shortcuts_router)

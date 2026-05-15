@@ -7,7 +7,7 @@ import traceback
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from carve_api.assets.models import Asset
@@ -179,7 +179,9 @@ def _run_with_admission_retry(
     return None  # unreachable
 
 
-def init_progress(redis_client, job_id: str, total: int) -> None:
+def init_progress(
+    redis_client, job_id: str, total: int, status: str = "running"
+) -> None:
     """Best-effort write of initial progress; swallow Redis errors.
 
     v3.7.2 — adds ``total_annotations_created`` and ``total_skipped_detections``
@@ -189,6 +191,14 @@ def init_progress(redis_client, job_id: str, total: int) -> None:
     v3.7.4 — adds ``skipped_by_class_json`` so the post-batch toast can
     name the most-skipped weight classes (e.g. "person (412), boat (305)")
     instead of just a count. Stored as a JSON-encoded ``dict[str, int]``.
+
+    ``status`` defaults to ``running`` (the worker's call, made the moment
+    it begins the per-asset loop). The enqueue endpoint calls this with
+    ``status="queued"`` so the polling endpoint returns a real
+    ``total``/state the instant the job is queued — the UI then shows
+    "Queued — N assets" instead of a contentless "Initialising…" until
+    the worker (single, possibly mid-batch) gets to it. The worker's
+    later call overwrites the same hash, transitioning queued→running.
     """
     if redis_client is None:
         return
@@ -196,7 +206,7 @@ def init_progress(redis_client, job_id: str, total: int) -> None:
         redis_client.hset(
             progress_key(job_id),
             mapping={
-                "status": "running",
+                "status": status,
                 "done": "0",
                 "total": str(total),
                 "failed": "0",
@@ -209,6 +219,28 @@ def init_progress(redis_client, job_id: str, total: int) -> None:
         redis_client.expire(progress_key(job_id), _PROGRESS_TTL_SECONDS)
     except Exception:
         pass
+
+
+def prepare_progress(redis_client, job_id: str, total: int) -> None:
+    """Seed the progress hash at *enqueue* time with ``status="queued"``.
+
+    Thin wrapper over :func:`init_progress`. Kept as its own name so
+    enqueue call sites read intentionally and a future "queued vs
+    preparing" split has one place to change.
+    """
+    init_progress(redis_client, job_id, total, status="queued")
+
+
+def count_assets_for_task(session: Session, task_id: uuid.UUID) -> int:
+    """Cheap COUNT mirroring :func:`list_assets_for_task`'s row set, so
+    the enqueue-time ``total`` matches the worker's ``len(assets)``
+    exactly (the worker overwrites it on start anyway if assets changed
+    in between)."""
+    return int(
+        session.execute(
+            select(func.count()).select_from(Asset).where(Asset.task_id == task_id)
+        ).scalar_one()
+    )
 
 
 def update_progress(

@@ -1290,6 +1290,18 @@ function BatchProgressView({
   onBackground?: () => void;
 }) {
   const [canceling, setCanceling] = useState(false);
+  // Stuck-pending heuristic (mirrors VisualBatchProgressView). If the
+  // worker hasn't bumped ``total`` off zero within 15s the job is still
+  // queued — almost always the worker is down, the queue is backed up,
+  // or the model service is unreachable. Without this the dialog sat on
+  // "Initialising…" forever with no signal it wasn't broken.
+  const [openedAt] = useState(() => Date.now());
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  void tick;
   // Plan-20.11 — was 1200 ms; reduced to 500 ms so the user sees
   // worker progress ticks promptly. The polled endpoint is a cheap
   // Redis hash read so the higher rate is fine.
@@ -1332,18 +1344,36 @@ function BatchProgressView({
   const failed = data?.failed ?? 0;
   const created = data?.total_annotations_created ?? 0;
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const elapsedMs = Date.now() - openedAt;
+  const isTerminal =
+    status === "completed" ||
+    status === "completed_with_errors" ||
+    status === "failed" ||
+    status === "canceled";
+  const isStuck =
+    !isTerminal &&
+    total === 0 &&
+    (status === "pending" || status === undefined) &&
+    elapsedMs > 15000;
+  // Enqueue now seeds status=queued + total before the worker starts,
+  // so we can show the real scale ("Queued — N assets") immediately
+  // instead of a contentless "Initialising…". Distinct from "running"
+  // so the copy doesn't imply asset 0 is being processed.
+  const isQueued = status === "queued";
 
   return (
     <div className="grid gap-3">
       <DialogHeader>
         <DialogTitle className="flex items-center gap-2">
           <Loader2 className="h-4 w-4 animate-spin text-[color:var(--accent)]" />
-          Running on the whole task…
+          {isQueued ? "Queued…" : "Running on the whole task…"}
         </DialogTitle>
         <DialogDescription>
-          {total > 0
-            ? `Asset ${done} of ${total} (${pct}%) — ${created} annotation${created === 1 ? "" : "s"} created.`
-            : "Initialising…"}
+          {isQueued
+            ? `Queued — ${total} asset${total === 1 ? "" : "s"}. The worker runs one batch at a time; this starts when the current one finishes.`
+            : total > 0
+              ? `Asset ${done} of ${total} (${pct}%) — ${created} annotation${created === 1 ? "" : "s"} created.`
+              : "Initialising…"}
         </DialogDescription>
       </DialogHeader>
       <div className="h-2 rounded-full bg-[var(--bg-sunken)] overflow-hidden">
@@ -1356,6 +1386,20 @@ function BatchProgressView({
         <p className="text-[11.5px] text-[color:var(--warning,oklch(0.78_0.18_85))]">
           {failed} asset{failed === 1 ? "" : "s"} failed (kept the rest).
         </p>
+      )}
+      {isStuck && (
+        <div
+          data-testid="auto-annotate-batch-stuck-hint"
+          className="flex items-start gap-1.5 text-[10.5px] text-[color:var(--warning,#d49a4a)]"
+        >
+          <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" aria-hidden />
+          <span>
+            Still queued — the worker hasn't picked this up yet. It may
+            be draining a backlog (e.g. thumbnails from a bulk upload),
+            down, or the model service is unreachable. Cancel here is
+            safe.
+          </span>
+        </div>
       )}
       {postProgress && (
         <div data-testid="auto-annotate-batch-post" className="grid gap-1">
@@ -1926,6 +1970,7 @@ function VisualBatchProgressView({
     status === "canceled";
   const isStuck =
     !isTerminal && total === 0 && (status === "pending" || status === undefined) && elapsedMs > 15000;
+  const isQueued = status === "queued";
   return (
     <div className="grid gap-3" data-testid="auto-visual-batch-progress">
       <DialogHeader>
@@ -1933,14 +1978,18 @@ function VisualBatchProgressView({
           <Loader2 className="h-4 w-4 animate-spin text-[color:var(--accent)]" />
           {status === "waiting_for_gpu"
             ? "Waiting for GPU…"
-            : "Running visual prompt across the task…"}
+            : isQueued
+              ? "Queued…"
+              : "Running visual prompt across the task…"}
         </DialogTitle>
         <DialogDescription>
           {status === "waiting_for_gpu"
             ? "Another inference job is on the GPU; this batch will resume automatically when it's free."
-            : total > 0
-              ? `Asset ${done} of ${total} (${pct}%) — ${created} annotation${created === 1 ? "" : "s"} created.`
-              : "Initialising…"}
+            : isQueued
+              ? `Queued — ${total} asset${total === 1 ? "" : "s"}. The worker runs one batch at a time; this starts when the current one finishes.`
+              : total > 0
+                ? `Asset ${done} of ${total} (${pct}%) — ${created} annotation${created === 1 ? "" : "s"} created.`
+                : "Initialising…"}
         </DialogDescription>
       </DialogHeader>
       <div className="h-2 rounded-full bg-[var(--bg-sunken)] overflow-hidden">

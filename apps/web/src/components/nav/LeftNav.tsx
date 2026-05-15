@@ -55,6 +55,7 @@ import {
   Cpu,
   HelpCircle,
   Info,
+  ListChecks,
   LogOut,
   PanelLeftClose,
   Settings,
@@ -774,6 +775,15 @@ export function LeftNav({
           icon={<Settings className="h-4 w-4" />}
           testId="leftnav-dock-settings"
         />
+        {user?.role === "admin" && (
+          <DockIcon
+            label="Jobs"
+            to="/settings/jobs"
+            active={isActive(path, "/settings/jobs", false)}
+            icon={<ListChecks className="h-4 w-4" />}
+            testId="leftnav-dock-jobs"
+          />
+        )}
         <DockIcon
           label="Trash"
           to="/trash"
