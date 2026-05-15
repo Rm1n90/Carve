@@ -76,6 +76,61 @@ function getStatusCode(err: unknown): number | null {
 }
 
 /**
+ * Distinguishes "SAM model is still loading" from a hard failure.
+ *
+ * The model service returns 503 with the structured payload
+ * ``{error: "sam_not_ready", state: "loading"|"idle"|"error", detail}``
+ * during the variant-switch window AND when an idle-evicted predictor
+ * is being lazy-rebuilt. Callers that branch on this class can show a
+ * soft "loading" toast instead of the misleading "SAM failed" error,
+ * and — crucially — keep the tool's internal state clean so the next
+ * pointer interaction works without a page refresh.
+ */
+export class SamLoadingError extends Error {
+  readonly samState: "loading" | "idle" | "error" | "unknown";
+  readonly detail: string | undefined;
+  readonly cause: unknown;
+
+  constructor(
+    state: "loading" | "idle" | "error" | "unknown",
+    detail: string | undefined,
+    cause: unknown,
+  ) {
+    super(`SAM is not ready (state=${state})`);
+    this.name = "SamLoadingError";
+    this.samState = state;
+    this.detail = detail;
+    this.cause = cause;
+  }
+}
+
+/**
+ * Recognise the model service's ``sam_not_ready`` 503 envelope and
+ * return a tagged ``SamLoadingError``. Returns ``null`` for any other
+ * error shape so callers can fall through to their default handling.
+ */
+export function asSamLoadingError(err: unknown): SamLoadingError | null {
+  if (err instanceof SamLoadingError) return err;
+  if (getStatusCode(err) !== 503) return null;
+  const e = err as {
+    response?: {
+      data?: { error?: unknown; state?: unknown; detail?: unknown };
+    };
+  };
+  const data = e.response?.data;
+  if (!data || data.error !== "sam_not_ready") return null;
+  const rawState = typeof data.state === "string" ? data.state : "unknown";
+  const state: SamLoadingError["samState"] =
+    rawState === "loading"
+    || rawState === "idle"
+    || rawState === "error"
+      ? rawState
+      : "unknown";
+  const detail = typeof data.detail === "string" ? data.detail : undefined;
+  return new SamLoadingError(state, detail, err);
+}
+
+/**
  * Click-driven SAM tool.
  *
  * Activation calls /sam/encode once and caches the image_hash. Each click
@@ -176,6 +231,14 @@ export class SamTool {
           this.localDecodeReady = false;
         }
       }
+    } catch (err) {
+      // Tag the model-loading case so the canvas can show a soft
+      // "loading" toast and open the loading overlay instead of the
+      // misleading "SAM failed" error. ``imageHash`` is already null,
+      // so the next pointer interaction will retry activate() cleanly.
+      const loading = asSamLoadingError(err);
+      if (loading) throw loading;
+      throw err;
     } finally {
       this.encoding = false;
     }
@@ -350,23 +413,52 @@ export class SamTool {
       return result;
     } catch (err) {
       if (ac.signal.aborted) return this.lastResult;
+      // Mid-flight loading (eviction / hot-swap): drop the stale box +
+      // encoding so the canvas state stays clean and the next user
+      // interaction triggers a fresh activate→encode→decode chain.
+      const loading = asSamLoadingError(err);
+      if (loading) {
+        this.boxes = [];
+        this.invalidateEncoding();
+        throw loading;
+      }
       const status = getStatusCode(err);
       if (status !== 409) throw err;
       this.onResync?.("Re-syncing SAM…");
-      await this.reencode();
+      try {
+        await this.reencode();
+      } catch (reencodeErr) {
+        const reencodeLoading = asSamLoadingError(reencodeErr);
+        if (reencodeLoading) {
+          this.boxes = [];
+          throw reencodeLoading;
+        }
+        throw reencodeErr;
+      }
       if (this.imageHash === null) throw err;
-      const retry = await samApi.decode(
-        this.assetId,
-        this.imageHash,
-        [],
-        [],
-        ac.signal,
-        box,
-        currentEpsilonFactor(),
-      );
-      if (ac.signal.aborted) return this.lastResult;
-      this.lastResult = retry;
-      return retry;
+      try {
+        const retry = await samApi.decode(
+          this.assetId,
+          this.imageHash,
+          [],
+          [],
+          ac.signal,
+          box,
+          currentEpsilonFactor(),
+        );
+        if (ac.signal.aborted) return this.lastResult;
+        this.lastResult = retry;
+        return retry;
+      } catch (retryErr) {
+        if (ac.signal.aborted) return this.lastResult;
+        const retryLoading = asSamLoadingError(retryErr);
+        if (retryLoading) {
+          this.boxes = [];
+          this.invalidateEncoding();
+          throw retryLoading;
+        }
+        throw retryErr;
+      }
     } finally {
       if (this.inFlight === ac) this.inFlight = null;
     }
@@ -390,12 +482,18 @@ export class SamTool {
       return null;
     }
     this.text = trimmed;
-    const results = await samApi.textPrompt(
-      this.assetId,
-      this.text,
-      this.getFrameId(),
-    );
-    return this.applyPromptResult(results);
+    try {
+      const results = await samApi.textPrompt(
+        this.assetId,
+        this.text,
+        this.getFrameId(),
+      );
+      return this.applyPromptResult(results);
+    } catch (err) {
+      const loading = asSamLoadingError(err);
+      if (loading) throw loading;
+      throw err;
+    }
   }
 
   /**
@@ -419,11 +517,18 @@ export class SamTool {
     const trimmed = text.trim();
     if (trimmed.length === 0) return { created: 0, total: 0 };
     this.text = trimmed;
-    const results = await samApi.textPrompt(
-      this.assetId,
-      this.text,
-      this.getFrameId(),
-    );
+    let results: SamPromptResult[];
+    try {
+      results = await samApi.textPrompt(
+        this.assetId,
+        this.text,
+        this.getFrameId(),
+      );
+    } catch (err) {
+      const loading = asSamLoadingError(err);
+      if (loading) throw loading;
+      throw err;
+    }
     const total = results.length;
     const kept = results.filter((r) => r.score >= threshold);
     const frameId = this.getFrameId();
@@ -564,30 +669,75 @@ export class SamTool {
       return result;
     } catch (err) {
       if (ac.signal.aborted) return this.lastResult;
+      // Mid-flight idle eviction / variant hot-swap can land a 503
+      // ``sam_not_ready`` between encode and decode. Pop the click we
+      // just optimistically pushed so the canvas state matches what
+      // the user sees (no mask, no spurious counter increment) before
+      // re-throwing as a soft loading error.
+      const loading = asSamLoadingError(err);
+      if (loading) {
+        this.popLastPushedClick();
+        this.invalidateEncoding();
+        throw loading;
+      }
       const status = getStatusCode(err);
       if (status !== 409) throw err;
       // 409 = the model worker no longer has this image's embedding.
       // Notify the UI, re-encode, and retry the decode once.
       this.onResync?.("Re-syncing SAM…");
-      await this.reencode();
+      try {
+        await this.reencode();
+      } catch (reencodeErr) {
+        const reencodeLoading = asSamLoadingError(reencodeErr);
+        if (reencodeLoading) {
+          this.popLastPushedClick();
+          throw reencodeLoading;
+        }
+        throw reencodeErr;
+      }
       if (this.imageHash === null) {
         throw err;
       }
-      const retry = await samApi.decode(
-        this.assetId,
-        this.imageHash,
-        points,
-        labels,
-        ac.signal,
-        box,
-        currentEpsilonFactor(),
-      );
-      if (ac.signal.aborted) return this.lastResult;
-      this.lastResult = retry;
-      return retry;
+      try {
+        const retry = await samApi.decode(
+          this.assetId,
+          this.imageHash,
+          points,
+          labels,
+          ac.signal,
+          box,
+          currentEpsilonFactor(),
+        );
+        if (ac.signal.aborted) return this.lastResult;
+        this.lastResult = retry;
+        return retry;
+      } catch (retryErr) {
+        if (ac.signal.aborted) return this.lastResult;
+        const retryLoading = asSamLoadingError(retryErr);
+        if (retryLoading) {
+          this.popLastPushedClick();
+          this.invalidateEncoding();
+          throw retryLoading;
+        }
+        throw retryErr;
+      }
     } finally {
       if (this.inFlight === ac) this.inFlight = null;
     }
+  }
+
+  /**
+   * Internal: undo the most recent ``addClick`` push without re-running
+   * decode. Used when a click optimistically lands but the decode call
+   * surfaces a recoverable error (e.g. the model evicted between
+   * encode and decode) — popping keeps the SamTool's internal click
+   * arrays consistent with what the user sees on the canvas.
+   */
+  private popLastPushedClick(): void {
+    const last = this.clickOrder.pop();
+    if (last === undefined) return;
+    if (last === "p") this.positives.pop();
+    else this.negatives.pop();
   }
 
   /**

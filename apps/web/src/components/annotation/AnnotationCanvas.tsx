@@ -6,7 +6,8 @@ import { BboxTool, type Point } from "@/canvas/tools/BboxTool";
 import { PolygonTool, CLOSE_RADIUS_PX } from "@/canvas/tools/PolygonTool";
 import { MaskBrushTool } from "@/canvas/tools/MaskBrushTool";
 import { TagTool } from "@/canvas/tools/TagTool";
-import { SamTool } from "@/canvas/tools/SamTool";
+import { SamTool, asSamLoadingError } from "@/canvas/tools/SamTool";
+import type { SamLoadingError } from "@/canvas/tools/SamTool";
 import { useTool, type ToolName } from "@/state/tool";
 import { useEditorSettings } from "@/state/editorSettings";
 import {
@@ -259,6 +260,43 @@ export function AnnotationCanvas({
   // single source of truth; we open on a 2s timer and close on activate
   // resolve so quick activations (warm session) never flash the overlay.
   const [samLoadOverlayOpen, setSamLoadOverlayOpen] = useState(false);
+  // Stable ref so the SAM error handler can flip the overlay open
+  // without making every pointer event closure re-bind on each render.
+  const setSamLoadOverlayOpenRef = useRef(setSamLoadOverlayOpen);
+  useEffect(() => {
+    setSamLoadOverlayOpenRef.current = setSamLoadOverlayOpen;
+  }, [setSamLoadOverlayOpen]);
+  /**
+   * Branch on the SAM error shape: a "still loading" 503 surfaces as a
+   * soft info toast + auto-opens the ModelLoadingOverlay (which polls
+   * /models/sam-status and dismisses on ready/error). Everything else
+   * keeps the existing error-toast path so genuine failures stay loud.
+   *
+   * Critically, the SamTool's own state is already kept clean for
+   * loading errors (no half-pushed click, image_hash null, in-flight
+   * decode aborted), so the user's *next* click after the toast picks
+   * up the just-loaded variant with no page refresh.
+   */
+  const handleSamError = (err: unknown): void => {
+    const loading = asSamLoadingError(err);
+    if (loading) {
+      setSamLoadOverlayOpenRef.current(true);
+      const friendly =
+        loading.samState === "loading"
+          ? "SAM model is still loading — your click will land once it's ready."
+          : loading.samState === "idle"
+            ? "Loading SAM model… try again in a few seconds."
+            : loading.samState === "error"
+              ? "SAM failed to load. Pick a variant in Settings → Models and try again."
+              : "SAM isn't ready yet — please wait a moment.";
+      showToast(friendly, { variant: "info", duration: 4000 });
+      return;
+    }
+    showToast(describeSamError(err), {
+      variant: "error",
+      duration: 5000,
+    });
+  };
   const shapeGfxByIdRef = useRef<Map<string, unknown>>(new Map());
   // Per-shape signature cache so reconcile() can skip the renderBbox /
   // renderPolygon / renderLabel rebuild when nothing visible about a
@@ -2525,15 +2563,25 @@ export function AnnotationCanvas({
       const overlayTimer = window.setTimeout(() => {
         setSamLoadOverlayOpen(true);
       }, overlayDelayMs);
+      // Carry the loading flag out of the catch so the finally block
+      // can decide whether to close the overlay. For sam_not_ready
+      // errors the overlay must stay open — it polls /sam/status and
+      // auto-dismisses when the model finishes loading, which is
+      // exactly the feedback the user needs (no premature dismiss).
+      let stillLoading = false;
       void samTool
         .activate()
         .catch((err: unknown) => {
-          const message = describeSamError(err);
-          showToast(message, { variant: "error", duration: 5000 });
+          if (asSamLoadingError(err)) {
+            stillLoading = true;
+            setSamLoadOverlayOpen(true);
+            return;
+          }
+          handleSamError(err);
         })
         .finally(() => {
           window.clearTimeout(overlayTimer);
-          setSamLoadOverlayOpen(false);
+          if (!stillLoading) setSamLoadOverlayOpen(false);
         });
     } else {
       samTool.reset();
@@ -2962,10 +3010,7 @@ export function AnnotationCanvas({
                 }
               })
               .catch((err: unknown) => {
-                showToast(describeSamError(err), {
-                  variant: "error",
-                  duration: 5000,
-                });
+                handleSamError(err);
               });
           } else {
             // No box yet — start a drag. Clamp to image bounds (mirrors
@@ -2998,10 +3043,7 @@ export function AnnotationCanvas({
               }
             })
             .catch((err: unknown) => {
-              showToast(describeSamError(err), {
-                variant: "error",
-                duration: 5000,
-              });
+              handleSamError(err);
             });
         }
         // text mode is driven by the floating input — pointer events on
@@ -3355,10 +3397,7 @@ export function AnnotationCanvas({
               }
             })
             .catch((err: unknown) => {
-              showToast(describeSamError(err), {
-                variant: "error",
-                duration: 5000,
-              });
+              handleSamError(err);
             });
         }
       } else if (tool === "cursor") {
@@ -3681,7 +3720,7 @@ export function AnnotationCanvas({
               }
             })
             .catch((err: unknown) => {
-              showToast(describeSamError(err), { variant: "error", duration: 5000 });
+              handleSamError(err);
             });
         } else if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
           // v3.8 Phase 1 — commit with the class whose idx matches the
@@ -3903,10 +3942,7 @@ export function AnnotationCanvas({
           }
         })
         .catch((err: unknown) => {
-          showToast(describeSamError(err), {
-            variant: "error",
-            duration: 5000,
-          });
+          handleSamError(err);
         })
         .finally(() => {
           setSamTextPending(false);
@@ -3926,10 +3962,7 @@ export function AnnotationCanvas({
         }
       })
       .catch((err: unknown) => {
-        showToast(describeSamError(err), {
-          variant: "error",
-          duration: 5000,
-        });
+        handleSamError(err);
       })
       .finally(() => {
         setSamTextPending(false);

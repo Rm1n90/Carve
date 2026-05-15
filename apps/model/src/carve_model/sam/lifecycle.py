@@ -206,6 +206,13 @@ class Sam2Variant:
         self._adapter = _build_sam2_adapter(self.name, device=device)
         self.device = device
 
+    def warmup(self) -> None:
+        """Force a synthetic encoder forward pass so the next real
+        /sam/encode doesn't pay lazy-init costs we'd otherwise hide
+        behind a premature ``state=ready`` signal. See
+        ``SamLifecycleManager.ensure_loaded`` for the caller."""
+        _run_warmup(self)
+
     def unload(self) -> None:
         self._adapter = None
         self._cached_hash = None
@@ -302,6 +309,12 @@ class Sam3p1Variant:
     def load(self, device: str | None) -> None:
         self._adapter = _build_sam3p1_adapter(device=device)
         self.device = device
+
+    def warmup(self) -> None:
+        """Mirrors :meth:`Sam2Variant.warmup` — primes the encoder so the
+        first real /sam/encode after ``state=ready`` doesn't pay the
+        lazy-init tax that previously made the "SAM ready" toast lie."""
+        _run_warmup(self)
 
     def unload(self) -> None:
         if self._adapter is not None:
@@ -1116,6 +1129,42 @@ def _build_variant(name: str) -> SamVariant:
     raise ValueError(f"unknown SAM variant: {name!r}")
 
 
+# Tiny synthetic image used to prime the encoder. 64×64 keeps the forward
+# pass cheap on CUDA (<100 ms) while still exercising the full
+# preprocess → backbone → embedding path the user's first click would
+# otherwise pay for. The bright square avoids a fully-black input that
+# some preprocessors short-circuit.
+_WARMUP_IMAGE_SIDE = 64
+
+
+def _build_warmup_image() -> Any:
+    import numpy as np
+
+    dummy = np.zeros(
+        (_WARMUP_IMAGE_SIDE, _WARMUP_IMAGE_SIDE, 3), dtype=np.uint8,
+    )
+    quarter = _WARMUP_IMAGE_SIDE // 4
+    dummy[quarter : -quarter, quarter : -quarter] = 255
+    return dummy
+
+
+def _run_warmup(variant: "SamVariant") -> None:
+    """Synthetic ``set_image`` against ``variant`` so the next real call
+    doesn't pay encoder-forward lazy-init costs (torch.compile graph
+    capture, CUDA kernel autotuning, allocator warmup). Resets the
+    variant's cached_hash + prev_logits so the user's first /sam/encode
+    re-encodes against the real image instead of accepting our dummy.
+
+    Exceptions propagate to ``ensure_loaded``'s existing handler so a
+    genuinely-broken model surfaces as ``state=error`` (correct) rather
+    than a silent "ready" lie."""
+    variant.set_image(_build_warmup_image())
+    variant._cached_hash = None  # type: ignore[attr-defined]
+    variant._cached_shape = None  # type: ignore[attr-defined]
+    variant._prev_logits = None  # type: ignore[attr-defined]
+    variant._prev_n_points = 0  # type: ignore[attr-defined]
+
+
 def _is_cuda_oom(exc: BaseException) -> bool:
     """Best-effort detection of torch.cuda.OutOfMemoryError without importing torch."""
     cls_name = type(exc).__name__
@@ -1261,6 +1310,13 @@ class SamLifecycleManager:
                 new_variant = _build_variant(variant)
                 resolved = self._resolve_device(device)
                 new_variant.load(device=resolved)
+                # Surface lazy-init costs BEFORE flipping state→ready so
+                # the frontend's "SAM ready" toast doesn't lie. Optional
+                # on the variant — _LegacyTestVariant has no warmup, so
+                # we attribute-probe instead of relying on the Protocol.
+                warmup = getattr(new_variant, "warmup", None)
+                if callable(warmup):
+                    warmup()
             except Exception as exc:
                 if new_variant is not None:
                     self._try_unload_locked(new_variant)

@@ -94,7 +94,21 @@ export function SamSwitchWatcher() {
       // armed, the next "ready" transition is genuinely ours.
       sawNonReadyRef.current = true;
     }
-    if (pollState === "ready" && sawNonReadyRef.current) {
+    // Defence against the race window between POST /sam/switch returning
+    // 202 and the model-service worker thread actually flipping
+    // state→loading: during that window /sam/status still reports the
+    // OLD variant as "ready". Without this check, the watcher would
+    // fire a "SAM <old> ready" toast immediately on the first poll.
+    // Only treat "ready" as ours when /sam/status reflects the variant
+    // the user actually requested.
+    const targetVariant = hintedVariant;
+    const variantMatches =
+      !targetVariant || !pollVariant || pollVariant === targetVariant;
+    if (
+      pollState === "ready"
+      && sawNonReadyRef.current
+      && variantMatches
+    ) {
       setSwitchInFlight(false);
       if (timeoutRef.current !== null) {
         clearTimeout(timeoutRef.current);
