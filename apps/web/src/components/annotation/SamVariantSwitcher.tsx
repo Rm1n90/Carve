@@ -34,8 +34,7 @@ const SAM_VARIANT_LABEL: Record<string, string> = {
   "sam2.1-small": "SAM 2.1 — Small",
   "sam2.1-base+": "SAM 2.1 — Base+",
   "sam2.1-large": "SAM 2.1 — Large (slowest · best)",
-  sam3: "SAM 3 — concept-driven prompting",
-  "sam3.1": "SAM 3.1 — multi-object multiplex tracker",
+  "sam3.1": "SAM 3.1 — concept + multiplex (text/box/visual)",
 };
 
 const COMPACT_VARIANT_NOTES: Record<string, string> = {
@@ -43,8 +42,7 @@ const COMPACT_VARIANT_NOTES: Record<string, string> = {
   "sam2.1-small": "Small — balanced",
   "sam2.1-base+": "Base+ — accurate",
   "sam2.1-large": "Large — best quality",
-  sam3: "SAM 3 — preview",
-  "sam3.1": "SAM 3.1 — multiplex (recommended)",
+  "sam3.1": "SAM 3.1 — concept-driven (recommended)",
 };
 
 export interface SamVariantSwitcherProps {

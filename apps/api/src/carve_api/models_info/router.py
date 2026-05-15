@@ -18,7 +18,6 @@ _AVAILABLE_SAM_VARIANTS: tuple[str, ...] = (
     "sam2.1-small",
     "sam2.1-base+",
     "sam2.1-large",
-    "sam3",
     "sam3.1",
 )
 

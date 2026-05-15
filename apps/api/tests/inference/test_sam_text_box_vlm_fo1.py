@@ -231,7 +231,7 @@ def test_sam_status_proxies_vlm_fo1_available_true(db_session, monkeypatch) -> N
                 200,
                 json={
                     "state": "ready",
-                    "variant": "sam3",
+                    "variant": "sam3.1",
                     "progress_bytes": None,
                     "progress_total": None,
                     "loaded_at": "2026-05-05T00:00:00Z",
@@ -264,7 +264,7 @@ def test_sam_status_defaults_vlm_fo1_available_false_when_upstream_omits(
                 200,
                 json={
                     "state": "ready",
-                    "variant": "sam3",
+                    "variant": "sam3.1",
                     "progress_bytes": None,
                     "progress_total": None,
                     "loaded_at": "2026-05-05T00:00:00Z",
