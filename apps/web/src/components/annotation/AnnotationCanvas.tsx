@@ -16,6 +16,7 @@ import {
 } from "@/state/shortcuts";
 import { matchChord } from "@/lib/shortcuts/chord";
 import { ACTIONS } from "@/lib/shortcuts/actions";
+import { shouldOpenCheatSheet } from "@/lib/cheat-sheet-hotkey";
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
@@ -1268,7 +1269,7 @@ export function AnnotationCanvas({
     }
     function onKey(e: KeyboardEvent) {
       if (isEditableTarget(e.target)) return;
-      if (e.key === "?" || (e.shiftKey && e.key === "/")) {
+      if (shouldOpenCheatSheet(e)) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("carve:open-cheat-sheet"));
       }
