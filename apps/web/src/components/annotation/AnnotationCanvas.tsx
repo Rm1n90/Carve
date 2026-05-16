@@ -18,6 +18,7 @@ import { matchChord } from "@/lib/shortcuts/chord";
 import { ACTIONS } from "@/lib/shortcuts/actions";
 import { shouldOpenCheatSheet } from "@/lib/cheat-sheet-hotkey";
 import { drainTextureLru, touchTextureLru } from "@/lib/texture-lru";
+import { findSnapTarget } from "@/lib/snap-target";
 
 /**
  * Capacity of the in-canvas texture LRU. The currently-displayed
@@ -2690,6 +2691,36 @@ export function AnnotationCanvas({
     }
 
     /**
+     * F6 — optional vertex/edge snap. When the user holds Shift and is
+     * drawing with the bbox or polygon tool, the cursor is locked to
+     * the nearest existing vertex / edge within an 8 screen-pixel
+     * threshold. Returns ``p`` unchanged when snapping is off (no
+     * shift, wrong tool) or when no candidate falls inside the
+     * threshold. Pure data flow: snap targets come from the live
+     * annotations store + visibility filters; the tool itself never
+     * learns about snap.
+     */
+    function snapCursorIfShift(p: Point, shiftKey: boolean): Point {
+      if (!shiftKey) return p;
+      if (tool !== "bbox" && tool !== "polygon") return p;
+      const state = useAnnotations.getState();
+      const drafts = Object.values(state.byId);
+      const result = findSnapTarget(
+        p,
+        scaleRef.current || 1,
+        drafts,
+        {
+          frameId,
+          hiddenAnnIds: new Set(state.hiddenAnnotationIds),
+          hiddenClassIds: new Set(state.hiddenClassIds),
+          excludeTempId: null,
+          excludeVertices: [],
+        },
+      );
+      return result ? { x: result.x, y: result.y } : p;
+    }
+
+    /**
      * Clamp a pointer to the live image bounds. Returns ``p`` unchanged
      * when the texture hasn't loaded (1×1 sentinel). Mirrors
      * ``clampToImage`` in BboxTool — kept local so the SAM box-mode
@@ -2806,7 +2837,15 @@ export function AnnotationCanvas({
         setDragCursor("grabbing");
         return;
       }
-      const p = pointerXY(e);
+      const rawP = pointerXY(e);
+      // F6 — snap the down point for bbox/polygon when Shift is held.
+      // The cursor tool's hit-test path uses the raw point because
+      // selection should target the real annotation under the cursor,
+      // not a snapped neighbour.
+      const p =
+        tool === "bbox" || tool === "polygon"
+          ? snapCursorIfShift(rawP, e.shiftKey)
+          : rawP;
       if (tool === "cursor") {
         // Plan 14 Phase 8 Task 6 — locked annotations are not draggable
         // or resizable. Skip the handle / body / vertex drag-init paths
@@ -3229,7 +3268,11 @@ export function AnnotationCanvas({
         applyFrame(next);
         return;
       }
-      const p = pointerXY(e);
+      const rawP = pointerXY(e);
+      // F6 — snap to nearest vertex/edge when drawing bbox/polygon and
+      // Shift is held. The helper short-circuits when shift is off so
+      // the non-snap path is unchanged.
+      const p = snapCursorIfShift(rawP, e.shiftKey);
       if (tool === "bbox") {
         const r = bbox.onPointerMove(p);
         if (r) void drawPreviewRect(r.preview);
@@ -3389,7 +3432,13 @@ export function AnnotationCanvas({
         else setDragCursor(null);
         return;
       }
-      const p = pointerXY(e);
+      const rawP = pointerXY(e);
+      // F6 — snap the commit point for bbox/polygon when Shift is held,
+      // so the final box / vertex lands exactly on the snap target.
+      const p =
+        tool === "bbox" || tool === "polygon"
+          ? snapCursorIfShift(rawP, e.shiftKey)
+          : rawP;
       if (tool === "bbox") {
         bbox.onPointerUp(p);
         clearPreview();
