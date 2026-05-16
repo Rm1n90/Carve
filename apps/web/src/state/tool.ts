@@ -63,7 +63,10 @@ const DEFAULT_VISIBILITY: VisibilityFlags = {
   annotations: true,
   labels: true,
   pixels: true,
-  crosshairs: false,
+  // Crosshair guide is on by default (CVAT / Ultralytics parity) so
+  // users get pixel-precise bbox alignment without discovering the
+  // visibility menu. They can still toggle it off there.
+  crosshairs: true,
   // Thumbnails are on by default in v2.1 so users can navigate between assets
   // without needing to discover the visibility menu. See audit bug 3 / D.
   thumbnails: true,

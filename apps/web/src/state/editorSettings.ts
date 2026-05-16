@@ -75,6 +75,12 @@ export interface EditorSettings {
    * exists yet.
    */
   showProjections: boolean;
+  /**
+   * When true, the crosshair guide also renders an ``x: __ y: __`` chip
+   * next to the pointer. Off by default for a CVAT/Ultralytics-style
+   * clean look; toggled from the Appearance panel.
+   */
+  showCrosshairReadout: boolean;
 
   // CVAT-feature parity (deferred — UI shows them disabled with a tooltip
   // explaining the dependency). Storing the values on the settings object
@@ -129,6 +135,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   outlinedBorders: false,
   outlinedBorderColor: "#FFFFFF",
   showProjections: false,
+  showCrosshairReadout: false,
 
   // Deferred CVAT parity — value preserved but UI is disabled.
   showAllInterpolationTracks: false,

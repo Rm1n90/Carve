@@ -287,6 +287,16 @@ export function AppearancePanel(
             testId="appearance-showBitmap"
           />
 
+          {/* Show coordinate readout next to the crosshair guide. Off by
+              default so the guide stays minimal; toggle on for the
+              x:__ y:__ chip. */}
+          <CheckboxRow
+            label="Show coordinate readout"
+            checked={settings.showCrosshairReadout}
+            onChange={(v) => set("showCrosshairReadout", v)}
+            testId="appearance-showCrosshairReadout"
+          />
+
           {/* Show projections — disabled with a tooltip until v3. */}
           <CheckboxRow
             label="Show projections"
