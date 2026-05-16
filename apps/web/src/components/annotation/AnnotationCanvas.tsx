@@ -62,6 +62,7 @@ import {
 import { showToast } from "@/lib/toast";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { CrosshairOverlay } from "@/components/annotation/CrosshairOverlay";
+import { LoupeOverlay } from "@/components/annotation/LoupeOverlay";
 import { AnnotationContextMenu } from "@/components/annotation/AnnotationContextMenu";
 import { ModelLoadingOverlay } from "@/components/annotation/ModelLoadingOverlay";
 import { ClassCommandPalette } from "@/components/annotation/ClassCommandPalette";
@@ -4161,6 +4162,16 @@ export function AnnotationCanvas({
         hostRef={hostRef}
         toImageXY={toImageXY}
         enabled={showCrosshair}
+      />
+      {/* F7 — magnifier loupe. Hold Z for a 3× circular zoom of the
+          underlying pixels at the cursor. Pure DOM overlay; reuses the
+          imageUrl already cached by the Pixi sprite so no extra
+          network cost. */}
+      <LoupeOverlay
+        hostRef={hostRef}
+        imageUrl={imageUrl}
+        imageSize={imageSize.w > 1 && imageSize.h > 1 ? imageSize : null}
+        toImageXY={toImageXY}
       />
       <AnnotationContextMenu
         hostRef={hostRef}
