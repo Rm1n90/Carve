@@ -183,6 +183,14 @@ const list: ShortcutAction[] = [
     category: "Selection",
     default: "mod+d",
   },
+  {
+    id: "copy_from_previous_asset",
+    label: "Copy annotations from previous asset",
+    category: "Editor",
+    default: "mod+shift+d",
+    description:
+      "Duplicate every annotation from the previous asset onto the current one. Sequential / similar-image datasets become 5–10× faster.",
+  },
 
   // ---------------- Z-order ----------------
   {

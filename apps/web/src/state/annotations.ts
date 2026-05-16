@@ -107,6 +107,15 @@ interface State {
   /** See {@link LastEditMeta}. Plan-09 Phase 5 Task 13. */
   lastEditMeta: LastEditMeta | null;
   add: (a: AnnotationDraft) => void;
+  /**
+   * Bulk-insert multiple drafts in one ``set()`` so the entire batch
+   * collapses into a single undo step. Mirrors ``removeMany``'s shape.
+   * Used by the copy-from-previous-asset flow and any future bulk
+   * importer. The first inserted id becomes the new selection; the
+   * full list becomes ``selectedIds`` so the user can immediately
+   * nudge / reassign the whole batch.
+   */
+  addMany: (drafts: AnnotationDraft[]) => void;
   update: (id: string, patch: Partial<AnnotationDraft>) => void;
   remove: (id: string) => void;
   /**
@@ -407,6 +416,34 @@ export const useAnnotations = create<State>((set, get) => ({
         history: pushPast(s),
         // Non-update op flushes the grouping window — the next update()
         // will start a fresh undo entry.
+        lastEditMeta: null,
+      };
+    }),
+  addMany: (drafts) =>
+    set((s) => {
+      if (drafts.length === 0) return s;
+      // Seed every draft with the same review-baseline defaults that
+      // ``add()`` uses, so callers don't have to repeat the boilerplate.
+      const nextById = { ...s.byId };
+      const newIds: string[] = [];
+      for (const a of drafts) {
+        nextById[a.tempId] = {
+          ...a,
+          status: a.status ?? "proposed",
+          reviewedById: a.reviewedById ?? null,
+          reviewedAt: a.reviewedAt ?? null,
+          prevGeometry: a.prevGeometry ?? null,
+        };
+        newIds.push(a.tempId);
+      }
+      return {
+        byId: nextById,
+        // Select the freshly-inserted batch so the user can nudge /
+        // reassign the whole group as one. Single-element batches
+        // behave identically to ``add()``.
+        selectedId: newIds[0],
+        selectedIds: newIds,
+        history: pushPast(s),
         lastEditMeta: null,
       };
     }),
