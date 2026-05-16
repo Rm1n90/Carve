@@ -978,11 +978,25 @@ export function ClassesPanel({
     function handler(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      if (!/^[1-9]$/.test(e.key)) return;
-      const digit = parseInt(e.key, 10);
+      // ``e.key`` reports the CHARACTER produced by the physical key
+      // INCLUDING modifier effects — Shift+1 on a US layout sends
+      // ``e.key === "!"`` (not ``"1"``), and other layouts produce
+      // different shifted characters. Use ``e.code`` (the *physical*
+      // key — "Digit1".."Digit9" / "Numpad1".."Numpad9" regardless of
+      // layout or modifiers) to detect digit keys so Shift+digit
+      // reliably fires the bind path on every keyboard. The plain-
+      // digit activation branch below can still read ``e.key`` since
+      // no shift is in play.
+      const codeMatch = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+      const digitFromCode = codeMatch ? parseInt(codeMatch[1], 10) : null;
 
       // Shift+digit → bind / unbind.
-      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (
+        digitFromCode !== null
+        && e.shiftKey
+        && !e.ctrlKey && !e.metaKey && !e.altKey
+      ) {
+        const digit = digitFromCode;
         const activeId = useTool.getState().activeClassId;
         if (!activeId) {
           showToast("Select a class first to bind a hotkey.", {
@@ -1009,8 +1023,15 @@ export function ClassesPanel({
       // Any other modifier → not our chord.
       if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
 
-      // Plain digit → activate the bound class.
-      const targetId = digitToClassId?.[digit];
+      // Plain digit → activate the bound class. ``e.code`` is the
+      // canonical source (Digit1..Digit9 + Numpad1..Numpad9). Fall
+      // back to ``e.key`` for layouts/keyboards where ``e.code`` is
+      // missing (rare).
+      const digitPlain = digitFromCode ?? (
+        /^[1-9]$/.test(e.key) ? parseInt(e.key, 10) : null
+      );
+      if (digitPlain === null) return;
+      const targetId = digitToClassId?.[digitPlain];
       if (targetId) {
         e.preventDefault();
         setActiveClassId(targetId);

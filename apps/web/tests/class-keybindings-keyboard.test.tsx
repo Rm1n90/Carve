@@ -90,7 +90,12 @@ describe("ClassesPanel keyboard", () => {
       />,
     ));
     // Active class is c-2; binding it to digit 5 → PUT("p", 5, "c-2").
-    fireEvent.keyDown(window, { key: "5", shiftKey: true });
+    // Real keyboards send e.key="%" with shift+5 (shifted character)
+    // and e.code="Digit5". The handler reads e.code so the shifted-
+    // character e.key doesn't prevent detection.
+    fireEvent.keyDown(window, {
+      key: "%", code: "Digit5", shiftKey: true,
+    });
     await act(async () => { await Promise.resolve(); });
     expect(putMock).toHaveBeenCalledWith("p", 5, "c-2");
   });
@@ -103,7 +108,9 @@ describe("ClassesPanel keyboard", () => {
       />,
     ));
     // c-2 is currently at digit 2; Shift+2 should unbind.
-    fireEvent.keyDown(window, { key: "2", shiftKey: true });
+    fireEvent.keyDown(window, {
+      key: "@", code: "Digit2", shiftKey: true,
+    });
     await act(async () => { await Promise.resolve(); });
     expect(removeMock).toHaveBeenCalledWith("p", 2);
     expect(putMock).not.toHaveBeenCalled();
@@ -117,11 +124,58 @@ describe("ClassesPanel keyboard", () => {
         digitToClassId={{}}
       />,
     ));
-    fireEvent.keyDown(window, { key: "1", shiftKey: true });
+    fireEvent.keyDown(window, {
+      key: "!", code: "Digit1", shiftKey: true,
+    });
     expect(showToastMock).toHaveBeenCalledWith(
       expect.stringMatching(/Select a class first/i),
       expect.anything(),
     );
     expect(putMock).not.toHaveBeenCalled();
+  });
+
+  // --- Regression for the "Im doing that but nothing happening" bug ---
+  // Pre-fix the handler matched only ``/^[1-9]$/.test(e.key)``. Real
+  // keyboards send e.key="!@#$%^&*(" for Shift+1..9 on US layouts (and
+  // other characters on other layouts), so the regex never matched and
+  // the bind path was unreachable from a real keyboard.
+
+  it("Shift+digit fires bind path when e.key is the SHIFTED character (real keyboard)", async () => {
+    render(wrap(
+      <ClassesPanel
+        classes={CLASSES}
+        digitToClassId={{ 1: "c-1", 2: "c-2" }}
+      />,
+    ));
+    fireEvent.keyDown(window, {
+      key: "*", code: "Digit8", shiftKey: true,
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(putMock).toHaveBeenCalledWith("p", 8, "c-2");
+  });
+
+  it("Shift+Numpad digit also fires bind path", async () => {
+    render(wrap(
+      <ClassesPanel
+        classes={CLASSES}
+        digitToClassId={{ 1: "c-1", 2: "c-2" }}
+      />,
+    ));
+    fireEvent.keyDown(window, {
+      key: "7", code: "Numpad7", shiftKey: true,
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(putMock).toHaveBeenCalledWith("p", 7, "c-2");
+  });
+
+  it("plain digit works with the new e.code-first detection", () => {
+    render(wrap(
+      <ClassesPanel
+        classes={CLASSES}
+        digitToClassId={{ 1: "c-1", 2: "c-2" }}
+      />,
+    ));
+    fireEvent.keyDown(window, { key: "2", code: "Digit2" });
+    expect(toolState.setActiveClassId).toHaveBeenCalledWith("c-2");
   });
 });

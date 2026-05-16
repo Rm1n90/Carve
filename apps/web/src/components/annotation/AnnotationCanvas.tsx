@@ -3727,13 +3727,26 @@ export function AnnotationCanvas({
             .catch((err: unknown) => {
               handleSamError(err);
             });
-        } else if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
-          // v3.x — commit with the class bound to the pressed digit. Reads the
-          // effective binding map (shared with the ClassesPanel keyboard
-          // handler) so the SAM commit path respects user-customised
-          // shortcuts. Falls back to the legacy idx-based lookup when no
-          // map is provided (older test mounts).
-          const digit = parseInt(e.key, 10);
+        } else if (
+          /^(?:Digit|Numpad)[1-9]$/.test(e.code)
+          && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
+        ) {
+          // v3.x — commit with the class bound to the pressed digit.
+          // Reads the effective binding map (shared with the
+          // ClassesPanel keyboard handler) so the SAM commit path
+          // respects user-customised shortcuts. Falls back to the
+          // legacy idx-based lookup when no map is provided (older
+          // test mounts).
+          //
+          // Uses ``e.code`` (physical-key, layout-independent) so the
+          // detection survives all keyboard layouts. Excludes
+          // ``shiftKey`` explicitly so ``Shift+digit`` is owned by
+          // the ClassesPanel bind handler — otherwise both handlers
+          // would fire and we'd accidentally commit while binding.
+          const digit = parseInt(
+            e.code.replace(/^(?:Digit|Numpad)/, ""),
+            10,
+          );
           const targetId =
             digitToClassId?.[digit]
             ?? (classesProp ?? []).find((c) => c.idx === digit - 1)?.id;
