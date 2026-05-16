@@ -21,6 +21,19 @@ import {
   type FilterGroup,
 } from "@/lib/annotation-filter";
 
+/** Adapter shape — anything the underlying ``evaluateFilter`` can read.
+ *
+ * The page hands us EITHER raw API rows (other assets, via the
+ * task-wide query) OR live ``AnnotationDraft`` values from the local
+ * Zustand store (current asset only). Both shapes carry the fields the
+ * filter evaluator cares about (classId, kind, geometry, frameId), so
+ * we accept either and normalise once before evaluation.
+ */
+type EvaluableAnnotation = Pick<
+  AnnotationDraft,
+  "classId" | "kind" | "geometry" | "frameId"
+>;
+
 /**
  * Build the set of asset IDs that contain at least one annotation
  * matching the supplied filter. Returns an empty set when:
@@ -119,4 +132,65 @@ export function computeFilteredNeighbours<A extends { id: string }>(
     }
   }
   return { prev, next };
+}
+
+/**
+ * Re-compute the current asset's membership in ``matching`` from the
+ * live in-memory annotations store (rather than the cached task-wide
+ * query), and return a fresh Set with that single override applied.
+ *
+ * Why this exists: the cached server query is the authority for OTHER
+ * assets, but for the asset the user is currently editing the local
+ * store is fresher — it reflects deletes/adds the millisecond they
+ * happen, before autosave has had a chance to flush. Without this
+ * override, deleting the last Bus on the current asset would leave
+ * that asset in the matching set, so arrow navigation would still
+ * land on it (the bug Armin reported).
+ *
+ * The other-assets membership is preserved verbatim. If the user
+ * adds a matching annotation locally, the current asset gets added
+ * to the set; if they delete the last match, it's removed.
+ *
+ * Pass ``currentAssetId = null`` (e.g. between asset switches) to
+ * disable the override and return ``matching`` unchanged.
+ */
+export function applyLocalAssetOverride(
+  matching: ReadonlySet<string>,
+  currentAssetId: string | null,
+  currentAssetAnnotations: ReadonlyArray<EvaluableAnnotation>,
+  classes: Record<string, ClassRow>,
+  filter: FilterGroup | null,
+): Set<string> {
+  const next = new Set(matching);
+  if (!currentAssetId) return next;
+  if (!filter || !hasMeaningfulRules(filter)) return next;
+  let anyMatch = false;
+  for (const ann of currentAssetAnnotations) {
+    // Build the minimal AnnotationDraft shape the evaluator needs.
+    // We tolerate either raw rows (server-shaped) or live drafts.
+    const draft: AnnotationDraft = {
+      tempId: "",
+      classId: ann.classId,
+      kind: ann.kind,
+      geometry: ann.geometry as unknown as Geometry,
+      frameId: ann.frameId,
+      serverId: null,
+      dirty: false,
+      zOrder: 0,
+      status: "proposed",
+      reviewedById: null,
+      reviewedAt: null,
+      prevGeometry: null,
+    };
+    if (evaluateFilter(draft, classes, filter)) {
+      anyMatch = true;
+      break;
+    }
+  }
+  if (anyMatch) {
+    next.add(currentAssetId);
+  } else {
+    next.delete(currentAssetId);
+  }
+  return next;
 }

@@ -81,6 +81,7 @@ import { useProjectPrefs } from "@/state/projectPrefs";
 import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
 import {
+  applyLocalAssetOverride,
   computeFilteredNeighbours,
   computeMatchingAssetIds,
 } from "@/lib/annotation-filter-nav";
@@ -580,11 +581,40 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     staleTime: 0,
   });
 
+  // Live subscription to the local annotations store. Lets the matching
+  // memo re-evaluate the CURRENT asset's membership the instant the
+  // user adds/deletes an annotation — the cached task-wide query
+  // refreshes only after autosave flushes (debounced ~1s), so without
+  // this override the user reported arrow nav still landing on assets
+  // whose last matching annotation they'd just deleted.
+  const liveAnnotationsById = useAnnotations((s) => s.byId);
+
   const matchingAssetIds = useMemo(() => {
     if (!filterActive) return new Set<string>();
     const raw = taskAnnotationsRawQ.data ?? [];
-    return computeMatchingAssetIds(raw, classByIdMap, activeFilter);
-  }, [filterActive, taskAnnotationsRawQ.data, classByIdMap, activeFilter]);
+    const serverMatching = computeMatchingAssetIds(
+      raw, classByIdMap, activeFilter,
+    );
+    // Override the current asset's bit with the live store so deletes/
+    // adds register immediately. ``assetId`` may be undefined during
+    // initial mount before the route resolves — in that case the
+    // override is a no-op.
+    const localAnnotations = Object.values(liveAnnotationsById);
+    return applyLocalAssetOverride(
+      serverMatching,
+      assetId ?? null,
+      localAnnotations,
+      classByIdMap,
+      activeFilter,
+    );
+  }, [
+    filterActive,
+    taskAnnotationsRawQ.data,
+    classByIdMap,
+    activeFilter,
+    liveAnnotationsById,
+    assetId,
+  ]);
 
   const { prev: prevAsset, next: nextAsset } = useMemo(
     () => computeFilteredNeighbours(taskAssets, currentAssetIdx, matchingAssetIds),
@@ -759,6 +789,14 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       }
       useAnnotations.getState().clearPendingDeletes();
       qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+      // Filter-aware nav reads from this task-wide raw query to decide
+      // which assets contain matching annotations. After autosave the
+      // server reflects local edits, so the matching set must refresh
+      // too — otherwise the user could delete the last Bus on the
+      // CURRENT asset and arrow-nav back to it (the local-store
+      // override at the page level handles the current asset; this
+      // invalidation handles every OTHER asset that was edited).
+      qc.invalidateQueries({ queryKey: ["task-annotations-raw", taskId] });
       // Plan-16 — refresh project-level stats so the per-task progress
       // bars and totals reflect the latest annotation count whenever
       // the user navigates back from the editor. Without this the

@@ -22,6 +22,7 @@ import {
   type FilterOp,
   type FilterRule,
 } from "@/lib/annotation-filter";
+import { sortClassesByCreationOrder } from "@/lib/class-order";
 import { useFilter } from "@/state/annotationFilter";
 import { cn } from "@/lib/cn";
 
@@ -67,8 +68,14 @@ interface FilterBuilderDialogProps {
    * v3.24.13 — when provided, the "Label" field renders as a Select
    * populated with these class names instead of a free-text input.
    * Optional so older callers (and tests) still work without changes.
+   *
+   * ``idx`` (optional) is the class's creation-order index — when
+   * present, the dropdown sorts by it instead of alphabetically so
+   * the picker mirrors the order classes were created in (same as
+   * the Classes panel). Falling back to name-sort keeps tests and
+   * older callers working unchanged.
    */
-  classes?: { id: string; name: string }[];
+  classes?: { id: string; name: string; idx?: number }[];
 }
 
 /**
@@ -494,14 +501,18 @@ export function FilterBuilderDialog({
   const activeFilter = useFilter((s) => s.filter);
 
   // v3.24.13 — derive the Label dropdown options from the project's
-  // class catalog. Sorted alphabetically for predictable scanning.
-  // Memoised so the underlying GroupSection / RuleRow trees don't
-  // re-render on unrelated state changes.
+  // class catalog. Sorted by creation order (``ClassRow.idx``) so the
+  // dropdown matches the order classes appear in the Classes panel —
+  // Armin reported alphabetical was disorienting because users think
+  // about their classes in the order they created them, not by name.
+  // ``sortClassesByCreationOrder`` falls back to name-sort when
+  // ``idx`` is missing (older callers, unit tests).
   const labelOptions = useMemo(() => {
     if (!classes || classes.length === 0) return undefined;
-    return [...classes]
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((c) => ({ value: c.name, label: c.name }));
+    return sortClassesByCreationOrder(classes).map((c) => ({
+      value: c.name,
+      label: c.name,
+    }));
   }, [classes]);
 
   const [tree, setTree] = useState<FilterGroup>(() => makeEmptyGroup());

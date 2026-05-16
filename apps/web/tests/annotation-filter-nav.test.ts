@@ -16,12 +16,14 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  applyLocalAssetOverride,
   computeFilteredNeighbours,
   computeMatchingAssetIds,
 } from "@/lib/annotation-filter-nav";
 import type { AnnotationRaw } from "@/api/annotations";
 import type { FilterGroup } from "@/lib/annotation-filter";
 import type { ClassRow } from "@/api/classes";
+import type { AnnotationDraft } from "@/state/annotations";
 
 const CLASS_BUS: ClassRow = {
   id: "cls-bus",
@@ -279,5 +281,157 @@ describe("computeFilteredNeighbours", () => {
       expect(nav.prev?.id).toBe("as-1");
       expect(nav.next?.id).toBe("as-3");
     });
+  });
+});
+
+function makeDraft(
+  overrides: Partial<AnnotationDraft> & { classId: string },
+): AnnotationDraft {
+  return {
+    tempId: overrides.tempId ?? "t-1",
+    classId: overrides.classId,
+    kind: overrides.kind ?? "bbox",
+    geometry:
+      overrides.geometry
+      ?? ({ kind: "bbox", x: 0, y: 0, w: 10, h: 10 } as never),
+    frameId: overrides.frameId ?? null,
+    serverId: overrides.serverId ?? null,
+    dirty: overrides.dirty ?? false,
+    zOrder: overrides.zOrder ?? 0,
+    status: overrides.status ?? "proposed",
+    reviewedById: overrides.reviewedById ?? null,
+    reviewedAt: overrides.reviewedAt ?? null,
+    prevGeometry: overrides.prevGeometry ?? null,
+  };
+}
+
+describe("applyLocalAssetOverride (live-store override for current asset)", () => {
+  it("removes the current asset from matching when the user deleted the last match locally", () => {
+    // Cache still says as-2 has a Bus (the server hasn't been told
+    // about the delete yet). User has deleted it locally → the live
+    // annotations store has no Bus on as-2 anymore.
+    const cached = new Set(["as-1", "as-2", "as-3"]);
+    const liveOnCurrent: AnnotationDraft[] = [
+      // Only a Car remains on the current asset.
+      makeDraft({ classId: CLASS_CAR.id }),
+    ];
+    const next = applyLocalAssetOverride(
+      cached,
+      "as-2",
+      liveOnCurrent,
+      CLASSES,
+      LABEL_EQUALS_BUS,
+    );
+    expect(next.has("as-2")).toBe(false);
+    // Other assets in the matching set are untouched.
+    expect(next.has("as-1")).toBe(true);
+    expect(next.has("as-3")).toBe(true);
+  });
+
+  it("adds the current asset to matching when the user just drew the first matching annotation locally", () => {
+    // Cache doesn't list as-2 — the autosave hasn't fired yet — but
+    // locally the user has drawn a Bus.
+    const cached = new Set(["as-5"]);
+    const liveOnCurrent: AnnotationDraft[] = [
+      makeDraft({ classId: CLASS_BUS.id }),
+    ];
+    const next = applyLocalAssetOverride(
+      cached,
+      "as-2",
+      liveOnCurrent,
+      CLASSES,
+      LABEL_EQUALS_BUS,
+    );
+    expect(next.has("as-2")).toBe(true);
+    expect(next.has("as-5")).toBe(true);
+  });
+
+  it("leaves the current asset in matching when other locally-drawn annotations still match", () => {
+    const cached = new Set(["as-2"]);
+    const liveOnCurrent: AnnotationDraft[] = [
+      // Two Bus annotations; the user deletes one — one remains.
+      makeDraft({ tempId: "t-1", classId: CLASS_BUS.id }),
+      makeDraft({ tempId: "t-2", classId: CLASS_CAR.id }),
+    ];
+    const next = applyLocalAssetOverride(
+      cached,
+      "as-2",
+      liveOnCurrent,
+      CLASSES,
+      LABEL_EQUALS_BUS,
+    );
+    expect(next.has("as-2")).toBe(true);
+  });
+
+  it("currentAssetId=null disables the override (returns matching unchanged)", () => {
+    const cached = new Set(["as-1", "as-2"]);
+    const next = applyLocalAssetOverride(
+      cached,
+      null,
+      [],
+      CLASSES,
+      LABEL_EQUALS_BUS,
+    );
+    expect([...next].sort()).toEqual(["as-1", "as-2"]);
+  });
+
+  it("no-op when the filter has no meaningful rules", () => {
+    const emptyFilter: FilterGroup = {
+      combinator: "AND",
+      rules: [{ not: false, field: "label", op: "==", value: "" }],
+    };
+    const cached = new Set(["as-1"]);
+    const next = applyLocalAssetOverride(
+      cached,
+      "as-1",
+      [],
+      CLASSES,
+      emptyFilter,
+    );
+    expect([...next]).toEqual(["as-1"]);
+  });
+
+  it("end-to-end bug scenario: delete last Bus on current asset → arrow nav skips it", () => {
+    // 5 assets; as-2 and as-5 originally have Bus. User is on as-2,
+    // deletes the only Bus there.
+    const taskAssets = [
+      { id: "as-1" },
+      { id: "as-2" },
+      { id: "as-3" },
+      { id: "as-4" },
+      { id: "as-5" },
+    ];
+    const cachedAnnotations: AnnotationRaw[] = [
+      makeAnnotation({ id: "a1", asset_id: "as-1", class_id: CLASS_CAR.id }),
+      makeAnnotation({ id: "a2", asset_id: "as-2", class_id: CLASS_BUS.id }),
+      makeAnnotation({ id: "a3", asset_id: "as-3", class_id: CLASS_CAR.id }),
+      makeAnnotation({ id: "a4", asset_id: "as-4", class_id: CLASS_CAR.id }),
+      makeAnnotation({ id: "a5", asset_id: "as-5", class_id: CLASS_BUS.id }),
+    ];
+    const cachedMatching = computeMatchingAssetIds(
+      cachedAnnotations,
+      CLASSES,
+      LABEL_EQUALS_BUS,
+    );
+    expect([...cachedMatching].sort()).toEqual(["as-2", "as-5"]);
+
+    // User is on as-2 with the Bus deleted from the local store.
+    const liveOnCurrent: AnnotationDraft[] = [];
+    const effective = applyLocalAssetOverride(
+      cachedMatching,
+      "as-2",
+      liveOnCurrent,
+      CLASSES,
+      LABEL_EQUALS_BUS,
+    );
+
+    // The matching set now correctly excludes as-2.
+    expect([...effective].sort()).toEqual(["as-5"]);
+
+    // Pressing Left from as-5 must NOT land back on as-2 — it should
+    // exit the matching set entirely (prev=null, next=null).
+    const nav = computeFilteredNeighbours(taskAssets, 4, effective);
+    expect(nav.prev).toBeNull();
+    expect(nav.next).toBeNull();
   });
 });
