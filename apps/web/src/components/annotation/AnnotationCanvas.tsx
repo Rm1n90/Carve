@@ -17,6 +17,18 @@ import {
 import { matchChord } from "@/lib/shortcuts/chord";
 import { ACTIONS } from "@/lib/shortcuts/actions";
 import { shouldOpenCheatSheet } from "@/lib/cheat-sheet-hotkey";
+import { drainTextureLru, touchTextureLru } from "@/lib/texture-lru";
+
+/**
+ * Capacity of the in-canvas texture LRU. The currently-displayed
+ * texture lives in slot 1; one slot reserved for the previous asset
+ * so ArrowLeft returns instantly; one slot reserved for the next so
+ * forward/back oscillation doesn't reload. Beyond 3 the marginal
+ * "instant nav" benefit drops sharply while the GPU/RAM footprint
+ * grows linearly — a 4K RGBA texture is ~32 MB resident. See
+ * src/lib/texture-lru.ts for the rationale.
+ */
+const TEXTURE_LRU_CAPACITY = 3;
 import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
@@ -256,6 +268,13 @@ export function AnnotationCanvas({
   // changes so the Pixi Application doesn't have to be torn down on
   // navigation. v2.5 perf fix.
   const imageSpriteRef = useRef<unknown | null>(null);
+  // MRU-ordered list of imageUrls currently resident in Pixi's Assets
+  // cache. Every successful Assets.load() pushes its URL onto the end;
+  // once the list grows past TEXTURE_LRU_CAPACITY the oldest entries
+  // are unloaded so we don't pin GPU memory across long sessions. The
+  // URL at the *end* is always the texture currently bound to the
+  // sprite, so it can never be evicted by its own touch.
+  const textureLruRef = useRef<string[]>([]);
   // Tracks whether the Pixi app has finished initialising. The
   // texture-swap effect waits on this so a fast first-paint imageUrl
   // change still lands on a ready renderer.
@@ -879,6 +898,36 @@ export function AnnotationCanvas({
           imageSpriteRef.current = sprite;
         }
 
+        // Touch the URL in the texture LRU and release anything that
+        // falls out. The just-bound URL is the most-recent entry so
+        // touchTextureLru cannot return it as an eviction candidate —
+        // no risk of blanking the canvas. Unload is best-effort and
+        // unrelated URLs failing must not break the editor.
+        try {
+          const { order, evicted } = touchTextureLru(
+            textureLruRef.current,
+            imageUrl,
+            TEXTURE_LRU_CAPACITY,
+          );
+          textureLruRef.current = order;
+          if (evicted.length > 0) {
+            const unload = (Assets as unknown as {
+              unload?: (u: string) => Promise<void>;
+            }).unload;
+            if (unload) {
+              for (const stale of evicted) {
+                // Defensive: never unload the URL currently displayed.
+                // touchTextureLru already guarantees this, but a future
+                // capacity change must not regress on it.
+                if (stale === imageUrl) continue;
+                unload(stale).catch(() => undefined);
+              }
+            }
+          }
+        } catch {
+          /* best-effort cache eviction */
+        }
+
         // Read intrinsic dims off the texture rather than the sprite —
         // Pixi v8's Sprite.width/height reflect the texture only after a
         // re-render, but the texture exposes them synchronously.
@@ -927,6 +976,33 @@ export function AnnotationCanvas({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageUrl, reloadKey, pixiReady]);
+
+  // Release every cached texture on full canvas unmount so navigating
+  // away from the editor doesn't leave 3 textures pinned in Pixi's
+  // module-level Assets cache. We isolate this in its own effect so
+  // the cleanup only runs once, on actual unmount — not on every
+  // ``imageUrl`` change.
+  useEffect(() => {
+    return () => {
+      const { evicted } = drainTextureLru(textureLruRef.current);
+      textureLruRef.current = [];
+      if (evicted.length === 0) return;
+      void (async () => {
+        try {
+          const { Assets } = await import("pixi.js");
+          const unload = (Assets as unknown as {
+            unload?: (u: string) => Promise<void>;
+          }).unload;
+          if (!unload) return;
+          for (const url of evicted) {
+            unload(url).catch(() => undefined);
+          }
+        } catch {
+          /* best-effort */
+        }
+      })();
+    };
+  }, []);
 
   // ----- Reset shape / label graphics when the asset changes so leftover
   // shapes from the previous asset don't briefly render before the new
