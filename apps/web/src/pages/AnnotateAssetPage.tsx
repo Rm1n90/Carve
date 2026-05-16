@@ -93,6 +93,8 @@ import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { BackgroundJobsLeaveGuard } from "@/components/BackgroundJobsLeaveGuard";
+import { keybindingsApi } from "@/api/keybindings";
+import { effectiveBindings } from "@/lib/class-keybindings";
 
 interface Props {
   projectId: string;
@@ -435,6 +437,23 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     isLoading: taskClassesQ.isLoading,
     error: taskClassesQ.error,
   } as const;
+
+  const keybindingsQ = useQuery({
+    queryKey: ["class-keybindings", projectId],
+    queryFn: () => keybindingsApi.list(projectId),
+    staleTime: 60_000,
+  });
+
+  // Single source of truth for digit→class. Mirrors the server-side
+  // composition; recomputes when classes or stored bindings change so
+  // optimistic mutations re-render the kbd badges instantly.
+  const digitToClassId = useMemo(
+    () => effectiveBindings(
+      keybindingsQ.data?.bindings ?? [],
+      classesQ.data ?? [],
+    ),
+    [keybindingsQ.data, classesQ.data],
+  );
 
   // List of all assets in this task — drives ArrowLeft/ArrowRight navigation
   // and the prev/next IconButtons in the toolbar. The same query is consumed
@@ -1516,6 +1535,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 classColorMap={classColorMap}
                 classNameMap={classNameMap}
                 classes={classesQ.data ?? []}
+                digitToClassId={digitToClassId}
               />
               <SelectionCountBadge
                 // v3.27.11 — pass the LIVE active frame id so the badge
@@ -1783,6 +1803,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                       setRenameDraft(cls.name);
                     }}
                     onDeleteClass={(cid) => classRemove.mutate(cid)}
+                    digitToClassId={digitToClassId}
                   />
                 </Tabs.Content>
                 <Tabs.Content

@@ -1,5 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { keybindingsApi } from "@/api/keybindings";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Plus,
@@ -54,6 +56,9 @@ interface Props {
    * annotation has ``frameId === null``.
    */
   currentFrameId?: string | null;
+  /** Merged digit → classId map (see lib/class-keybindings). Used for
+   *  both badge rendering and the digit keyboard handler. */
+  digitToClassId?: Record<number, string>;
 }
 
 type SortMode = "idx" | "name-asc" | "name-desc" | "count-asc" | "count-desc";
@@ -319,6 +324,7 @@ function ClassRowItem({
   onTogglePin,
   onRequestReassign,
   onDropAnnotations,
+  digitBadge,
 }: {
   cls: ClassRow;
   index: number;
@@ -350,6 +356,9 @@ function ClassRowItem({
    *  carried by the drag, `targetClassId` is this row's id. The panel
    *  calls setActiveClassForSelected(targetClassId, ids). */
   onDropAnnotations: (targetClassId: string, ids: string[]) => void;
+  /** Digit shortcut bound to this class via class-keybindings. ``undefined``
+   *  means no binding; overrides the legacy positional badge. */
+  digitBadge?: number;
 }) {
   const setActiveClassId = useTool((s) => s.setActiveClassId);
   const confirm = useConfirm();
@@ -467,7 +476,14 @@ function ClassRowItem({
             </sup>
           )}
         </span>
-        {index < 9 && !isActive && <Kbd>{index + 1}</Kbd>}
+        {digitBadge !== undefined && (
+          <Kbd
+            data-testid={`class-row-kbd-${cls.id}`}
+            aria-label={`Digit shortcut ${digitBadge}`}
+          >
+            {digitBadge}
+          </Kbd>
+        )}
         <span
           className={cn(
             "flex items-center gap-0.5",
@@ -765,6 +781,7 @@ export function ClassesPanel({
   onUpdateColor,
   onCreateClass,
   currentFrameId = null,
+  digitToClassId,
 }: Props) {
   const activeClassId = useTool((s) => s.activeClassId);
   const setActiveClassId = useTool((s) => s.setActiveClassId);
@@ -845,6 +862,18 @@ export function ClassesPanel({
     return m;
   }, [byId]);
 
+  // Inverted map: classId → digit. Used to render the [N] badge on each
+  // class row and to detect same-digit toggle (unbind) on Shift+digit.
+  const digitByClassId = useMemo(() => {
+    const r: Record<string, number> = {};
+    if (digitToClassId) {
+      for (const [d, id] of Object.entries(digitToClassId)) {
+        r[id] = parseInt(d, 10);
+      }
+    }
+    return r;
+  }, [digitToClassId]);
+
   // v3.0 B2 — per-class count of annotations on the *current frame*. Drives
   // the "Clear on this frame" menu item: copy/disabled state + confirm copy.
   const frameCounts = useMemo(() => {
@@ -910,19 +939,69 @@ export function ClassesPanel({
     setExpanded((prev) => (prev[ann.classId] ? prev : { ...prev, [ann.classId]: true }));
   }, [hoveredAnnotationId, byId]);
 
+  const qc = useQueryClient();
+  const putBinding = useMutation({
+    mutationFn: ({ digit, classId }: { digit: number; classId: string }) =>
+      keybindingsApi.put(projectId, digit, classId),
+    onSettled: () => qc.invalidateQueries({
+      queryKey: ["class-keybindings", projectId],
+    }),
+  });
+  const clearBinding = useMutation({
+    mutationFn: (digit: number) => keybindingsApi.remove(projectId, digit),
+    onSettled: () => qc.invalidateQueries({
+      queryKey: ["class-keybindings", projectId],
+    }),
+  });
+
   useEffect(() => {
     function handler(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      const n = parseInt(e.key, 10);
-      if (Number.isInteger(n) && n >= 1 && n <= 9) {
-        const target = classes[n - 1];
-        if (target) setActiveClassId(target.id);
+      if (!/^[1-9]$/.test(e.key)) return;
+      const digit = parseInt(e.key, 10);
+
+      // Shift+digit → bind / unbind.
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const activeId = useTool.getState().activeClassId;
+        if (!activeId) {
+          showToast("Select a class first to bind a hotkey.", {
+            variant: "info", duration: 3000,
+          });
+          return;
+        }
+        e.preventDefault();
+        const current = digitToClassId?.[digit];
+        if (current === activeId) {
+          clearBinding.mutate(digit);
+          showToast(`Digit ${digit} cleared`, { variant: "info" });
+        } else {
+          const activeClass = classes.find((c) => c.id === activeId);
+          putBinding.mutate({ digit, classId: activeId });
+          showToast(
+            `Digit ${digit} → ${activeClass?.name ?? "class"}`,
+            { variant: "success" },
+          );
+        }
+        return;
+      }
+
+      // Any other modifier → not our chord.
+      if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+
+      // Plain digit → activate the bound class.
+      const targetId = digitToClassId?.[digit];
+      if (targetId) {
+        e.preventDefault();
+        setActiveClassId(targetId);
       }
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [classes, setActiveClassId]);
+  }, [
+    digitToClassId, classes, setActiveClassId, projectId,
+    putBinding, clearBinding,
+  ]);
 
   const filtered = useMemo(() => {
     let out = query
@@ -1080,6 +1159,7 @@ export function ClassesPanel({
                 }
                 onRequestReassign={handleRequestReassign}
                 onDropAnnotations={handleDropAnnotations}
+                digitBadge={digitByClassId[c.id]}
               />
             );
           };
