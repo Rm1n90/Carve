@@ -46,8 +46,30 @@ interface ToolState {
    * instance stay in sync without prop-drilling.
    */
   samMode: SamMode;
+  /**
+   * F4 — streak indicator. Tracks how many consecutive annotations
+   * the user has drawn with the SAME class via a *drawing tool*
+   * (Bbox, Polygon, Mask, SAM commit, Tag). Programmatic additions
+   * (paste, copy-from-prev, SAM batch, YOLO predict) do NOT touch
+   * the counter — they shouldn't reward the user for autopilot.
+   *
+   * Volatile; never persisted. Resets on project / task switch
+   * because the editor remounts (zustand instance is the same but
+   * tools call ``resetStreak`` from their cleanup).
+   */
+  lastDrawClassId: string | null;
+  streakCount: number;
   setActive: (t: ToolName) => void;
   setActiveClassId: (id: string | null) => void;
+  /**
+   * Tools call this AFTER a successful create. If ``classId`` matches
+   * the prior ``lastDrawClassId`` the counter ticks up; otherwise it
+   * resets to 1 and ``lastDrawClassId`` becomes the new class. ``null``
+   * is a no-op (defensive — tools should always pass a real id).
+   */
+  recordDraw: (classId: string | null) => void;
+  /** Wipe the streak — used on class delete / asset switch. */
+  resetStreak: () => void;
   setAutoApply: (v: boolean) => void;
   toggleAutoApply: () => void;
   setVisibility: (key: keyof VisibilityFlags, value: boolean) => void;
@@ -82,8 +104,20 @@ export const useTool = create<ToolState>((set) => ({
   maskHardness: 0.7,
   maskEraser: false,
   samMode: "point",
+  lastDrawClassId: null,
+  streakCount: 0,
   setActive: (t) => set({ active: t }),
   setActiveClassId: (id) => set({ activeClassId: id }),
+  recordDraw: (classId) => {
+    if (!classId) return;
+    set((s) => {
+      if (s.lastDrawClassId === classId) {
+        return { streakCount: s.streakCount + 1 };
+      }
+      return { lastDrawClassId: classId, streakCount: 1 };
+    });
+  },
+  resetStreak: () => set({ lastDrawClassId: null, streakCount: 0 }),
   setAutoApply: (v) => set({ autoApply: v }),
   toggleAutoApply: () => set((s) => ({ autoApply: !s.autoApply })),
   setVisibility: (key, value) =>

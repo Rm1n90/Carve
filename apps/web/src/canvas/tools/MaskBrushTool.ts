@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useAnnotations } from "@/state/annotations";
+import { useTool } from "@/state/tool";
 import type { Point } from "./BboxTool";
 import { MaskRasterizer } from "@/canvas/MaskRasterizer";
 
@@ -187,6 +188,8 @@ export class MaskBrushTool {
       serverId: null,
       dirty: true,
     });
+    // F4 — record tool-driven draw for streak.
+    useTool.getState().recordDraw(classId);
     this.rasterizer = null;
     this.painting = false;
     this.strokePoints = [];

@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useAnnotations } from "@/state/annotations";
+import { useTool } from "@/state/tool";
 import { samApi, type SamDecodeResult, type SamPromptResult } from "@/api/sam";
 import { canDecodeLocally } from "@/canvas/sam/onnx";
 import { currentPolygonEpsilonFactor as currentEpsilonFactor } from "@/lib/polygon-approx";
@@ -760,6 +761,11 @@ export class SamTool {
         dirty: true,
       });
     }
+    // F4 — single-shape SAM commit counts as a tool-driven draw.
+    // (The multi-mode batch above intentionally does NOT call this:
+    // per spec, "SAM batch" is programmatic and shouldn't affect the
+    // streak counter.)
+    useTool.getState().recordDraw(cls);
     this.reset();
     return true;
   }

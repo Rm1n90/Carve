@@ -329,6 +329,7 @@ function ClassRowItem({
   onRequestReassign,
   onDropAnnotations,
   digitBadge,
+  streak,
 }: {
   cls: ClassRow;
   index: number;
@@ -363,6 +364,8 @@ function ClassRowItem({
   /** Digit shortcut bound to this class via class-keybindings. ``undefined``
    *  means no binding; overrides the legacy positional badge. */
   digitBadge?: number;
+  /** F4 — current consecutive-draw streak (only set when ≥ 3). */
+  streak?: number;
 }) {
   const setActiveClassId = useTool((s) => s.setActiveClassId);
   const confirm = useConfirm();
@@ -478,6 +481,23 @@ function ClassRowItem({
             >
               {count}
             </sup>
+          )}
+          {streak !== undefined && (
+            <span
+              data-testid={`class-streak-${cls.id}`}
+              title={`Streak: ${streak} ${cls.name} in a row`}
+              aria-label={`Streak: ${streak} in a row`}
+              className={cn(
+                "ml-1 inline-flex items-center gap-0.5",
+                "px-1 py-[1px] rounded-[var(--radius-xs)]",
+                "bg-[color:var(--accent-warning-bg,rgba(245,158,11,0.15))]",
+                "text-[10px] tabular-nums",
+                "text-[color:var(--accent-warning,#f59e0b)]",
+              )}
+            >
+              <span aria-hidden>🔥</span>
+              <span>{streak}</span>
+            </span>
           )}
         </span>
         {digitBadge !== undefined && (
@@ -790,6 +810,12 @@ export function ClassesPanel({
   const activeClassId = useTool((s) => s.activeClassId);
   const setActiveClassId = useTool((s) => s.setActiveClassId);
   const hoveredAnnotationId = useTool((s) => s.hoveredAnnotationId);
+  // F4 — streak indicator. Show a tiny "🔥 N" chip next to the class
+  // that has been drawn N >= 3 times in a row. Helps the user notice
+  // long runs of the same class so they can pause and verify before
+  // racking up identical errors.
+  const streakClassId = useTool((s) => s.lastDrawClassId);
+  const streakCount = useTool((s) => s.streakCount);
   // Plan-18 follow-up — only surface the Classify chip strip when the
   // user is in the Tag tool (T). Avoids cluttering the panel during
   // bbox/polygon/mask work; the T shortcut is the natural way in/out.
@@ -1201,6 +1227,11 @@ export function ClassesPanel({
                 onRequestReassign={handleRequestReassign}
                 onDropAnnotations={handleDropAnnotations}
                 digitBadge={digitByClassId[c.id]}
+                streak={
+                  streakClassId === c.id && streakCount >= 3
+                    ? streakCount
+                    : undefined
+                }
               />
             );
           };

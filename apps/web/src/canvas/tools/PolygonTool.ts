@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useAnnotations } from "@/state/annotations";
+import { useTool } from "@/state/tool";
 import { showToast } from "@/lib/toast";
 import type { ImageSize, Point } from "./BboxTool";
 
@@ -149,6 +150,8 @@ export class PolygonTool {
       serverId: null,
       dirty: true,
     });
+    // F4 — record tool-driven draw for streak.
+    useTool.getState().recordDraw(classId);
     this.vertices = [];
     this.cursor = null;
     return true;

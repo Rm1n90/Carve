@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useAnnotations } from "@/state/annotations";
+import { useTool } from "@/state/tool";
 import { showToast } from "@/lib/toast";
 
 export class TagTool {
@@ -31,6 +32,8 @@ export class TagTool {
       serverId: null,
       dirty: true,
     });
+    // F4 — record tool-driven draw for streak.
+    useTool.getState().recordDraw(classId);
     return true;
   }
 }

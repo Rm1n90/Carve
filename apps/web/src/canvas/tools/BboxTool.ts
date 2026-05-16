@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { useAnnotations } from "@/state/annotations";
+import { useTool } from "@/state/tool";
 import { showToast } from "@/lib/toast";
 
 export interface Point {
@@ -147,6 +148,10 @@ export class BboxTool {
       serverId: null,
       dirty: true,
     });
+    // F4 — record this as a tool-driven draw so the streak indicator
+    // can show "5× Car in a row". Programmatic adds (paste, copy-from-
+    // previous, SAM batch, YOLO predict) intentionally skip this call.
+    useTool.getState().recordDraw(classId);
     this.reset();
     return true;
   }
