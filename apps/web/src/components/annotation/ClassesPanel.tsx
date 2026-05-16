@@ -159,6 +159,10 @@ function ColorPickerPopover({
 const ANN_DRAG_MIME = "application/x-carve-annotations";
 const ANN_DRAG_SEP = ",";
 
+// One-time hint for class digit shortcuts, shown on first mount when
+// digitToClassId is non-empty.
+const HINT_KEY = "carve.class-keybindings.hint-seen-v1";
+
 function parseAnnDragIds(dt: DataTransfer | null): string[] {
   if (!dt) return [];
   const raw = dt.getData(ANN_DRAG_MIME);
@@ -938,6 +942,22 @@ export function ClassesPanel({
     if (!ann) return;
     setExpanded((prev) => (prev[ann.classId] ? prev : { ...prev, [ann.classId]: true }));
   }, [hoveredAnnotationId, byId]);
+
+  // One-time hint: show a discoverability tip after keybindings data first resolves.
+  useEffect(() => {
+    if (!digitToClassId) return;
+    if (Object.keys(digitToClassId).length === 0) return; // nothing to hint about
+    try {
+      if (window.localStorage.getItem(HINT_KEY) === "1") return;
+      showToast(
+        "Tip: select a class and press Shift+digit to assign that key.",
+        { variant: "info", duration: 6000 },
+      );
+      window.localStorage.setItem(HINT_KEY, "1");
+    } catch {
+      /* localStorage disabled — silently skip */
+    }
+  }, [digitToClassId]);
 
   const qc = useQueryClient();
   const putBinding = useMutation({
