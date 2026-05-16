@@ -19,10 +19,36 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from carve_api.projects.models import Class, ClassKeybinding
+
+
+def _acquire_user_project_lock(
+    db: Session,
+    user_id: uuid.UUID,
+    project_id: uuid.UUID,
+) -> None:
+    """Take a transaction-scoped advisory lock keyed by (user, project).
+
+    Serialises concurrent ``set_binding`` / ``delete_binding`` calls
+    for the same user+project pair so the delete-then-insert sequence
+    below never races with itself. Other (user, project) pairs are
+    unaffected because the lock key is unique per pair.
+
+    Without this lock, two parallel ``set_binding`` calls trying to
+    bind the SAME digit on the SAME user+project can both pass their
+    "delete existing row at this digit" step before either commits,
+    then both try to INSERT, and the loser hits a UNIQUE-violation
+    500. The advisory lock collapses that race into a clean
+    last-writer-wins. Released automatically at transaction
+    commit/rollback.
+    """
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"class-keybindings:{user_id}:{project_id}"},
+    )
 
 
 @dataclass(frozen=True)
@@ -98,6 +124,10 @@ def set_binding(
     """
     if digit < 1 or digit > 9:
         raise ValueError(f"digit out of range: {digit}")
+    # Serialise concurrent set/delete on the same user+project so the
+    # multi-statement sequence below cannot race with itself. See
+    # ``_acquire_user_project_lock`` for the rationale.
+    _acquire_user_project_lock(db, user_id, project_id)
     # 1. Remove the class's prior binding at any other digit.
     db.execute(
         delete(ClassKeybinding)
@@ -136,6 +166,10 @@ def delete_binding(
     digit: int,
 ) -> None:
     """Idempotent — silently no-ops when no row exists."""
+    # Share the same advisory lock as set_binding so a concurrent
+    # set+delete on the same (user, project) doesn't interleave their
+    # intermediate states.
+    _acquire_user_project_lock(db, user_id, project_id)
     db.execute(
         delete(ClassKeybinding)
         .where(
