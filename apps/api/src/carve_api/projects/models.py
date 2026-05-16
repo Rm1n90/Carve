@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -117,6 +118,57 @@ class Class(Base):
         String(200), nullable=True, default=None
     )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ClassKeybinding(Base):
+    """Per-user, per-project digit→class shortcut binding.
+
+    See docs/superpowers/specs/2026-05-16-class-digit-shortcuts-design.md.
+    PK ``(user_id, project_id, digit)``; UNIQUE
+    ``(user_id, project_id, class_id)`` enforces one digit per class.
+    CASCADE on project_id and class_id keeps the table consistent.
+    """
+
+    __tablename__ = "class_keybindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "project_id", "class_id",
+            name="uq_class_keybindings_user_project_class",
+        ),
+        CheckConstraint(
+            "digit BETWEEN 1 AND 9",
+            name="ck_class_keybindings_digit_range",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        primary_key=True,
+        nullable=False,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    digit: Mapped[int] = mapped_column(
+        SmallInteger,
+        primary_key=True,
+        nullable=False,
+    )
+    class_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("classes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
