@@ -38,6 +38,7 @@ import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
 import { InfoDialog } from "@/components/annotation/InfoDialog";
 import { ObjectsPanel } from "@/components/annotation/ObjectsPanel";
+import { HealthPanel } from "@/components/annotation/HealthPanel";
 import { ReviewPanel } from "@/components/annotation/ReviewPanel";
 import { AppearancePanel } from "@/components/annotation/AppearancePanel";
 import { TrackPanel } from "@/components/annotation/TrackPanel";
@@ -1982,6 +1983,22 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   className="flex-1 overflow-y-auto p-3 focus-visible:outline-none"
                 >
                   <ObjectsPanel frameId={frameId} classes={classByIdMap} />
+                  {/* F3 — annotation health flags. Renders below the
+                      object list so the user has the count + drill-in
+                      to suspicious annotations in their primary work
+                      tab. Pure detectors against the local store; no
+                      backend cost. */}
+                  <div className="mt-3">
+                    <HealthPanel
+                      frameId={frameId}
+                      imageSize={
+                        typeof assetQ.data?.asset?.width === "number" &&
+                        typeof assetQ.data?.asset?.height === "number"
+                          ? { w: assetQ.data.asset.width, h: assetQ.data.asset.height }
+                          : null
+                      }
+                    />
+                  </div>
                 </Tabs.Content>
                 <Tabs.Content
                   value="review"
