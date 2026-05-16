@@ -116,6 +116,14 @@ export interface AnnotationRaw {
   kind: AnnotationKind;
   geometry: Record<string, unknown>;
   created_at: string;
+  /**
+   * Server-authoritative review state. Forwarded by ``listForTaskRaw``
+   * so consumers (skip-nav, QA summaries) can answer "is this asset
+   * fully accepted?" without a second round trip. Older API responses
+   * that omit the field appear as ``undefined`` — treat that as
+   * ``proposed`` for the "needs work" check.
+   */
+  status?: ReviewStatus;
 }
 
 export const annotationsApi = {
@@ -138,6 +146,7 @@ export const annotationsApi = {
       kind: a.kind,
       geometry: a.geometry,
       created_at: a.created_at,
+      status: a.status,
     }));
   },
   batch: async (taskId: string, payload: BatchPayload): Promise<BatchOut> =>

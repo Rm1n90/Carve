@@ -100,6 +100,11 @@ import {
   type CopySource,
 } from "@/lib/copy-from-previous";
 import type { Geometry } from "@/state/annotations";
+import {
+  findNextEmptyAsset,
+  findNextUnreviewedAsset,
+  type SkipDirection,
+} from "@/lib/asset-skip-nav";
 
 interface Props {
   projectId: string;
@@ -1160,6 +1165,59 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   }, [currentAssetIdx, taskAssets, assetQ.data?.asset, qc, taskId, taskClassesQ.data?.allowed_class_ids]);
   useShortcutHandler("copy_from_previous_asset", () => {
     void runCopyFromPreviousAsset();
+  });
+
+  // F2 — skip-nav to next/prev empty / unreviewed asset. The walks
+  // happen against the cached task-annotations-raw query when present;
+  // when the cache is cold the handlers fetch on demand so the first
+  // press is a one-off network call rather than a no-op.
+  const runSkipNav = useCallback(
+    async (
+      mode: "empty" | "unreviewed",
+      direction: SkipDirection,
+    ): Promise<void> => {
+      if (taskAssets.length === 0) return;
+      let raw;
+      try {
+        raw = await qc.fetchQuery({
+          queryKey: ["task-annotations-raw", taskId],
+          queryFn: () => annotationsApi.listForTaskRaw(taskId),
+          staleTime: 0,
+        });
+      } catch (err) {
+        showToast(
+          err instanceof Error
+            ? `Couldn't load annotations: ${err.message}`
+            : "Couldn't load annotations.",
+          { variant: "error" },
+        );
+        return;
+      }
+      const target =
+        mode === "empty"
+          ? findNextEmptyAsset(taskAssets, raw, currentAssetIdx, direction)
+          : findNextUnreviewedAsset(taskAssets, raw, currentAssetIdx, direction);
+      if (!target) {
+        const label = mode === "empty" ? "empty" : "unreviewed";
+        const dir = direction === "forward" ? "more" : "earlier";
+        showToast(`No ${dir} ${label} assets.`, { variant: "info" });
+        return;
+      }
+      goToAsset(target.id);
+    },
+    [taskAssets, currentAssetIdx, taskId, qc],
+  );
+  useShortcutHandler("skip_next_empty", () => {
+    void runSkipNav("empty", "forward");
+  });
+  useShortcutHandler("skip_prev_empty", () => {
+    void runSkipNav("empty", "backward");
+  });
+  useShortcutHandler("skip_next_unreviewed", () => {
+    void runSkipNav("unreviewed", "forward");
+  });
+  useShortcutHandler("skip_prev_unreviewed", () => {
+    void runSkipNav("unreviewed", "backward");
   });
 
   const confirm = useConfirm();

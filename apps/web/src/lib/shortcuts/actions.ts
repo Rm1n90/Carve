@@ -191,6 +191,36 @@ const list: ShortcutAction[] = [
     description:
       "Duplicate every annotation from the previous asset onto the current one. Sequential / similar-image datasets become 5–10× faster.",
   },
+  {
+    id: "skip_next_empty",
+    label: "Next empty asset",
+    category: "Navigation",
+    default: "pagedown",
+    description: "Jump to the next asset with no annotations.",
+  },
+  {
+    id: "skip_prev_empty",
+    label: "Previous empty asset",
+    category: "Navigation",
+    default: "pageup",
+    description: "Jump to the previous asset with no annotations.",
+  },
+  {
+    id: "skip_next_unreviewed",
+    label: "Next unreviewed asset",
+    category: "Navigation",
+    default: "shift+pagedown",
+    description:
+      "Jump to the next asset that still has at least one non-accepted annotation.",
+  },
+  {
+    id: "skip_prev_unreviewed",
+    label: "Previous unreviewed asset",
+    category: "Navigation",
+    default: "shift+pageup",
+    description:
+      "Jump to the previous asset that still has at least one non-accepted annotation.",
+  },
 
   // ---------------- Z-order ----------------
   {
