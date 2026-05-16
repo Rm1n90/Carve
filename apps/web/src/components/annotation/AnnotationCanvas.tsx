@@ -578,6 +578,11 @@ export function AnnotationCanvas({
         anchor: Point;
         current: Point;
         shift: boolean;
+        // F5 — Alt-drag subtracts the marquee hits from the current
+        // selection. Captured at pointerdown alongside ``shift`` so a
+        // release that loses the modifier (rare on jsdom) still
+        // respects the user's intent.
+        alt: boolean;
         startClient: { x: number; y: number };
       }
     | null
@@ -2949,15 +2954,19 @@ export function AnnotationCanvas({
         // 3. Plan 14 Phase 8 Task 7 — empty-canvas LMB drag starts a
         // marquee selection. We DEFER ``clearSelection`` to pointerup
         // (sub-4px drag = click-to-clear); larger drags compute a hit
-        // set against the marquee rect. Modifier rules: only Shift is
-        // honoured (extends the existing selection) — Cmd / Ctrl / Alt
-        // bail out to the legacy click path so other tools (Alt-edge
-        // insert, etc.) keep working.
-        if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        // set against the marquee rect. Modifier rules in cursor
+        // mode:
+        //   • no modifier → replace selection,
+        //   • Shift → add the hits to the existing selection,
+        //   • Alt  → remove the hits from the existing selection.
+        // Cmd / Ctrl still bail out to the legacy click path so other
+        // tools / system gestures keep working.
+        if (e.button === 0 && !e.metaKey && !e.ctrlKey) {
           marqueeDraftRef.current = {
             anchor: p,
             current: p,
             shift: e.shiftKey,
+            alt: e.altKey,
             startClient: { x: e.clientX, y: e.clientY },
           };
           try {
@@ -3520,7 +3529,15 @@ export function AnnotationCanvas({
               y2: marquee.current.y,
             },
           });
-          if (marquee.shift) {
+          if (marquee.alt) {
+            // F5 — subtract the hit set from the current selection.
+            // Useful for "select all and then drop a few" workflows.
+            const matchedSet = new Set(matched);
+            const remaining = state.selectedIds.filter(
+              (id) => !matchedSet.has(id),
+            );
+            state.selectMany(remaining);
+          } else if (marquee.shift) {
             const union = Array.from(
               new Set([...state.selectedIds, ...matched]),
             );
