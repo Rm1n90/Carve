@@ -112,6 +112,10 @@ interface Props {
    * ``undefined`` (entry hidden so legacy tests / hosts unaffected).
    */
   classes?: ClassRow[];
+  /** Merged digit → classId map (see lib/class-keybindings). Replaces
+   *  the legacy ``c.idx === digit - 1`` lookup. Optional so older test
+   *  mounts that don't pass it fall back to legacy behaviour. */
+  digitToClassId?: Record<number, string>;
 }
 
 const DEFAULT_AMBER = 0xeab308;
@@ -176,6 +180,7 @@ export function AnnotationCanvas({
   classColorMap,
   classNameMap,
   classes: classesProp,
+  digitToClassId,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<CanvasApp | null>(null);
@@ -3723,11 +3728,18 @@ export function AnnotationCanvas({
               handleSamError(err);
             });
         } else if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
-          // v3.8 Phase 1 — commit with the class whose idx matches the
-          // pressed digit. Power-user path: click on the object, press
-          // the digit. No-op when no class with that idx exists.
-          const idx = parseInt(e.key, 10) - 1;
-          const target = (classesProp ?? []).find((c) => c.idx === idx);
+          // v3.x — commit with the class bound to the pressed digit. Reads the
+          // effective binding map (shared with the ClassesPanel keyboard
+          // handler) so the SAM commit path respects user-customised
+          // shortcuts. Falls back to the legacy idx-based lookup when no
+          // map is provided (older test mounts).
+          const digit = parseInt(e.key, 10);
+          const targetId =
+            digitToClassId?.[digit]
+            ?? (classesProp ?? []).find((c) => c.idx === digit - 1)?.id;
+          const target = targetId
+            ? (classesProp ?? []).find((c) => c.id === targetId)
+            : null;
           if (target) {
             e.preventDefault();
             e.stopPropagation();
