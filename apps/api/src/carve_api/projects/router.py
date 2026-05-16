@@ -12,9 +12,17 @@ from carve_api.audit.actions import TASK_DELETED
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.projects.models import ProjectMember
+from carve_api.projects.keybindings import (
+    compose_effective_bindings,
+    delete_binding,
+    set_binding,
+)
+from carve_api.projects.models import Class, ProjectMember
 from carve_api.projects.schemas import (
     ClassIn,
+    ClassKeybindingListOut,
+    ClassKeybindingOut,
+    ClassKeybindingPutIn,
     ClassOut,
     ClassPatch,
     DuplicateTaskIn,
@@ -35,6 +43,7 @@ from carve_api.projects.service import (
     ProjectService,
     TaskService,
     _MUTATING_ROLES,
+    _READ_ROLES,
     require_project_role,
 )
 
@@ -586,3 +595,96 @@ def duplicate_task(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     db.commit()
     return [TaskOut.from_orm_task(t) for t in new_tasks]
+
+
+# --- /projects/{pid}/class-keybindings ---
+
+
+@router.get(
+    "/{project_id}/class-keybindings",
+    response_model=ClassKeybindingListOut,
+)
+def list_class_keybindings(
+    project_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ClassKeybindingListOut:
+    """Return the user's effective bindings (stored union computed seed).
+
+    Any project member (including viewers) can read their own bindings —
+    bindings are personal, no mutating role required.
+    """
+    try:
+        require_project_role(db, user, project_id, _READ_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+    rows = compose_effective_bindings(
+        db, user_id=user.id, project_id=project_id,
+    )
+    return ClassKeybindingListOut(
+        bindings=[
+            ClassKeybindingOut(
+                digit=r.digit, class_id=r.class_id, source=r.source,
+            )
+            for r in rows
+        ]
+    )
+
+
+@router.put(
+    "/{project_id}/class-keybindings/{digit}",
+    response_model=ClassKeybindingOut,
+)
+def put_class_keybinding(
+    project_id: uuid.UUID,
+    digit: int,
+    payload: ClassKeybindingPutIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ClassKeybindingOut:
+    if digit < 1 or digit > 9:
+        raise HTTPException(status_code=422, detail="invalid_digit")
+    try:
+        require_project_role(db, user, project_id, _READ_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+    # class_id must belong to project_id — protects the UNIQUE index
+    # from cross-project leaks.
+    target = db.get(Class, payload.class_id)
+    if target is None or target.project_id != project_id:
+        raise HTTPException(
+            status_code=422, detail="class_not_in_project",
+        )
+    set_binding(
+        db,
+        user_id=user.id,
+        project_id=project_id,
+        digit=digit,
+        class_id=payload.class_id,
+    )
+    db.commit()
+    return ClassKeybindingOut(
+        digit=digit, class_id=payload.class_id, source="stored",
+    )
+
+
+@router.delete(
+    "/{project_id}/class-keybindings/{digit}",
+    status_code=204,
+)
+def delete_class_keybinding(
+    project_id: uuid.UUID,
+    digit: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    if digit < 1 or digit > 9:
+        raise HTTPException(status_code=422, detail="invalid_digit")
+    try:
+        require_project_role(db, user, project_id, _READ_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+    delete_binding(
+        db, user_id=user.id, project_id=project_id, digit=digit,
+    )
+    db.commit()

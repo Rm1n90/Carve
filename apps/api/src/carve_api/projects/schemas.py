@@ -271,3 +271,24 @@ class DuplicateTaskIn(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
     allowed_class_ids: list[uuid.UUID] | None = Field(default=None)
+
+
+# ---------------------------------------------------------------------------
+# Class-keybinding schemas (digit→class shortcut, per-user per-project)
+# ---------------------------------------------------------------------------
+
+
+class ClassKeybindingOut(BaseModel):
+    """One row of the user's effective digit→class map for a project."""
+
+    digit: int = Field(..., ge=1, le=9)
+    class_id: uuid.UUID
+    source: Literal["stored", "seed"]
+
+
+class ClassKeybindingListOut(BaseModel):
+    bindings: list[ClassKeybindingOut]
+
+
+class ClassKeybindingPutIn(BaseModel):
+    class_id: uuid.UUID
