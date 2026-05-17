@@ -50,13 +50,13 @@ function polygon(
 const SIZE: ImageBounds = { w: 100, h: 100 };
 
 describe("computeAnnotationFlags — single-shape detectors", () => {
-  it("flags tiny bbox (edge < 4 image-px)", () => {
-    const f = computeAnnotationFlags([bbox("t1", "c", 10, 10, 3, 50)], SIZE);
+  it("flags tiny bbox (edge < 16 image-px)", () => {
+    const f = computeAnnotationFlags([bbox("t1", "c", 10, 10, 8, 50)], SIZE);
     expect(f.find((x) => x.tempId === "t1" && x.code === "tiny")).toBeTruthy();
   });
 
-  it("does NOT flag a 4×4 bbox as tiny (boundary inclusive)", () => {
-    const f = computeAnnotationFlags([bbox("t1", "c", 10, 10, 4, 4)], SIZE);
+  it("does NOT flag a 16×16 bbox as tiny (boundary inclusive)", () => {
+    const f = computeAnnotationFlags([bbox("t1", "c", 10, 10, 16, 16)], SIZE);
     expect(f.find((x) => x.code === "tiny")).toBeFalsy();
   });
 

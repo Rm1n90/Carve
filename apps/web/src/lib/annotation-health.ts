@@ -44,7 +44,13 @@ export interface ImageBounds {
   readonly h: number;
 }
 
-const MIN_BBOX_EDGE_PX = 4;
+// Initial spec was 4 image-px, but in practice that only catches
+// pixel-noise; the user-perceived "this annotation is suspiciously
+// small" threshold is closer to a teaspoonful of image. 16 image-px
+// flags a bbox smaller than a typical UI icon — about 1 % of a
+// 1080×1350 image's diagonal — which is the size below which a
+// labeller-drawn region is almost certainly a stray click.
+const MIN_BBOX_EDGE_PX = 16;
 const MIN_POLYGON_UNIQUE_VERTICES = 3;
 const EXTREME_ASPECT_RATIO = 50;
 const WHOLE_IMAGE_AREA_FRAC = 0.8;

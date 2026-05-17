@@ -171,6 +171,12 @@ function useLiveShortcutGroups(): ShortcutGroup[] {
     review_reject: chordTokens(useShortcut("review_reject")),
     select_all_assets: chordTokens(useShortcut("select_all_assets")),
     group_assets: chordTokens(useShortcut("group_assets")),
+    // v3.x annotator-accelerators batch.
+    copy_from_previous_asset: chordTokens(useShortcut("copy_from_previous_asset")),
+    skip_next_empty: chordTokens(useShortcut("skip_next_empty")),
+    skip_prev_empty: chordTokens(useShortcut("skip_prev_empty")),
+    skip_next_unreviewed: chordTokens(useShortcut("skip_next_unreviewed")),
+    skip_prev_unreviewed: chordTokens(useShortcut("skip_prev_unreviewed")),
   };
   return useMemo<ShortcutGroup[]>(
     () => [
@@ -186,6 +192,7 @@ function useLiveShortcutGroups(): ShortcutGroup[] {
           { keys: ["A"], desc: "Auto-apply (smart)" },
           { keys: ["F"], desc: "Fit to screen" },
           { keys: ["Enter"], desc: "Commit polygon" },
+          { keys: ["⇧", "+", "drag"], desc: "Snap to nearest vertex / edge" },
         ],
       },
       {
@@ -195,6 +202,9 @@ function useLiveShortcutGroups(): ShortcutGroup[] {
           { keys: t.delete_annotation, desc: "Delete selected" },
           { keys: ["Esc"], desc: "Cancel / clear selection" },
           { keys: ["⇧", "click"], desc: "Multi-select" },
+          { keys: ["drag"], desc: "Marquee select (cursor tool)" },
+          { keys: ["⇧", "+", "drag"], desc: "Marquee — add to selection" },
+          { keys: ["Alt", "+", "drag"], desc: "Marquee — subtract from selection" },
           { keys: ["1", "..", "9"], desc: "Switch active class" },
           { keys: t.open_class_palette, desc: "Open class palette" },
           { keys: t.open_class_palette_alt, desc: "Open class palette (alt)" },
@@ -217,6 +227,10 @@ function useLiveShortcutGroups(): ShortcutGroup[] {
           { keys: t.frame_prev_comma, desc: "Step frame back" },
           { keys: t.frame_next_period, desc: "Step frame forward" },
           { keys: t.frame_play_pause, desc: "Play / pause" },
+          { keys: t.skip_next_empty, desc: "Next empty asset" },
+          { keys: t.skip_prev_empty, desc: "Previous empty asset" },
+          { keys: t.skip_next_unreviewed, desc: "Next unreviewed asset" },
+          { keys: t.skip_prev_unreviewed, desc: "Previous unreviewed asset" },
         ],
       },
       {
@@ -261,9 +275,16 @@ function useLiveShortcutGroups(): ShortcutGroup[] {
           { keys: t.copy, desc: "Copy selected" },
           { keys: t.paste, desc: "Paste" },
           { keys: t.duplicate, desc: "Duplicate selected" },
+          { keys: t.copy_from_previous_asset, desc: "Copy annotations from previous asset" },
           { keys: t.global_search, desc: "Global search" },
           { keys: ["L"], desc: "Lock / unlock selected" },
           { keys: ["?"], desc: "Show this cheat sheet" },
+        ],
+      },
+      {
+        title: "View",
+        items: [
+          { keys: ["hold", "Z"], desc: "Magnifier loupe (3× pixel zoom)" },
         ],
       },
     ],
