@@ -391,6 +391,74 @@ def read_progress(redis_client, job_id: str) -> dict:
     }
 
 
+# v3.32 -- statuses that count as "the worker is doing things with the
+# GPU/model right now" for the SAM-switch guard. ``queued`` is included
+# so a switch request just before the worker picks up the job still
+# refuses (otherwise the switch would race the worker into a
+# variant-mismatch failure within seconds).
+_ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(
+    {"queued", "running", "waiting_for_gpu"}
+)
+
+
+def count_active_jobs(redis_client) -> list[dict]:
+    """v3.32 -- enumerate the auto-annotate batch jobs that are currently
+    holding (or about to hold) the model service's inference slot.
+
+    Returns a list of small dicts: ``{job_id, status, done, total}``.
+    An empty list means "the switch is free to proceed". Soft-fails
+    when Redis is unavailable: returns ``[]`` so a Redis blip doesn't
+    permanently block users from changing SAM variants. The router's
+    business-logic gate is the authoritative source of truth; this
+    helper only enumerates.
+
+    Scans ``aa:job:*`` and filters by status. ``scan_iter`` is used
+    over ``keys()`` so even a Redis with tens of thousands of stale
+    keys doesn't block the gunicorn worker for seconds; the trade-off
+    is that newly-created keys mid-scan may be missed, which is
+    acceptable here because the worker writes status before claiming
+    work and the model service's own admission gate is the final
+    safety net.
+    """
+    if redis_client is None:
+        return []
+    out: list[dict] = []
+    try:
+        for raw_key in redis_client.scan_iter(
+            match=f"{_PROGRESS_KEY_PREFIX}*", count=100
+        ):
+            try:
+                key = (
+                    raw_key.decode() if isinstance(raw_key, bytes) else raw_key
+                )
+                if not key.startswith(_PROGRESS_KEY_PREFIX):
+                    continue
+                raw = redis_client.hgetall(raw_key)
+            except Exception:  # noqa: BLE001
+                continue
+            if not raw:
+                continue
+
+            def _b2s(v):
+                return v.decode() if isinstance(v, bytes) else v
+
+            parsed = {_b2s(k): _b2s(v) for k, v in raw.items()}
+            status = parsed.get("status", "")
+            if status not in _ACTIVE_JOB_STATUSES:
+                continue
+            out.append(
+                {
+                    "job_id": key[len(_PROGRESS_KEY_PREFIX) :],
+                    "status": status,
+                    "done": int(parsed.get("done", 0) or 0),
+                    "total": int(parsed.get("total", 0) or 0),
+                }
+            )
+    except Exception:  # noqa: BLE001 -- Redis must never wedge the gate
+        return []
+    return out
+
+
 # v3.8 Phase 3.5 -- multi-asset SAM 3 text-prompt batch. Reuses the
 # Redis progress hash helpers (init/update/finalize/read) so the
 # frontend's BatchProgressDialog works for both YOLO and SAM-text.

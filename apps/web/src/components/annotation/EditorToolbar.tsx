@@ -69,6 +69,7 @@ import {
 } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
 import { assetsApi } from "@/api/assets";
+import { useAuth } from "@/auth/store";
 import { ScopePicker } from "@/components/annotation/ScopePicker";
 import { HierarchyResolverPanel } from "@/components/annotation/HierarchyResolverPanel";
 import {
@@ -354,10 +355,30 @@ function ToolButton({
  * runtime switch (POST /models/sam-active). v3.5 Phase B — was
  * previously read-only; now actually swaps.
  */
-function SamModelPicker() {
+interface SamModelPickerProps {
+  /**
+   * v3.32 — passed through to ``SamVariantSwitcher`` so a successful
+   * switch also persists the choice on the project record (subject
+   * to the permission gate). Undefined disables persistence.
+   */
+  projectId?: string;
+  /**
+   * v3.32 — true when the current user is owner/admin and may save
+   * the new variant as the project default. Backend re-checks this.
+   */
+  canPersistProjectDefault?: boolean;
+}
+
+function SamModelPicker({
+  projectId,
+  canPersistProjectDefault = false,
+}: SamModelPickerProps) {
+  // v3.32 — pass projectId so the backend can include the project's
+  // preferred variant in the response; the editor uses that to display
+  // the right label even when the model service is idle/evicted.
   const q = useQuery({
-    queryKey: ["sam-active"],
-    queryFn: () => modelsApi.samActive(),
+    queryKey: ["sam-active", projectId ?? null],
+    queryFn: () => modelsApi.samActive(projectId),
   });
   const active = q.data?.active ?? "sam2.1-base+";
 
@@ -381,7 +402,11 @@ function SamModelPicker() {
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="min-w-[300px] p-1">
-        <SamVariantSwitcher variant="compact" />
+        <SamVariantSwitcher
+          variant="compact"
+          projectId={projectId}
+          canPersistProjectDefault={canPersistProjectDefault}
+        />
       </PopoverContent>
     </Popover>
   );
@@ -2730,6 +2755,26 @@ export function EditorToolbar({
   const setActive = useTool((s) => s.setActive);
   const toggleAutoApply = useTool((s) => s.toggleAutoApply);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // v3.32 — fetch the project once so the SAM picker can decide whether
+  // the current user is allowed to persist the new variant as the
+  // project default. Backend re-checks the role on every PATCH so the
+  // flag is purely a UX guard (avoids surfacing "can't save" toasts
+  // when the user has no permission to begin with).
+  const samPersistProjectQ = useQuery<Project>({
+    queryKey: ["project", projectId],
+    queryFn: () => projectsApi.get(projectId as string),
+    enabled: Boolean(projectId),
+    staleTime: 60_000,
+  });
+  const me = useAuth((s) => s.user);
+  const canPersistSamDefault = Boolean(
+    me
+      && samPersistProjectQ.data
+      && (
+        me.role === "admin"
+        || samPersistProjectQ.data.owner_id === me.id
+      ),
+  );
   const [filterDialogOpen, setFilterDialogOpen] = useState(false);
   // Drive the Filter icon's "active" styling from the filter store so
   // users can see at a glance whether a filter is currently applied
@@ -2898,7 +2943,10 @@ export function EditorToolbar({
 
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
-      <SamModelPicker />
+      <SamModelPicker
+        projectId={projectId}
+        canPersistProjectDefault={canPersistSamDefault}
+      />
       <SamModePicker isVideo={isVideo} />
       <AutoApplyToggle />
       <MaskBrushSizeControl />

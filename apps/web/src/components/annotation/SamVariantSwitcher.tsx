@@ -25,6 +25,8 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { modelsApi } from "@/api/phase2";
+import { projectsApi } from "@/api/projects";
+import { useBackgroundJobs } from "@/state/backgroundJobs";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { ModelLoadingOverlay } from "./ModelLoadingOverlay";
@@ -50,11 +52,30 @@ export interface SamVariantSwitcherProps {
   variant?: "compact" | "full";
   /** Fired after a successful switch. */
   onVariantChange?: (variant: string) => void;
+  /**
+   * v3.32 — when set, a successful switch also PATCHes the project's
+   * ``default_sam_variant`` so the choice persists across API restarts
+   * and idle eviction. Caller (the editor toolbar) is responsible for
+   * passing the active project id; the workspace SAM page leaves this
+   * undefined and the switch stays runtime-only.
+   */
+  projectId?: string;
+  /**
+   * v3.32 — gate for the project-persistence side-effect. Only callers
+   * that have verified the current user is owner / workspace admin
+   * should set this true. When false (default), the switch happens
+   * runtime-only and the project record is untouched. Backend enforces
+   * the same gate (PATCH /projects/{id} returns 403 for non-admins) so
+   * a misset flag is safe-fail, not destructive.
+   */
+  canPersistProjectDefault?: boolean;
 }
 
 export function SamVariantSwitcher({
   variant = "full",
   onVariantChange,
+  projectId,
+  canPersistProjectDefault = false,
 }: SamVariantSwitcherProps) {
   const qc = useQueryClient();
   const confirm = useConfirm();
@@ -85,8 +106,21 @@ export function SamVariantSwitcher({
   // polling.
 
   const switchM = useMutation({
-    mutationFn: (next: string) => modelsApi.samSetActive(next),
-    onMutate: (next) => {
+    mutationFn: ({
+      variant: next,
+      force,
+    }: {
+      variant: string;
+      force?: boolean;
+    }) =>
+      // Preserve the legacy single-arg call signature when there's no
+      // force flag in play. Tests assert on the exact arguments list;
+      // omitting the unused option object keeps them passing without
+      // weakening the assertions.
+      force
+        ? modelsApi.samSetActive(next, { force: true })
+        : modelsApi.samSetActive(next),
+    onMutate: ({ variant: next }) => {
       setPendingVariant(next);
       setOverlayOpen(true);
       // Broadcast switch-start. The canvas listens to invalidate the
@@ -109,11 +143,116 @@ export function SamVariantSwitcher({
         variant: "success",
       });
       void qc.invalidateQueries({ queryKey: ["sam-active"] });
+      // v3.32 — persist the user's choice on the project record so it
+      // survives API restarts and idle eviction. Gated to callers that
+      // explicitly opted in (editor toolbar passes ``canPersist=true``
+      // only when the current user is owner/admin); backend re-checks
+      // the role, so a misset flag is safe-fail (403 toast).
+      if (projectId && canPersistProjectDefault) {
+        projectsApi
+          .update(projectId, { default_sam_variant: result.active_variant })
+          .then(() => {
+            void qc.invalidateQueries({ queryKey: ["project", projectId] });
+          })
+          .catch((err: unknown) => {
+            // Roll forward — the runtime switch already succeeded, only
+            // the persist failed. Surface a soft warning so the user
+            // knows their preference wasn't saved.
+            const status =
+              (err as { response?: { status?: number } } | undefined)
+                ?.response?.status ?? 0;
+            if (status === 403) {
+              showToast(
+                "SAM switched, but only project owner or admin can save"
+                  + " this as the project default.",
+                { variant: "warning", duration: 5000 },
+              );
+            } else {
+              showToast(
+                "SAM switched, but couldn't save it as the project default."
+                  + " Try again from project settings.",
+                { variant: "warning", duration: 5000 },
+              );
+            }
+          });
+      }
       onVariantChange?.(result.active_variant);
     },
-    onError: () => {
-      showToast("Failed to switch SAM variant", { variant: "error" });
+    onError: async (
+      err: unknown,
+      variables: { variant: string; force?: boolean },
+    ) => {
       setOverlayOpen(false);
+      // v3.32 -- inspect the backend response for the structured
+      // active-batch block. The router returns 409 + detail:
+      // {error, code, active_jobs:[], can_force:boolean, message}.
+      // For admins we offer a "Force switch" follow-up; non-admins
+      // see the explanation and a count.
+      const apiErr = err as {
+        response?: {
+          status?: number;
+          data?: {
+            detail?:
+              | string
+              | {
+                  code?: string;
+                  error?: string;
+                  active_jobs?: Array<{
+                    job_id: string;
+                    status: string;
+                    done?: number;
+                    total?: number;
+                  }>;
+                  can_force?: boolean;
+                  message?: string;
+                };
+          };
+        };
+      };
+      const status = apiErr?.response?.status;
+      const detail = apiErr?.response?.data?.detail;
+      const code =
+        typeof detail === "object" && detail !== null
+          ? detail.code ?? detail.error
+          : undefined;
+      if (status === 409 && code === "switch_blocked_by_active_jobs"
+          && typeof detail === "object" && detail !== null) {
+        const jobs = detail.active_jobs ?? [];
+        const canForce = Boolean(detail.can_force);
+        // Read the variant from the mutation's variables so we don't
+        // depend on React state closure timing — onError fires after
+        // ``setPendingVariant(null)`` may have already landed.
+        const variantBeingLoaded = variables.variant;
+        // Always close out the pending UI state -- the original
+        // request didn't go through.
+        setPendingVariant(null);
+        if (canForce && variantBeingLoaded) {
+          // Re-confirm with an explicit destructive warning. The user
+          // sees the affected jobs by count + progress.
+          const summary = jobs
+            .map((j) => `• ${j.done ?? 0}/${j.total ?? "?"} (${j.status})`)
+            .join("\n");
+          const ok = await confirm({
+            title: `Force switch to ${variantBeingLoaded}?`,
+            description:
+              `${jobs.length} batch job(s) are currently running:\n\n` +
+              `${summary}\n\nForcing the switch will cancel them.`,
+            confirmLabel: `Force switch (cancel ${jobs.length})`,
+            cancelLabel: "Keep current model",
+          });
+          if (ok) {
+            switchM.mutate({ variant: variantBeingLoaded, force: true });
+          }
+          return;
+        }
+        showToast(
+          detail.message ??
+            `Can't switch SAM: ${jobs.length} batch job(s) are running.`,
+          { variant: "error", duration: 7000 },
+        );
+        return;
+      }
+      showToast("Failed to switch SAM variant", { variant: "error" });
     },
     onSettled: () => {
       setPendingVariant(null);
@@ -133,15 +272,59 @@ export function SamVariantSwitcher({
   async function handleVariantChange(next: string): Promise<void> {
     if (switching) return;
     if (next === active) return;
-    const ok = await confirm({
-      title: `Switch to ${SAM_VARIANT_LABEL[next] ?? next}?`,
-      description:
-        "The current model will be offloaded from GPU memory. Loading the new variant takes 5-30 seconds.",
-      confirmLabel: "Switch",
-      cancelLabel: "Cancel",
-    });
+
+    // v3.32 -- read the same-user active jobs from the background-jobs
+    // store. Anything that talks to SAM (auto-text, auto-visual, sam
+    // refine, polygon convert that calls SAM) is a switch hazard;
+    // YOLO predict batches don't touch SAM so they're excluded.
+    const samAffectingKinds = new Set([
+      "sam-auto-text",
+      "sam-auto-visual",
+      "sam-refine-batch",
+      "polygon-convert",
+    ]);
+    const sameUserJobs = Object.values(useBackgroundJobs.getState().jobs)
+      .filter((j) => samAffectingKinds.has(j.kind));
+
+    let ok: boolean;
+    if (sameUserJobs.length > 0) {
+      // Stronger warning when the user has their own SAM batch in
+      // flight. Default is Cancel; the user has to explicitly opt in
+      // to "Switch anyway".
+      const labelLines = sameUserJobs
+        .map((j) => {
+          const p = j.progress;
+          const fraction = p && p.total
+            ? ` (${p.done ?? 0}/${p.total})`
+            : "";
+          return `• ${j.label}${fraction}`;
+        })
+        .join("\n");
+      ok = await confirm({
+        title: `Switch to ${SAM_VARIANT_LABEL[next] ?? next}?`,
+        description:
+          `You have ${sameUserJobs.length} running batch job(s) that use SAM:\n\n` +
+          `${labelLines}\n\n` +
+          "Switching now will likely cause them to skip the remaining " +
+          "assets. Consider waiting until they finish.",
+        confirmLabel: "Switch anyway",
+        cancelLabel: "Keep current",
+        variant: "danger",
+      });
+    } else {
+      ok = await confirm({
+        title: `Switch to ${SAM_VARIANT_LABEL[next] ?? next}?`,
+        description:
+          "The current model will be offloaded from GPU memory. Loading the new variant takes 5-30 seconds.",
+        confirmLabel: "Switch",
+        cancelLabel: "Cancel",
+      });
+    }
     if (!ok) return;
-    switchM.mutate(next);
+    // Admin force-switch only kicks in via the backend 409 path; the
+    // onError handler reads ``detail.can_force`` from the response
+    // and presents the destructive follow-up confirm if applicable.
+    switchM.mutate({ variant: next });
   }
 
   // v3.5 Phase C — full-screen progress overlay while the variant is
