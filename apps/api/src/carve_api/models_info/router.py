@@ -187,19 +187,19 @@ def sam_active(
     while SAM 3.1 was actually mounted. Now we ask the model service.
 
     v3.32 — accepts ``?project_id=<uuid>`` so the editor can read the
-    project's persisted preference in the same round-trip. When the
-    model service reports the predictor as idle / errored / unreachable
-    AND the project has a preference set, ``active`` echoes the
-    preference and ``preferred_loaded=False`` so the editor knows to
-    offer "Load <variant> for this project". This is the persistent-
-    selection fix the user asked for: their choice survives API
-    restarts and idle eviction.
+    project's persisted preference in the same round-trip. ``active``
+    ALWAYS reflects what the model service has loaded (so the editor's
+    SAM-picker label tells the truth). The mismatch signal lives in
+    ``preferred_variant`` + ``preferred_loaded``: when the project has
+    a preference that differs from the loaded variant, ``preferred_loaded``
+    is False so the editor can offer "Load <variant> for this project".
+    This is the persistent-selection fix the user asked for: their
+    choice survives API restarts and idle eviction.
     """
     settings = get_settings()
     base = settings.model_base_url.rstrip("/")
     reachable = False
     model_variant: str | None = None
-    model_state: str | None = None
     try:
         with httpx.Client(timeout=1.5) as c:
             r = c.get(f"{base}/sam/status")
@@ -207,14 +207,14 @@ def sam_active(
                 reachable = True
                 body = r.json() or {}
                 v = body.get("variant")
-                model_state = body.get("state")
+                state = body.get("state")
                 # Only trust the model service's variant when the
                 # predictor is actually ready or in the middle of
                 # loading; otherwise the field can carry a stale value.
                 if (
                     isinstance(v, str)
                     and v
-                    and model_state in {"ready", "loading"}
+                    and state in {"ready", "loading"}
                 ):
                     model_variant = _model_to_api(v)
     except Exception:
@@ -279,15 +279,27 @@ def sam_set_active(
 
     Returns 503 ``model_service_unavailable`` when the model service is
     down or returns 5xx; 422 when the model service rejects the variant;
-    409 when another switch is already in flight on the model service.
+    409 ``switch_in_progress`` when another switch is already in flight
+    on the model service (proxied verbatim from upstream).
 
-    v3.32 -- before forwarding, scans Redis for active auto-annotate
-    batch jobs. If any are running (status in {queued, running,
+    v3.32 -- before forwarding, scans Redis for SAM-using active batch
+    jobs (kind in :data:`SAM_USING_BATCH_KINDS`). YOLO / YOLOE batches
+    are intentionally NOT considered because they don't touch SAM and
+    switching the variant won't affect them.
+
+    If any SAM batches are running (status in {queued, running,
     waiting_for_gpu}) and the caller is NOT a workspace admin, returns
     409 ``switch_blocked_by_active_jobs`` with the running jobs'
-    progress. Admins may pass ``?force=true`` to bypass the guard; the
-    running batches will then see the variant change mid-flight and
-    fall back to their own error path (typically ``sam_not_ready``).
+    progress. The response carries ``can_force`` so the frontend can
+    decide whether to offer a force-switch follow-up.
+
+    Workspace admins may pass ``?force=true`` to bypass the guard. The
+    force path cancels every SAM-using active job via
+    ``try_cancel_rq_job`` BEFORE forwarding the switch, so the workers
+    exit cleanly instead of grinding through ``sam_not_ready`` retries
+    per asset. Best-effort: a cancel that fails (worker already
+    exited, RQ blip, etc.) is logged and ignored; the worker would
+    then discover ``sam_not_ready`` on its next iteration.
     """
     if payload.variant not in _AVAILABLE_SAM_VARIANTS:
         raise HTTPException(

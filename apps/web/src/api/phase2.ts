@@ -45,11 +45,13 @@ export interface SamActive {
   preferred_variant?: string | null;
   /**
    * v3.32 — false when the project has a ``preferred_variant`` that
-   * isn't the variant currently loaded on the model service. When
-   * false, ``active`` echoes ``preferred_variant`` so the editor's
-   * variant label stays stable, but the editor knows to prompt the
-   * user to load it. Defaults to true for backward compat (callers
-   * without a ``project_id`` always see true).
+   * isn't the variant currently loaded on the model service.
+   * ``active`` always reflects what's actually loaded; this flag is
+   * the mismatch signal the editor uses to decide whether to prompt
+   * the user to load the preferred variant. Defaults to true (no
+   * mismatch) for backward compat: callers without a ``project_id``
+   * always see true because there's no project preference to compare
+   * against.
    */
   preferred_loaded?: boolean;
 }
