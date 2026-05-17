@@ -52,6 +52,11 @@ def auto_visual_for_asset(
     overwrite: bool,
     actor_id: uuid.UUID | None,
     epsilon_factor: float | None = None,
+    # v3.31 -- cross-class hierarchical NMS; see auto_text_for_asset
+    # for the full rationale.
+    resolve_hierarchy: bool = False,
+    hierarchy_iou: float = 0.7,
+    classes_by_id: dict | None = None,
 ) -> dict:
     """Run SAM 3.1 visual prompt for each (source asset, class) group.
 
@@ -162,7 +167,38 @@ def auto_visual_for_asset(
     for ann in new_anns:
         session.add(ann)
     session.flush()
-    return {"annotations_created": len(new_anns), "per_class": per_class}
+
+    # v3.31 -- cross-class hierarchical NMS (same contract as auto_text).
+    hierarchy_deleted = 0
+    if resolve_hierarchy and new_anns:
+        from carve_api.inference.hierarchy_nms import (
+            build_classes_by_id_for_project,
+            resolve_hierarchy_overlaps,
+        )
+
+        cmap = classes_by_id
+        if cmap is None:
+            cmap = build_classes_by_id_for_project(session, task.project_id)
+        deleted = resolve_hierarchy_overlaps(
+            session=session,
+            new_annotation_ids=[a.id for a in new_anns],
+            classes_by_id=cmap,
+            iou_threshold=hierarchy_iou,
+            enabled=True,
+        )
+        hierarchy_deleted = len(deleted)
+        if deleted:
+            deleted_set = set(deleted)
+            for ann in new_anns:
+                if ann.id in deleted_set:
+                    key = str(ann.class_id)
+                    if key in per_class and per_class[key] > 0:
+                        per_class[key] -= 1
+    return {
+        "annotations_created": len(new_anns) - hierarchy_deleted,
+        "per_class": per_class,
+        "hierarchy_resolved": hierarchy_deleted,
+    }
 
 
 def _build_annotation(

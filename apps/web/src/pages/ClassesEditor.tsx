@@ -75,7 +75,14 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
       patch,
     }: {
       cid: string;
-      patch: { name?: string; color?: string };
+      // v3.31 — patch shape widened to include the hierarchy parent.
+      // ``parent_class_id: null`` clears the parent (turns the class
+      // back into a top-level class); omitting the key leaves it.
+      patch: {
+        name?: string;
+        color?: string;
+        parent_class_id?: string | null;
+      };
     }) => classesApi.update(projectId, cid, patch),
     onSuccess: () => invalidateClassDependents(),
     onError: (err: unknown, variables) => {
@@ -85,6 +92,14 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
         showToast(
           `A class named "${variables.patch.name}" already exists in this project.`,
           { variant: "error" },
+        );
+      } else if (detail === "class_hierarchy_invalid") {
+        // v3.31 — server rejected the parent assignment (cycle, depth
+        // limit, cross-project, etc). Surface a friendly toast; the
+        // dropdown will revert because the mutation throws.
+        showToast(
+          "Invalid parent class — that would create a cycle or exceed the hierarchy depth.",
+          { variant: "error", duration: 5000 },
         );
       } else {
         showToast("Failed to update class.", { variant: "error" });
@@ -268,11 +283,18 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
               <ClassEditorRow
                 key={c.id}
                 cls={c}
+                allClasses={q.data ?? []}
                 onRename={(next) =>
                   update.mutateAsync({ cid: c.id, patch: { name: next } })
                 }
                 onChangeColor={(next) =>
                   update.mutateAsync({ cid: c.id, patch: { color: next } })
+                }
+                onChangeParent={(next) =>
+                  update.mutateAsync({
+                    cid: c.id,
+                    patch: { parent_class_id: next },
+                  })
                 }
                 onDelete={async () => {
                   const ok = await confirm({
@@ -389,15 +411,22 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
 
 interface ClassEditorRowProps {
   cls: ClassRow;
+  // v3.31 — full project class list, needed to render the hierarchy
+  // parent dropdown (eligible options + indented display).
+  allClasses: ReadonlyArray<ClassRow>;
   onRename: (next: string) => Promise<unknown>;
   onChangeColor: (next: string) => Promise<unknown>;
+  // v3.31 — null clears the parent (turn back into top-level class).
+  onChangeParent: (next: string | null) => Promise<unknown>;
   onDelete: () => void;
 }
 
 function ClassEditorRow({
   cls,
+  allClasses,
   onRename,
   onChangeColor,
+  onChangeParent,
   onDelete,
 }: ClassEditorRowProps) {
   const [editing, setEditing] = useState(false);
@@ -566,6 +595,16 @@ function ClassEditorRow({
             </button>
           </>
         )}
+        {/* v3.31 — IS-A hierarchy parent picker. Always visible so the
+            relationship is never invisible; subtler when no parent is
+            set so it doesn't compete with the class name. Server enforces
+            same-project / no-cycle / depth limits; we also pre-filter
+            descendants to make the dropdown UX clean. */}
+        <ParentPickerPill
+          cls={cls}
+          allClasses={allClasses}
+          onChangeParent={onChangeParent}
+        />
         <button
           type="button"
           onClick={onDelete}
@@ -576,6 +615,237 @@ function ClassEditorRow({
         </button>
       </div>
     </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v3.31 — Parent (IS-A) picker.
+//
+// Renders as a compact pill on the right side of each class row:
+//   * "↑ Specialization of <Parent>" with the parent's color dot, when
+//     parent_class_id is set.
+//   * "↑ Set parent" muted hint, when null.
+//
+// Clicking the pill opens a Popover with the eligible-parent list:
+//   * "None (top-level)" at top.
+//   * Every class in the project EXCEPT the row itself and any class
+//     whose ancestor chain leads back to the row (cycle prevention —
+//     mirrors the server-side check so the user gets immediate feedback
+//     without a network round-trip).
+//   * Indented by depth so multi-level hierarchies are scannable.
+//
+// Errors from the server (cycle / depth limit) surface via the parent's
+// update mutation's onError toast handler.
+// ---------------------------------------------------------------------------
+interface ParentPickerPillProps {
+  cls: ClassRow;
+  allClasses: ReadonlyArray<ClassRow>;
+  onChangeParent: (next: string | null) => Promise<unknown>;
+}
+
+function ParentPickerPill({
+  cls,
+  allClasses,
+  onChangeParent,
+}: ParentPickerPillProps) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const classMap = useRef<Map<string, ClassRow>>(new Map());
+  classMap.current = new Map(allClasses.map((c) => [c.id, c]));
+
+  // Descendants (self-inclusive) of ``cls`` — these can't be parents
+  // of ``cls`` without creating a cycle.
+  const ineligibleSelfAndDescendants = (() => {
+    const out = new Set<string>([cls.id]);
+    let frontier = [cls.id];
+    while (frontier.length > 0) {
+      const next: string[] = [];
+      for (const c of allClasses) {
+        if (
+          c.parent_class_id &&
+          frontier.includes(c.parent_class_id) &&
+          !out.has(c.id)
+        ) {
+          out.add(c.id);
+          next.push(c.id);
+        }
+      }
+      frontier = next;
+    }
+    return out;
+  })();
+
+  // Depth of each class (top-level = 0). Used to indent the dropdown.
+  function depthOf(id: string): number {
+    let depth = 0;
+    let cur: ClassRow | undefined = classMap.current.get(id);
+    const seen = new Set<string>();
+    while (cur && cur.parent_class_id && !seen.has(cur.parent_class_id)) {
+      seen.add(cur.parent_class_id);
+      depth += 1;
+      if (depth >= 8) break;
+      cur = classMap.current.get(cur.parent_class_id);
+    }
+    return depth;
+  }
+
+  const eligible = allClasses
+    .filter((c) => !ineligibleSelfAndDescendants.has(c.id))
+    // Sort by hierarchy: parent before children, then by idx within
+    // siblings. Simple approach — sort by (depth, idx).
+    .map((c) => ({ cls: c, depth: depthOf(c.id) }))
+    .sort((a, b) => {
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      return a.cls.idx - b.cls.idx;
+    });
+
+  const parent = cls.parent_class_id
+    ? classMap.current.get(cls.parent_class_id) ?? null
+    : null;
+
+  async function pick(next: string | null) {
+    if (saving) return;
+    if (next === (cls.parent_class_id ?? null)) {
+      setOpen(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onChangeParent(next);
+      setOpen(false);
+    } catch {
+      // The mutation's onError surfaces a toast; keep the popover open
+      // so the user sees their pick didn't stick.
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={
+            parent
+              ? `Change parent of ${cls.name} (currently ${parent.name})`
+              : `Set a parent class for ${cls.name}`
+          }
+          data-testid={`class-parent-trigger-${cls.id}`}
+          className={cn(
+            "inline-flex items-center gap-1.5 h-6 px-2 rounded-[var(--radius-pill)] text-[11px]",
+            "border border-transparent transition-colors",
+            "hover:bg-[var(--bg-hover)] hover:border-[var(--border-subtle)]",
+            "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+            parent
+              ? "text-[color:var(--text-secondary)]"
+              : "text-[color:var(--text-tertiary)] opacity-60 group-hover:opacity-100",
+          )}
+          title={
+            parent
+              ? `Specialization of ${parent.name} — auto-annotate will drop ${parent.name} boxes that overlap a ${cls.name} above the configured IoU floor.`
+              : "Set a parent class (IS-A). Auto-annotate will drop ancestor annotations that overlap descendants."
+          }
+        >
+          <span aria-hidden="true">↑</span>
+          {parent ? (
+            <>
+              <span
+                aria-hidden="true"
+                className="inline-block h-2 w-2 rounded-full"
+                style={{ background: parent.color }}
+              />
+              <span className="truncate max-w-[140px]">{parent.name}</span>
+            </>
+          ) : (
+            <span>Set parent</span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        sideOffset={6}
+        className={cn(
+          "z-[1000] w-[280px] p-1",
+          "rounded-[var(--radius-6)] bg-[var(--bg-elev)]",
+          "border border-[var(--border-subtle)] shadow-[var(--shadow-card)]",
+        )}
+      >
+        <div
+          className="px-2 py-1.5 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)] border-b border-[var(--border-subtle)] mb-1"
+        >
+          Parent of {cls.name}
+        </div>
+        <ul
+          data-testid={`class-parent-list-${cls.id}`}
+          className="max-h-[220px] overflow-y-auto"
+        >
+          <li>
+            <button
+              type="button"
+              onClick={() => void pick(null)}
+              data-testid={`class-parent-option-none-${cls.id}`}
+              disabled={saving}
+              className={cn(
+                "w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12px]",
+                "hover:bg-[var(--bg-hover)]",
+                cls.parent_class_id == null &&
+                  "bg-[var(--accent-bg)] text-[color:var(--text-primary)]",
+              )}
+            >
+              <span aria-hidden="true" className="text-[color:var(--text-tertiary)] w-3.5">
+                {cls.parent_class_id == null ? "✓" : ""}
+              </span>
+              <span className="flex-1">None (top-level class)</span>
+            </button>
+          </li>
+          {eligible.length === 0 && (
+            <li className="px-2 py-2 text-[11.5px] italic text-[color:var(--text-tertiary)]">
+              No other classes available — add a sibling class first.
+            </li>
+          )}
+          {eligible.map(({ cls: opt, depth }) => {
+            const selected = cls.parent_class_id === opt.id;
+            return (
+              <li key={opt.id}>
+                <button
+                  type="button"
+                  onClick={() => void pick(opt.id)}
+                  data-testid={`class-parent-option-${cls.id}-${opt.id}`}
+                  disabled={saving}
+                  className={cn(
+                    "w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12px]",
+                    "hover:bg-[var(--bg-hover)]",
+                    selected &&
+                      "bg-[var(--accent-bg)] text-[color:var(--text-primary)]",
+                  )}
+                  style={{ paddingLeft: `${8 + depth * 14}px` }}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="text-[color:var(--text-tertiary)] w-3.5"
+                  >
+                    {selected ? "✓" : ""}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2 w-2 rounded-full shrink-0"
+                    style={{ background: opt.color }}
+                  />
+                  <span className="flex-1 truncate" title={opt.name}>
+                    {opt.name}
+                  </span>
+                  <span className="font-mono text-[10px] text-[color:var(--text-tertiary)]">
+                    #{opt.idx}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </PopoverContent>
+    </Popover>
   );
 }
 

@@ -127,6 +127,15 @@ def auto_text_for_asset(
     use_vlm_fo1: bool = False,
     iou_threshold: float | None = None,
     epsilon_factor: float | None = None,
+    # v3.31 -- cross-class hierarchical NMS. When ``resolve_hierarchy``
+    # is True, the resolver runs after the per-class detections are
+    # saved and drops ancestor annotations that overlap descendants
+    # above ``hierarchy_iou``. Callers default this OFF for backward
+    # compatibility; the dialog flips it ON when any project class has
+    # a parent.
+    resolve_hierarchy: bool = False,
+    hierarchy_iou: float = 0.7,
+    classes_by_id: dict[uuid.UUID, Class] | None = None,
 ) -> dict:
     """Run SAM 3 text-prompt for each selected class and persist results.
 
@@ -301,10 +310,49 @@ def auto_text_for_asset(
         session.add(ann)
     session.flush()
 
+    # v3.31 -- cross-class hierarchical NMS. Walks each new annotation's
+    # parent chain (Class.parent_class_id) and drops the ancestor when
+    # it overlaps a descendant in this run above ``hierarchy_iou``. The
+    # resolver runs ONLY within new_anns -- manual edits and previous
+    # runs are untouched.
+    hierarchy_deleted = 0
+    if resolve_hierarchy and new_anns:
+        from carve_api.inference.hierarchy_nms import (
+            build_classes_by_id_for_project,
+            resolve_hierarchy_overlaps,
+        )
+
+        cmap = classes_by_id
+        if cmap is None:
+            cmap = build_classes_by_id_for_project(session, task.project_id)
+        deleted = resolve_hierarchy_overlaps(
+            session=session,
+            new_annotation_ids=[a.id for a in new_anns],
+            classes_by_id=cmap,
+            iou_threshold=hierarchy_iou,
+            enabled=True,
+        )
+        hierarchy_deleted = len(deleted)
+        # Adjust per_class so the response accurately reflects what
+        # actually persisted. Per-class subtraction means the user
+        # sees "Created 12 Racing Car (0 Car kept; hierarchy dropped 12)"
+        # instead of "Created 12 Racing Car and 12 Car" then mysteriously
+        # losing the Cars to the resolver.
+        if deleted:
+            deleted_set = set(deleted)
+            for ann in new_anns:
+                if ann.id in deleted_set:
+                    key = str(ann.class_id)
+                    if key in per_class and per_class[key] > 0:
+                        per_class[key] -= 1
+
     return {
-        "annotations_created": len(new_anns),
+        "annotations_created": len(new_anns) - hierarchy_deleted,
         "per_class": per_class,
         "ineligible": ineligible_ids,
+        # v3.31 -- exposed so the dialog can show "Resolved N overlaps"
+        # in the success toast.
+        "hierarchy_resolved": hierarchy_deleted,
     }
 
 

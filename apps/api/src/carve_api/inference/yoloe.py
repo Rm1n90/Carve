@@ -599,6 +599,10 @@ def apply_yoloe_to_asset(
     overwrite: bool = False,
     min_confidence: float = 0.0,
     output_kind: YoloeOutputKind = YoloeOutputKind.bbox,
+    # v3.31 -- cross-class hierarchical NMS; see auto_text_for_asset.
+    resolve_hierarchy: bool = False,
+    hierarchy_iou: float = 0.7,
+    classes_by_id: dict | None = None,
 ) -> AutoAnnotateResult:
     """Run YOLOE on a single asset and persist new annotations.
 
@@ -698,8 +702,32 @@ def apply_yoloe_to_asset(
         session.add(ann)
 
     session.flush()
+
+    # v3.31 -- cross-class hierarchical NMS. Reuse ``project_classes``
+    # already loaded above as the class map (avoid a second query).
+    hierarchy_resolved = 0
+    if resolve_hierarchy and new_anns:
+        from carve_api.inference.hierarchy_nms import (
+            resolve_hierarchy_overlaps,
+        )
+
+        cmap = classes_by_id
+        if cmap is None:
+            cmap = {c.id: c for c in project_classes}
+        deleted = resolve_hierarchy_overlaps(
+            session=session,
+            new_annotation_ids=[a.id for a in new_anns],
+            classes_by_id=cmap,
+            iou_threshold=hierarchy_iou,
+            enabled=True,
+        )
+        hierarchy_resolved = len(deleted)
+        if deleted:
+            deleted_set = set(deleted)
+            new_anns = [a for a in new_anns if a.id not in deleted_set]
     return AutoAnnotateResult(
         annotations=new_anns,
         skipped_by_class=skipped_by_class,
         overwrite_skipped=overwrite_skipped,
+        hierarchy_resolved=hierarchy_resolved,
     )

@@ -58,6 +58,7 @@ import {
   type VisualPick,
 } from "@/components/annotation/VisualReferencePicker";
 import { ScopePicker } from "@/components/annotation/ScopePicker";
+import { HierarchyResolverPanel } from "@/components/annotation/HierarchyResolverPanel";
 import {
   resolveScopeAssetIds,
   type RangeInput,
@@ -186,6 +187,16 @@ export function YoloeDialog({
     from: "",
     to: "",
   });
+  // v3.31 — cross-class hierarchy NMS. Shared across modes too; same
+  // rationale as scopeRange. Default ON when the project has hierarchies.
+  const projectHasHierarchy = useMemo(
+    () => classes.some((c) => !!c.parent_class_id),
+    [classes],
+  );
+  const [resolveHierarchy, setResolveHierarchy] = useState<boolean>(
+    projectHasHierarchy,
+  );
+  const [hierarchyIou, setHierarchyIou] = useState<number>(0.7);
 
   // (Common controls — conf/iou/overwrite/outputKind — moved into
   // ``configByMode`` above so each prompt mode keeps its own values.)
@@ -226,6 +237,25 @@ export function YoloeDialog({
           ? rangeTo
           : "",
     });
+    // v3.31 — hydrate hierarchy toggle from any mode-config slot.
+    const storedResolve =
+      stored.text?.resolveHierarchy ??
+      stored.prompt_free?.resolveHierarchy ??
+      stored.visual_common?.resolveHierarchy;
+    const storedIou =
+      stored.text?.hierarchyIou ??
+      stored.prompt_free?.hierarchyIou ??
+      stored.visual_common?.hierarchyIou;
+    setResolveHierarchy(
+      typeof storedResolve === "boolean"
+        ? storedResolve
+        : projectHasHierarchy,
+    );
+    setHierarchyIou(
+      typeof storedIou === "number" && Number.isFinite(storedIou)
+        ? Math.max(0, Math.min(1, storedIou))
+        : 0.7,
+    );
     if (stored.text) {
       const validClassIds = new Set(classes.map((c) => c.id));
       const rows = stored.text.rows
@@ -289,6 +319,9 @@ export function YoloeDialog({
       ...(typeof scopeRange.to === "number"
         ? { rangeTo: scopeRange.to }
         : {}),
+      // v3.31 — persist hierarchy toggle into every mode-config slot.
+      resolveHierarchy,
+      hierarchyIou,
     };
     useDialogPrefs.getState().saveSmartFind(taskId, {
       mode,
@@ -329,6 +362,8 @@ export function YoloeDialog({
     pfMaxDet,
     configByMode,
     scopeRange,
+    resolveHierarchy,
+    hierarchyIou,
   ]);
 
   function clearForThisTask() {
@@ -343,6 +378,10 @@ export function YoloeDialog({
       visual: { ...DEFAULT_MODE_CONFIG },
       prompt_free: { ...DEFAULT_MODE_CONFIG },
     });
+    // v3.31 — reset hierarchy resolver to its smart default.
+    setScopeRange({ from: "", to: "" });
+    setResolveHierarchy(projectHasHierarchy);
+    setHierarchyIou(0.7);
   }
 
   // Visual picker — read existing annotations from the editor's store.
@@ -615,6 +654,14 @@ export function YoloeDialog({
 
   const run = useMutation({
     mutationFn: async () => {
+      // v3.31 — single source of truth for the hierarchy flags. ``...spread``ed
+      // into every yoloeApi call below so the toggle reaches sync + batch
+      // surfaces uniformly. Only sends the field when the project has any
+      // hierarchy AND the user opted in.
+      const hierarchyExtras: { resolve_hierarchy?: boolean; hierarchy_iou?: number } =
+        resolveHierarchy && projectHasHierarchy
+          ? { resolve_hierarchy: true, hierarchy_iou: hierarchyIou }
+          : {};
       if (scope === "this") {
         if (!assetId) throw new Error("no_asset");
         if (mode === "text") {
@@ -627,6 +674,7 @@ export function YoloeDialog({
             iou,
             overwrite,
             output_kind: outputKind,
+            ...hierarchyExtras,
           });
         }
         if (mode === "visual") {
@@ -638,6 +686,7 @@ export function YoloeDialog({
             iou,
             overwrite,
             output_kind: outputKind,
+            ...hierarchyExtras,
           });
         }
         return await yoloeApi.promptFreePredict(assetId, {
@@ -647,6 +696,7 @@ export function YoloeDialog({
           max_detections: pfMaxDet || null,
           overwrite,
           output_kind: outputKind,
+          ...hierarchyExtras,
         });
       }
       // Batch path — enqueue + return job_id (caller renders progress).
@@ -693,6 +743,7 @@ export function YoloeDialog({
         ...(scope === "range" && rangeAssetIds.length > 0
           ? { asset_ids: rangeAssetIds }
           : {}),
+        ...hierarchyExtras,
       });
       return { job_id: r.job_id };
     },
@@ -1292,6 +1343,16 @@ export function YoloeDialog({
                 />
                 Replace existing annotations on this frame
               </label>
+
+              {/* v3.31 — cross-class hierarchical NMS panel. */}
+              <HierarchyResolverPanel
+                name="yoloe"
+                classes={classes}
+                enabled={resolveHierarchy}
+                onEnabledChange={setResolveHierarchy}
+                iou={hierarchyIou}
+                onIouChange={setHierarchyIou}
+              />
             </div>
 
             <DialogFooter>

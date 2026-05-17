@@ -66,6 +66,11 @@ class BatchJobPayload:
     # picker. ``None`` keeps the legacy "every asset in the task"
     # behaviour and stays wire-compatible with older pickled payloads.
     asset_ids: list[str] | None = None
+    # v3.31 — cross-class hierarchical NMS. ``False`` keeps the legacy
+    # behaviour (intra-class dedup only). Default reads cleanly for
+    # payloads pickled before this field existed.
+    resolve_hierarchy: bool = False
+    hierarchy_iou: float = 0.7
 
 
 def build_job_payload(
@@ -78,6 +83,8 @@ def build_job_payload(
     iou: float | None = None,
     class_overrides: dict[int, str | None] | None = None,
     asset_ids: list[str] | None = None,
+    resolve_hierarchy: bool = False,
+    hierarchy_iou: float = 0.7,
 ) -> BatchJobPayload:
     return BatchJobPayload(
         job_id=str(uuid.uuid4()),
@@ -89,6 +96,8 @@ def build_job_payload(
         iou=iou,
         class_overrides=class_overrides,
         asset_ids=list(asset_ids) if asset_ids else None,
+        resolve_hierarchy=bool(resolve_hierarchy),
+        hierarchy_iou=float(hierarchy_iou),
     )
 
 
@@ -411,6 +420,9 @@ class AutoTextBatchPayload:
     epsilon_factor: float | None = None
     # v3.31 — optional subset filter (see BatchJobPayload.asset_ids).
     asset_ids: list[str] | None = None
+    # v3.31 — cross-class hierarchical NMS (see BatchJobPayload).
+    resolve_hierarchy: bool = False
+    hierarchy_iou: float = 0.7
 
 
 def build_auto_text_payload(
@@ -425,6 +437,8 @@ def build_auto_text_payload(
     iou_threshold: float | None = None,
     epsilon_factor: float | None = None,
     asset_ids: list[str] | None = None,
+    resolve_hierarchy: bool = False,
+    hierarchy_iou: float = 0.7,
 ) -> AutoTextBatchPayload:
     return AutoTextBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -442,6 +456,8 @@ def build_auto_text_payload(
             float(epsilon_factor) if epsilon_factor is not None else None
         ),
         asset_ids=list(asset_ids) if asset_ids else None,
+        resolve_hierarchy=bool(resolve_hierarchy),
+        hierarchy_iou=float(hierarchy_iou),
     )
 
 
@@ -537,6 +553,10 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
                         use_vlm_fo1=getattr(payload, "use_vlm_fo1", False),
                         iou_threshold=getattr(payload, "iou_threshold", None),
                         epsilon_factor=getattr(payload, "epsilon_factor", None),
+                        resolve_hierarchy=getattr(
+                            payload, "resolve_hierarchy", False
+                        ),
+                        hierarchy_iou=getattr(payload, "hierarchy_iou", 0.7),
                     ),
                     redis_client=redis_client,
                     job_id=payload.job_id,
@@ -628,6 +648,9 @@ class AutoVisualBatchPayload:
     epsilon_factor: float | None = None
     # v3.31 — optional subset filter (see BatchJobPayload.asset_ids).
     asset_ids: list[str] | None = None
+    # v3.31 — cross-class hierarchical NMS (see BatchJobPayload).
+    resolve_hierarchy: bool = False
+    hierarchy_iou: float = 0.7
 
 
 def build_auto_visual_payload(
@@ -641,6 +664,8 @@ def build_auto_visual_payload(
     overwrite: bool,
     epsilon_factor: float | None = None,
     asset_ids: list[str] | None = None,
+    resolve_hierarchy: bool = False,
+    hierarchy_iou: float = 0.7,
 ) -> AutoVisualBatchPayload:
     return AutoVisualBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -655,6 +680,8 @@ def build_auto_visual_payload(
             float(epsilon_factor) if epsilon_factor is not None else None
         ),
         asset_ids=list(asset_ids) if asset_ids else None,
+        resolve_hierarchy=bool(resolve_hierarchy),
+        hierarchy_iou=float(hierarchy_iou),
     )
 
 
@@ -730,6 +757,10 @@ def run_auto_visual_batch(payload: AutoVisualBatchPayload) -> dict:
                         overwrite=payload.overwrite,
                         actor_id=actor_uuid,
                         epsilon_factor=getattr(payload, "epsilon_factor", None),
+                        resolve_hierarchy=getattr(
+                            payload, "resolve_hierarchy", False
+                        ),
+                        hierarchy_iou=getattr(payload, "hierarchy_iou", 0.7),
                     ),
                     redis_client=redis_client,
                     job_id=payload.job_id,
@@ -814,6 +845,9 @@ class YoloeBatchPayload:
     output_kind: str = "bbox"
     # v3.31 — optional subset filter (see BatchJobPayload.asset_ids).
     asset_ids: list[str] | None = None
+    # v3.31 — cross-class hierarchical NMS (see BatchJobPayload).
+    resolve_hierarchy: bool = False
+    hierarchy_iou: float = 0.7
 
 
 def build_yoloe_payload(
@@ -826,6 +860,8 @@ def build_yoloe_payload(
     min_confidence: float | None = None,
     output_kind: str = "bbox",
     asset_ids: list[str] | None = None,
+    resolve_hierarchy: bool = False,
+    hierarchy_iou: float = 0.7,
 ) -> YoloeBatchPayload:
     return YoloeBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -837,6 +873,8 @@ def build_yoloe_payload(
         min_confidence=min_confidence,
         output_kind=output_kind,
         asset_ids=list(asset_ids) if asset_ids else None,
+        resolve_hierarchy=bool(resolve_hierarchy),
+        hierarchy_iou=float(hierarchy_iou),
     )
 
 
@@ -1133,6 +1171,10 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                         output_kind=YoloeOutputKind(
                             getattr(payload, "output_kind", "polygon"),
                         ),
+                        resolve_hierarchy=getattr(
+                            payload, "resolve_hierarchy", False
+                        ),
+                        hierarchy_iou=getattr(payload, "hierarchy_iou", 0.7),
                     ),
                     redis_client=redis_client,
                     job_id=payload.job_id,
@@ -1562,6 +1604,15 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                     aa_kwargs["iou"] = float(payload.iou)
                 if coerced_overrides is not None:
                     aa_kwargs["class_overrides"] = coerced_overrides
+                # v3.31 -- thread hierarchy NMS flags through the per-asset
+                # call. getattr keeps older pickled payloads (without these
+                # fields) compatible.
+                aa_kwargs["resolve_hierarchy"] = getattr(
+                    payload, "resolve_hierarchy", False
+                )
+                aa_kwargs["hierarchy_iou"] = getattr(
+                    payload, "hierarchy_iou", 0.7
+                )
                 aa_result = auto_annotate_asset(**aa_kwargs)
                 # Per-asset commit so partial progress is durable on
                 # worker kill. Releases the connection back to idle so

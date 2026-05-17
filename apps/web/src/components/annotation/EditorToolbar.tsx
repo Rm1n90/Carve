@@ -70,6 +70,7 @@ import {
 import { projectsApi, type Project } from "@/api/projects";
 import { assetsApi } from "@/api/assets";
 import { ScopePicker } from "@/components/annotation/ScopePicker";
+import { HierarchyResolverPanel } from "@/components/annotation/HierarchyResolverPanel";
 import {
   resolveScopeAssetIds,
   type RangeInput,
@@ -409,9 +410,16 @@ const YoloPredictButton = forwardRef<
     projectId?: string;
     taskId?: string;
     assetId?: string;
+    /** v3.31 — needed to detect whether the project has any IS-A
+     *  hierarchies and gate / pre-populate the "Resolve hierarchical
+     *  overlaps" toggle in the popover. */
+    classes?: import("@/api/classes").ClassRow[];
     onAfter?: () => void;
   }
->(function YoloPredictButton({ projectId, taskId, assetId, onAfter }, ref) {
+>(function YoloPredictButton(
+  { projectId, taskId, assetId, classes, onAfter },
+  ref,
+) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   // v3.30 — weight-search query for large weight lists (>6 entries).
@@ -460,6 +468,21 @@ const YoloPredictButton = forwardRef<
     from: "",
     to: "",
   });
+  // v3.31 — cross-class hierarchical NMS. Default ON when any project
+  // class has a parent set; user can flip off per run.
+  const projectHasHierarchy = useMemo(
+    () => (classes ?? []).some((c) => !!c.parent_class_id),
+    [classes],
+  );
+  const [resolveHierarchy, setResolveHierarchy] = useState<boolean>(
+    projectHasHierarchy,
+  );
+  // Recompute the default the first time the project classes resolve
+  // (the popover may be open before the classes query lands).
+  useEffect(() => {
+    setResolveHierarchy(projectHasHierarchy);
+  }, [projectHasHierarchy]);
+  const [hierarchyIou, setHierarchyIou] = useState<number>(0.7);
   // v3.7 Phase 2 Issue 1 — active batch job. Null when no batch is in
   // flight. Renders the <BatchPredictProgressOverlay/> when set.
   const [batchJobId, setBatchJobId] = useState<string | null>(null);
@@ -691,6 +714,9 @@ const YoloPredictButton = forwardRef<
         confidence,
         Object.keys(wireOverrides).length > 0 ? wireOverrides : undefined,
         iou,
+        resolveHierarchy && projectHasHierarchy
+          ? { resolveHierarchy: true, hierarchyIou }
+          : undefined,
       );
     },
     onSuccess: (res, weightId) => {
@@ -857,6 +883,12 @@ const YoloPredictButton = forwardRef<
         scope === "range" && rangeAssetIds.length > 0
           ? rangeAssetIds
           : undefined;
+      // v3.31 — cross-class hierarchical NMS. Only sends when the
+      // project has hierarchies AND the user opted in.
+      const hierarchy =
+        resolveHierarchy && projectHasHierarchy
+          ? { resolveHierarchy: true, hierarchyIou }
+          : undefined;
       return inferenceApi.predictYoloBatch(
         taskId,
         weightId,
@@ -865,6 +897,7 @@ const YoloPredictButton = forwardRef<
         buildWireOverrides(),
         iou,
         assetIds,
+        hierarchy,
       );
     },
     onSuccess: (res, weightId) => {
@@ -1326,6 +1359,17 @@ const YoloPredictButton = forwardRef<
               all: "yolo-predict-scope-task",
               range: "yolo-predict-scope-range",
             }}
+          />
+        </div>
+        {/* v3.31 — cross-class hierarchical NMS panel. */}
+        <div className="px-2 pt-2 pb-1 border-t border-[var(--border-subtle)] mt-1">
+          <HierarchyResolverPanel
+            name="yolo-predict"
+            classes={classes ?? []}
+            enabled={resolveHierarchy}
+            onEnabledChange={setResolveHierarchy}
+            iou={hierarchyIou}
+            onIouChange={setHierarchyIou}
           />
         </div>
         {/* v3.5 Phase F3 — class overrides disclosure. Visible once a
@@ -2917,6 +2961,7 @@ export function EditorToolbar({
         projectId={projectId}
         taskId={taskId}
         assetId={assetId}
+        classes={classesProp ?? []}
         onAfter={onAfterYoloPredict}
       />
 

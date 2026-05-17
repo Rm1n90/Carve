@@ -60,6 +60,9 @@ export interface YoloeTextRequest {
    *  masks. YOLOE-seg returns both per detection; we keep one to
    *  avoid stacked-duplicate annotations. */
   output_kind?: YoloeOutputKind;
+  /** v3.31 — cross-class hierarchical NMS; see YoloeBatchRequest. */
+  resolve_hierarchy?: boolean;
+  hierarchy_iou?: number;
 }
 
 export interface YoloeVisualGroupItem {
@@ -87,6 +90,9 @@ export interface YoloeVisualRequest {
   overwrite?: boolean;
   frame_id?: string | null;
   output_kind?: YoloeOutputKind;
+  /** v3.31 — cross-class hierarchical NMS; see YoloeBatchRequest. */
+  resolve_hierarchy?: boolean;
+  hierarchy_iou?: number;
 }
 
 export interface YoloePromptFreeRequest {
@@ -97,6 +103,9 @@ export interface YoloePromptFreeRequest {
   overwrite?: boolean;
   frame_id?: string | null;
   output_kind?: YoloeOutputKind;
+  /** v3.31 — cross-class hierarchical NMS; see YoloeBatchRequest. */
+  resolve_hierarchy?: boolean;
+  hierarchy_iou?: number;
 }
 
 export interface YoloeBatchRequest {
@@ -109,6 +118,11 @@ export interface YoloeBatchRequest {
    *  scope picker. UUIDs resolved client-side against the task's
    *  asset list. Omitted = run on every asset. */
   asset_ids?: string[];
+  /** v3.31 — cross-class hierarchical NMS. Drops the more general
+   *  (ancestor) class's annotation when it overlaps a more specific
+   *  (descendant) class's annotation above ``hierarchy_iou``. */
+  resolve_hierarchy?: boolean;
+  hierarchy_iou?: number;
 }
 
 export interface YoloeBatchProgress {

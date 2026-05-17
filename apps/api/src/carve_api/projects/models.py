@@ -117,6 +117,19 @@ class Class(Base):
     text_prompt: Mapped[str | None] = mapped_column(
         String(200), nullable=True, default=None
     )
+    # v3.31 -- self-referential parent for the IS-A hierarchy used by
+    # the auto-annotate cross-class NMS resolver. NULL means the class
+    # is at the top of its chain. Cycle prevention + max depth 8 are
+    # enforced at the API layer (see ClassService.update). FK is
+    # ON DELETE SET NULL so deleting a parent orphans its children
+    # rather than cascading the delete onto the child rows.
+    parent_class_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("classes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        default=None,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
