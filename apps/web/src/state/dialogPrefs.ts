@@ -26,13 +26,21 @@ export interface AutoAnnotateTextConfig {
   findAll: boolean;
   overwrite: boolean;
   samPostMode: "off" | "to-bbox";
-  scope: "this" | "all";
+  // v3.31 — "range" added for the 1-based asset position picker.
+  // Older saved entries with "this" | "all" remain compatible.
+  scope: "this" | "all" | "range";
   useVlmFo1: boolean;
   // Bbox-IoU floor for the per-class NMS dedup pass on the server.
   // Optional so older localStorage entries (saved before this field
   // existed) still load — the dialog falls back to a sensible default
   // when missing.
   iouThreshold?: number;
+  // v3.31 — 1-based asset position range for the "range" scope.
+  // Optional so older localStorage entries (saved before this field
+  // existed) still load. Stored as plain numbers (or omitted) — the
+  // dialog re-runs its clamp on hydrate.
+  rangeFrom?: number;
+  rangeTo?: number;
 }
 
 export interface SmartFindModeCommonConfig {
@@ -40,7 +48,11 @@ export interface SmartFindModeCommonConfig {
   iou: number;
   outputKind: string;
   overwrite: boolean;
-  scope: "this" | "all";
+  // v3.31 — see AutoAnnotateTextConfig.scope.
+  scope: "this" | "all" | "range";
+  // v3.31 — range endpoints (1-based asset position).
+  rangeFrom?: number;
+  rangeTo?: number;
 }
 
 export interface SmartFindTextConfig extends SmartFindModeCommonConfig {

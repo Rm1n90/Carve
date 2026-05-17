@@ -105,6 +105,10 @@ export interface YoloeBatchRequest {
   params: Record<string, unknown>;
   overwrite?: boolean;
   output_kind?: YoloeOutputKind;
+  /** v3.31 — optional subset filter from the "Range: from N to M"
+   *  scope picker. UUIDs resolved client-side against the task's
+   *  asset list. Omitted = run on every asset. */
+  asset_ids?: string[];
 }
 
 export interface YoloeBatchProgress {

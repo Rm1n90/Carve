@@ -64,6 +64,9 @@ export interface SamAutoVisualBody {
   // slider; omitted keeps the polygonize default. Persists into the
   // RQ batch payload via autoVisualBatch too.
   epsilon_factor?: number;
+  // v3.31 — optional subset filter from the "Range: from N to M"
+  // scope picker. Ignored by the sync (single-asset) endpoint.
+  asset_ids?: string[];
 }
 export interface SamAutoVisualResult {
   annotations_created: number;
@@ -210,6 +213,10 @@ export const samApi = {
       // simplification. Persists into the RQ payload so every
       // per-asset iteration honors the slider setting.
       epsilon_factor?: number;
+      // v3.31 — optional subset filter from the "Range: from N to M"
+      // scope picker. UUIDs resolved client-side against the task's
+      // asset list. Omitted = run on every asset.
+      asset_ids?: string[];
     },
   ): Promise<{ job_id: string }> =>
     (

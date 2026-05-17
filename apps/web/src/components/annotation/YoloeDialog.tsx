@@ -57,9 +57,17 @@ import {
   VisualReferencePicker,
   type VisualPick,
 } from "@/components/annotation/VisualReferencePicker";
+import { ScopePicker } from "@/components/annotation/ScopePicker";
+import {
+  resolveScopeAssetIds,
+  type RangeInput,
+  type ScopeMode,
+} from "@/lib/scopeRange";
 
 type YoloeMode = "text" | "visual" | "prompt_free";
-type Scope = "this" | "all";
+// v3.31 — widened from "this" | "all" to also include the
+// 1-based asset-position "range" scope.
+type Scope = ScopeMode;
 
 interface YoloeDialogProps {
   /** The asset currently open in the editor. Used for "this image". */
@@ -170,6 +178,15 @@ export function YoloeDialog({
   const [pfClassId, setPfClassId] = useState<string>("");
   const [pfMaxDet, setPfMaxDet] = useState<number>(300);
 
+  // v3.31 — 1-based asset position range, shared across all three modes
+  // (the user typically picks ONE range for "this Smart Find run" and
+  // expects mode-flipping to keep it). Persisted into every mode-config
+  // slot in localStorage so older dialogs can still read it.
+  const [scopeRange, setScopeRange] = useState<RangeInput>({
+    from: "",
+    to: "",
+  });
+
   // (Common controls — conf/iou/overwrite/outputKind — moved into
   // ``configByMode`` above so each prompt mode keeps its own values.)
 
@@ -187,6 +204,28 @@ export function YoloeDialog({
     const stored = useDialogPrefs.getState().getSmartFind(taskId);
     if (!stored) return;
     if (stored.mode) setMode(stored.mode);
+    // v3.31 — pick range fields off whichever stored mode-config has
+    // them. We persist the same value into all three slots; reading
+    // any one is sufficient and stays tolerant to older pref entries
+    // that only have it on a subset of modes.
+    const rangeFrom =
+      stored.text?.rangeFrom ??
+      stored.prompt_free?.rangeFrom ??
+      stored.visual_common?.rangeFrom;
+    const rangeTo =
+      stored.text?.rangeTo ??
+      stored.prompt_free?.rangeTo ??
+      stored.visual_common?.rangeTo;
+    setScopeRange({
+      from:
+        typeof rangeFrom === "number" && Number.isFinite(rangeFrom)
+          ? rangeFrom
+          : "",
+      to:
+        typeof rangeTo === "number" && Number.isFinite(rangeTo)
+          ? rangeTo
+          : "",
+    });
     if (stored.text) {
       const validClassIds = new Set(classes.map((c) => c.id));
       const rows = stored.text.rows
@@ -243,6 +282,14 @@ export function YoloeDialog({
   // Write back on every relevant change while the dialog is open.
   useEffect(() => {
     if (!open) return;
+    const rangeFields = {
+      ...(typeof scopeRange.from === "number"
+        ? { rangeFrom: scopeRange.from }
+        : {}),
+      ...(typeof scopeRange.to === "number"
+        ? { rangeTo: scopeRange.to }
+        : {}),
+    };
     useDialogPrefs.getState().saveSmartFind(taskId, {
       mode,
       text: {
@@ -252,6 +299,7 @@ export function YoloeDialog({
         outputKind: configByMode.text.outputKind,
         overwrite: configByMode.text.overwrite,
         scope: configByMode.text.scope,
+        ...rangeFields,
       },
       prompt_free: {
         classId: pfClassId,
@@ -261,6 +309,7 @@ export function YoloeDialog({
         outputKind: configByMode.prompt_free.outputKind,
         overwrite: configByMode.prompt_free.overwrite,
         scope: configByMode.prompt_free.scope,
+        ...rangeFields,
       },
       visual_common: {
         conf: configByMode.visual.conf,
@@ -268,6 +317,7 @@ export function YoloeDialog({
         outputKind: configByMode.visual.outputKind,
         overwrite: configByMode.visual.overwrite,
         scope: configByMode.visual.scope,
+        ...rangeFields,
       },
     });
   }, [
@@ -278,6 +328,7 @@ export function YoloeDialog({
     pfClassId,
     pfMaxDet,
     configByMode,
+    scopeRange,
   ]);
 
   function clearForThisTask() {
@@ -313,6 +364,28 @@ export function YoloeDialog({
     enabled: !!taskId && open && mode === "visual",
     staleTime: 30_000,
   });
+
+  // v3.31 — shared "task-assets" query used by the Range scope picker
+  // and the canRun check. Same key the editor + AutoAnnotateDialog use
+  // so React Query dedupes the request. Gated on ``open`` so we don't
+  // pay the network cost when the dialog is closed.
+  const rangeAssetsQ = useQuery({
+    queryKey: ["task-assets", taskId ?? ""],
+    queryFn: () => (taskId ? assetsApi.listForTask(taskId) : Promise.resolve([])),
+    enabled: !!taskId && open,
+    staleTime: 30_000,
+  });
+  const orderedAssetIds = useMemo(
+    () => (rangeAssetsQ.data ?? []).map((a) => a.id),
+    [rangeAssetsQ.data],
+  );
+  const rangeAssetIds = useMemo(
+    () =>
+      scope === "range"
+        ? resolveScopeAssetIds("range", scopeRange, orderedAssetIds) ?? []
+        : [],
+    [scope, scopeRange, orderedAssetIds],
+  );
   const taskAnnotationsQ = useQuery({
     queryKey: ["yoloe-task-annotations", taskId],
     queryFn: () => annotationsApi.listForTaskRaw(taskId!),
@@ -506,6 +579,12 @@ export function YoloeDialog({
   const canRun = useMemo(() => {
     if (!available) return false;
     if (scope === "all" && !taskId) return false;
+    // v3.31 — range scope needs a task AND a non-empty resolved id
+    // list (the clamp helper collapses invalid inputs to []).
+    if (scope === "range") {
+      if (!taskId) return false;
+      if (rangeAssetIds.length === 0) return false;
+    }
     if (mode === "text") {
       return textAvailable && textValidRows.length > 0;
     }
@@ -515,8 +594,8 @@ export function YoloeDialog({
       if (picksSummary.pickCount === 0) return false;
       if (picksSummary.unassigned > 0) return false;
       // Visual mode needs the *target* asset (assetId for "this
-      // image"; any of the task assets for "all assets").
-      const targetOk = scope === "all" ? !!taskId : !!assetId;
+      // image"; any of the task assets for "all" / "range").
+      const targetOk = scope === "this" ? !!assetId : !!taskId;
       return textAvailable && targetOk;
     }
     return pfAvailable;
@@ -531,6 +610,7 @@ export function YoloeDialog({
     picksSummary.pickCount,
     picksSummary.unassigned,
     assetId,
+    rangeAssetIds.length,
   ]);
 
   const run = useMutation({
@@ -569,8 +649,13 @@ export function YoloeDialog({
           output_kind: outputKind,
         });
       }
-      // Batch path — enqueue + return job_id (caller renders progress)
+      // Batch path — enqueue + return job_id (caller renders progress).
+      // v3.31 — "range" routes through the same batch endpoint as "all"
+      // and additionally carries the resolved asset_ids subset.
       if (!taskId) throw new Error("no_task");
+      if (scope === "range" && rangeAssetIds.length === 0) {
+        throw new Error("empty_range");
+      }
       let params: Record<string, unknown> = {};
       if (mode === "text") {
         params = {
@@ -605,6 +690,9 @@ export function YoloeDialog({
         params,
         overwrite,
         output_kind: outputKind,
+        ...(scope === "range" && rangeAssetIds.length > 0
+          ? { asset_ids: rangeAssetIds }
+          : {}),
       });
       return { job_id: r.job_id };
     },
@@ -1096,34 +1184,19 @@ export function YoloeDialog({
 
             {/* Common controls */}
             <div className="grid gap-2 mt-1">
-              <div className="grid grid-cols-2 gap-1 p-1 rounded-[var(--radius-md)] bg-[var(--bg-subtle)]">
-                {(["this", "all"] as Scope[]).map((s) => {
-                  const dis = s === "all" && !taskId;
-                  const active = scope === s;
-                  return (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => !dis && patchActiveConfig({ scope: s })}
-                      disabled={dis}
-                      data-testid={`yoloe-scope-${s}`}
-                      title={
-                        dis ? "Open inside a task to enable" : undefined
-                      }
-                      className={cn(
-                        "px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium",
-                        "transition-all duration-[160ms]",
-                        active
-                          ? "bg-[var(--bg-elev)] shadow-[0_0_0_1px_var(--accent)]"
-                          : "hover:bg-[var(--bg-hover)]",
-                        dis && "opacity-40 cursor-not-allowed",
-                      )}
-                    >
-                      {s === "this" ? "This image" : "All assets in task"}
-                    </button>
-                  );
-                })}
-              </div>
+              {/* v3.31 — scope picker now includes a "Range: from N to M"
+                  option; the shared ScopePicker component owns the
+                  3-radio layout + From/To number inputs. */}
+              <ScopePicker
+                name="yoloe-scope"
+                mode={scope}
+                onModeChange={(next) => patchActiveConfig({ scope: next })}
+                range={scopeRange}
+                onRangeChange={setScopeRange}
+                totalAssets={orderedAssetIds.length}
+                hasTask={!!taskId}
+                hasAsset={!!assetId}
+              />
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="grid gap-0.5 text-[11px] text-[color:var(--text-secondary)]">
@@ -1256,7 +1329,11 @@ export function YoloeDialog({
                         : undefined
                 }
               >
-                {scope === "this" ? "Run" : "Run on all assets"}
+                {scope === "this"
+                  ? "Run"
+                  : scope === "range"
+                    ? `Run on ${rangeAssetIds.length || 0} asset${rangeAssetIds.length === 1 ? "" : "s"}`
+                    : "Run on all assets"}
               </Button>
             </DialogFooter>
           </>

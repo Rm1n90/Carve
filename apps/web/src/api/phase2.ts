@@ -474,6 +474,10 @@ export const inferenceApi = {
     minConfidence = 0.0,
     classOverrides?: ClassOverrides,
     iou = 0.7,
+    // v3.31 — optional subset filter from the "Range: from N to M"
+    // scope picker. UUIDs resolved client-side against the task's
+    // asset list. Omitted = run on every asset (legacy behaviour).
+    assetIds?: string[],
   ): Promise<BatchPredictResult> => {
     const params = new URLSearchParams({
       weight_id: weightId,
@@ -484,6 +488,7 @@ export const inferenceApi = {
       min_confidence?: number;
       iou?: number;
       class_overrides?: ClassOverrides;
+      asset_ids?: string[];
     } = {};
     if (Number.isFinite(minConfidence)) {
       body.min_confidence = Math.max(0, Math.min(1, minConfidence));
@@ -496,6 +501,9 @@ export const inferenceApi = {
     }
     if (classOverrides && Object.keys(classOverrides).length > 0) {
       body.class_overrides = classOverrides;
+    }
+    if (assetIds && assetIds.length > 0) {
+      body.asset_ids = assetIds;
     }
     const wireBody = Object.keys(body).length > 0 ? body : undefined;
     const r = await api.post<BatchPredictResult>(url, wireBody);

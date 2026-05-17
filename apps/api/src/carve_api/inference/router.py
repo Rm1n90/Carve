@@ -224,6 +224,11 @@ class BatchAutoAnnotateBody(BaseModel):
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     iou: float | None = Field(default=None, ge=0.0, le=1.0)
     class_overrides: dict[str, str | None] | None = Field(default=None)
+    # v3.31 — optional subset filter for the "Range: from N to M" scope
+    # picker. UUIDs the client resolved from a 1-based asset position
+    # range against this task's asset list. None preserves the legacy
+    # "every asset in the task" behaviour.
+    asset_ids: list[uuid.UUID] | None = Field(default=None)
 
 
 @task_inference_router.post("/{task_id}/auto-annotate")
@@ -269,6 +274,7 @@ def enqueue_batch_auto_annotate(
     overrides_for_payload: dict[int, str | None] | None = None
     min_conf: float | None = None
     iou_value: float | None = None
+    asset_ids_for_payload: list[str] | None = None
     if body is not None:
         if body.min_confidence is not None:
             # Pydantic already enforced 0..1 via Field(ge=0, le=1).
@@ -294,6 +300,8 @@ def enqueue_batch_auto_annotate(
                 except (TypeError, ValueError):
                     continue
                 overrides_for_payload[idx] = str(v)
+        if body.asset_ids:
+            asset_ids_for_payload = [str(a) for a in body.asset_ids]
 
     payload = build_job_payload(
         actor=user,
@@ -303,6 +311,7 @@ def enqueue_batch_auto_annotate(
         min_confidence=min_conf,
         iou=iou_value,
         class_overrides=overrides_for_payload,
+        asset_ids=asset_ids_for_payload,
     )
 
     # Enqueue MUST surface failures loudly — the previous best-effort
@@ -408,6 +417,8 @@ class SamAutoTextBatchIn(BaseModel):
     # simplification. Persists into the batch payload so each per-asset
     # iteration uses the user's slider setting.
     epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
+    # v3.31 — optional subset filter; see BatchAutoAnnotateBody.asset_ids.
+    asset_ids: list[uuid.UUID] | None = Field(default=None)
 
 
 @task_inference_router.post("/{task_id}/sam/auto-text-batch")
@@ -453,6 +464,9 @@ def enqueue_sam_auto_text_batch(
         use_vlm_fo1=payload.use_vlm_fo1,
         iou_threshold=payload.iou_threshold,
         epsilon_factor=payload.epsilon_factor,
+        asset_ids=(
+            [str(a) for a in payload.asset_ids] if payload.asset_ids else None
+        ),
     )
     # Enqueue MUST surface failures loudly. Previously this was a
     # best-effort try/except that silently swallowed every error and
@@ -694,6 +708,10 @@ class SamAutoVisualIn(BaseModel):
     overwrite: bool = Field(default=False)
     # Douglas-Peucker tolerance — see ``SamAutoTextIn.epsilon_factor``.
     epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
+    # v3.31 — optional subset filter (batch path only); see
+    # BatchAutoAnnotateBody.asset_ids. Ignored on the sync (single-asset)
+    # endpoint since the asset is identified by the URL.
+    asset_ids: list[uuid.UUID] | None = Field(default=None)
 
 
 class SamAutoVisualOut(BaseModel):
@@ -885,6 +903,9 @@ def enqueue_sam_auto_visual_batch(
         find_all=payload.find_all,
         overwrite=payload.overwrite,
         epsilon_factor=payload.epsilon_factor,
+        asset_ids=(
+            [str(a) for a in payload.asset_ids] if payload.asset_ids else None
+        ),
     )
     from rq import Queue
     from carve_api.jobs.queue import enqueue_with_defaults
@@ -1490,6 +1511,8 @@ class YoloeBatchIn(BaseModel):
     # v3.23.3 — choose between bbox-only or polygon-only persistence.
     # Default polygon (instance-segmentation models output masks).
     output_kind: str = Field(default="polygon", pattern="^(bbox|polygon)$")
+    # v3.31 — optional subset filter; see BatchAutoAnnotateBody.asset_ids.
+    asset_ids: list[uuid.UUID] | None = Field(default=None)
 
 
 @task_inference_router.post("/{task_id}/yoloe/batch")
@@ -1515,6 +1538,9 @@ def enqueue_yoloe_batch(
         overwrite=payload.overwrite,
         min_confidence=payload.min_confidence,
         output_kind=payload.output_kind,
+        asset_ids=(
+            [str(a) for a in payload.asset_ids] if payload.asset_ids else None
+        ),
     )
     from rq import Queue
 

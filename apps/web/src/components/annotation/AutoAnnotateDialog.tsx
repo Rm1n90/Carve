@@ -10,7 +10,14 @@ import {
   type SamVisualSource,
 } from "@/api/sam";
 import { modelsApi } from "@/api/phase2";
+import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassRow } from "@/api/classes";
+import { ScopePicker } from "@/components/annotation/ScopePicker";
+import {
+  resolveScopeAssetIds,
+  type RangeInput,
+  type ScopeMode,
+} from "@/lib/scopeRange";
 import { Input } from "@/components/ui/Input";
 import {
   VisualReferencePicker,
@@ -125,7 +132,26 @@ export function AutoAnnotateDialog({
   // in per-session; we no longer seed from a stored per-user pref.
   const [useVlmFo1, setUseVlmFo1] = useState<boolean>(false);
   // Phase 3.5: only "this" is wired. "all" reserved for Phase 3.6 (RQ batch).
-  const [scope, setScope] = useState<"this" | "all">("this");
+  // v3.31 — third scope "range" (1-based asset position [from, to]).
+  const [scope, setScope] = useState<ScopeMode>("this");
+  const [scopeRange, setScopeRange] = useState<RangeInput>({
+    from: "",
+    to: "",
+  });
+
+  // v3.31 — task asset list used by the range scope. The same key is
+  // populated by the editor's AnnotateAssetPage; React Query dedupes
+  // by key so we don't pay for a second request.
+  const taskAssetsQ = useQuery({
+    queryKey: ["task-assets", taskId ?? ""],
+    queryFn: () => (taskId ? assetsApi.listForTask(taskId) : Promise.resolve([])),
+    enabled: !!taskId && open,
+    staleTime: 30_000,
+  });
+  const orderedAssetIds = useMemo(
+    () => (taskAssetsQ.data ?? []).map((a) => a.id),
+    [taskAssetsQ.data],
+  );
   // v3.8 Phase 3.5 — track an in-flight RQ batch so the dialog can
   // render a live progress overlay with Cancel.
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
@@ -239,6 +265,16 @@ export function AutoAnnotateDialog({
       setOverwrite(stored.overwrite);
       setSamPostMode(stored.samPostMode);
       setScope(stored.scope);
+      setScopeRange({
+        from:
+          typeof stored.rangeFrom === "number" && Number.isFinite(stored.rangeFrom)
+            ? stored.rangeFrom
+            : "",
+        to:
+          typeof stored.rangeTo === "number" && Number.isFinite(stored.rangeTo)
+            ? stored.rangeTo
+            : "",
+      });
       setUseVlmFo1(stored.useVlmFo1);
     } else {
       const seeded: TextRow[] = classes
@@ -278,6 +314,12 @@ export function AutoAnnotateDialog({
         samPostMode,
         scope,
         useVlmFo1,
+        ...(typeof scopeRange.from === "number"
+          ? { rangeFrom: scopeRange.from }
+          : {}),
+        ...(typeof scopeRange.to === "number"
+          ? { rangeTo: scopeRange.to }
+          : {}),
       },
     });
   }, [
@@ -290,6 +332,7 @@ export function AutoAnnotateDialog({
     overwrite,
     samPostMode,
     scope,
+    scopeRange,
     useVlmFo1,
   ]);
 
@@ -308,6 +351,7 @@ export function AutoAnnotateDialog({
     setOverwrite(false);
     setSamPostMode("off");
     setScope("this");
+    setScopeRange({ from: "", to: "" });
     setUseVlmFo1(false);
   }
 
@@ -483,8 +527,17 @@ export function AutoAnnotateDialog({
       // service default regardless of the slider — the bug Armin
       // reported when setting 25 or 75 produced no visible change.
       const epsilonFactor = currentPolygonEpsilonFactor();
-      if (scope === "all") {
+      // v3.31 — "all" + "range" both route through the batch endpoint;
+      // "range" additionally carries the resolved asset_ids subset.
+      if (scope === "all" || scope === "range") {
         if (!taskId) throw new Error("no_task");
+        const assetIds =
+          scope === "range"
+            ? resolveScopeAssetIds("range", scopeRange, orderedAssetIds) ?? []
+            : null;
+        if (scope === "range" && (!assetIds || assetIds.length === 0)) {
+          throw new Error("empty_range");
+        }
         const r = await samApi.autoTextBatch(taskId, {
           class_ids: runClassIds,
           threshold,
@@ -493,6 +546,9 @@ export function AutoAnnotateDialog({
           iou_threshold: iouThreshold,
           epsilon_factor: epsilonFactor,
           ...(wireUseVlmFo1 ? { use_vlm_fo1: true } : {}),
+          ...(assetIds && assetIds.length > 0
+            ? { asset_ids: assetIds }
+            : {}),
         });
         return { kind: "batch", job_id: r.job_id } as const;
       }
@@ -589,11 +645,21 @@ export function AutoAnnotateDialog({
 
   // v3.30 — Run is gated on the derived row state. ``selectedClassIds``
   // remains in scope for older callers but isn't part of the gate.
+  // v3.31 — range scope requires a non-empty resolved id list (the
+  // range-clamp helper handles invalid inputs by collapsing to []).
+  const rangeAssetIds = useMemo(
+    () =>
+      scope === "range"
+        ? resolveScopeAssetIds("range", scopeRange, orderedAssetIds) ?? []
+        : [],
+    [scope, scopeRange, orderedAssetIds],
+  );
   const canRun =
     validTextRows.length > 0 &&
     !run.isPending &&
     ((scope === "this" && !!assetId) ||
-      (scope === "all" && !!taskId));
+      (scope === "all" && !!taskId) ||
+      (scope === "range" && !!taskId && rangeAssetIds.length > 0));
 
   return (
     <Dialog
@@ -1111,40 +1177,18 @@ export function AutoAnnotateDialog({
           </p>
         </div>
 
-        {/* Scope */}
-        <div className="grid gap-2 mb-4">
-          <div className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
-            Scope
-          </div>
-          <div className="flex flex-col gap-1.5 text-[12.5px] text-[color:var(--text-primary)]">
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="radio"
-                name="auto-annotate-scope"
-                checked={scope === "this"}
-                onChange={() => setScope("this")}
-              />
-              This image
-            </label>
-            <label
-              className={cn(
-                "flex items-center gap-1.5",
-                taskId ? "cursor-pointer" : "opacity-50 cursor-not-allowed",
-              )}
-              title={
-                taskId ? "Run on all assets in this task" : "Task id missing"
-              }
-            >
-              <input
-                type="radio"
-                name="auto-annotate-scope"
-                checked={scope === "all"}
-                disabled={!taskId}
-                onChange={() => setScope("all")}
-              />
-              All assets in this task
-            </label>
-          </div>
+        {/* Scope (v3.31 — adds Range: from N to M) */}
+        <div className="mb-4">
+          <ScopePicker
+            name="auto-annotate-scope"
+            mode={scope}
+            onModeChange={setScope}
+            range={scopeRange}
+            onRangeChange={setScopeRange}
+            totalAssets={orderedAssetIds.length}
+            hasTask={!!taskId}
+            hasAsset={!!assetId}
+          />
         </div>
 
         {/* v3.21+ — VLM-FO1 precision filter toggle. Hidden when the
@@ -1196,7 +1240,11 @@ export function AutoAnnotateDialog({
             <span className="flex-1">
               Convert polygons to bboxes after
               <span className="ml-1 font-mono text-[10px] text-[color:var(--text-tertiary)]">
-                {scope === "all" ? "task-wide" : "instant"}
+                {scope === "all"
+                  ? "task-wide"
+                  : scope === "range"
+                    ? "range-wide"
+                    : "instant"}
               </span>
             </span>
           </label>
@@ -1513,12 +1561,37 @@ function VisualBody({
   const [confirmSwitchTo, setConfirmSwitchTo] = useState<
     "bbox" | "polygon" | null
   >(null);
-  const [scope, setScope] = useState<"this" | "all">("this");
+  const [scope, setScope] = useState<ScopeMode>("this");
+  // v3.31 — 1-based asset position range for the "range" scope.
+  const [scopeRange, setScopeRange] = useState<RangeInput>({
+    from: "",
+    to: "",
+  });
   const [threshold, setThreshold] = useState<number>(0.4);
   const [findAll, setFindAll] = useState<boolean>(true);
   const [overwrite, setOverwrite] = useState<boolean>(false);
 
   const refs = useTaskRefs({ taskId, assetId, enabled: true });
+
+  // v3.31 — same shared "task-assets" key as the editor + text body so
+  // React Query dedupes the network round-trip.
+  const taskAssetsQ = useQuery({
+    queryKey: ["task-assets", taskId ?? ""],
+    queryFn: () => (taskId ? assetsApi.listForTask(taskId) : Promise.resolve([])),
+    enabled: !!taskId,
+    staleTime: 30_000,
+  });
+  const orderedAssetIds = useMemo(
+    () => (taskAssetsQ.data ?? []).map((a) => a.id),
+    [taskAssetsQ.data],
+  );
+  const rangeAssetIds = useMemo(
+    () =>
+      scope === "range"
+        ? resolveScopeAssetIds("range", scopeRange, orderedAssetIds) ?? []
+        : [],
+    [scope, scopeRange, orderedAssetIds],
+  );
 
   function sendToBackground() {
     if (!runningJobId || !taskId) return;
@@ -1593,7 +1666,9 @@ function VisualBody({
   const canRun =
     summary.pickCount > 0 &&
     summary.unassigned === 0 &&
-    ((scope === "this" && !!assetId) || (scope === "all" && !!taskId));
+    ((scope === "this" && !!assetId) ||
+      (scope === "all" && !!taskId) ||
+      (scope === "range" && !!taskId && rangeAssetIds.length > 0));
 
   const [samLoadingForRun, setSamLoadingForRun] = useState(false);
   const run = useMutation({
@@ -1616,9 +1691,18 @@ function VisualBody({
       } finally {
         setSamLoadingForRun(false);
       }
-      if (scope === "all") {
+      // v3.31 — "all" + "range" both route through the batch endpoint;
+      // "range" additionally carries the resolved asset_ids subset.
+      if (scope === "all" || scope === "range") {
         if (!taskId) throw new Error("no_task");
-        const r = await samApi.autoVisualBatch(taskId, body);
+        if (scope === "range" && rangeAssetIds.length === 0) {
+          throw new Error("empty_range");
+        }
+        const batchBody: SamAutoVisualBody =
+          scope === "range"
+            ? { ...body, asset_ids: rangeAssetIds }
+            : body;
+        const r = await samApi.autoVisualBatch(taskId, batchBody);
         return { kind: "batch" as const, job_id: r.job_id };
       }
       if (!assetId) throw new Error("no_asset");
@@ -1751,38 +1835,18 @@ function VisualBody({
         )}
       </div>
 
-      {/* Scope */}
-      <div className="grid gap-2 mb-3">
-        <div className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--text-tertiary)]">
-          Scope
-        </div>
-        <div className="flex flex-col gap-1.5 text-[12.5px] text-[color:var(--text-primary)]">
-          <label className="flex items-center gap-1.5 cursor-pointer">
-            <input
-              type="radio"
-              name="auto-visual-scope"
-              checked={scope === "this"}
-              onChange={() => setScope("this")}
-            />
-            This image
-          </label>
-          <label
-            className={cn(
-              "flex items-center gap-1.5",
-              taskId ? "cursor-pointer" : "opacity-50 cursor-not-allowed",
-            )}
-            title={taskId ? "Run on all assets in this task" : "Task id missing"}
-          >
-            <input
-              type="radio"
-              name="auto-visual-scope"
-              checked={scope === "all"}
-              disabled={!taskId}
-              onChange={() => setScope("all")}
-            />
-            All assets in this task
-          </label>
-        </div>
+      {/* Scope (v3.31 — adds Range: from N to M) */}
+      <div className="mb-3">
+        <ScopePicker
+          name="auto-visual-scope"
+          mode={scope}
+          onModeChange={setScope}
+          range={scopeRange}
+          onRangeChange={setScopeRange}
+          totalAssets={orderedAssetIds.length}
+          hasTask={!!taskId}
+          hasAsset={!!assetId}
+        />
       </div>
 
       {/* Threshold */}
@@ -1858,7 +1922,9 @@ function VisualBody({
             ? "Loading SAM…"
             : scope === "this"
               ? "Run"
-              : "Run on all assets"}
+              : scope === "range"
+                ? `Run on ${rangeAssetIds.length || 0} asset${rangeAssetIds.length === 1 ? "" : "s"}`
+                : "Run on all assets"}
         </Button>
       </DialogFooter>
 

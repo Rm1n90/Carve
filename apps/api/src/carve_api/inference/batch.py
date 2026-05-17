@@ -60,6 +60,12 @@ class BatchJobPayload:
     # dataclass default.
     iou: float | None = None
     class_overrides: dict[int, str | None] | None = None
+    # v3.31 — optional subset filter. When non-None the worker only
+    # iterates assets whose id appears in this list (still in the
+    # canonical task order). Used by the "Range: from N to M" scope
+    # picker. ``None`` keeps the legacy "every asset in the task"
+    # behaviour and stays wire-compatible with older pickled payloads.
+    asset_ids: list[str] | None = None
 
 
 def build_job_payload(
@@ -71,6 +77,7 @@ def build_job_payload(
     min_confidence: float | None = None,
     iou: float | None = None,
     class_overrides: dict[int, str | None] | None = None,
+    asset_ids: list[str] | None = None,
 ) -> BatchJobPayload:
     return BatchJobPayload(
         job_id=str(uuid.uuid4()),
@@ -81,6 +88,7 @@ def build_job_payload(
         min_confidence=min_confidence,
         iou=iou,
         class_overrides=class_overrides,
+        asset_ids=list(asset_ids) if asset_ids else None,
     )
 
 
@@ -401,6 +409,8 @@ class AutoTextBatchPayload:
     # keeps the polygonize default. Default None preserves backwards
     # compat with payloads pickled before this field existed.
     epsilon_factor: float | None = None
+    # v3.31 — optional subset filter (see BatchJobPayload.asset_ids).
+    asset_ids: list[str] | None = None
 
 
 def build_auto_text_payload(
@@ -414,6 +424,7 @@ def build_auto_text_payload(
     use_vlm_fo1: bool = False,
     iou_threshold: float | None = None,
     epsilon_factor: float | None = None,
+    asset_ids: list[str] | None = None,
 ) -> AutoTextBatchPayload:
     return AutoTextBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -430,6 +441,7 @@ def build_auto_text_payload(
         epsilon_factor=(
             float(epsilon_factor) if epsilon_factor is not None else None
         ),
+        asset_ids=list(asset_ids) if asset_ids else None,
     )
 
 
@@ -489,6 +501,9 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
             return {"ok": False, "error": "no_matching_classes"}
 
         assets = list_assets_for_task(session, task_uuid)
+        assets = _filter_assets_by_ids(
+            assets, getattr(payload, "asset_ids", None)
+        )
         init_progress(redis_client, payload.job_id, total=len(assets))
 
         canceled = False
@@ -611,6 +626,8 @@ class AutoVisualBatchPayload:
     # the polygonize default. Default None preserves backwards compat
     # with payloads pickled before this field existed.
     epsilon_factor: float | None = None
+    # v3.31 — optional subset filter (see BatchJobPayload.asset_ids).
+    asset_ids: list[str] | None = None
 
 
 def build_auto_visual_payload(
@@ -623,6 +640,7 @@ def build_auto_visual_payload(
     find_all: bool,
     overwrite: bool,
     epsilon_factor: float | None = None,
+    asset_ids: list[str] | None = None,
 ) -> AutoVisualBatchPayload:
     return AutoVisualBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -636,6 +654,7 @@ def build_auto_visual_payload(
         epsilon_factor=(
             float(epsilon_factor) if epsilon_factor is not None else None
         ),
+        asset_ids=list(asset_ids) if asset_ids else None,
     )
 
 
@@ -681,6 +700,9 @@ def run_auto_visual_batch(payload: AutoVisualBatchPayload) -> dict:
             return {"ok": False, "error": "task_not_found"}
 
         assets = list_assets_for_task(session, task_uuid)
+        assets = _filter_assets_by_ids(
+            assets, getattr(payload, "asset_ids", None)
+        )
         init_progress(redis_client, payload.job_id, total=len(assets))
 
         canceled = False
@@ -790,6 +812,8 @@ class YoloeBatchPayload:
     # flows commit boxes first and refine to polygons via SAM later.
     # Older pickled payloads still deserialise via dataclass default.
     output_kind: str = "bbox"
+    # v3.31 — optional subset filter (see BatchJobPayload.asset_ids).
+    asset_ids: list[str] | None = None
 
 
 def build_yoloe_payload(
@@ -801,6 +825,7 @@ def build_yoloe_payload(
     overwrite: bool = False,
     min_confidence: float | None = None,
     output_kind: str = "bbox",
+    asset_ids: list[str] | None = None,
 ) -> YoloeBatchPayload:
     return YoloeBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -811,6 +836,7 @@ def build_yoloe_payload(
         overwrite=overwrite,
         min_confidence=min_confidence,
         output_kind=output_kind,
+        asset_ids=list(asset_ids) if asset_ids else None,
     )
 
 
@@ -1051,6 +1077,9 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                 pass
 
         assets = _list_assets_for_task(session, task_uuid)
+        assets = _filter_assets_by_ids(
+            assets, getattr(payload, "asset_ids", None)
+        )
         init_progress(redis_client, payload.job_id, total=len(assets))
 
         canceled = False
@@ -1187,6 +1216,27 @@ def list_assets_for_task(session: Session, task_id: uuid.UUID) -> list[Asset]:
     )
 
 
+def _filter_assets_by_ids(
+    assets: list[Asset], asset_ids: list[str] | None
+) -> list[Asset]:
+    """v3.31 — restrict a task asset list to the subset selected by the
+    user's "Range: from N to M" scope. ``asset_ids`` is a non-empty list
+    of UUID strings coming from the wire payload; ``None`` keeps the
+    full list (legacy "all assets" behaviour).
+
+    Preserves the canonical ``Asset.created_at`` order — we only filter
+    ``assets`` in-place rather than ordering by the wire list, so two
+    runs over the same range hit the same assets in the same order
+    regardless of how the client serialised the ids.
+    """
+    if not asset_ids:
+        return assets
+    wanted: set[str] = {str(a) for a in asset_ids if a}
+    if not wanted:
+        return assets
+    return [a for a in assets if str(a.id) in wanted]
+
+
 def _coerce_overrides(
     raw: dict[int, str | None] | None,
 ) -> dict[int, uuid.UUID | None] | None:
@@ -1313,6 +1363,9 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                 return {"status": "failed", "done": 0, "total": 0, "failed": 0}
 
             assets = list_assets_for_task(boot, task.id)
+            assets = _filter_assets_by_ids(
+                assets, getattr(payload, "asset_ids", None)
+            )
             asset_ids = [a.id for a in assets]
             asset_names_by_id = {a.id: a.original_name for a in assets}
             init_progress(redis_client, payload.job_id, len(assets))

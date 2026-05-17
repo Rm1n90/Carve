@@ -105,6 +105,60 @@ export function bulkConvertPolygonsOnFrameToBboxWithToast(
 }
 
 /**
+ * v3.31 — task-wide CLEAR. Wipes every annotation on every asset in
+ * the task in a single batch delete, then mirrors the result into the
+ * local store so any annotations currently open in the editor
+ * disappear without waiting for a query refetch. Mirrors the
+ * ``bulkConvertPolygonsInTaskToBboxWithToast`` flow so the caller
+ * gets a uniform ``BulkConvertResult`` shape (``converted`` here
+ * doubles as "deleted").
+ *
+ * The caller already prompted the user with a count-aware
+ * confirmation dialog; this helper does NOT confirm again.
+ */
+export async function bulkClearTaskAnnotationsWithToast(
+  taskId: string,
+  rawAnnotations: ReadonlyArray<AnnotationRaw>,
+): Promise<BulkConvertResult> {
+  const ids = rawAnnotations.map((a) => a.id);
+  if (ids.length === 0) {
+    showToast("No annotations to clear in this task.", { variant: "info" });
+    return { converted: 0, skipped: 0 };
+  }
+  try {
+    await annotationsApi.batch(taskId, {
+      create: [],
+      update: [],
+      delete: ids,
+    });
+    // Local store sync — drop every draft whose serverId was in the
+    // deleted set. Non-server (unsaved) drafts on the current asset
+    // are kept intact; the AnnotateAssetPage gates this action on
+    // ``dirtyCount > 0`` so in practice the local store already
+    // reflects only server-known rows.
+    const deletedSet = new Set(ids);
+    const state = useAnnotations.getState();
+    const toRemove: string[] = [];
+    for (const draft of Object.values(state.byId)) {
+      if (draft.serverId && deletedSet.has(draft.serverId)) {
+        toRemove.push(draft.tempId);
+      }
+    }
+    if (toRemove.length > 0) state.removeMany(toRemove);
+    showToast(
+      `Cleared ${ids.length} annotation${ids.length === 1 ? "" : "s"} across the task.`,
+      { variant: "success" },
+    );
+    return { converted: ids.length, skipped: 0 };
+  } catch {
+    showToast("Failed to clear annotations. Check your connection.", {
+      variant: "error",
+    });
+    return { converted: 0, skipped: ids.length };
+  }
+}
+
+/**
  * Task-wide polygon → bbox conversion. The caller is expected to have
  * already fetched the task's annotations (so the confirm dialog can
  * surface the exact count). The helper:

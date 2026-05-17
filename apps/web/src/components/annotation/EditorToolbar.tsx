@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -67,6 +68,12 @@ import {
   type BatchPredictProgress,
 } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
+import { assetsApi } from "@/api/assets";
+import { ScopePicker } from "@/components/annotation/ScopePicker";
+import {
+  resolveScopeAssetIds,
+  type RangeInput,
+} from "@/lib/scopeRange";
 import { showToast } from "@/lib/toast";
 import { MOD_LABEL } from "@/lib/platform";
 import {
@@ -238,6 +245,13 @@ interface EditorToolbarProps {
   onZoomActual?: () => void;
   onUndo?: () => void;
   onRedo?: () => void;
+  /**
+   * v3.31 — Clears every annotation across every asset in the open
+   * task (mirrors the "Convert polygons in all assets" pattern in
+   * onConvertPolygonsInTask). The handler is responsible for
+   * confirming with the user before sending the batch delete.
+   */
+  onClearTask?: () => void;
   /**
    * Clears every annotation on the current frame/image (classes are
    * kept). Pops a confirm dialog at the call-site, then bulk-removes
@@ -439,11 +453,38 @@ const YoloPredictButton = forwardRef<
   // v3.7 Phase 2 Issue 1 — predict scope. "asset" is the existing flow
   // (single asset). "task" enqueues the RQ batch over every asset in
   // the task and opens the progress overlay below.
-  const [scope, setScope] = useState<"asset" | "task">("asset");
+  // v3.31 — "range" routes through the batch endpoint with a resolved
+  // asset_ids subset (1-based asset position picker).
+  const [scope, setScope] = useState<"asset" | "task" | "range">("asset");
+  const [scopeRange, setScopeRange] = useState<RangeInput>({
+    from: "",
+    to: "",
+  });
   // v3.7 Phase 2 Issue 1 — active batch job. Null when no batch is in
   // flight. Renders the <BatchPredictProgressOverlay/> when set.
   const [batchJobId, setBatchJobId] = useState<string | null>(null);
   const qc = useQueryClient();
+
+  // v3.31 — shared task-assets query (dedupes with the editor's
+  // ``["task-assets", taskId]`` cache key). Gated on ``open`` so we
+  // don't pay the request when the popover is closed.
+  const popoverTaskAssetsQ = useQuery({
+    queryKey: ["task-assets", taskId ?? ""],
+    queryFn: () => (taskId ? assetsApi.listForTask(taskId) : Promise.resolve([])),
+    enabled: !!taskId && open,
+    staleTime: 30_000,
+  });
+  const orderedAssetIds = useMemo(
+    () => (popoverTaskAssetsQ.data ?? []).map((a) => a.id),
+    [popoverTaskAssetsQ.data],
+  );
+  const rangeAssetIds = useMemo(
+    () =>
+      scope === "range"
+        ? resolveScopeAssetIds("range", scopeRange, orderedAssetIds) ?? []
+        : [],
+    [scope, scopeRange, orderedAssetIds],
+  );
 
   // v3.22 — re-open the YOLO batch overlay when the operator clicks
   // "Expand" on a backgrounded job in the floating bar. The bar sets
@@ -810,6 +851,12 @@ const YoloPredictButton = forwardRef<
   const batchM = useMutation({
     mutationFn: (weightId: string) => {
       if (!taskId) return Promise.reject(new Error("no task"));
+      // v3.31 — for the "range" scope we resolved the asset_ids
+      // subset client-side; pass it through to the batch endpoint.
+      const assetIds =
+        scope === "range" && rangeAssetIds.length > 0
+          ? rangeAssetIds
+          : undefined;
       return inferenceApi.predictYoloBatch(
         taskId,
         weightId,
@@ -817,6 +864,7 @@ const YoloPredictButton = forwardRef<
         confidence,
         buildWireOverrides(),
         iou,
+        assetIds,
       );
     },
     onSuccess: (res, weightId) => {
@@ -869,6 +917,32 @@ const YoloPredictButton = forwardRef<
   async function handlePredict() {
     if (!selected) {
       showToast("Select a weight first.", { variant: "error" });
+      return;
+    }
+    // v3.31 — range routes through the batch path too. Guard against
+    // an empty resolved range so we don't enqueue a no-op batch.
+    if (scope === "range") {
+      if (!taskId) {
+        showToast("No task open.", { variant: "error" });
+        return;
+      }
+      if (rangeAssetIds.length === 0) {
+        showToast("Pick a non-empty range first.", { variant: "error" });
+        return;
+      }
+      if (overwrite) {
+        const ok = await confirm({
+          title: `Replace existing annotations across ${rangeAssetIds.length} asset${rangeAssetIds.length === 1 ? "" : "s"}?`,
+          description:
+            "This will REPLACE existing annotations on every asset in the picked range that has a matching detection. Existing annotations on assets with no matches will be preserved. Continue?",
+          confirmLabel: "Replace and predict",
+          cancelLabel: "Cancel",
+          variant: "danger",
+        });
+        if (!ok) return;
+      }
+      batchRunStartIsoRef.current = samPost ? new Date().toISOString() : null;
+      batchM.mutate(selected);
       return;
     }
     if (scope === "task") {
@@ -962,12 +1036,22 @@ const YoloPredictButton = forwardRef<
       showToast("No task open.", { variant: "error" });
       return;
     }
+    if (scope === "range") {
+      if (!taskId) {
+        showToast("No task open.", { variant: "error" });
+        return;
+      }
+      if (rangeAssetIds.length === 0) {
+        showToast("Pick a non-empty range first.", { variant: "error" });
+        return;
+      }
+    }
     if (scope === "asset" && !assetId) {
       showToast("No asset open.", { variant: "error" });
       return;
     }
     // All prerequisites met — fire the predict directly.
-    if (scope === "task") {
+    if (scope === "task" || scope === "range") {
       batchM.mutate(selected);
     } else {
       if (samPost) {
@@ -1211,54 +1295,38 @@ const YoloPredictButton = forwardRef<
         {/* v3.7 Phase 2 Issue 1 — predict scope picker. Defaults to
             "asset" (existing single-asset flow). Switching to "task"
             routes the predict through the RQ batch endpoint and opens
-            the progress overlay. */}
+            the progress overlay.
+            v3.31 — third "Range" option (1-based asset position) that
+            routes through the batch endpoint with a resolved
+            asset_ids subset. Adapter below maps the popover's
+            ``asset|task|range`` to ScopePicker's ``this|all|range``. */}
         <div
-          role="radiogroup"
-          aria-label="Predict scope"
           data-testid="yolo-predict-scope"
           className="px-2 pt-2 pb-1 grid gap-1 border-t border-[var(--border-subtle)] mt-1"
         >
-          <p className="px-1 pt-0.5 text-[10.5px] uppercase tracking-[0.10em] text-[color:var(--text-tertiary)]">
-            Predict on
-          </p>
-          <label
-            data-testid="yolo-predict-scope-asset"
-            className={cn(
-              "flex items-center gap-2 px-1.5 py-1 rounded-[var(--radius-xs)] cursor-pointer text-[12px]",
-              scope === "asset"
-                ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
-                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
-            )}
-          >
-            <input
-              type="radio"
-              name="yolo-predict-scope"
-              value="asset"
-              checked={scope === "asset"}
-              onChange={() => setScope("asset")}
-              className="accent-[var(--accent)]"
-            />
-            <span>Current asset</span>
-          </label>
-          <label
-            data-testid="yolo-predict-scope-task"
-            className={cn(
-              "flex items-center gap-2 px-1.5 py-1 rounded-[var(--radius-xs)] cursor-pointer text-[12px]",
-              scope === "task"
-                ? "bg-[var(--accent-bg)] text-[color:var(--text-primary)]"
-                : "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]",
-            )}
-          >
-            <input
-              type="radio"
-              name="yolo-predict-scope"
-              value="task"
-              checked={scope === "task"}
-              onChange={() => setScope("task")}
-              className="accent-[var(--accent)]"
-            />
-            <span>All assets in task</span>
-          </label>
+          <ScopePicker
+            name="yolo-predict-scope"
+            mode={
+              scope === "asset" ? "this" : scope === "task" ? "all" : "range"
+            }
+            onModeChange={(next) =>
+              setScope(
+                next === "this" ? "asset" : next === "all" ? "task" : "range",
+              )
+            }
+            range={scopeRange}
+            onRangeChange={setScopeRange}
+            totalAssets={orderedAssetIds.length}
+            hasTask={!!taskId}
+            hasAsset={!!assetId}
+            // Preserve legacy selectors the predict-scope tests already
+            // depend on (`yolo-predict-scope-asset/-task`).
+            modeTestIds={{
+              this: "yolo-predict-scope-asset",
+              all: "yolo-predict-scope-task",
+              range: "yolo-predict-scope-range",
+            }}
+          />
         </div>
         {/* v3.5 Phase F3 — class overrides disclosure. Visible once a
             weight is selected and the task is known. Collapsed by default;
@@ -2601,6 +2669,7 @@ export function EditorToolbar({
   onUndo,
   onRedo,
   onClearFrame,
+  onClearTask,
   zoomPct,
   projectId,
   taskId,
@@ -2877,18 +2946,62 @@ export function EditorToolbar({
           choice; the original video is deleted after extraction so a
           re-extract isn't possible anyway. */}
 
-      {onClearFrame && (
-        <Tooltip content="Clear all annotations on this image">
-          <button
-            type="button"
-            onClick={onClearFrame}
-            aria-label="Clear all annotations on this image"
-            data-testid="clear-frame-trigger"
-            className="grid h-8 w-8 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] transition-colors duration-[180ms] ease-out hover:bg-[color:color-mix(in_oklch,var(--danger)_18%,transparent)] hover:text-[color:var(--danger)]"
-          >
-            <Eraser className="h-[16px] w-[16px]" />
-          </button>
-        </Tooltip>
+      {(onClearFrame || onClearTask) && (
+        <DropdownMenu.Root>
+          <Tooltip content="Clear annotations…">
+            <DropdownMenu.Trigger asChild>
+              <button
+                type="button"
+                aria-label="Clear annotations"
+                data-testid="clear-frame-trigger"
+                className="grid h-8 w-8 place-items-center rounded-[var(--radius-6)] text-[color:var(--text-secondary)] transition-colors duration-[180ms] ease-out hover:bg-[color:color-mix(in_oklch,var(--danger)_18%,transparent)] hover:text-[color:var(--danger)]"
+              >
+                <Eraser className="h-[16px] w-[16px]" />
+              </button>
+            </DropdownMenu.Trigger>
+          </Tooltip>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={6}
+              data-testid="clear-annotations-content"
+              className={cn(
+                "z-[1000] min-w-[260px] rounded-[var(--radius-6)] p-1",
+                "bg-[var(--bg-elev)] border border-[var(--border-subtle)]",
+                "shadow-[var(--shadow-card)]",
+              )}
+            >
+              {onClearFrame && (
+                <DropdownMenu.Item
+                  data-testid="clear-frame-on-image"
+                  onSelect={() => onClearFrame()}
+                  className={cn(
+                    "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none",
+                    "text-[color:var(--text-primary)]",
+                    "data-[highlighted]:bg-[var(--bg-hover)]",
+                  )}
+                >
+                  <Eraser className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                  <span className="flex-1">Clear annotations on this image</span>
+                </DropdownMenu.Item>
+              )}
+              {onClearTask && (
+                <DropdownMenu.Item
+                  data-testid="clear-frame-in-task"
+                  onSelect={() => onClearTask()}
+                  className={cn(
+                    "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none",
+                    "text-[color:var(--danger)]",
+                    "data-[highlighted]:bg-[color:color-mix(in_oklch,var(--danger)_12%,transparent)]",
+                  )}
+                >
+                  <Eraser className="h-3.5 w-3.5" />
+                  <span className="flex-1">Clear annotations in all assets…</span>
+                </DropdownMenu.Item>
+              )}
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
       )}
 
       {(onConvertPolygonsOnImage || onConvertPolygonsInTask) && (

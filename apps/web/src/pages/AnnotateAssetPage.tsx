@@ -67,6 +67,7 @@ import {
   bulkConvertSelectedToBboxWithToast,
   bulkConvertPolygonsOnFrameToBboxWithToast,
   bulkConvertPolygonsInTaskToBboxWithToast,
+  bulkClearTaskAnnotationsWithToast,
   countPolygonsOnFrame,
 } from "@/lib/bulkConvert";
 import { assetsApi } from "@/api/assets";
@@ -1275,6 +1276,43 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     bulkConvertPolygonsOnFrameToBboxWithToast(fid);
   }, [confirm]);
 
+  // v3.31 — task-wide clear. Mirrors handleConvertPolygonsInTask:
+  // refuse when there are unsaved local drafts (the user must save or
+  // discard first so we don't half-delete a session) and show a hard
+  // confirm dialog with the exact count before sending a batch delete.
+  const handleClearAnnotationsInTask = useCallback(async () => {
+    if (dirtyCount > 0) {
+      showToast(
+        "Save your unsaved changes before clearing all assets.",
+        { variant: "error" },
+      );
+      return;
+    }
+    let raw;
+    try {
+      raw = await annotationsApi.listForTaskRaw(taskId);
+    } catch {
+      showToast("Failed to fetch annotations.", { variant: "error" });
+      return;
+    }
+    if (raw.length === 0) {
+      showToast("No annotations to clear in this task.", { variant: "info" });
+      return;
+    }
+    const ok = await confirm({
+      title: `Clear ${raw.length} annotation${raw.length === 1 ? "" : "s"} across this task?`,
+      description:
+        "Every annotation (bbox, polygon, classification tag, mask) on every asset in this task will be permanently removed. Classes are kept. This affects assets that aren't currently open and cannot be undone with Cmd+Z.",
+      variant: "danger",
+      confirmLabel: "Clear all",
+    });
+    if (!ok) return;
+    await bulkClearTaskAnnotationsWithToast(taskId, raw);
+    qc.invalidateQueries({ queryKey: ["annotations"] });
+    qc.invalidateQueries({ queryKey: ["task-annotations", taskId] });
+    qc.invalidateQueries({ queryKey: ["task-annotations-raw", taskId] });
+  }, [confirm, dirtyCount, qc, taskId]);
+
   const handleConvertPolygonsInTask = useCallback(async () => {
     if (dirtyCount > 0) {
       showToast(
@@ -1628,6 +1666,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             onUndo={() => useAnnotations.getState().undo()}
             onRedo={() => useAnnotations.getState().redo()}
             onClearFrame={handleClearFrame}
+            onClearTask={handleClearAnnotationsInTask}
             onConvertPolygonsOnImage={handleConvertPolygonsOnImage}
             onConvertPolygonsInTask={handleConvertPolygonsInTask}
             polygonCountOnImage={polygonCountOnImage}
