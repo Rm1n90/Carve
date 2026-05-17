@@ -519,9 +519,90 @@ class ClassNotFound(AppError):
     code = "class_not_found"
 
 
+class ClassHierarchyError(AppError):
+    """v3.31 -- invalid parent_class_id assignment.
+
+    Raised when the proposed parent is the class itself, lives in a
+    different project, doesn't exist, or would create a cycle / exceed
+    the depth limit of 8 levels in the IS-A chain.
+    """
+
+    http_status = 422
+    code = "class_hierarchy_invalid"
+
+
+# v3.31 -- bound on the parent-class chain depth. Deep enough for
+# realistic ontologies (Vehicle -> Car -> Racing Car -> Formula 1 Car ->
+# Formula 1 2024 Car) without letting the resolver walk a pathological
+# chain forever. The same bound is enforced by ClassService and used by
+# the resolver's ancestor walk.
+MAX_CLASS_HIERARCHY_DEPTH: int = 8
+
+
 class ClassService:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    # v3.31 -- shared validation helper for parent_class_id. Raises
+    # ClassHierarchyError when:
+    #   * the proposed parent doesn't exist
+    #   * lives in a different project
+    #   * is the class itself (self-parent)
+    #   * walking the proposed parent's chain UP would cycle back into
+    #     ``class_id`` (the candidate child) or exceed MAX_CLASS_HIERARCHY_DEPTH
+    #
+    # ``class_id`` may be None when validating a brand-new class (which
+    # has no id yet); in that case only the "parent exists, same project,
+    # depth <= max" checks run and cycle prevention is structurally
+    # impossible (a new class can't yet be referenced as anyone's parent).
+    def _validate_parent(
+        self,
+        *,
+        project: Project,
+        class_id: uuid.UUID | None,
+        parent_class_id: uuid.UUID,
+    ) -> None:
+        if class_id is not None and parent_class_id == class_id:
+            raise ClassHierarchyError(
+                "a class cannot be its own parent",
+            )
+        parent = self.session.get(Class, parent_class_id)
+        if parent is None or parent.project_id != project.id:
+            raise ClassHierarchyError(
+                "parent class not found in this project",
+            )
+        # Walk the proposed parent's own chain UP. Detect cycles and
+        # enforce the depth bound. Counting ``parent`` as level 1 means
+        # MAX_CLASS_HIERARCHY_DEPTH=8 admits chains of up to 8 ancestors
+        # above the new child -- a 9-level tree including the child
+        # itself, comfortably above realistic ontologies.
+        seen: set[uuid.UUID] = {parent.id}
+        depth = 1
+        cur = parent
+        while cur.parent_class_id is not None:
+            if depth >= MAX_CLASS_HIERARCHY_DEPTH:
+                raise ClassHierarchyError(
+                    f"parent chain would exceed depth limit "
+                    f"({MAX_CLASS_HIERARCHY_DEPTH} levels)",
+                )
+            next_id = cur.parent_class_id
+            if next_id == class_id:
+                raise ClassHierarchyError(
+                    "parent assignment would create a cycle",
+                )
+            if next_id in seen:
+                # Defensive -- DB shouldn't carry a cycle but if a prior
+                # bug introduced one, reject the new assignment loudly
+                # rather than spinning forever.
+                raise ClassHierarchyError(
+                    "existing parent chain is cyclic; fix the data first",
+                )
+            seen.add(next_id)
+            cur = self.session.get(Class, next_id)
+            if cur is None:
+                # Orphan reference -- treat as end of chain.
+                break
+            depth += 1
 
     def create(
         self,
@@ -532,7 +613,14 @@ class ClassService:
         color: str,
         attributes: dict,
         text_prompt: str | None = None,
+        parent_class_id: uuid.UUID | None = None,
     ) -> Class:
+        if parent_class_id is not None:
+            self._validate_parent(
+                project=project,
+                class_id=None,
+                parent_class_id=parent_class_id,
+            )
         c = Class(
             project_id=project.id,
             idx=idx,
@@ -540,6 +628,7 @@ class ClassService:
             color=color,
             attributes=attributes,
             text_prompt=text_prompt,
+            parent_class_id=parent_class_id,
         )
         self.session.add(c)
         try:
@@ -569,9 +658,23 @@ class ClassService:
         # the caller passed the key (router uses model_fields_set to
         # signal intent); the None-skip filter still protects every other
         # field from accidental clears via omitted PATCH bodies.
+        # v3.31 -- parent_class_id follows the same explicit-None-clears
+        # contract. When the caller supplies the key, we either clear
+        # (None) or re-validate then apply.
         for k, v in fields.items():
             if k == "text_prompt":
                 setattr(c, k, v)
+                continue
+            if k == "parent_class_id":
+                if v is None:
+                    c.parent_class_id = None
+                else:
+                    self._validate_parent(
+                        project=project,
+                        class_id=c.id,
+                        parent_class_id=v,
+                    )
+                    c.parent_class_id = v
                 continue
             if v is not None:
                 setattr(c, k, v)
@@ -633,16 +736,39 @@ class ClassService:
         Skips any class whose name already exists in the destination
         (uq_classes_project_name unique constraint). Returns
         ``(imported, skipped)``.
+
+        v3.31 — two-pass so the IS-A hierarchy survives the import:
+
+          1. Create every class without a parent (records src.id -> new.id
+             mapping). Skips any name that already exists in dest.
+          2. For each newly-imported class whose source had a parent,
+             remap to the destination's equivalent class id. If the
+             source's parent was itself skipped (because dest already had
+             a class with that name) we point at the EXISTING dest class
+             of the same name so the hierarchy still resolves -- the user
+             likely just re-used the parent and expected it to apply.
         """
         existing_dest = self.list_for_project(project=dest)
-        existing_names = {c.name for c in existing_dest}
+        existing_names_to_dest_id: dict[str, uuid.UUID] = {
+            c.name: c.id for c in existing_dest
+        }
         next_idx = max((c.idx for c in existing_dest), default=-1) + 1
 
         src_classes = self.list_for_project(project=source)
+        # Map ``source class id`` -> ``destination class id`` for any
+        # source row that resolves to a dest row -- whether we just
+        # imported it or it already existed under the same name.
+        src_id_to_dest_id: dict[uuid.UUID, uuid.UUID] = {}
+        # Track only the rows we ACTUALLY inserted so the parent remap
+        # pass below doesn't try to patch dest classes that pre-existed.
+        new_classes_with_src: list[tuple[Class, Class]] = []
         imported = 0
         skipped = 0
         for src_c in src_classes:
-            if src_c.name in existing_names:
+            if src_c.name in existing_names_to_dest_id:
+                src_id_to_dest_id[src_c.id] = existing_names_to_dest_id[
+                    src_c.name
+                ]
                 skipped += 1
                 continue
             new_c = Class(
@@ -656,7 +782,24 @@ class ClassService:
                 text_prompt=src_c.text_prompt,
             )
             self.session.add(new_c)
+            new_classes_with_src.append((src_c, new_c))
             next_idx += 1
             imported += 1
+        # Flush so the inserted rows have stable PKs we can reference
+        # from the second pass.
+        self.session.flush()
+        for src_c, new_c in new_classes_with_src:
+            src_id_to_dest_id[src_c.id] = new_c.id
+        # Second pass -- wire parents. Walking via the dest's id map
+        # avoids self-referential races in the same transaction.
+        for src_c, new_c in new_classes_with_src:
+            if src_c.parent_class_id is None:
+                continue
+            mapped = src_id_to_dest_id.get(src_c.parent_class_id)
+            if mapped is None:
+                # Source's parent didn't make it across (skipped + no
+                # name match in dest). Leave the new class as top-level.
+                continue
+            new_c.parent_class_id = mapped
         self.session.flush()
         return imported, skipped

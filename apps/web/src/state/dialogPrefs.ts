@@ -41,6 +41,10 @@ export interface AutoAnnotateTextConfig {
   // dialog re-runs its clamp on hydrate.
   rangeFrom?: number;
   rangeTo?: number;
+  // v3.31 — cross-class hierarchy NMS toggle + IoU floor; optional so
+  // older entries hydrate cleanly with the default-on behaviour.
+  resolveHierarchy?: boolean;
+  hierarchyIou?: number;
 }
 
 export interface SmartFindModeCommonConfig {
@@ -53,6 +57,10 @@ export interface SmartFindModeCommonConfig {
   // v3.31 — range endpoints (1-based asset position).
   rangeFrom?: number;
   rangeTo?: number;
+  // v3.31 — cross-class hierarchy NMS settings (see
+  // AutoAnnotateTextConfig).
+  resolveHierarchy?: boolean;
+  hierarchyIou?: number;
 }
 
 export interface SmartFindTextConfig extends SmartFindModeCommonConfig {

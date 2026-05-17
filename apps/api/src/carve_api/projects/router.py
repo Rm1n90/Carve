@@ -359,6 +359,7 @@ def create_class(
             color=payload.color,
             attributes=payload.attributes,
             text_prompt=payload.text_prompt,
+            parent_class_id=payload.parent_class_id,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -406,6 +407,11 @@ def patch_class(
         }
         if "text_prompt" in payload.model_fields_set:
             update_kwargs["text_prompt"] = payload.text_prompt
+        # v3.31 -- explicit null clears the parent (turn back into
+        # top-level class); omitted = leave unchanged. Same pattern as
+        # text_prompt above.
+        if "parent_class_id" in payload.model_fields_set:
+            update_kwargs["parent_class_id"] = payload.parent_class_id
         c = ClassService(db).update(
             project=project,
             class_id=class_id,

@@ -67,6 +67,9 @@ export interface SamAutoVisualBody {
   // v3.31 — optional subset filter from the "Range: from N to M"
   // scope picker. Ignored by the sync (single-asset) endpoint.
   asset_ids?: string[];
+  // v3.31 — cross-class hierarchical NMS; see samApi.autoText.
+  resolve_hierarchy?: boolean;
+  hierarchy_iou?: number;
 }
 export interface SamAutoVisualResult {
   annotations_created: number;
@@ -176,6 +179,12 @@ export const samApi = {
       // Douglas-Peucker tolerance from the editor's polygon-
       // approximation slider; omitted keeps the polygonize default.
       epsilon_factor?: number;
+      // v3.31 — cross-class hierarchical NMS. Drops the more general
+      // (ancestor) class's annotation when it overlaps a more specific
+      // (descendant) class's annotation above ``hierarchy_iou``. The
+      // dialog auto-enables this when any project class has a parent.
+      resolve_hierarchy?: boolean;
+      hierarchy_iou?: number;
     },
   ): Promise<{
     annotations_created: number;
@@ -217,6 +226,9 @@ export const samApi = {
       // scope picker. UUIDs resolved client-side against the task's
       // asset list. Omitted = run on every asset.
       asset_ids?: string[];
+      // v3.31 — cross-class hierarchical NMS; see autoText.
+      resolve_hierarchy?: boolean;
+      hierarchy_iou?: number;
     },
   ): Promise<{ job_id: string }> =>
     (

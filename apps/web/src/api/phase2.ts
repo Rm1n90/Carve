@@ -421,6 +421,8 @@ export const inferenceApi = {
     minConfidence = 0.0,
     classOverrides?: ClassOverrides,
     iou = 0.7,
+    // v3.31 — cross-class hierarchical NMS; mirrors predictYoloBatch.
+    hierarchy?: { resolveHierarchy?: boolean; hierarchyIou?: number },
   ): Promise<YoloPredictResult> => {
     const params = new URLSearchParams({
       weight_id: weightId,
@@ -432,12 +434,25 @@ export const inferenceApi = {
       iou: String(Math.max(0, Math.min(1, Number.isFinite(iou) ? iou : 0.7))),
     });
     const url = `/assets/${assetId}/auto-annotate?${params.toString()}`;
-    // The body is optional. When the popover passes overrides we POST a
-    // JSON body; otherwise the legacy POST-no-body shape keeps working.
-    const body =
-      classOverrides && Object.keys(classOverrides).length > 0
-        ? { class_overrides: classOverrides }
-        : undefined;
+    // The body is optional. When the popover passes overrides OR
+    // hierarchy resolver settings, we POST a JSON body; otherwise the
+    // legacy no-body shape keeps working.
+    const bodyObj: {
+      class_overrides?: ClassOverrides;
+      resolve_hierarchy?: boolean;
+      hierarchy_iou?: number;
+    } = {};
+    if (classOverrides && Object.keys(classOverrides).length > 0) {
+      bodyObj.class_overrides = classOverrides;
+    }
+    if (hierarchy?.resolveHierarchy) {
+      bodyObj.resolve_hierarchy = true;
+      const hi = hierarchy.hierarchyIou;
+      if (typeof hi === "number" && Number.isFinite(hi)) {
+        bodyObj.hierarchy_iou = Math.max(0, Math.min(1, hi));
+      }
+    }
+    const body = Object.keys(bodyObj).length > 0 ? bodyObj : undefined;
     const r = await api.post<AutoAnnotateApiResponse>(url, body);
     const data = r.data;
     const created =
@@ -478,6 +493,8 @@ export const inferenceApi = {
     // scope picker. UUIDs resolved client-side against the task's
     // asset list. Omitted = run on every asset (legacy behaviour).
     assetIds?: string[],
+    // v3.31 — cross-class hierarchical NMS; see api/sam.ts.
+    hierarchy?: { resolveHierarchy?: boolean; hierarchyIou?: number },
   ): Promise<BatchPredictResult> => {
     const params = new URLSearchParams({
       weight_id: weightId,
@@ -489,6 +506,8 @@ export const inferenceApi = {
       iou?: number;
       class_overrides?: ClassOverrides;
       asset_ids?: string[];
+      resolve_hierarchy?: boolean;
+      hierarchy_iou?: number;
     } = {};
     if (Number.isFinite(minConfidence)) {
       body.min_confidence = Math.max(0, Math.min(1, minConfidence));
@@ -504,6 +523,13 @@ export const inferenceApi = {
     }
     if (assetIds && assetIds.length > 0) {
       body.asset_ids = assetIds;
+    }
+    if (hierarchy?.resolveHierarchy) {
+      body.resolve_hierarchy = true;
+      const hi = hierarchy.hierarchyIou;
+      if (typeof hi === "number" && Number.isFinite(hi)) {
+        body.hierarchy_iou = Math.max(0, Math.min(1, hi));
+      }
     }
     const wireBody = Object.keys(body).length > 0 ? body : undefined;
     const r = await api.post<BatchPredictResult>(url, wireBody);

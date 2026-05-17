@@ -151,6 +151,12 @@ class ClassIn(BaseModel):
     # v3.8 Phase 3 — optional SAM 3 text concept; empty string treated
     # the same as None (class not eligible for Text-SAM).
     text_prompt: str | None = Field(default=None, max_length=200)
+    # v3.31 — optional IS-A parent (e.g. "Racing Car"'s parent = "Car").
+    # When present, the auto-annotate cross-class NMS resolver drops the
+    # ancestor's annotations when they overlap a descendant's above the
+    # configured IoU floor. Server validates same-project / no-cycle /
+    # depth limit; see ClassService._validate_parent.
+    parent_class_id: UUID | None = Field(default=None)
 
     @field_validator("color")
     @classmethod
@@ -175,6 +181,11 @@ class ClassPatch(BaseModel):
     attributes: dict | None = None
     # v3.8 Phase 3 — patchable text prompt. Pass empty string to clear.
     text_prompt: str | None = Field(default=None, max_length=200)
+    # v3.31 — patchable parent. Pass explicit ``null`` to clear (turn the
+    # class back into a top-level class). Omitted = keep current value.
+    # Router uses ``model_fields_set`` to distinguish "explicit null" from
+    # "omitted" so a forgetful client never accidentally clears the link.
+    parent_class_id: UUID | None = Field(default=None)
 
     @field_validator("color")
     @classmethod
@@ -202,10 +213,15 @@ class ClassOut(BaseModel):
     color: str
     attributes: dict
     text_prompt: str | None
+    # v3.31 — surfaced so the editor can render the hierarchy badge +
+    # the auto-annotate dialog can count "N hierarchies active" without
+    # a second roundtrip.
+    parent_class_id: str | None
     created_at: datetime
 
     @classmethod
     def from_orm_class(cls, c) -> "ClassOut":
+        parent_id = getattr(c, "parent_class_id", None)
         return cls(
             id=str(c.id),
             project_id=str(c.project_id),
@@ -214,6 +230,7 @@ class ClassOut(BaseModel):
             color=c.color,
             attributes=c.attributes,
             text_prompt=getattr(c, "text_prompt", None),
+            parent_class_id=str(parent_id) if parent_id is not None else None,
             created_at=c.created_at,
         )
 

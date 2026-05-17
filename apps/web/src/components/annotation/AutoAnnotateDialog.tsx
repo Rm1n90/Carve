@@ -13,6 +13,7 @@ import { modelsApi } from "@/api/phase2";
 import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { ScopePicker } from "@/components/annotation/ScopePicker";
+import { HierarchyResolverPanel } from "@/components/annotation/HierarchyResolverPanel";
 import {
   resolveScopeAssetIds,
   type RangeInput,
@@ -138,6 +139,18 @@ export function AutoAnnotateDialog({
     from: "",
     to: "",
   });
+  // v3.31 — cross-class hierarchy NMS. The default toggle state is
+  // ON when any project class has a parent set; the user can flip off
+  // per run. Persisted into dialogPrefs alongside the other scope
+  // settings so the choice survives between sessions.
+  const projectHasHierarchy = useMemo(
+    () => classes.some((c) => !!c.parent_class_id),
+    [classes],
+  );
+  const [resolveHierarchy, setResolveHierarchy] = useState<boolean>(
+    projectHasHierarchy,
+  );
+  const [hierarchyIou, setHierarchyIou] = useState<number>(0.7);
 
   // v3.31 — task asset list used by the range scope. The same key is
   // populated by the editor's AnnotateAssetPage; React Query dedupes
@@ -275,6 +288,18 @@ export function AutoAnnotateDialog({
             ? stored.rangeTo
             : "",
       });
+      // v3.31 — hydrate hierarchy toggle. When the saved entry has no
+      // value, fall back to "ON when project has hierarchies".
+      setResolveHierarchy(
+        typeof stored.resolveHierarchy === "boolean"
+          ? stored.resolveHierarchy
+          : projectHasHierarchy,
+      );
+      setHierarchyIou(
+        typeof stored.hierarchyIou === "number" && Number.isFinite(stored.hierarchyIou)
+          ? Math.max(0, Math.min(1, stored.hierarchyIou))
+          : 0.7,
+      );
       setUseVlmFo1(stored.useVlmFo1);
     } else {
       const seeded: TextRow[] = classes
@@ -320,6 +345,8 @@ export function AutoAnnotateDialog({
         ...(typeof scopeRange.to === "number"
           ? { rangeTo: scopeRange.to }
           : {}),
+        resolveHierarchy,
+        hierarchyIou,
       },
     });
   }, [
@@ -334,6 +361,8 @@ export function AutoAnnotateDialog({
     scope,
     scopeRange,
     useVlmFo1,
+    resolveHierarchy,
+    hierarchyIou,
   ]);
 
   // Reset everything for this task back to defaults — both in-memory
@@ -549,6 +578,9 @@ export function AutoAnnotateDialog({
           ...(assetIds && assetIds.length > 0
             ? { asset_ids: assetIds }
             : {}),
+          ...(resolveHierarchy && projectHasHierarchy
+            ? { resolve_hierarchy: true, hierarchy_iou: hierarchyIou }
+            : {}),
         });
         return { kind: "batch", job_id: r.job_id } as const;
       }
@@ -561,6 +593,9 @@ export function AutoAnnotateDialog({
         iou_threshold: iouThreshold,
         epsilon_factor: epsilonFactor,
         ...(wireUseVlmFo1 ? { use_vlm_fo1: true } : {}),
+        ...(resolveHierarchy && projectHasHierarchy
+          ? { resolve_hierarchy: true, hierarchy_iou: hierarchyIou }
+          : {}),
       });
       return { kind: "sync", ...r } as const;
     },
@@ -1191,6 +1226,20 @@ export function AutoAnnotateDialog({
           />
         </div>
 
+        {/* v3.31 — cross-class hierarchical NMS panel. Auto-enabled when
+            any project class has a parent set; degrades to a discoverable
+            hint when no hierarchies exist yet. */}
+        <div className="mb-3">
+          <HierarchyResolverPanel
+            name="auto-annotate"
+            classes={classes}
+            enabled={resolveHierarchy}
+            onEnabledChange={setResolveHierarchy}
+            iou={hierarchyIou}
+            onIouChange={setHierarchyIou}
+          />
+        </div>
+
         {/* v3.21+ — VLM-FO1 precision filter toggle. Hidden when the
             model service hasn't registered a filter (capability gate)
             so users on FO1-less deployments don't see a dead control. */}
@@ -1570,6 +1619,15 @@ function VisualBody({
   const [threshold, setThreshold] = useState<number>(0.4);
   const [findAll, setFindAll] = useState<boolean>(true);
   const [overwrite, setOverwrite] = useState<boolean>(false);
+  // v3.31 — hierarchy resolver state (defaults match text body).
+  const projectHasHierarchy = useMemo(
+    () => classes.some((c) => !!c.parent_class_id),
+    [classes],
+  );
+  const [resolveHierarchy, setResolveHierarchy] = useState<boolean>(
+    projectHasHierarchy,
+  );
+  const [hierarchyIou, setHierarchyIou] = useState<number>(0.7);
 
   const refs = useTaskRefs({ taskId, assetId, enabled: true });
 
@@ -1682,6 +1740,10 @@ function VisualBody({
         // Honour the editor's "Polygon approximation points" slider
         // for visual-prompt auto-annotate too. Mirrors the text path.
         epsilon_factor: currentPolygonEpsilonFactor(),
+        // v3.31 — cross-class hierarchy NMS (same contract as text body).
+        ...(resolveHierarchy && projectHasHierarchy
+          ? { resolve_hierarchy: true, hierarchy_iou: hierarchyIou }
+          : {}),
       };
       // v3.30 — pre-flight SAM load. Mirrors the text-mode Run path
       // so the visual flow never 503s on a cold backend.
@@ -1846,6 +1908,17 @@ function VisualBody({
           totalAssets={orderedAssetIds.length}
           hasTask={!!taskId}
           hasAsset={!!assetId}
+        />
+      </div>
+      {/* v3.31 — cross-class hierarchical NMS panel. */}
+      <div className="mb-3">
+        <HierarchyResolverPanel
+          name="auto-visual"
+          classes={classes}
+          enabled={resolveHierarchy}
+          onEnabledChange={setResolveHierarchy}
+          iou={hierarchyIou}
+          onIouChange={setHierarchyIou}
         />
       </div>
 

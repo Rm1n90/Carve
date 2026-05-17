@@ -107,9 +107,15 @@ class AutoAnnotateBody(BaseModel):
     for this predict run". When the overrides map is empty/omitted, the
     autoannotate pipeline falls back to case-insensitive name-match
     against the project's classes.
+
+    v3.31 — adds optional ``resolve_hierarchy`` / ``hierarchy_iou`` so
+    the predict popover's "Resolve hierarchical overlaps" toggle reaches
+    the auto_annotate_asset pipeline.
     """
 
     class_overrides: dict[str, str | None] | None = Field(default=None)
+    resolve_hierarchy: bool = Field(default=False)
+    hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 @router.post("/{asset_id}/auto-annotate", response_model=AutoAnnotateResponse)
@@ -194,6 +200,12 @@ def auto_annotate(
             min_confidence=min_confidence,
             iou=iou,
             class_overrides=overrides,
+            resolve_hierarchy=(
+                body.resolve_hierarchy if body is not None else False
+            ),
+            hierarchy_iou=(
+                body.hierarchy_iou if body is not None else 0.7
+            ),
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -229,6 +241,9 @@ class BatchAutoAnnotateBody(BaseModel):
     # range against this task's asset list. None preserves the legacy
     # "every asset in the task" behaviour.
     asset_ids: list[uuid.UUID] | None = Field(default=None)
+    # v3.31 -- cross-class hierarchical NMS; see SamAutoTextIn.
+    resolve_hierarchy: bool = Field(default=False)
+    hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 @task_inference_router.post("/{task_id}/auto-annotate")
@@ -275,6 +290,10 @@ def enqueue_batch_auto_annotate(
     min_conf: float | None = None
     iou_value: float | None = None
     asset_ids_for_payload: list[str] | None = None
+    # v3.31 -- pulled from body when present; defaults preserve legacy
+    # behaviour for callers that don't opt in.
+    resolve_hierarchy: bool = False
+    hierarchy_iou: float = 0.7
     if body is not None:
         if body.min_confidence is not None:
             # Pydantic already enforced 0..1 via Field(ge=0, le=1).
@@ -302,6 +321,8 @@ def enqueue_batch_auto_annotate(
                 overrides_for_payload[idx] = str(v)
         if body.asset_ids:
             asset_ids_for_payload = [str(a) for a in body.asset_ids]
+        resolve_hierarchy = bool(body.resolve_hierarchy)
+        hierarchy_iou = float(body.hierarchy_iou)
 
     payload = build_job_payload(
         actor=user,
@@ -312,6 +333,8 @@ def enqueue_batch_auto_annotate(
         iou=iou_value,
         class_overrides=overrides_for_payload,
         asset_ids=asset_ids_for_payload,
+        resolve_hierarchy=resolve_hierarchy,
+        hierarchy_iou=hierarchy_iou,
     )
 
     # Enqueue MUST surface failures loudly — the previous best-effort
@@ -419,6 +442,9 @@ class SamAutoTextBatchIn(BaseModel):
     epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
     # v3.31 — optional subset filter; see BatchAutoAnnotateBody.asset_ids.
     asset_ids: list[uuid.UUID] | None = Field(default=None)
+    # v3.31 -- cross-class hierarchical NMS; see SamAutoTextIn.
+    resolve_hierarchy: bool = Field(default=False)
+    hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 @task_inference_router.post("/{task_id}/sam/auto-text-batch")
@@ -467,6 +493,8 @@ def enqueue_sam_auto_text_batch(
         asset_ids=(
             [str(a) for a in payload.asset_ids] if payload.asset_ids else None
         ),
+        resolve_hierarchy=payload.resolve_hierarchy,
+        hierarchy_iou=payload.hierarchy_iou,
     )
     # Enqueue MUST surface failures loudly. Previously this was a
     # best-effort try/except that silently swallowed every error and
@@ -676,6 +704,15 @@ class SamAutoTextIn(BaseModel):
     # keeps the polygonize default. Mirrors the /sam/decode contract
     # so the slider affects auto-annotate output too.
     epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
+    # v3.31 -- cross-class hierarchical NMS. Drops the more general
+    # (ancestor) class's annotation when it overlaps the more specific
+    # (descendant) class's annotation above ``hierarchy_iou``. The
+    # dialog auto-enables this when any project class has a parent;
+    # users can toggle off per-run. The intra-class NMS pass above
+    # (``iou_threshold``) handles same-class dedup; this one handles
+    # IS-A hierarchies the user encoded on the Class editor.
+    resolve_hierarchy: bool = Field(default=False)
+    hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class SamAutoTextOut(BaseModel):
@@ -712,6 +749,9 @@ class SamAutoVisualIn(BaseModel):
     # BatchAutoAnnotateBody.asset_ids. Ignored on the sync (single-asset)
     # endpoint since the asset is identified by the URL.
     asset_ids: list[uuid.UUID] | None = Field(default=None)
+    # v3.31 -- cross-class hierarchical NMS; see SamAutoTextIn.
+    resolve_hierarchy: bool = Field(default=False)
+    hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class SamAutoVisualOut(BaseModel):
@@ -772,6 +812,8 @@ def sam_auto_text_endpoint(
             use_vlm_fo1=payload.use_vlm_fo1,
             iou_threshold=payload.iou_threshold,
             epsilon_factor=payload.epsilon_factor,
+            resolve_hierarchy=payload.resolve_hierarchy,
+            hierarchy_iou=payload.hierarchy_iou,
         )
     except AutoTextNoEligibleClasses as exc:
         raise _http(exc) from exc
@@ -851,6 +893,8 @@ def sam_auto_visual_endpoint(
             overwrite=payload.overwrite,
             actor_id=user.id,
             epsilon_factor=payload.epsilon_factor,
+            resolve_hierarchy=payload.resolve_hierarchy,
+            hierarchy_iou=payload.hierarchy_iou,
         )
     except (AutoVisualMixedRefs, AutoVisualNoClass, AutoVisualNoRefs) as exc:
         raise _http(exc) from exc
@@ -906,6 +950,8 @@ def enqueue_sam_auto_visual_batch(
         asset_ids=(
             [str(a) for a in payload.asset_ids] if payload.asset_ids else None
         ),
+        resolve_hierarchy=payload.resolve_hierarchy,
+        hierarchy_iou=payload.hierarchy_iou,
     )
     from rq import Queue
     from carve_api.jobs.queue import enqueue_with_defaults
@@ -1148,6 +1194,9 @@ class YoloeTextIn(BaseModel):
     # v3.23.4 — default flipped to "bbox" since most users start with
     # boxes and convert to polygons later via the SAM-refine flow.
     output_kind: str = Field(default="bbox", pattern="^(bbox|polygon)$")
+    # v3.31 -- cross-class hierarchical NMS; see SamAutoTextIn.
+    resolve_hierarchy: bool = Field(default=False)
+    hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class YoloeVisualGroupIn(BaseModel):
@@ -1209,6 +1258,9 @@ class YoloeVisualIn(BaseModel):
     overwrite: bool = False
     frame_id: uuid.UUID | None = None
     output_kind: str = Field(default="bbox", pattern="^(bbox|polygon)$")
+    # v3.31 -- cross-class hierarchical NMS; see SamAutoTextIn.
+    resolve_hierarchy: bool = Field(default=False)
+    hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class YoloePromptFreeIn(BaseModel):
@@ -1220,6 +1272,9 @@ class YoloePromptFreeIn(BaseModel):
     overwrite: bool = False
     frame_id: uuid.UUID | None = None
     output_kind: str = Field(default="bbox", pattern="^(bbox|polygon)$")
+    # v3.31 -- cross-class hierarchical NMS; see SamAutoTextIn.
+    resolve_hierarchy: bool = Field(default=False)
+    hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 def _resolve_yoloe_asset_bytes(
@@ -1299,6 +1354,8 @@ def yoloe_text_predict_endpoint(
             overwrite=payload.overwrite,
             min_confidence=payload.min_confidence,
             output_kind=YoloeOutputKind(payload.output_kind),
+            resolve_hierarchy=payload.resolve_hierarchy,
+            hierarchy_iou=payload.hierarchy_iou,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -1430,6 +1487,8 @@ def yoloe_visual_predict_endpoint(
             overwrite=payload.overwrite,
             min_confidence=payload.min_confidence,
             output_kind=YoloeOutputKind(payload.output_kind),
+            resolve_hierarchy=payload.resolve_hierarchy,
+            hierarchy_iou=payload.hierarchy_iou,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -1477,6 +1536,8 @@ def yoloe_prompt_free_predict_endpoint(
             overwrite=payload.overwrite,
             min_confidence=payload.min_confidence,
             output_kind=YoloeOutputKind(payload.output_kind),
+            resolve_hierarchy=payload.resolve_hierarchy,
+            hierarchy_iou=payload.hierarchy_iou,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -1513,6 +1574,9 @@ class YoloeBatchIn(BaseModel):
     output_kind: str = Field(default="polygon", pattern="^(bbox|polygon)$")
     # v3.31 — optional subset filter; see BatchAutoAnnotateBody.asset_ids.
     asset_ids: list[uuid.UUID] | None = Field(default=None)
+    # v3.31 -- cross-class hierarchical NMS; see SamAutoTextIn.
+    resolve_hierarchy: bool = Field(default=False)
+    hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 @task_inference_router.post("/{task_id}/yoloe/batch")
@@ -1541,6 +1605,8 @@ def enqueue_yoloe_batch(
         asset_ids=(
             [str(a) for a in payload.asset_ids] if payload.asset_ids else None
         ),
+        resolve_hierarchy=payload.resolve_hierarchy,
+        hierarchy_iou=payload.hierarchy_iou,
     )
     from rq import Queue
 
