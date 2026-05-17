@@ -13,7 +13,7 @@
  *  - "Cancel" calls the per-job ``cancel`` closure registered by the
  *    dialog and removes the entry on success.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, ChevronUp, Loader2, X, AlertTriangle } from "lucide-react";
 import { samApi } from "@/api/sam";
@@ -151,6 +151,12 @@ function usePollJob(job: BackgroundJob): PollResult {
 
   const qc = useQueryClient();
 
+  // v3.32 -- track the last ``done`` we saw per job so we only fire
+  // annotation invalidations when the worker has actually produced
+  // something new since the previous poll. Without this we'd refetch
+  // every 1.5s while the batch is just waiting on the GPU queue.
+  const lastSeenDoneRef = useRef<number>(-1);
+
   useEffect(() => {
     if (isFrontend || !data) return;
     if (isExtract) {
@@ -175,8 +181,57 @@ function usePollJob(job: BackgroundJob): PollResult {
           qc.invalidateQueries({ queryKey: ["frames", job.assetId] });
         }
       }
-    } else {
-      setProgress(job.jobId, { status, done, total, failed });
+      return;
+    }
+
+    setProgress(job.jobId, { status, done, total, failed });
+
+    // v3.32 -- annotation-producing batches (sam-auto-text,
+    // sam-auto-visual, yolo-predict-batch, yoloe-batch) write new
+    // annotations to the DB asset-by-asset. The open editor's
+    // ``["annotations", taskId, frameId]`` cache stays stale until
+    // something invalidates it. Previously only the dialog (while
+    // open) invalidated; backgrounding the dialog left the editor
+    // looking at a snapshot from before the batch started. Worse,
+    // the asset the user was viewing when the batch ran showed
+    // empty even after batch completion because the cache for that
+    // exact (taskId, frameId) tuple was already populated and never
+    // marked stale.
+    //
+    // Fix: invalidate on every progress poll where ``done`` grew,
+    // plus once more on terminal status. The lastSeenDoneRef guard
+    // keeps the network footprint reasonable -- one refetch per
+    // asset processed, not per poll tick.
+    const isAnnotationBatch =
+      job.kind === "sam-auto-text" ||
+      job.kind === "sam-auto-visual" ||
+      job.kind === "yolo-predict-batch" ||
+      job.kind === "yoloe-batch" ||
+      job.kind === "sam-refine-batch";
+    if (isAnnotationBatch) {
+      const previous = lastSeenDoneRef.current;
+      const isTerminalStatus =
+        status === "completed" ||
+        status === "completed_with_errors" ||
+        status === "failed";
+      if (done > previous || isTerminalStatus) {
+        lastSeenDoneRef.current = done;
+        qc.invalidateQueries({ queryKey: ["annotations", job.taskId] });
+        qc.invalidateQueries({
+          queryKey: ["task-annotations-raw", job.taskId],
+        });
+        qc.invalidateQueries({
+          queryKey: ["task-annotations", job.taskId],
+        });
+        if (isTerminalStatus) {
+          // Asset list / count may have changed (e.g. a new asset
+          // gained its first annotation, badge needs updating).
+          qc.invalidateQueries({ queryKey: ["task-assets", job.taskId] });
+          qc.invalidateQueries({
+            queryKey: ["task-assets-count", job.taskId],
+          });
+        }
+      }
     }
   }, [
     isFrontend,
@@ -191,6 +246,7 @@ function usePollJob(job: BackgroundJob): PollResult {
     job.jobId,
     job.taskId,
     job.assetId,
+    job.kind,
   ]);
 
   return {
