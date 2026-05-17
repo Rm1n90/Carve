@@ -35,6 +35,23 @@ export interface SamActive {
    * probe from the API). When `reachable: false`, the UI shows the
    * SAM-unavailable banner regardless of `available.length`. */
   reachable?: boolean;
+  /**
+   * v3.32 — per-project preferred SAM variant when the caller passed
+   * ``?project_id=<uuid>``. ``null`` (or undefined when omitted on
+   * the wire) means "no project preference". The editor compares this
+   * against the loaded variant to decide whether to offer a one-click
+   * load-and-switch on project open.
+   */
+  preferred_variant?: string | null;
+  /**
+   * v3.32 — false when the project has a ``preferred_variant`` that
+   * isn't the variant currently loaded on the model service. When
+   * false, ``active`` echoes ``preferred_variant`` so the editor's
+   * variant label stays stable, but the editor knows to prompt the
+   * user to load it. Defaults to true for backward compat (callers
+   * without a ``project_id`` always see true).
+   */
+  preferred_loaded?: boolean;
 }
 
 /** Response from POST /models/sam-active.
@@ -88,8 +105,17 @@ export interface SamLoadStatus {
 }
 
 export const modelsApi = {
-  samActive: async (): Promise<SamActive> =>
-    (await api.get<SamActive>("/models/sam-active")).data,
+  /**
+   * Read the active SAM variant. Pass ``projectId`` to also receive
+   * the project's persisted preference (``preferred_variant`` +
+   * ``preferred_loaded``) so the editor can pre-flight a switch.
+   */
+  samActive: async (projectId?: string): Promise<SamActive> => {
+    const qs = projectId
+      ? `?project_id=${encodeURIComponent(projectId)}`
+      : "";
+    return (await api.get<SamActive>(`/models/sam-active${qs}`)).data;
+  },
   /**
    * Hot-swap the active SAM variant (non-blocking).
    *
@@ -97,10 +123,23 @@ export const modelsApi = {
    * service performs the actual 5-30s load in the background; the
    * frontend polls ``samStatus()`` until state transitions to ``ready``
    * (or ``error``). Throws on 422 (unknown variant), 409
-   * (switch_in_progress), or 503 (model service unavailable).
+   * (switch_in_progress | switch_blocked_by_active_jobs), or 503
+   * (model service unavailable).
+   *
+   * v3.32 — when ``force`` is true (admin-only on the server), the
+   * active-batch guard is bypassed; running batches are cancelled
+   * before the switch begins. Non-admin callers passing force still
+   * receive 409 because the backend re-checks the role.
    */
-  samSetActive: async (variant: string): Promise<SamSwitchResult> =>
-    (await api.post<SamSwitchResult>("/models/sam-active", { variant })).data,
+  samSetActive: async (
+    variant: string,
+    options?: { force?: boolean },
+  ): Promise<SamSwitchResult> => {
+    const qs = options?.force ? "?force=true" : "";
+    return (
+      await api.post<SamSwitchResult>(`/models/sam-active${qs}`, { variant })
+    ).data;
+  },
   /**
    * Read the SAM predictor's current load state.
    *

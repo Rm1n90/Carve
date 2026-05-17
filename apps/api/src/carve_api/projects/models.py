@@ -45,6 +45,14 @@ class Project(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    # v3.32 -- per-project preferred SAM variant. NULL means "use
+    # workspace default (settings.sam_model)". Validated against the
+    # API's allowed-variant list at the service layer; the column stays
+    # permissive so the allow-list can evolve without a schema change.
+    # See alembic 0035.
+    default_sam_variant: Mapped[str | None] = mapped_column(
+        String, nullable=True, default=None
+    )
 
 
 class Task(Base):

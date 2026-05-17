@@ -51,8 +51,22 @@ class ProjectIn(BaseModel):
 
 
 class ProjectPatch(BaseModel):
+    """PATCH body for ``/projects/{id}``.
+
+    All fields optional. ``default_sam_variant`` accepts an explicit
+    ``null`` to clear the preference (so the workspace default kicks in
+    again). The router uses ``model_fields_set`` to tell "omitted" from
+    "explicitly cleared".
+    """
+
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=4000)
+    # v3.32 -- per-project preferred SAM variant. Only project owner /
+    # workspace admin may PATCH this (router-level gate). Explicit
+    # ``null`` clears the preference and falls back to the workspace
+    # default (settings.sam_model). Validation against the API
+    # allow-list lives in ProjectService.update.
+    default_sam_variant: str | None = Field(default=None, max_length=64)
 
 
 class ProjectOut(BaseModel):
@@ -65,6 +79,10 @@ class ProjectOut(BaseModel):
     # soft-deleted (defensive; the FK is non-null by schema).
     owner_email: str | None
     created_at: datetime
+    # v3.32 -- per-project preferred SAM variant. ``None`` means "no
+    # preference; use the workspace default". The editor uses this to
+    # pre-flight a SAM switch when the loaded variant differs.
+    default_sam_variant: str | None = None
 
     @classmethod
     def from_orm_project(cls, p, owner_email: str | None = None) -> "ProjectOut":
@@ -75,6 +93,7 @@ class ProjectOut(BaseModel):
             owner_id=str(p.owner_id),
             owner_email=owner_email,
             created_at=p.created_at,
+            default_sam_variant=getattr(p, "default_sam_variant", None),
         )
 
 
