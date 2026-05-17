@@ -277,6 +277,11 @@ export function AnnotationCanvas({
   // URL at the *end* is always the texture currently bound to the
   // sprite, so it can never be evicted by its own touch.
   const textureLruRef = useRef<string[]>([]);
+  // F6 — current snap target in image-space. Updated inside
+  // ``snapCursorIfShift`` from a pointer-move closure; the JSX overlay
+  // reads it via ``snapTargetTick`` to force a render on each change.
+  const snapTargetRef = useRef<{ x: number; y: number; kind: "vertex" | "edge" } | null>(null);
+  const [, setSnapTargetTick] = useState(0);
   // Tracks whether the Pixi app has finished initialising. The
   // texture-swap effect waits on this so a fast first-paint imageUrl
   // change still lands on a ready renderer.
@@ -2101,10 +2106,15 @@ export function AnnotationCanvas({
     }
     g.clear();
     g.rect(rect.x, rect.y, rect.w, rect.h);
-    // Lighter / dashed-feel stroke vs drawPreviewRect — visually distinct
-    // so the user knows this is a selection marquee, not a draft bbox.
-    g.stroke({ color: 0x60a5fa, width: 1, alpha: 0.95 });
-    g.fill({ color: 0x60a5fa, alpha: 0.08 });
+    // Image-space stroke widths scale down by the canvas zoom — a 1 px
+    // width at 50 % zoom paints as 0.5 screen-px which the GPU resolves
+    // to a near-invisible line. Pick a width relative to the current
+    // scale so the marquee is always ~2 screen-px regardless of zoom.
+    const screenStrokePx = 2;
+    const s = scaleRef.current || 1;
+    const imageStrokePx = screenStrokePx / s;
+    g.stroke({ color: 0x60a5fa, width: imageStrokePx, alpha: 1 });
+    g.fill({ color: 0x60a5fa, alpha: 0.18 });
   }
 
   function clearMarquee() {
@@ -2702,8 +2712,20 @@ export function AnnotationCanvas({
      * learns about snap.
      */
     function snapCursorIfShift(p: Point, shiftKey: boolean): Point {
-      if (!shiftKey) return p;
-      if (tool !== "bbox" && tool !== "polygon") return p;
+      if (!shiftKey) {
+        if (snapTargetRef.current !== null) {
+          snapTargetRef.current = null;
+          setSnapTargetTick((v) => v + 1);
+        }
+        return p;
+      }
+      if (tool !== "bbox" && tool !== "polygon") {
+        if (snapTargetRef.current !== null) {
+          snapTargetRef.current = null;
+          setSnapTargetTick((v) => v + 1);
+        }
+        return p;
+      }
       const state = useAnnotations.getState();
       const drafts = Object.values(state.byId);
       const result = findSnapTarget(
@@ -2718,6 +2740,18 @@ export function AnnotationCanvas({
           excludeVertices: [],
         },
       );
+      const next = result
+        ? { x: result.x, y: result.y, kind: result.kind }
+        : null;
+      const prev = snapTargetRef.current;
+      if (
+        prev?.x !== next?.x ||
+        prev?.y !== next?.y ||
+        prev?.kind !== next?.kind
+      ) {
+        snapTargetRef.current = next;
+        setSnapTargetTick((v) => v + 1);
+      }
       return result ? { x: result.x, y: result.y } : p;
     }
 
@@ -3583,17 +3617,32 @@ export function AnnotationCanvas({
             // F5 — subtract the hit set from the current selection.
             // Useful for "select all and then drop a few" workflows.
             const matchedSet = new Set(matched);
+            const before = state.selectedIds.length;
             const remaining = state.selectedIds.filter(
               (id) => !matchedSet.has(id),
             );
             state.selectMany(remaining);
+            const removed = before - remaining.length;
+            if (removed > 0) {
+              showToast(`Removed ${removed} from selection`, { variant: "info" });
+            } else {
+              showToast("Nothing in the marquee was selected", { variant: "info" });
+            }
           } else if (marquee.shift) {
+            const before = state.selectedIds.length;
             const union = Array.from(
               new Set([...state.selectedIds, ...matched]),
             );
             state.selectMany(union);
+            const added = union.length - before;
+            if (added > 0) {
+              showToast(`Added ${added} to selection`, { variant: "info" });
+            }
           } else {
             state.selectMany(matched);
+            if (matched.length > 0) {
+              showToast(`Selected ${matched.length}`, { variant: "info" });
+            }
           }
           return;
         }
@@ -4173,6 +4222,37 @@ export function AnnotationCanvas({
         imageSize={imageSize.w > 1 && imageSize.h > 1 ? imageSize : null}
         toImageXY={toImageXY}
       />
+      {/* F6 — visible snap target indicator. Renders a small white
+          ring at the snap point whenever Shift is held while drawing
+          bbox / polygon and the cursor is within the snap threshold
+          of an existing vertex / edge. */}
+      {snapTargetRef.current && (() => {
+        const t = snapTargetRef.current;
+        const s = scaleRef.current || 1;
+        const off = offsetRef.current;
+        const cx = t.x * s + off.x;
+        const cy = t.y * s + off.y;
+        return (
+          <div
+            data-testid="snap-target-indicator"
+            aria-hidden
+            className="pointer-events-none absolute z-20"
+            style={{
+              left: `${cx - 7}px`,
+              top: `${cy - 7}px`,
+              width: 14,
+              height: 14,
+              borderRadius: "9999px",
+              border: t.kind === "vertex"
+                ? "2px solid rgba(255,255,255,0.95)"
+                : "2px solid rgba(255,255,255,0.7)",
+              boxShadow: "0 0 0 2px rgba(0,0,0,0.55)",
+              background:
+                t.kind === "vertex" ? "rgba(255,255,255,0.25)" : "transparent",
+            }}
+          />
+        );
+      })()}
       <AnnotationContextMenu
         hostRef={hostRef}
         hitTest={hitTestClient}
