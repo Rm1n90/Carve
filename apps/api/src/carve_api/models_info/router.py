@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User, UserRole
 from carve_api.config import get_settings
 from carve_api.deps import get_current_user, get_db
-from carve_api.inference.batch import count_active_jobs
+from carve_api.inference.batch import (
+    SAM_USING_BATCH_KINDS,
+    count_active_jobs,
+)
 from carve_api.projects.models import Project
 from redis import Redis
 
@@ -233,28 +236,23 @@ def sam_active(
             preferred_variant = None
 
     # The "loaded" variant follows the legacy precedence: live model
-    # variant > in-memory override > settings env default.
+    # variant > in-memory override > settings env default. ``active``
+    # ALWAYS reflects what the model service actually has loaded so
+    # the editor's SAM-picker label tells the truth. The mismatch
+    # signal lives in ``preferred_variant`` + ``preferred_loaded`` so
+    # the reconcile dialog can correctly say "preferred X, but Y is
+    # currently loaded".
     loaded_active = model_variant or _active_sam_variant or settings.sam_model
-
-    # When the project has a preference and the model service is NOT
-    # actually loaded with that preference, echo the preference as
-    # ``active`` and flip ``preferred_loaded=False``. The editor uses
-    # the flag to offer a one-click "Load this variant".
-    if preferred_variant is not None and preferred_variant != loaded_active:
-        return SamActiveOut(
-            active=preferred_variant,
-            available=list(_AVAILABLE_SAM_VARIANTS),
-            reachable=reachable,
-            preferred_variant=preferred_variant,
-            preferred_loaded=False,
-        )
+    preferred_loaded = (
+        preferred_variant is None or preferred_variant == loaded_active
+    )
 
     return SamActiveOut(
         active=loaded_active,
         available=list(_AVAILABLE_SAM_VARIANTS),
         reachable=reachable,
         preferred_variant=preferred_variant,
-        preferred_loaded=True,
+        preferred_loaded=preferred_loaded,
     )
 
 
@@ -297,11 +295,14 @@ def sam_set_active(
             detail=f"unknown_variant; allowed: {', '.join(_AVAILABLE_SAM_VARIANTS)}",
         )
 
-    # v3.32 -- active-batch guard. Soft-fail when Redis is unavailable
-    # (count_active_jobs returns []), so a Redis outage doesn't lock
-    # out the SAM picker indefinitely.
+    # v3.32 -- active-batch guard. Only SAM-using batches block the
+    # switch: YOLO / YOLOE batches use their own weights and don't
+    # touch SAM, so switching the SAM variant while they're running
+    # is safe and must not be refused. Soft-fail when Redis is
+    # unavailable (count_active_jobs returns []) so a Redis outage
+    # doesn't lock the SAM picker indefinitely.
     redis_client = _redis_client_or_none()
-    active_jobs = count_active_jobs(redis_client)
+    active_jobs = count_active_jobs(redis_client, kinds=SAM_USING_BATCH_KINDS)
     is_admin = user.role == UserRole.admin
     if active_jobs and not (is_admin and force):
         raise HTTPException(
@@ -312,11 +313,11 @@ def sam_set_active(
                 "active_jobs": active_jobs,
                 "can_force": is_admin,
                 "message": (
-                    f"{len(active_jobs)} auto-annotate batch job(s) are "
-                    "currently using SAM. Wait for them to finish, "
+                    f"{len(active_jobs)} SAM batch job(s) are currently "
+                    "running. Wait for them to finish, "
                     + (
                         "or pass ?force=true to switch anyway "
-                        "(running jobs will fail with sam_not_ready)."
+                        "(running jobs will be cancelled)."
                         if is_admin
                         else "or ask a workspace admin to force the switch."
                     )
@@ -324,11 +325,13 @@ def sam_set_active(
             },
         )
 
-    # v3.32 -- admin force-switch path: cancel every active job before
-    # forwarding the switch so workers stop quickly instead of grinding
-    # through retries and posting sam_not_ready errors per asset.
-    # Best-effort; a cancel that fails (worker already exited, etc.)
-    # just lets the worker discover sam_not_ready on its next iteration.
+    # v3.32 -- admin force-switch path: cancel every SAM-using active
+    # job before forwarding the switch so workers stop quickly instead
+    # of grinding through retries and posting sam_not_ready errors per
+    # asset. Innocent YOLO/YOLOE batches are NOT in ``active_jobs``
+    # (kind filter) and therefore not cancelled. Best-effort; a cancel
+    # that fails (worker already exited, etc.) just lets the worker
+    # discover sam_not_ready on its next iteration.
     if active_jobs and is_admin and force and redis_client is not None:
         try:
             from carve_api.jobs.queue import try_cancel_rq_job

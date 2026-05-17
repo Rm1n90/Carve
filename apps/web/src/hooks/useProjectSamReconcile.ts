@@ -110,11 +110,14 @@ export function useProjectSamReconcile(projectId: string | undefined): void {
           confirmLabel: `Load ${preferred}`,
           cancelLabel: "Keep current",
         });
+        // Honour "asked once" for this project's session lifetime
+        // regardless of outcome. If the user accepted but the switch
+        // fails (e.g. backend's active-batch gate refuses), the next
+        // sam-active refetch would otherwise reopen the dialog
+        // mid-edit. They can still retry from the SAM picker.
+        _DISMISSED_FOR_PROJECT.add(projectId);
         if (ok) {
           switchM.mutate(preferred);
-        } else {
-          // Honour the dismissal for this project's session lifetime.
-          _DISMISSED_FOR_PROJECT.add(projectId);
         }
       } finally {
         promptInFlightRef.current = false;

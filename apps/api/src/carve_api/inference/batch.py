@@ -197,7 +197,12 @@ def _run_with_admission_retry(
 
 
 def init_progress(
-    redis_client, job_id: str, total: int, status: str = "running"
+    redis_client,
+    job_id: str,
+    total: int,
+    status: str = "running",
+    *,
+    kind: str | None = None,
 ) -> None:
     """Best-effort write of initial progress; swallow Redis errors.
 
@@ -208,6 +213,14 @@ def init_progress(
     v3.7.4 — adds ``skipped_by_class_json`` so the post-batch toast can
     name the most-skipped weight classes (e.g. "person (412), boat (305)")
     instead of just a count. Stored as a JSON-encoded ``dict[str, int]``.
+
+    v3.32 — ``kind`` identifies the batch type ("sam-auto-text",
+    "sam-auto-visual", "yolo-predict-batch", "yoloe-batch"). The
+    SAM-switch active-batch guard (``count_active_jobs``) filters by
+    this field so a running YOLO/YOLOE batch — which does NOT touch
+    SAM — never blocks a SAM variant switch. When ``kind`` is None we
+    omit the field from the hset mapping so a worker re-initialising
+    the hash mid-job doesn't wipe the kind set at enqueue time.
 
     ``status`` defaults to ``running`` (the worker's call, made the moment
     it begins the per-asset loop). The enqueue endpoint calls this with
@@ -220,32 +233,40 @@ def init_progress(
     if redis_client is None:
         return
     try:
-        redis_client.hset(
-            progress_key(job_id),
-            mapping={
-                "status": status,
-                "done": "0",
-                "total": str(total),
-                "failed": "0",
-                "errors": "[]",
-                "total_annotations_created": "0",
-                "total_skipped_detections": "0",
-                "skipped_by_class_json": "{}",
-            },
-        )
+        mapping: dict[str, str] = {
+            "status": status,
+            "done": "0",
+            "total": str(total),
+            "failed": "0",
+            "errors": "[]",
+            "total_annotations_created": "0",
+            "total_skipped_detections": "0",
+            "skipped_by_class_json": "{}",
+        }
+        if kind is not None:
+            mapping["kind"] = kind
+        redis_client.hset(progress_key(job_id), mapping=mapping)
         redis_client.expire(progress_key(job_id), _PROGRESS_TTL_SECONDS)
     except Exception:
         pass
 
 
-def prepare_progress(redis_client, job_id: str, total: int) -> None:
+def prepare_progress(
+    redis_client,
+    job_id: str,
+    total: int,
+    *,
+    kind: str | None = None,
+) -> None:
     """Seed the progress hash at *enqueue* time with ``status="queued"``.
 
     Thin wrapper over :func:`init_progress`. Kept as its own name so
     enqueue call sites read intentionally and a future "queued vs
-    preparing" split has one place to change.
+    preparing" split has one place to change. ``kind`` is forwarded so
+    the SAM-switch active-batch guard can filter by batch type (see
+    :func:`count_active_jobs`).
     """
-    init_progress(redis_client, job_id, total, status="queued")
+    init_progress(redis_client, job_id, total, status="queued", kind=kind)
 
 
 def count_assets_for_task(session: Session, task_id: uuid.UUID) -> int:
@@ -400,17 +421,40 @@ _ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(
     {"queued", "running", "waiting_for_gpu"}
 )
 
+# v3.32 -- which batch kinds actually drive the SAM model. YOLO and
+# YOLOE batches use their own weights and do NOT call SAM, so switching
+# the SAM variant while a YOLO batch is running is safe and must NOT
+# trigger the active-batch gate. Frontend-driven post-process passes
+# (sam-refine-batch, polygon-convert) never write to this Redis hash,
+# so they're enumerated separately by the frontend's same-user warning
+# and intentionally absent here.
+SAM_USING_BATCH_KINDS: frozenset[str] = frozenset(
+    {"sam-auto-text", "sam-auto-visual"}
+)
 
-def count_active_jobs(redis_client) -> list[dict]:
+
+def count_active_jobs(
+    redis_client,
+    *,
+    kinds: frozenset[str] | None = None,
+) -> list[dict]:
     """v3.32 -- enumerate the auto-annotate batch jobs that are currently
     holding (or about to hold) the model service's inference slot.
 
-    Returns a list of small dicts: ``{job_id, status, done, total}``.
-    An empty list means "the switch is free to proceed". Soft-fails
-    when Redis is unavailable: returns ``[]`` so a Redis blip doesn't
-    permanently block users from changing SAM variants. The router's
-    business-logic gate is the authoritative source of truth; this
-    helper only enumerates.
+    Returns a list of small dicts: ``{job_id, kind, status, done, total}``.
+    An empty list means "no matching jobs". Soft-fails when Redis is
+    unavailable: returns ``[]`` so a Redis blip doesn't permanently
+    block users from changing SAM variants. The router's business-logic
+    gate is the authoritative source of truth; this helper only
+    enumerates.
+
+    Pass ``kinds`` to filter to a subset of batch kinds (e.g.
+    :data:`SAM_USING_BATCH_KINDS` for the SAM-switch gate). When
+    ``kinds`` is None, every active job is returned regardless of
+    kind. Legacy jobs queued before kind tracking was added carry no
+    ``kind`` field; they are conservatively included when a filter is
+    applied so the gate doesn't accidentally race a job whose kind we
+    don't know.
 
     Scans ``aa:job:*`` and filters by status. ``scan_iter`` is used
     over ``keys()`` so even a Redis with tens of thousands of stale
@@ -446,9 +490,16 @@ def count_active_jobs(redis_client) -> list[dict]:
             status = parsed.get("status", "")
             if status not in _ACTIVE_JOB_STATUSES:
                 continue
+            job_kind = parsed.get("kind") or None
+            if kinds is not None and job_kind is not None and job_kind not in kinds:
+                # Skip jobs whose kind is recorded AND not in the
+                # caller's allow-set. Jobs missing a kind (pre-v3.32)
+                # fall through so we never accidentally race them.
+                continue
             out.append(
                 {
                     "job_id": key[len(_PROGRESS_KEY_PREFIX) :],
+                    "kind": job_kind,
                     "status": status,
                     "done": int(parsed.get("done", 0) or 0),
                     "total": int(parsed.get("total", 0) or 0),
@@ -588,7 +639,12 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
         assets = _filter_assets_by_ids(
             assets, getattr(payload, "asset_ids", None)
         )
-        init_progress(redis_client, payload.job_id, total=len(assets))
+        init_progress(
+            redis_client,
+            payload.job_id,
+            total=len(assets),
+            kind="sam-auto-text",
+        )
 
         canceled = False
         for i, asset in enumerate(assets):
@@ -798,7 +854,12 @@ def run_auto_visual_batch(payload: AutoVisualBatchPayload) -> dict:
         assets = _filter_assets_by_ids(
             assets, getattr(payload, "asset_ids", None)
         )
-        init_progress(redis_client, payload.job_id, total=len(assets))
+        init_progress(
+            redis_client,
+            payload.job_id,
+            total=len(assets),
+            kind="sam-auto-visual",
+        )
 
         canceled = False
         for i, asset in enumerate(assets):
@@ -1186,7 +1247,12 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
         assets = _filter_assets_by_ids(
             assets, getattr(payload, "asset_ids", None)
         )
-        init_progress(redis_client, payload.job_id, total=len(assets))
+        init_progress(
+            redis_client,
+            payload.job_id,
+            total=len(assets),
+            kind="yoloe-batch",
+        )
 
         canceled = False
         for asset in assets:
@@ -1468,7 +1534,12 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                     task is not None,
                     weight is not None,
                 )
-                init_progress(redis_client, payload.job_id, 0)
+                init_progress(
+                    redis_client,
+                    payload.job_id,
+                    0,
+                    kind="yolo-predict-batch",
+                )
                 finalize_progress(redis_client, payload.job_id, status="failed")
                 return {"status": "failed", "done": 0, "total": 0, "failed": 0}
 
@@ -1478,13 +1549,23 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
             )
             asset_ids = [a.id for a in assets]
             asset_names_by_id = {a.id: a.original_name for a in assets}
-            init_progress(redis_client, payload.job_id, len(assets))
+            init_progress(
+                redis_client,
+                payload.job_id,
+                len(assets),
+                kind="yolo-predict-batch",
+            )
 
             # Compute the presigned URL once (cheap; reused per asset).
             url = presigned_url_for_weight(weight)
     except Exception as exc:  # noqa: BLE001
         log.exception("batch.boot.failed job_id=%s", payload.job_id)
-        init_progress(redis_client, payload.job_id, 0)
+        init_progress(
+            redis_client,
+            payload.job_id,
+            0,
+            kind="yolo-predict-batch",
+        )
         write_error_traceback(redis_client, payload.job_id, traceback.format_exc())
         finalize_progress(redis_client, payload.job_id, status="failed")
         return {

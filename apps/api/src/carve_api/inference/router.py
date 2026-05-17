@@ -374,7 +374,10 @@ def enqueue_batch_auto_annotate(
     # start, so a blip here only costs a brief "Initialising…".
     try:
         prepare_progress(
-            client, payload.job_id, count_assets_for_task(db, task_id)
+            client,
+            payload.job_id,
+            count_assets_for_task(db, task_id),
+            kind="yolo-predict-batch",
         )
     except Exception:  # noqa: BLE001
         log.warning("yolo_batch: prepare_progress failed", exc_info=True)
@@ -522,7 +525,10 @@ def enqueue_sam_auto_text_batch(
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     try:
         prepare_progress(
-            client, job_payload.job_id, count_assets_for_task(db, task_id)
+            client,
+            job_payload.job_id,
+            count_assets_for_task(db, task_id),
+            kind="sam-auto-text",
         )
     except Exception:  # noqa: BLE001
         log.warning("sam_auto_text_batch: prepare_progress failed", exc_info=True)
@@ -972,7 +978,10 @@ def enqueue_sam_auto_visual_batch(
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     try:
         prepare_progress(
-            client, job_payload.job_id, count_assets_for_task(db, task_id)
+            client,
+            job_payload.job_id,
+            count_assets_for_task(db, task_id),
+            kind="sam-auto-visual",
         )
     except Exception:  # noqa: BLE001
         log.warning("sam_auto_visual_batch: prepare_progress failed", exc_info=True)
@@ -1629,7 +1638,10 @@ def enqueue_yoloe_batch(
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     try:
         prepare_progress(
-            client, job_payload.job_id, count_assets_for_task(db, task_id)
+            client,
+            job_payload.job_id,
+            count_assets_for_task(db, task_id),
+            kind="yoloe-batch",
         )
     except Exception:  # noqa: BLE001
         log.warning("yoloe_batch: prepare_progress failed", exc_info=True)
