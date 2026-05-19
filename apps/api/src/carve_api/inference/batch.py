@@ -34,6 +34,28 @@ def progress_key(job_id: str) -> str:
     return f"{_PROGRESS_KEY_PREFIX}{job_id}"
 
 
+def _refresh_ttl(redis_client, job_id: str) -> None:
+    """Push the progress hash's expiry forward to a fresh
+    ``_PROGRESS_TTL_SECONDS`` window.
+
+    CRITICAL for chunked batches: ``init_progress`` sets the TTL only on
+    the *first* chunk, and Redis ``HSET`` does NOT reset a key's TTL. A
+    100K-image batch runs for days — far beyond 24h — so without a
+    rolling refresh the hash (and the resume ``cursor`` it holds) would
+    expire mid-run, ``read_cursor`` would return ``None``, and the next
+    chunk would restart the whole batch from asset 0 forever. Called
+    from every per-asset write so the key lives as long as the batch is
+    making progress, then gets cleaned up ~24h after the last update.
+    Best-effort: a Redis blip must never break the batch.
+    """
+    if redis_client is None:
+        return
+    try:
+        redis_client.expire(progress_key(job_id), _PROGRESS_TTL_SECONDS)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @dataclass
 class BatchJobPayload:
     """Serialisable args for the RQ job. RQ pickles these per call.
@@ -141,6 +163,9 @@ def _set_progress_status(redis_client, job_id: str, status: str) -> None:
         redis_client.hset(progress_key(job_id), "status", status)
     except Exception:  # noqa: BLE001
         pass
+    # Keeps the key alive across continuation begins and long
+    # ``waiting_for_gpu`` admission backoffs (see _refresh_ttl).
+    _refresh_ttl(redis_client, job_id)
 
 
 def _run_with_admission_retry(
@@ -318,6 +343,8 @@ def update_progress(
         )
     except Exception:
         pass
+    # Rolling TTL so a multi-day batch's hash never expires mid-run.
+    _refresh_ttl(redis_client, job_id)
 
 
 def finalize_progress(redis_client, job_id: str, *, status: str) -> None:
@@ -327,6 +354,9 @@ def finalize_progress(redis_client, job_id: str, *, status: str) -> None:
         redis_client.hset(progress_key(job_id), "status", status)
     except Exception:
         pass
+    # Give the terminal state a fresh 24h window so the polling dialog
+    # / post-batch toast can read the final status before Redis GCs it.
+    _refresh_ttl(redis_client, job_id)
 
 
 def write_error_traceback(redis_client, job_id: str, tb: str) -> None:
@@ -410,6 +440,203 @@ def read_progress(redis_client, job_id: str) -> dict:
         ),
         "skipped_by_class": skipped_by_class,
     }
+
+
+# ---------------------------------------------------------------------------
+# Resumable chunked-batch primitives.
+#
+# Historically every ``run_*_batch`` processed *all* assets in a single
+# RQ execution under a fixed ``job_timeout``. Any dataset bigger than
+# that window (e.g. a 3.6K / 20K / 100K SAM auto-annotate) was therefore
+# guaranteed to be reaped by RQ's death penalty mid-run and never
+# finish — that is exactly the failure that lost ~2/3 of a 3600-image
+# batch at the 2h mark.
+#
+# These helpers turn the per-asset loop into a *resumable window*: each
+# RQ execution attempts at most ``BATCH_CHUNK_WINDOW`` assets, persists a
+# ``cursor`` (assets *attempted*, not merely succeeded) into the same
+# ``aa:job:`` progress hash, then re-enqueues the SAME runner for the
+# next window. Total wall-clock is unbounded — the per-chunk timeout is
+# now only a *hung-asset watchdog*, and a chunk that does trip it (or is
+# SIGKILLed by a deploy) is retried by RQ and resumes from the cursor.
+# ``done`` / ``failed`` / aggregates are seeded back from the hash so
+# they accumulate across chunks; ``status`` stays ``running`` for the
+# whole logical batch so the SAM-switch guard keeps gating and the
+# polling dialog shows continuous progress.
+# ---------------------------------------------------------------------------
+
+# Assets attempted per RQ execution. Small enough that a chunk finishes
+# (and re-enqueues) long before any sane per-chunk timeout, so a
+# deploy/restart redoes at most ~this many assets — and even those are
+# cheap re-runs because already-committed annotations are durable.
+BATCH_CHUNK_WINDOW = 200
+
+_CURSOR_FIELD = "cursor"
+
+
+class _SkipAsset(Exception):
+    """Internal: a per-asset early-skip (e.g. a video with no extracted
+    frames) that still counts as *attempted*. Raising it lets the
+    windowed loop fall through to the uniform progress/cursor tail
+    instead of a bare ``continue`` that would bypass the cursor write."""
+
+
+def _b2s(v):
+    """Decode a Redis value regardless of the client's ``decode_responses``
+    setting (text/visual batches use a decoding client; yoloe/predict use
+    a bytes client)."""
+    return v.decode("utf-8", "ignore") if isinstance(v, (bytes, bytearray)) else v
+
+
+def read_cursor(redis_client, job_id: str) -> int | None:
+    """Assets *attempted* so far, or ``None`` when the cursor field is
+    absent (⇒ first chunk; progress not initialised yet). Best-effort: a
+    Redis hiccup returns ``None`` so the batch restarts from 0 rather
+    than wedging."""
+    if redis_client is None:
+        return None
+    try:
+        raw = redis_client.hget(progress_key(job_id), _CURSOR_FIELD)
+    except Exception:  # noqa: BLE001
+        return None
+    if raw is None:
+        return None
+    try:
+        return int(_b2s(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def write_cursor(redis_client, job_id: str, cursor: int) -> None:
+    """Persist the attempted-asset cursor so a crashed/timed-out chunk
+    resumes here instead of re-doing the whole batch. Best-effort."""
+    if redis_client is None:
+        return
+    try:
+        redis_client.hset(
+            progress_key(job_id), _CURSOR_FIELD, str(int(cursor))
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    # Rolling TTL: keep the resume cursor alive for the whole multi-day
+    # batch (see _refresh_ttl). Called every asset.
+    _refresh_ttl(redis_client, job_id)
+
+
+def _status_is_canceled(redis_client, job_id: str) -> bool:
+    if redis_client is None:
+        return False
+    try:
+        cur = redis_client.hget(progress_key(job_id), "status")
+    except Exception:  # noqa: BLE001
+        return False
+    return _b2s(cur) == "canceled"
+
+
+@dataclass
+class ChunkPlan:
+    """Where this RQ execution should start/stop within the batch."""
+
+    cursor: int       # absolute index of the first asset to attempt
+    window_end: int   # exclusive stop index for this execution
+    total: int        # full asset count for the batch
+    first: bool       # True ⇒ first chunk (progress initialised here)
+    canceled: bool    # True ⇒ user already canceled; do no work
+
+
+def begin_chunk(
+    redis_client,
+    job_id: str,
+    *,
+    total: int,
+    kind: str,
+    window: int = BATCH_CHUNK_WINDOW,
+) -> ChunkPlan:
+    """Resolve this execution's window and (only on the first chunk)
+    initialise the progress hash.
+
+    Honors the pre-init cancel race: if the user pressed Cancel while the
+    job sat queued, ``status`` is already ``canceled`` in the hash and we
+    must NOT ``init_progress`` over it — return ``canceled=True`` so the
+    caller finalizes cleanly without doing any work.
+    """
+    if _status_is_canceled(redis_client, job_id):
+        return ChunkPlan(
+            cursor=0, window_end=0, total=total, first=False, canceled=True
+        )
+    cur = read_cursor(redis_client, job_id)
+    if cur is None:
+        # First chunk: initialise progress + seed cursor=0.
+        init_progress(redis_client, job_id, total=total, kind=kind)
+        write_cursor(redis_client, job_id, 0)
+        cursor = 0
+        first = True
+    else:
+        # Continuation: keep done/total/kind/aggregates intact; just
+        # make sure status reads "running" again (a prior chunk may
+        # have left it on "waiting_for_gpu"). NEVER re-init — that
+        # would reset done back to 0.
+        cursor = max(0, cur)
+        first = False
+        _set_progress_status(redis_client, job_id, "running")
+    return ChunkPlan(
+        cursor=cursor,
+        window_end=min(cursor + max(1, window), total),
+        total=total,
+        first=first,
+        canceled=False,
+    )
+
+
+def finish_chunk(
+    redis_client,
+    job_id: str,
+    *,
+    processed: int,
+    total: int,
+    failed: int,
+    canceled: bool,
+    runner,
+    payload,
+) -> str:
+    """Terminate or continue the batch. Returns one of:
+
+      ``"canceled"``               — user canceled; finalized.
+      ``"completed"`` /
+      ``"completed_with_errors"``  — every asset attempted; finalized.
+      ``"continued"``              — more assets remain; cursor saved and
+                                     the next window re-enqueued. Status
+                                     is left ``running`` (NOT finalized)
+                                     so the logical batch stays active
+                                     across the whole continuation chain.
+    """
+    write_cursor(redis_client, job_id, processed)
+    if canceled:
+        finalize_progress(redis_client, job_id, status="canceled")
+        return "canceled"
+    if processed >= total:
+        status = "completed" if failed == 0 else "completed_with_errors"
+        finalize_progress(redis_client, job_id, status=status)
+        return status
+    # More work remains — hand the next window to a fresh RQ job. The
+    # progress hash (cursor/done/aggregates) is the source of truth; the
+    # new job reads it and resumes.
+    try:
+        from carve_api.jobs.queue import enqueue_batch_continuation
+
+        enqueue_batch_continuation(runner, payload, chunk_index=processed)
+    except Exception:  # noqa: BLE001
+        # The chunk that just ran already committed its work and saved
+        # its cursor. Re-raise so RQ's Retry re-runs THIS job, which
+        # resumes from the cursor and re-attempts the continuation —
+        # better than a silently stalled batch.
+        log.exception(
+            "batch.continuation.enqueue_failed job_id=%s next_cursor=%d",
+            job_id,
+            processed,
+        )
+        raise
+    return "continued"
 
 
 # v3.32 -- statuses that count as "the worker is doing things with the
@@ -612,11 +839,11 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
     actor_uuid = uuid.UUID(payload.actor_id)
     class_uuids = [uuid.UUID(c) for c in payload.class_ids]
 
-    total_created = 0
-    failed = 0
-    errors: list[str] = []
-
     session = get_session_factory()()
+    # Default "failed" so the FO1 unload in ``finally`` treats an early
+    # crash as terminal (frees the GPU); only a true "continued" leaves
+    # the weights resident for the next window.
+    result_status = "failed"
     try:
         task = session.get(Task, task_uuid)
         if task is None:
@@ -639,30 +866,48 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
         assets = _filter_assets_by_ids(
             assets, getattr(payload, "asset_ids", None)
         )
-        init_progress(
+
+        # Seed running totals from the hash so a resumed chunk continues
+        # the counts instead of resetting them. First chunk → all zeros.
+        carry = read_progress(redis_client, payload.job_id)
+        total_created = int(carry.get("total_annotations_created", 0) or 0)
+        failed = int(carry.get("failed", 0) or 0)
+        errors: list[str] = list(carry.get("errors", []) or [])
+
+        plan = begin_chunk(
             redis_client,
             payload.job_id,
             total=len(assets),
             kind="sam-auto-text",
         )
+        if plan.canceled:
+            result_status = finish_chunk(
+                redis_client,
+                payload.job_id,
+                processed=plan.cursor,
+                total=plan.total,
+                failed=failed,
+                canceled=True,
+                runner=run_auto_text_batch,
+                payload=payload,
+            )
+            return {
+                "ok": True,
+                "canceled": True,
+                "annotations_created": total_created,
+                "failed": failed,
+            }
 
         canceled = False
-        for i, asset in enumerate(assets):
-            # v3.8 Phase 3.5 -- co-operative cancel: between assets,
-            # check the progress hash for status="canceled" written by
-            # the API's cancel endpoint. Per-asset commits ensure all
-            # work done so far is preserved.
-            if redis_client is not None:
-                try:
-                    cur_status = redis_client.hget(
-                        progress_key(payload.job_id), "status"
-                    )
-                    if cur_status == "canceled":
-                        canceled = True
-                        break
-                except Exception:
-                    # Best-effort -- if Redis blips we keep going.
-                    pass
+        i = plan.cursor
+        while i < plan.window_end:
+            # Co-operative cancel: the API's cancel endpoint writes
+            # status="canceled" to the hash. Per-asset commits ensure
+            # all work done so far is preserved.
+            if _status_is_canceled(redis_client, payload.job_id):
+                canceled = True
+                break
+            asset = assets[i]
             try:
                 result = _run_with_admission_retry(
                     lambda: auto_text_for_asset(
@@ -703,39 +948,50 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
                 errors.append(_truncated_repr(exc, limit=200))
                 log.exception("auto_text_batch: asset %s unexpected error", asset.id)
 
+            # Advance the attempted-asset cursor regardless of
+            # success/failure so a permanently-failing asset can't trap
+            # the batch in an infinite re-attempt loop.
+            i += 1
             update_progress(
                 redis_client,
                 payload.job_id,
-                done=i + 1,
+                done=i,
                 failed=failed,
                 errors=errors[-20:],
                 total_annotations_created=total_created,
                 total_skipped_detections=0,
                 skipped_by_class={},
             )
+            write_cursor(redis_client, payload.job_id, i)
 
-        if canceled:
-            finalize_progress(redis_client, payload.job_id, status="canceled")
-            return {
-                "ok": True,
-                "canceled": True,
-                "annotations_created": total_created,
-                "failed": failed,
-            }
-        finalize_progress(
+        result_status = finish_chunk(
             redis_client,
             payload.job_id,
-            status="completed" if failed == 0 else "completed_with_errors",
+            processed=i,
+            total=plan.total,
+            failed=failed,
+            canceled=canceled,
+            runner=run_auto_text_batch,
+            payload=payload,
         )
-        return {"ok": True, "annotations_created": total_created, "failed": failed}
+        return {
+            "ok": True,
+            "annotations_created": total_created,
+            "failed": failed,
+            "status": result_status,
+            "continued": result_status == "continued",
+            "canceled": result_status == "canceled",
+        }
     finally:
         session.close()
         # v3.22 — when this batch opted into FO1, drop the sidecar's
-        # ~6 GB of GPU weights now that the job is finished. The
-        # sidecar's idle sweeper is the safety net, but unloading
-        # promptly frees the GPU for the editor (single-click SAM
-        # work) right away. Best-effort; never raises.
-        if getattr(payload, "use_vlm_fo1", False):
+        # ~6 GB of GPU weights once the batch is *terminal*. NOT between
+        # continuation chunks ("continued") — unloading there would
+        # thrash 6 GB of weights every window. The sidecar's idle
+        # sweeper is the safety net. Best-effort; never raises.
+        if result_status != "continued" and getattr(
+            payload, "use_vlm_fo1", False
+        ):
             try:
                 from carve_api.inference.model_client import sam_vlm_fo1_unload
                 sam_vlm_fo1_unload()
@@ -839,10 +1095,6 @@ def run_auto_visual_batch(payload: AutoVisualBatchPayload) -> dict:
     task_uuid = uuid.UUID(payload.task_id)
     actor_uuid = uuid.UUID(payload.actor_id)
 
-    total_created = 0
-    failed = 0
-    errors: list[str] = []
-
     session = get_session_factory()()
     try:
         task = session.get(Task, task_uuid)
@@ -854,25 +1106,45 @@ def run_auto_visual_batch(payload: AutoVisualBatchPayload) -> dict:
         assets = _filter_assets_by_ids(
             assets, getattr(payload, "asset_ids", None)
         )
-        init_progress(
+
+        # Seed running totals from the hash so a resumed chunk continues
+        # the counts instead of resetting them. First chunk → all zeros.
+        carry = read_progress(redis_client, payload.job_id)
+        total_created = int(carry.get("total_annotations_created", 0) or 0)
+        failed = int(carry.get("failed", 0) or 0)
+        errors: list[str] = list(carry.get("errors", []) or [])
+
+        plan = begin_chunk(
             redis_client,
             payload.job_id,
             total=len(assets),
             kind="sam-auto-visual",
         )
+        if plan.canceled:
+            finish_chunk(
+                redis_client,
+                payload.job_id,
+                processed=plan.cursor,
+                total=plan.total,
+                failed=failed,
+                canceled=True,
+                runner=run_auto_visual_batch,
+                payload=payload,
+            )
+            return {
+                "ok": True,
+                "canceled": True,
+                "annotations_created": total_created,
+                "failed": failed,
+            }
 
         canceled = False
-        for i, asset in enumerate(assets):
-            if redis_client is not None:
-                try:
-                    cur_status = redis_client.hget(
-                        progress_key(payload.job_id), "status"
-                    )
-                    if cur_status == "canceled":
-                        canceled = True
-                        break
-                except Exception:
-                    pass
+        i = plan.cursor
+        while i < plan.window_end:
+            if _status_is_canceled(redis_client, payload.job_id):
+                canceled = True
+                break
+            asset = assets[i]
             try:
                 result = _run_with_admission_retry(
                     lambda: auto_visual_for_asset(
@@ -912,31 +1184,39 @@ def run_auto_visual_batch(payload: AutoVisualBatchPayload) -> dict:
                 errors.append(_truncated_repr(exc, limit=200))
                 log.exception("auto_visual_batch: asset %s unexpected error", asset.id)
 
+            # Advance cursor on success OR failure so a permanently
+            # failing asset can't trap the batch in a re-attempt loop.
+            i += 1
             update_progress(
                 redis_client,
                 payload.job_id,
-                done=i + 1,
+                done=i,
                 failed=failed,
                 errors=errors[-20:],
                 total_annotations_created=total_created,
                 total_skipped_detections=0,
                 skipped_by_class={},
             )
+            write_cursor(redis_client, payload.job_id, i)
 
-        if canceled:
-            finalize_progress(redis_client, payload.job_id, status="canceled")
-            return {
-                "ok": True,
-                "canceled": True,
-                "annotations_created": total_created,
-                "failed": failed,
-            }
-        finalize_progress(
+        result_status = finish_chunk(
             redis_client,
             payload.job_id,
-            status="completed" if failed == 0 else "completed_with_errors",
+            processed=i,
+            total=plan.total,
+            failed=failed,
+            canceled=canceled,
+            runner=run_auto_visual_batch,
+            payload=payload,
         )
-        return {"ok": True, "annotations_created": total_created, "failed": failed}
+        return {
+            "ok": True,
+            "annotations_created": total_created,
+            "failed": failed,
+            "status": result_status,
+            "continued": result_status == "continued",
+            "canceled": result_status == "canceled",
+        }
     finally:
         session.close()
 
@@ -1198,14 +1478,6 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
         else 0.0
     )
 
-    counts = {"done": 0, "failed": 0}
-    aggregates: dict = {
-        "total_annotations_created": 0,
-        "total_skipped_detections": 0,
-        "skipped_by_class": {},
-    }
-    errors: list[str] = []
-
     session = get_session_factory()()
     try:
         actor = session.get(User, actor_uuid)
@@ -1214,61 +1486,59 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
             finalize_progress(redis_client, payload.job_id, status="failed")
             return {"ok": False, "error": "missing_actor_or_task"}
 
-        # v3.23.5 — pre-init cancel race. If the user already pressed
-        # Cancel while the job was sitting in the RQ queue (worker not
-        # yet picked it up), the cancel endpoint wrote
-        # ``status=canceled`` to the Redis hash. ``init_progress``
-        # below would unconditionally overwrite it to ``running``,
-        # making the user's cancel a no-op. Peek first; if canceled,
-        # bail out cleanly without touching the hash beyond a
-        # finalize for symmetry.
-        if redis_client is not None:
-            try:
-                cur = redis_client.hget(progress_key(payload.job_id), "status")
-                if isinstance(cur, bytes):
-                    cur = cur.decode("utf-8", errors="ignore")
-                if cur == "canceled":
-                    finalize_progress(
-                        redis_client, payload.job_id, status="canceled",
-                    )
-                    return {
-                        "ok": True,
-                        "canceled": True,
-                        "done": 0,
-                        "failed": 0,
-                        "total_annotations_created": 0,
-                        "total_skipped_detections": 0,
-                        "skipped_by_class": {},
-                    }
-            except Exception:  # noqa: BLE001 — best-effort peek
-                pass
-
         assets = _list_assets_for_task(session, task_uuid)
         assets = _filter_assets_by_ids(
             assets, getattr(payload, "asset_ids", None)
         )
-        init_progress(
+
+        # Seed counts/aggregates from the hash so a resumed chunk
+        # continues the running totals instead of resetting them. First
+        # chunk → all zeros (prepare_progress seeded the hash at enqueue).
+        carry = read_progress(redis_client, payload.job_id)
+        counts = {
+            "done": int(carry.get("done", 0) or 0),
+            "failed": int(carry.get("failed", 0) or 0),
+        }
+        aggregates: dict = {
+            "total_annotations_created": int(
+                carry.get("total_annotations_created", 0) or 0
+            ),
+            "total_skipped_detections": int(
+                carry.get("total_skipped_detections", 0) or 0
+            ),
+            "skipped_by_class": dict(carry.get("skipped_by_class", {}) or {}),
+        }
+        errors: list[str] = list(carry.get("errors", []) or [])
+
+        # begin_chunk also absorbs the v3.23.5 pre-init cancel race
+        # (status already "canceled" while queued): it returns
+        # canceled=True WITHOUT re-initialising the hash.
+        plan = begin_chunk(
             redis_client,
             payload.job_id,
             total=len(assets),
             kind="yoloe-batch",
         )
+        if plan.canceled:
+            finish_chunk(
+                redis_client,
+                payload.job_id,
+                processed=plan.cursor,
+                total=plan.total,
+                failed=counts["failed"],
+                canceled=True,
+                runner=run_yoloe_batch,
+                payload=payload,
+            )
+            return {"ok": True, "canceled": True, **counts, **aggregates}
 
         canceled = False
-        for asset in assets:
-            if redis_client is not None:
-                try:
-                    cur_status = redis_client.hget(
-                        progress_key(payload.job_id), "status",
-                    )
-                    if isinstance(cur_status, bytes):
-                        cur_status = cur_status.decode("utf-8", errors="ignore")
-                    if cur_status == "canceled":
-                        canceled = True
-                        break
-                except Exception:  # noqa: BLE001
-                    pass
-
+        i = plan.cursor
+        while i < plan.window_end:
+            if _status_is_canceled(redis_client, payload.job_id):
+                canceled = True
+                break
+            asset = assets[i]
             try:
                 # Videos: use the first extracted frame JPEG (idx=0) so
                 # the model service receives an image, not an mp4. Image
@@ -1283,11 +1553,7 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                     if f is None:
                         counts["failed"] += 1
                         errors.append(f"{asset.original_name}: video_no_frames_extracted")
-                        update_progress(
-                            redis_client, payload.job_id, **counts,
-                            errors=errors[-50:], **aggregates,
-                        )
-                        continue
+                        raise _SkipAsset
                     frame_id = f.id
                 image_bytes = fetch_asset_bytes(asset, frame_id=frame_id)
 
@@ -1331,6 +1597,10 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                         if n <= 0:
                             continue
                         bucket[str(k)] = bucket.get(str(k), 0) + n
+            except _SkipAsset:
+                # Already counted as failed above; fall through to the
+                # uniform progress + cursor tail so the batch advances.
+                pass
             except AppError as exc:
                 try:
                     session.rollback()
@@ -1354,20 +1624,34 @@ def run_yoloe_batch(payload: YoloeBatchPayload) -> dict:
                     payload.job_id, asset.id,
                 )
 
+            # Advance the attempted cursor on every outcome (success,
+            # skip, failure) so neither a poison asset nor a frameless
+            # video can trap the batch in an endless re-attempt loop.
+            i += 1
             update_progress(
                 redis_client, payload.job_id, **counts,
                 errors=errors[-50:], **aggregates,
             )
+            write_cursor(redis_client, payload.job_id, i)
 
-        if canceled:
-            finalize_progress(redis_client, payload.job_id, status="canceled")
-            return {"ok": True, "canceled": True, **counts, **aggregates}
-        finalize_progress(
+        result_status = finish_chunk(
             redis_client,
             payload.job_id,
-            status="completed" if counts["failed"] == 0 else "completed_with_errors",
+            processed=i,
+            total=plan.total,
+            failed=counts["failed"],
+            canceled=canceled,
+            runner=run_yoloe_batch,
+            payload=payload,
         )
-        return {"ok": True, **counts, **aggregates}
+        return {
+            "ok": True,
+            **counts,
+            **aggregates,
+            "status": result_status,
+            "continued": result_status == "continued",
+            "canceled": result_status == "canceled",
+        }
     finally:
         session.close()
 
@@ -1379,7 +1663,16 @@ def _list_assets_for_task(session: Session, task_id: uuid.UUID) -> list[Asset]:
     """
     return list(
         session.execute(
-            select(Asset).where(Asset.task_id == task_id).order_by(Asset.created_at)
+            select(Asset)
+            .where(Asset.task_id == task_id)
+            # ``Asset.id`` tiebreaker is REQUIRED for chunked batches:
+            # the windowed loop resumes by integer cursor across ~N/200
+            # *separate* worker processes, so the asset order must be
+            # byte-for-byte identical every chunk. ``created_at`` alone
+            # is non-deterministic under ties (bulk uploads stamp many
+            # rows with the same timestamp) — without the tiebreaker a
+            # 100K run could skip or double-process assets.
+            .order_by(Asset.created_at, Asset.id)
         ).scalars()
     )
 
@@ -1387,7 +1680,10 @@ def _list_assets_for_task(session: Session, task_id: uuid.UUID) -> list[Asset]:
 def list_assets_for_task(session: Session, task_id: uuid.UUID) -> list[Asset]:
     return list(
         session.execute(
-            select(Asset).where(Asset.task_id == task_id).order_by(Asset.created_at)
+            select(Asset)
+            .where(Asset.task_id == task_id)
+            # Deterministic order across chunks — see _list_assets_for_task.
+            .order_by(Asset.created_at, Asset.id)
         ).scalars()
     )
 
@@ -1495,16 +1791,27 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
         redis_client = None
 
     SessionLocal = get_session_factory()
-    counts = {"done": 0, "failed": 0}
+    # Seed counts/aggregates from the hash so a *resumed* chunk continues
+    # the running totals instead of resetting them. First chunk → all
+    # zeros (the enqueue endpoint's prepare_progress seeded the hash).
     # v3.7.4 — also track per-class skip counts so the post-batch toast
     # can name the dominant unmapped classes (e.g. "person (412), boat (305)")
     # instead of just an opaque "Skipped N detections" number.
-    aggregates: dict = {
-        "total_annotations_created": 0,
-        "total_skipped_detections": 0,
-        "skipped_by_class": {},
+    _carry = read_progress(redis_client, payload.job_id)
+    counts = {
+        "done": int(_carry.get("done", 0) or 0),
+        "failed": int(_carry.get("failed", 0) or 0),
     }
-    errors: list[str] = []
+    aggregates: dict = {
+        "total_annotations_created": int(
+            _carry.get("total_annotations_created", 0) or 0
+        ),
+        "total_skipped_detections": int(
+            _carry.get("total_skipped_detections", 0) or 0
+        ),
+        "skipped_by_class": dict(_carry.get("skipped_by_class", {}) or {}),
+    }
+    errors: list[str] = list(_carry.get("errors", []) or [])
 
     log.info(
         "batch.start job_id=%s task_id=%s weight_id=%s actor_id=%s "
@@ -1549,12 +1856,10 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
             )
             asset_ids = [a.id for a in assets]
             asset_names_by_id = {a.id: a.original_name for a in assets}
-            init_progress(
-                redis_client,
-                payload.job_id,
-                len(assets),
-                kind="yolo-predict-batch",
-            )
+            # NOTE: progress init is deferred to begin_chunk() below so a
+            # *continuation* chunk doesn't reset done/cursor. (The
+            # missing-refs / boot-failure paths above still init+finalize
+            # to "failed" because those are terminal.)
 
             # Compute the presigned URL once (cheap; reused per asset).
             url = presigned_url_for_weight(weight)
@@ -1684,31 +1989,55 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
             "errors": [f"weight_load_failed_at_start: {type(exc).__name__}"],
         }
 
+    total = len(asset_ids)
+    # begin_chunk also absorbs the pre-init cancel race (status already
+    # "canceled" while queued) — it returns canceled WITHOUT re-init.
+    plan = begin_chunk(
+        redis_client,
+        payload.job_id,
+        total=total,
+        kind="yolo-predict-batch",
+    )
+    if plan.canceled:
+        session.close()
+        finish_chunk(
+            redis_client,
+            payload.job_id,
+            processed=plan.cursor,
+            total=plan.total,
+            failed=counts["failed"],
+            canceled=True,
+            runner=run_batch_auto_annotate,
+            payload=payload,
+        )
+        return {
+            "status": "canceled",
+            **counts,
+            "total": total,
+            "errors": errors[-50:],
+            **aggregates,
+        }
+
     canceled = False
     try:
-        for asset_id in asset_ids:
+        i = plan.cursor
+        while i < plan.window_end:
+            asset_id = asset_ids[i]
             # v3.22 — co-operative cancel between assets, mirroring
             # ``run_auto_text_batch``. The cancel endpoint sets the
             # Redis hash status to "canceled"; we break here so the
             # in-flight asset (already committed) is preserved.
-            if redis_client is not None:
-                try:
-                    cur_status = redis_client.hget(
-                        progress_key(payload.job_id), "status",
-                    )
-                    if cur_status is not None and isinstance(cur_status, bytes):
-                        cur_status = cur_status.decode("utf-8", errors="ignore")
-                    if cur_status == "canceled":
-                        canceled = True
-                        break
-                except Exception:  # noqa: BLE001
-                    pass
+            if _status_is_canceled(redis_client, payload.job_id):
+                canceled = True
+                break
 
             original_name = asset_names_by_id.get(asset_id, str(asset_id))
             try:
                 asset_db = session.get(Asset, asset_id)
                 if asset_db is None:
-                    # Asset was deleted between list and process.
+                    # Asset was deleted between list and process. Count
+                    # it failed and skip to the uniform progress/cursor
+                    # tail (so the cursor still advances past it).
                     counts["failed"] += 1
                     errors.append(f"{original_name}: asset_not_found")
                     log.warning(
@@ -1717,14 +2046,7 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                         asset_id,
                         original_name,
                     )
-                    update_progress(
-                        redis_client,
-                        payload.job_id,
-                        **counts,
-                        errors=errors,
-                        **aggregates,
-                    )
-                    continue
+                    raise _SkipAsset
 
                 body = fetch_asset_bytes(asset_db)
                 aa_kwargs: dict = dict(
@@ -1804,6 +2126,10 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                         ),
                         getattr(aa_result, "overwrite_skipped", False),
                     )
+            except _SkipAsset:
+                # Already counted as failed above; fall through to the
+                # uniform progress + cursor tail so the batch advances.
+                pass
             except AppError as exc:
                 # Rollback so the session is usable for the next asset.
                 # Without this the session enters a "failed" transaction
@@ -1837,6 +2163,9 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                     type(exc).__name__,
                 )
 
+            # Advance the attempted cursor on every outcome so a poison
+            # asset / missing asset can't trap the batch forever.
+            i += 1
             update_progress(
                 redis_client,
                 payload.job_id,
@@ -1844,16 +2173,20 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                 errors=errors,
                 **aggregates,
             )
+            write_cursor(redis_client, payload.job_id, i)
     finally:
         session.close()
 
-    if canceled:
-        final_status = "canceled"
-    elif counts["failed"] == 0:
-        final_status = "completed"
-    else:
-        final_status = "completed_with_errors"
-    finalize_progress(redis_client, payload.job_id, status=final_status)
+    final_status = finish_chunk(
+        redis_client,
+        payload.job_id,
+        processed=i,
+        total=total,
+        failed=counts["failed"],
+        canceled=canceled,
+        runner=run_batch_auto_annotate,
+        payload=payload,
+    )
     log.info(
         "batch.done job_id=%s status=%s done=%d failed=%d total=%d "
         "created=%d skipped=%d errors=%s",
@@ -1861,7 +2194,7 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
         final_status,
         counts["done"],
         counts["failed"],
-        len(asset_ids),
+        total,
         aggregates["total_annotations_created"],
         aggregates["total_skipped_detections"],
         _truncated_repr(errors),
@@ -1869,7 +2202,7 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
     return {
         "status": final_status,
         **counts,
-        "total": len(asset_ids),
+        "total": total,
         "errors": errors[-50:],
         **aggregates,
     }
