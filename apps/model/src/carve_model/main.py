@@ -192,6 +192,12 @@ def _maybe_register_vlm_fo1() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    # TF32 + cuDNN autotuner once, before any model loads. Best-effort.
+    try:
+        from carve_model.sam.perf import apply_global_perf
+        apply_global_perf()
+    except Exception:  # noqa: BLE001 — startup must never crash on perf cfg
+        pass
     _hf_login_from_env()
     from carve_model.yolo.registry import install_default_loader
     install_default_loader()

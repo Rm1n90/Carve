@@ -29,6 +29,7 @@ from carve_api.inference.model_client import (
     sam_decode,
     sam_encode,
     sam_text_prompt,
+    sam_text_prompt_multi,
     sam_visual_prompt,
 )
 
@@ -263,6 +264,67 @@ def sam_text_prompt_for_asset(
         )
     except ModelServiceError as exc:
         raise _translate_model_error(exc, label="text-prompt") from exc
+
+
+def sam_text_prompt_multi_for_asset(
+    asset: Asset,
+    texts: list[str],
+    frame_id: uuid.UUID | None = None,
+    *,
+    use_vlm_fo1: bool = False,
+    threshold: float | None = None,
+    epsilon_factor: float | None = None,
+) -> list[list[dict]]:
+    """Encode-once batched text prompts for one asset.
+
+    Fetches the asset bytes and base64-encodes them ONCE, then asks the
+    model service to evaluate every concept against a single image
+    encode. ``return[i]`` is byte-identical to
+    :func:`sam_text_prompt_for_asset` called with ``texts[i]``.
+
+    Rolling-deploy safe: if the model service predates
+    ``/sam/text-prompt-multi`` (404), we transparently fall back to the
+    per-text loop — still reusing the SAME fetched bytes, so the N×
+    MinIO fetch + N× base64 cost is eliminated even on the old path
+    (only the per-text image encode remains until the model service is
+    rebuilt).
+    """
+    if not texts:
+        return []
+    body = fetch_asset_bytes(asset, frame_id=frame_id)
+    b64 = base64.b64encode(body).decode("ascii")
+    try:
+        return sam_text_prompt_multi(
+            b64,
+            texts,
+            use_vlm_fo1=use_vlm_fo1,
+            threshold=threshold,
+            epsilon_factor=epsilon_factor,
+        )
+    except ModelServiceError as exc:
+        # 404 ⇒ model service has no /sam/text-prompt-multi yet (older
+        # build mid rolling-deploy). Degrade gracefully: per-text loop
+        # over the already-fetched bytes. Any other model error is a
+        # real failure — translate it exactly like the single path.
+        if exc.status_code != 404:
+            raise _translate_model_error(exc, label="text-prompt") from exc
+        out: list[list[dict]] = []
+        for t in texts:
+            try:
+                out.append(
+                    sam_text_prompt(
+                        b64,
+                        t,
+                        use_vlm_fo1=use_vlm_fo1,
+                        threshold=threshold,
+                        epsilon_factor=epsilon_factor,
+                    )
+                )
+            except ModelServiceError as inner:
+                raise _translate_model_error(
+                    inner, label="text-prompt"
+                ) from inner
+        return out
 
 
 def sam_box_prompt_for_asset(

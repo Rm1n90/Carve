@@ -34,7 +34,7 @@ from carve_api.inference.sam import (
     Sam3NotEnabled,
     SamModelFailed,
     SamModelUnreachable,
-    sam_text_prompt_for_asset,
+    sam_text_prompt_multi_for_asset,
 )
 from carve_api.projects.models import Class, Task
 
@@ -188,16 +188,29 @@ def auto_text_for_asset(
     new_scores: list[float] = []
     per_class: dict[str, int] = {}
 
+    # Multi-concept prompts. SAM 3 / 3.1's text encoder embeds the whole
+    # string as a SINGLE concept — comma-separated lists give
+    # unpredictable results because the model isn't a vocabulary parser.
+    # We split on commas client-side and evaluate SAM once per non-empty
+    # fragment, merging results under the owning class. Case-insensitive
+    # dedup within a class so "Pants, pants" doesn't double-call.
+    #
+    # SPEED (v3.x): historically each fragment was a separate
+    # sam_text_prompt_for_asset call → a separate MinIO fetch + base64 +
+    # HTTP + (expensive) SAM image encode, repeated once per class ×
+    # fragment. The image encode depends only on the image, not the
+    # text. We now collect EVERY concept across all eligible classes and
+    # send them in ONE encode-once request: the image is fetched /
+    # encoded a single time and every text is evaluated against the
+    # cached backbone features. ``_multi_by_text[fragment]`` is
+    # byte-identical to the old per-fragment call (proof: model-side
+    # Sam3p1Variant.predict_text_multi), so the per-class
+    # threshold/NMS/best-only logic below is completely unchanged.
+    frags_by_class: dict[str, list[str]] = {}
+    uniq_texts: list[str] = []
+    seen_text: set[str] = set()
     for cls in eligible:
         prompt = (cls.text_prompt or "").strip()
-        # Multi-concept prompts. SAM 3 / 3.1's text encoder embeds the
-        # whole string as a SINGLE concept — comma-separated lists give
-        # unpredictable results because the model isn't a vocabulary
-        # parser. We split on commas client-side and run SAM once per
-        # non-empty fragment, merging the results under the same class.
-        # Case-insensitive dedup so "Pants, pants" doesn't double-call.
-        # A single-token prompt (no commas) lands in a one-element list
-        # and runs exactly as before — fully backwards compatible.
         fragments: list[str] = []
         seen_lower: set[str] = set()
         for raw in prompt.split(","):
@@ -209,6 +222,33 @@ def auto_text_for_asset(
                 continue
             seen_lower.add(key)
             fragments.append(frag)
+        frags_by_class[str(cls.id)] = fragments
+        for frag in fragments:
+            # Exact-string dedup across classes: two classes sharing the
+            # same concept get the same (deterministic) masks, so the
+            # model only needs to evaluate that text once.
+            if frag not in seen_text:
+                seen_text.add(frag)
+                uniq_texts.append(frag)
+
+    # v3.21+ — Auto mode coverage: the use_vlm_fo1 flag + the user's UI
+    # threshold are forwarded to SAM 3's
+    # post_process_instance_segmentation exactly as before (shared across
+    # every concept for this image — they're per-run, not per-concept).
+    multi_by_text: dict[str, list[dict]] = {}
+    if uniq_texts:
+        multi_results = sam_text_prompt_multi_for_asset(
+            asset,
+            uniq_texts,
+            use_vlm_fo1=use_vlm_fo1,
+            threshold=float(threshold),
+            epsilon_factor=epsilon_factor,
+        )
+        for _t, _r in zip(uniq_texts, multi_results):
+            multi_by_text[_t] = _r
+
+    for cls in eligible:
+        fragments = frags_by_class.get(str(cls.id), [])
         if not fragments:
             # Defensive — the eligible filter above already rejected
             # empty/whitespace prompts, but a string of only commas
@@ -217,24 +257,12 @@ def auto_text_for_asset(
             per_class[str(cls.id)] = 0
             continue
 
-        # v3.21+ — Auto mode coverage: every class iteration honors the
-        # use_vlm_fo1 flag so the toggle behaves consistently across
-        # single-asset and batch surfaces.
-        # Also pipe the user's UI threshold all the way to SAM 3's
-        # post_process_instance_segmentation. The legacy path hardcoded
-        # 0.5 inside the model service, so the user's score gate below
-        # silently observed an already-truncated candidate list and
-        # "obvious" objects with mid-confidence scores were never seen.
+        # Reassemble this class's candidate pool in the SAME order the
+        # per-fragment loop produced (fragments order, each fragment's
+        # full result list) — identical to the pre-batch behaviour.
         results: list[dict] = []
         for fragment in fragments:
-            frag_results = sam_text_prompt_for_asset(
-                asset,
-                fragment,
-                use_vlm_fo1=use_vlm_fo1,
-                threshold=float(threshold),
-                epsilon_factor=epsilon_factor,
-            )
-            results.extend(frag_results)
+            results.extend(multi_by_text.get(fragment, []))
 
         # Score filter. Applied once across the merged candidate pool so
         # find_all / best-only / overwrite semantics behave identically

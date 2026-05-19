@@ -254,6 +254,39 @@ def sam_text_prompt(
         return r.json()
 
 
+def sam_text_prompt_multi(
+    image_b64: str,
+    texts: list[str],
+    *,
+    use_vlm_fo1: bool = False,
+    threshold: float | None = None,
+    epsilon_factor: float | None = None,
+) -> list[list[dict]]:
+    """POST /sam/text-prompt-multi — SAM 3.1 encode-once batched texts.
+
+    ``return[i]`` is byte-identical to :func:`sam_text_prompt` with
+    ``text=texts[i]`` but the (expensive) image backbone runs ONCE for
+    the whole list instead of once per concept — the dominant
+    multi-class auto-annotate speed win.
+
+    A 404 means the model service predates this route (rolling deploy);
+    it surfaces as ``ModelServiceError(404, ...)`` so the per-asset
+    caller can fall back to the per-text loop without failing the batch.
+    """
+    body: dict = {"image_b64": image_b64, "texts": list(texts)}
+    if use_vlm_fo1:
+        body["use_vlm_fo1"] = True
+    if threshold is not None:
+        body["threshold"] = float(threshold)
+    if epsilon_factor is not None:
+        body["epsilon_factor"] = float(epsilon_factor)
+    with _wrap_unreachable("sam_text_prompt_multi"), _client() as c:
+        r = c.post("/sam/text-prompt-multi", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
 def sam_visual_prompt(
     *,
     refer_b64: str,

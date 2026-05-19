@@ -143,6 +143,16 @@ class SamVariant(Protocol):
         use_vlm_fo1: bool = False,
     ) -> list[dict]: ...
 
+    def predict_text_multi(
+        self,
+        *,
+        image_b64: str,
+        texts: list[str],
+        threshold: float | None = None,
+        use_vlm_fo1: bool = False,
+        epsilon_factor: float | None = None,
+    ) -> list[list[dict]]: ...
+
     def predict_box(
         self,
         *,
@@ -271,6 +281,9 @@ class Sam2Variant:
         )
 
     def predict_text(self, **kw: Any) -> list[dict]:
+        raise SamCapabilityError("sam2 variants do not support text prompts")
+
+    def predict_text_multi(self, **kw: Any) -> list[list[dict]]:
         raise SamCapabilityError("sam2 variants do not support text prompts")
 
     def predict_box(self, **kw: Any) -> list[dict]:
@@ -413,6 +426,101 @@ class Sam3p1Variant:
         if state is None:
             return []
 
+        # Single-text: encode image then run one text. Behaviour is
+        # byte-identical to before — the per-text work now lives in the
+        # shared helper so predict_text_multi can reuse one set_image().
+        return self._text_on_loaded_state(
+            adapter=adapter,
+            state=state,
+            text=text,
+            threshold=threshold,
+            use_vlm_fo1=use_vlm_fo1,
+            epsilon_factor=epsilon_factor,
+            image_b64=image_b64,
+            torch=torch,
+        )
+
+    def predict_text_multi(
+        self,
+        *,
+        image_b64: str,
+        texts: list[str],
+        threshold: float | None = None,
+        use_vlm_fo1: bool = False,
+        epsilon_factor: float | None = None,
+    ) -> list[list[dict]]:
+        """Run many text prompts against ONE image encode.
+
+        ``result[i]`` is byte-identical to a standalone
+        ``predict_text(text=texts[i])`` call. Why this is safe (verified
+        against the native ``Sam3Processor`` source):
+
+          * ``set_image`` (the expensive ViT backbone) is a pure
+            function of the image — computing it once vs N times yields
+            the same ``backbone_out`` features.
+          * ``_text_on_loaded_state`` begins with
+            ``reset_all_prompts``, which deletes every ``language_*``
+            key + prior boxes/masks/scores from the state.
+          * ``set_text_prompt`` then recomputes ``forward_text`` for the
+            new prompt and ``.update()``s ``backbone_out`` ("will erase
+            the previous text prompt").
+
+        So there is zero cross-text contamination; only the redundant
+        per-prompt image encode (and the per-prompt MinIO fetch / b64 /
+        HTTP on the API side) is eliminated. This is the dominant
+        auto-annotate speed win for multi-class tasks.
+        """
+        if self._adapter is None:
+            raise RuntimeError(
+                "Sam3p1Variant.predict_text_multi called before load()"
+            )
+        torch = _import_torch()
+        if not texts:
+            return []
+
+        image_np = _decode_image_b64_to_numpy(image_b64)
+        # The ONE expensive backbone encode for the whole prompt list.
+        self.set_image(image_np)
+
+        adapter = self._adapter
+        state = adapter._state
+        if state is None:
+            return [[] for _ in texts]
+
+        out: list[list[dict]] = []
+        for t in texts:
+            out.append(
+                self._text_on_loaded_state(
+                    adapter=adapter,
+                    state=state,
+                    text=t,
+                    threshold=threshold,
+                    use_vlm_fo1=use_vlm_fo1,
+                    epsilon_factor=epsilon_factor,
+                    image_b64=image_b64,
+                    torch=torch,
+                )
+            )
+        return out
+
+    def _text_on_loaded_state(
+        self,
+        *,
+        adapter: Any,
+        state: Any,
+        text: str,
+        threshold: float | None,
+        use_vlm_fo1: bool,
+        epsilon_factor: float | None,
+        image_b64: str,
+        torch: Any,
+    ) -> list[dict]:
+        """Per-text work against an already-``set_image``'d state.
+
+        Verbatim extraction of the original predict_text body (from
+        ``reset_all_prompts`` onward) — unchanged so single-call results
+        stay byte-identical; shared by predict_text + predict_text_multi.
+        """
         adapter._processor.reset_all_prompts(state)
 
         processor = adapter._processor
@@ -1560,6 +1668,16 @@ class _LegacyTestVariant:
         if self._text_impl is None:
             raise SamCapabilityError("legacy variant: no text impl injected")
         return self._text_impl(**kw)
+
+    def predict_text_multi(self, *, image_b64, texts, **kw):
+        # Legacy variants have no batched impl — loop the single path so
+        # behaviour is preserved (correct, just no encode-once speedup;
+        # the SAM 3.1 native variant is the one that matters for speed).
+        if self._text_impl is None:
+            raise SamCapabilityError("legacy variant: no text impl injected")
+        return [
+            self._text_impl(image_b64=image_b64, text=t, **kw) for t in texts
+        ]
 
     def predict_box(self, **kw):
         if self._box_impl is None:
