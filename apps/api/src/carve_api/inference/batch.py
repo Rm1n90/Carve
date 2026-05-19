@@ -769,6 +769,12 @@ class AutoTextBatchPayload:
     # v3.31 — cross-class hierarchical NMS (see BatchJobPayload).
     resolve_hierarchy: bool = False
     hierarchy_iou: float = 0.7
+    # v3.33 -- cross-class winner-takes-all NMS; orthogonal to the
+    # hierarchy resolver. OFF by default for backward compat. Pickled
+    # payloads from before this field existed will deserialize via the
+    # dataclass default.
+    resolve_cross_class: bool = False
+    cross_class_iou: float = 0.7
 
 
 def build_auto_text_payload(
@@ -785,6 +791,8 @@ def build_auto_text_payload(
     asset_ids: list[str] | None = None,
     resolve_hierarchy: bool = False,
     hierarchy_iou: float = 0.7,
+    resolve_cross_class: bool = False,
+    cross_class_iou: float = 0.7,
 ) -> AutoTextBatchPayload:
     return AutoTextBatchPayload(
         job_id=str(uuid.uuid4()),
@@ -804,6 +812,8 @@ def build_auto_text_payload(
         asset_ids=list(asset_ids) if asset_ids else None,
         resolve_hierarchy=bool(resolve_hierarchy),
         hierarchy_iou=float(hierarchy_iou),
+        resolve_cross_class=bool(resolve_cross_class),
+        cross_class_iou=float(cross_class_iou),
     )
 
 
@@ -926,6 +936,12 @@ def run_auto_text_batch(payload: AutoTextBatchPayload) -> dict:
                             payload, "resolve_hierarchy", False
                         ),
                         hierarchy_iou=getattr(payload, "hierarchy_iou", 0.7),
+                        resolve_cross_class=getattr(
+                            payload, "resolve_cross_class", False
+                        ),
+                        cross_class_iou=getattr(
+                            payload, "cross_class_iou", 0.7
+                        ),
                     ),
                     redis_client=redis_client,
                     job_id=payload.job_id,

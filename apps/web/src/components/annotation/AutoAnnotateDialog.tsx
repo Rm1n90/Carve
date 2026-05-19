@@ -14,6 +14,7 @@ import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { ScopePicker } from "@/components/annotation/ScopePicker";
 import { HierarchyResolverPanel } from "@/components/annotation/HierarchyResolverPanel";
+import { CrossClassResolverPanel } from "@/components/annotation/CrossClassResolverPanel";
 import {
   resolveScopeAssetIds,
   type RangeInput,
@@ -151,6 +152,11 @@ export function AutoAnnotateDialog({
     projectHasHierarchy,
   );
   const [hierarchyIou, setHierarchyIou] = useState<number>(0.7);
+  // v3.33 — cross-class winner-takes-all NMS toggle + IoU. OFF by
+  // default; user opts in. Targets the motorbike/racing-car false-
+  // positive case.
+  const [resolveCrossClass, setResolveCrossClass] = useState<boolean>(false);
+  const [crossClassIou, setCrossClassIou] = useState<number>(0.7);
 
   // v3.31 — task asset list used by the range scope. The same key is
   // populated by the editor's AnnotateAssetPage; React Query dedupes
@@ -581,6 +587,15 @@ export function AutoAnnotateDialog({
           ...(resolveHierarchy && projectHasHierarchy
             ? { resolve_hierarchy: true, hierarchy_iou: hierarchyIou }
             : {}),
+          // v3.33 — cross-class winner-takes-all NMS. Independent of
+          // projectHasHierarchy: this resolver handles arbitrary
+          // unrelated-class overlaps (Motorbike + Racing Car, etc.).
+          ...(resolveCrossClass
+            ? {
+                resolve_cross_class: true,
+                cross_class_iou: crossClassIou,
+              }
+            : {}),
         });
         return { kind: "batch", job_id: r.job_id } as const;
       }
@@ -595,6 +610,13 @@ export function AutoAnnotateDialog({
         ...(wireUseVlmFo1 ? { use_vlm_fo1: true } : {}),
         ...(resolveHierarchy && projectHasHierarchy
           ? { resolve_hierarchy: true, hierarchy_iou: hierarchyIou }
+          : {}),
+        // v3.33 — cross-class winner-takes-all NMS.
+        ...(resolveCrossClass
+          ? {
+              resolve_cross_class: true,
+              cross_class_iou: crossClassIou,
+            }
           : {}),
       });
       return { kind: "sync", ...r } as const;
@@ -1237,6 +1259,20 @@ export function AutoAnnotateDialog({
             onEnabledChange={setResolveHierarchy}
             iou={hierarchyIou}
             onIouChange={setHierarchyIou}
+          />
+        </div>
+
+        {/* v3.33 — cross-class winner-takes-all NMS panel. Handles
+            unrelated-class overlaps (Motorbike + Racing Car) the
+            hierarchy resolver intentionally leaves alone. OFF by
+            default; user opts in per run. */}
+        <div className="mb-3">
+          <CrossClassResolverPanel
+            name="auto-annotate"
+            enabled={resolveCrossClass}
+            onEnabledChange={setResolveCrossClass}
+            iou={crossClassIou}
+            onIouChange={setCrossClassIou}
           />
         </div>
 

@@ -135,6 +135,13 @@ def auto_text_for_asset(
     # a parent.
     resolve_hierarchy: bool = False,
     hierarchy_iou: float = 0.7,
+    # v3.33 -- cross-class winner-takes-all NMS. When True, drops the
+    # lower-confidence annotation in any unrelated-class overlap above
+    # ``cross_class_iou``. Defers ancestor/descendant pairs to the
+    # hierarchy resolver (no double-suppression). OFF by default;
+    # opt-in via the dialog toggle.
+    resolve_cross_class: bool = False,
+    cross_class_iou: float = 0.7,
     classes_by_id: dict[uuid.UUID, Class] | None = None,
 ) -> dict:
     """Run SAM 3 text-prompt for each selected class and persist results.
@@ -175,6 +182,10 @@ def auto_text_for_asset(
     # Compute all new annotations BEFORE deleting -- v3.7.2 safety
     # parity with YOLO autoannotate.
     new_anns: list[Annotation] = []
+    # v3.33 -- track the SAM score parallel to new_anns so the
+    # cross-class NMS resolver can pick the winner by confidence. The
+    # score is otherwise discarded after the filter step above.
+    new_scores: list[float] = []
     per_class: dict[str, int] = {}
 
     for cls in eligible:
@@ -251,6 +262,10 @@ def auto_text_for_asset(
 
         per_class[str(cls.id)] = 0
         for r in kept:
+            # v3.33 -- capture once, used both in the polygon and the
+            # mask_rle branch below so the parallel new_scores list
+            # stays index-aligned with new_anns.
+            r_score = float(r.get("score", 0.0))
             polygon = r.get("polygon") or []
             if isinstance(polygon, list) and len(polygon) >= 3:
                 new_anns.append(
@@ -267,6 +282,7 @@ def auto_text_for_asset(
                         created_by=actor_id,
                     )
                 )
+                new_scores.append(r_score)
             else:
                 # Fall back to mask_rle when polygon is empty / degenerate.
                 counts = r.get("counts")
@@ -292,6 +308,7 @@ def auto_text_for_asset(
                         created_by=actor_id,
                     )
                 )
+                new_scores.append(r_score)
             per_class[str(cls.id)] += 1
 
     # Only delete existing annotations when at least one new annotation
@@ -346,13 +363,75 @@ def auto_text_for_asset(
                     if key in per_class and per_class[key] > 0:
                         per_class[key] -= 1
 
+    # v3.33 -- cross-class winner-takes-all NMS. Runs AFTER the
+    # hierarchy resolver so ancestor/descendant pairs are already
+    # resolved by the time we get here; the resolver itself also
+    # defensively skips any remaining ancestor/descendant pairs.
+    # Filters out annotations the hierarchy resolver already deleted
+    # by intersecting against ``deleted`` ids.
+    cross_class_deleted = 0
+    if resolve_cross_class and new_anns:
+        from carve_api.inference.cross_class_nms import (
+            resolve_cross_class_overlaps,
+        )
+
+        cmap = classes_by_id
+        if cmap is None:
+            # Mirror the hierarchy path's lazy load. If both resolvers
+            # run, cmap is already populated above; otherwise build it
+            # here so the standalone-cross-class case still works.
+            from carve_api.inference.hierarchy_nms import (
+                build_classes_by_id_for_project,
+            )
+
+            cmap = build_classes_by_id_for_project(session, task.project_id)
+        # Build the scores map from the parallel new_scores list. The
+        # indices align with new_anns by construction (we appended to
+        # both lists together in the per-class loop). Skip annotations
+        # already removed by the hierarchy resolver.
+        already_dropped: set[uuid.UUID] = set()
+        if resolve_hierarchy:
+            already_dropped = {a.id for a in new_anns} & set(
+                # ``deleted`` is only in scope when resolve_hierarchy
+                # was True; defensively re-fetch via locals().
+                locals().get("deleted", [])
+            )
+        scores_by_id: dict[uuid.UUID, float] = {
+            ann.id: score
+            for ann, score in zip(new_anns, new_scores)
+            if ann.id not in already_dropped
+        }
+        survivors_ids = [
+            ann.id for ann in new_anns if ann.id not in already_dropped
+        ]
+        cc_deleted = resolve_cross_class_overlaps(
+            session=session,
+            new_annotation_ids=survivors_ids,
+            scores=scores_by_id,
+            classes_by_id=cmap,
+            iou_threshold=cross_class_iou,
+            enabled=True,
+        )
+        cross_class_deleted = len(cc_deleted)
+        if cc_deleted:
+            cc_deleted_set = set(cc_deleted)
+            for ann in new_anns:
+                if ann.id in cc_deleted_set:
+                    key = str(ann.class_id)
+                    if key in per_class and per_class[key] > 0:
+                        per_class[key] -= 1
+
     return {
-        "annotations_created": len(new_anns) - hierarchy_deleted,
+        "annotations_created": (
+            len(new_anns) - hierarchy_deleted - cross_class_deleted
+        ),
         "per_class": per_class,
         "ineligible": ineligible_ids,
         # v3.31 -- exposed so the dialog can show "Resolved N overlaps"
         # in the success toast.
         "hierarchy_resolved": hierarchy_deleted,
+        # v3.33 -- exposed so the dialog can show "Cross-class dropped N".
+        "cross_class_resolved": cross_class_deleted,
     }
 
 

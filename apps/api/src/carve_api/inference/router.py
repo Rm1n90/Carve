@@ -439,6 +439,9 @@ class SamAutoTextBatchIn(BaseModel):
     # v3.31 -- cross-class hierarchical NMS; see SamAutoTextIn.
     resolve_hierarchy: bool = Field(default=False)
     hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
+    # v3.33 -- cross-class winner-takes-all NMS; see SamAutoTextIn.
+    resolve_cross_class: bool = Field(default=False)
+    cross_class_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 @task_inference_router.post("/{task_id}/sam/auto-text-batch")
@@ -489,6 +492,8 @@ def enqueue_sam_auto_text_batch(
         ),
         resolve_hierarchy=payload.resolve_hierarchy,
         hierarchy_iou=payload.hierarchy_iou,
+        resolve_cross_class=payload.resolve_cross_class,
+        cross_class_iou=payload.cross_class_iou,
     )
     # Enqueue MUST surface failures loudly. Previously this was a
     # best-effort try/except that silently swallowed every error and
@@ -704,6 +709,14 @@ class SamAutoTextIn(BaseModel):
     # IS-A hierarchies the user encoded on the Class editor.
     resolve_hierarchy: bool = Field(default=False)
     hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
+    # v3.33 -- cross-class winner-takes-all NMS. Drops the lower-
+    # confidence annotation in any UNRELATED-class overlap above
+    # ``cross_class_iou``. Defers ancestor/descendant pairs to the
+    # hierarchy resolver so the two never fight. OFF by default; the
+    # dialog toggle opts in. Targets the user-reported "motorbike
+    # tagged as racing car" false-positive case.
+    resolve_cross_class: bool = Field(default=False)
+    cross_class_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class SamAutoTextOut(BaseModel):
@@ -805,6 +818,8 @@ def sam_auto_text_endpoint(
             epsilon_factor=payload.epsilon_factor,
             resolve_hierarchy=payload.resolve_hierarchy,
             hierarchy_iou=payload.hierarchy_iou,
+            resolve_cross_class=payload.resolve_cross_class,
+            cross_class_iou=payload.cross_class_iou,
         )
     except AutoTextNoEligibleClasses as exc:
         raise _http(exc) from exc
