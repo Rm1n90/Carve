@@ -470,6 +470,29 @@ class TextPromptOut(BaseModel):
     polygon: list[list[float]] = []
 
 
+# --- SAM 3.1 batched text-prompt (encode-once) -------------------------------
+#
+# The auto-annotate path runs one text prompt per project class (and per
+# comma-fragment) on the SAME image. The single /sam/text-prompt re-runs
+# the (expensive) image backbone every call. This endpoint encodes the
+# image ONCE and evaluates every text against the cached features —
+# ``result[i]`` is byte-identical to ``/sam/text-prompt`` with
+# ``text=texts[i]`` (see Sam3p1Variant.predict_text_multi for the
+# correctness argument). This is the dominant multi-class speed win.
+
+
+class TextPromptMultiIn(BaseModel):
+    image_b64: str
+    # One entry per concept; result is aligned 1:1 to this list. Bounded
+    # so a pathological payload can't pin the inference lock forever.
+    texts: list[str] = Field(..., min_length=1, max_length=128)
+    # Shared across every text (same semantics as TextPromptIn — these
+    # are per-image-run settings, not per-concept).
+    use_vlm_fo1: bool = False
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
+
+
 # --- SAM 3.1 visual-prompt endpoint ------------------------------------------
 #
 # One-shot endpoint: SAM 3.1 Promptable Concept Segmentation via image
@@ -543,6 +566,47 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
                 kwargs["epsilon_factor"] = payload.epsilon_factor
             with admit(CostClass.SAM_TEXT):
                 return sam.predict_text(**kwargs)
+    except SamNotReadyError as e:
+        err_msg = manager.status().error
+        raise HTTPException(
+            status_code=503,
+            detail=_sam_not_ready_detail(e.state, err_msg),
+        ) from e
+
+
+@router.post(
+    "/text-prompt-multi", response_model=list[list[TextPromptOut]]
+)
+def sam_text_prompt_multi(payload: TextPromptMultiIn) -> list[list[dict]]:
+    """Encode the image ONCE, evaluate every text against the cached
+    backbone features. ``return[i]`` == ``/sam/text-prompt`` with
+    ``text=payload.texts[i]`` (byte-identical — see
+    Sam3p1Variant.predict_text_multi). Mirrors /sam/text-prompt's
+    lease + capability + admission handling exactly; the whole prompt
+    list runs under a single inference lease so no other inference
+    interleaves mid-image.
+    """
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
+    try:
+        with manager.lease_or_load() as sam:
+            if not sam.supports_text:
+                raise HTTPException(
+                    status_code=409,
+                    detail="text_prompt_not_supported_for_variant",
+                )
+            kwargs: dict = {
+                "image_b64": payload.image_b64,
+                "texts": list(payload.texts),
+            }
+            if payload.use_vlm_fo1:
+                kwargs["use_vlm_fo1"] = True
+            if payload.threshold is not None:
+                kwargs["threshold"] = payload.threshold
+            if payload.epsilon_factor is not None:
+                kwargs["epsilon_factor"] = payload.epsilon_factor
+            with admit(CostClass.SAM_TEXT):
+                return sam.predict_text_multi(**kwargs)
     except SamNotReadyError as e:
         err_msg = manager.status().error
         raise HTTPException(

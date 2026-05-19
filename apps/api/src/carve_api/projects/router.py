@@ -42,6 +42,7 @@ from carve_api.projects.service import (
     ClassService,
     ProjectService,
     TaskService,
+    _ADMIN_ROLES,
     _MUTATING_ROLES,
     _READ_ROLES,
     require_project_role,
@@ -130,17 +131,37 @@ def patch_project(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ProjectOut:
+    # v3.32 — pull the explicit set of fields the client included.
+    # Pydantic's ``model_fields_set`` tells "default null" from "field
+    # was omitted entirely". The default SAM variant uses (set, value)
+    # semantics so an explicit ``null`` clears the preference; an
+    # omitted field is a no-op.
+    sent_fields = payload.model_fields_set
+    sam_field_present = "default_sam_variant" in sent_fields
     try:
-        # Plan-13 Phase 7 Task 2 — membership gate. Non-members get 403
-        # NotProjectMember; viewers get 403 InsufficientRole.
+        # Plan-13 Phase 7 Task 2 — base mutation gate (owner/admin/member).
+        # v3.32 — when the client is also touching ``default_sam_variant``,
+        # require the stricter owner/admin role so a regular member cannot
+        # silently change which model the whole project uses.
         require_project_role(db, user, project_id, _MUTATING_ROLES)
-        p = ProjectService(db).update(
+        if sam_field_present:
+            # The role narrowing intentionally re-runs the membership
+            # check so a workspace-admin who is not a project member
+            # still passes (require_project_role admits workspace
+            # admins via the same path used by project_members).
+            require_project_role(db, user, project_id, _ADMIN_ROLES)
+        # Build kwargs for ProjectService.update without triggering the
+        # SAM-clear path unless the client opted in.
+        update_kwargs: dict[str, object] = dict(
             actor=user,
             project_id=project_id,
             name=payload.name,
             description=payload.description,
             skip_owner_check=True,
         )
+        if sam_field_present:
+            update_kwargs["default_sam_variant"] = payload.default_sam_variant
+        p = ProjectService(db).update(**update_kwargs)  # type: ignore[arg-type]
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()

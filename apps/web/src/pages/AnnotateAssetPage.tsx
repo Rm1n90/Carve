@@ -74,6 +74,7 @@ import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
 import { projectsApi } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
+import { useProjectSamReconcile } from "@/hooks/useProjectSamReconcile";
 import { useUsers, displayNameFor } from "@/api/users";
 import { useAnnotations } from "@/state/annotations";
 import { useAuth } from "@/auth/store";
@@ -329,6 +330,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     queryKey: ["project", projectId],
     queryFn: () => projectsApi.get(projectId),
   });
+  // v3.32 — reconcile the project's persisted preferred SAM variant
+  // with what's actually loaded on the model service. Asks the user
+  // once per session (per project) if there's a mismatch; no-op when
+  // the project has no preference set.
+  useProjectSamReconcile(projectId);
   // `placeholderData: prev => prev` keeps the previous asset's data on
   // screen while the next asset's query is in flight. Without it, every
   // navigation flashes the entire editor through a "Loading…" page while

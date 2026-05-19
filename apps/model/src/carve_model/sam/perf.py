@@ -63,15 +63,76 @@ def get_compile_enabled() -> bool:
     return os.environ.get("SAM_COMPILE", "false").lower() in ("1", "true", "yes")
 
 
+_GLOBAL_PERF_APPLIED = False
+
+
+def apply_global_perf() -> None:
+    """Enable TF32 + the cuDNN autotuner once, at process startup.
+
+    Safe and high-value on the target Ampere/Ada GPUs (RTX 3090 /
+    4070 Ti):
+
+      * TF32 matmul/conv — ~1.3–2x on the SAM ViT backbone for a
+        negligible, well-characterised precision change (the model
+        already runs bf16 autocast inference; fp32 fallbacks now use
+        TF32 tensor cores instead of full fp32).
+      * ``cudnn.benchmark`` — SAM resizes every image to a FIXED input
+        resolution, so the autotuner picks the fastest conv kernels
+        once and reuses them for the whole (long) batch. The usual
+        downside (re-autotune on varying shapes) does not apply here.
+
+    Idempotent + best-effort: a failure here must never crash model
+    startup (mirrors the rest of the lifespan's defensive style).
+    Honors ``SAM_DISABLE_TF32=1`` as an escape hatch.
+    """
+    global _GLOBAL_PERF_APPLIED
+    if _GLOBAL_PERF_APPLIED:
+        return
+    _GLOBAL_PERF_APPLIED = True
+    if os.environ.get("SAM_DISABLE_TF32", "").lower() in ("1", "true", "yes"):
+        logger.info("SAM_DISABLE_TF32 set — leaving torch.backends defaults")
+        return
+    try:
+        if not torch.cuda.is_available():
+            return
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:  # noqa: BLE001 — older torch lacks this API
+            pass
+        logger.info(
+            "global perf: TF32 matmul/cudnn ON, cudnn.benchmark ON "
+            "(fixed SAM input size)",
+        )
+    except Exception as exc:  # noqa: BLE001 — never crash startup
+        logger.warning("apply_global_perf failed (%s); using torch defaults", exc)
+
+
 def apply_compile_to_image_encoder(model) -> None:
     """Wrap the image/vision encoder with torch.compile when SAM_COMPILE=true.
 
-    Compiles only the encoder (not the full model) — the mask-decoder loop has
-    dynamic shapes that don't compile cleanly under reduce-overhead mode.
+    NOTE on the SAM 3.1 path: native ``build_sam3_image_model`` already
+    consumes the SAM_COMPILE flag (``compile=True`` →
+    ``compile_mode="default"`` is threaded into the package's own
+    ``_create_vision_backbone`` + ``_create_segmentation_head``). This
+    helper is therefore NOT on the SAM 3.1 hot path — calling it on a
+    SAM 3.1 model would *double-compile* and is intentionally not done.
+    It's the fallback for SAM 2 / legacy variants whose model objects
+    expose the encoder as a plain attribute. ``backbone`` is included
+    in the candidate list because that's the SAM 3-family attribute
+    name, in case a future caller routes through here.
+
+    Compiles only the encoder (not the full model) — the mask-decoder
+    loop has dynamic shapes that don't compile cleanly under
+    reduce-overhead mode.
     """
     if not get_compile_enabled():
         return
-    candidates = ("vision_encoder", "image_encoder")
+    # ``backbone`` covers SAM 3-family models; ``vision_encoder`` /
+    # ``image_encoder`` cover SAM 2 + most HF vision wrappers.
+    candidates = ("vision_encoder", "image_encoder", "backbone")
     for name in candidates:
         encoder = getattr(model, name, None)
         if encoder is not None:
@@ -93,7 +154,7 @@ def apply_compile_to_image_encoder(model) -> None:
                 )
                 return
     logger.debug(
-        "No vision/image encoder attribute found on %s; skipping compile",
+        "No vision/image/backbone encoder attribute found on %s; skipping compile",
         model.__class__.__name__,
     )
 

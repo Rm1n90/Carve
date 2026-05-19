@@ -17,6 +17,27 @@ _MUTATING_ROLES: tuple[str, ...] = ("owner", "admin", "member")
 _READ_ROLES: tuple[str, ...] = ("owner", "admin", "member", "viewer")
 _ADMIN_ROLES: tuple[str, ...] = ("owner", "admin")
 
+# v3.32 -- mirror of ``_AVAILABLE_SAM_VARIANTS`` in
+# models_info/router.py. Kept here as a separate literal (rather than
+# imported) so the projects package does not develop a circular
+# dependency on models_info, and so adding a new variant requires a
+# deliberate edit in both places (intentional friction).
+_ALLOWED_SAM_VARIANTS: frozenset[str] = frozenset(
+    {
+        "sam2.1-tiny",
+        "sam2.1-small",
+        "sam2.1-base+",
+        "sam2.1-large",
+        "sam3.1",
+    }
+)
+
+# v3.32 -- sentinel used by ``ProjectService.update`` to distinguish
+# "omitted (skip)" from "explicit None (clear)". A bare ``None`` cannot
+# carry that distinction on its own, and ``Optional[Optional[str]]``
+# isn't expressible in Python's type system without a marker.
+_UNSET: object = object()
+
 
 class ProjectNotFound(AppError):
     http_status = 404
@@ -26,6 +47,18 @@ class ProjectNotFound(AppError):
 class NotProjectOwner(AppError):
     http_status = 403
     code = "not_project_owner"
+
+
+class InvalidSamVariant(AppError):
+    """Raised when ``default_sam_variant`` isn't in the API allow-list.
+
+    v3.32. Surfaced to the client as 422 with the same allow-list the
+    POST /models/sam-active endpoint validates against so the user gets
+    a consistent error story regardless of which endpoint they touched.
+    """
+
+    http_status = 422
+    code = "invalid_sam_variant"
 
 
 class ProjectService:
@@ -119,6 +152,12 @@ class ProjectService:
         project_id: uuid.UUID,
         name: str | None = None,
         description: str | None = None,
+        # v3.32 -- ``default_sam_variant`` uses a (set, value) pair so
+        # the router can express "omitted" (skip the field) vs.
+        # "explicit null" (clear the preference). ``_UNSET`` lives at
+        # the module level; the router translates Pydantic's
+        # ``model_fields_set`` into this contract.
+        default_sam_variant: str | None | object = _UNSET,
         skip_owner_check: bool = False,
     ) -> Project:
         p = self.get(actor=actor, project_id=project_id)
@@ -133,6 +172,22 @@ class ProjectService:
             p.name = name
         if description is not None:
             p.description = description
+        if default_sam_variant is not _UNSET:
+            # Validate against the allow-list when a value is supplied.
+            # ``None`` clears the preference; non-allowed strings raise.
+            if default_sam_variant is not None:
+                v = str(default_sam_variant).strip()
+                if v == "":
+                    p.default_sam_variant = None
+                elif v not in _ALLOWED_SAM_VARIANTS:
+                    raise InvalidSamVariant(
+                        f"unknown SAM variant {v!r}; allowed: "
+                        f"{sorted(_ALLOWED_SAM_VARIANTS)}"
+                    )
+                else:
+                    p.default_sam_variant = v
+            else:
+                p.default_sam_variant = None
         self.session.flush()
         return p
 

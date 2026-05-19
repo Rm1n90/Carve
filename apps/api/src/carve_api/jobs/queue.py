@@ -22,10 +22,22 @@ Priority lanes (worker drains them in order ``high default low``):
 
 Per-callable timeouts (seconds):
 
-    run_batch_auto_annotate     2 * 3600    (predict-batch — slow)
-    run_auto_text_batch         2 * 3600    (SAM-text batch)
+    run_batch_auto_annotate     4 * 3600    (per-CHUNK watchdog*)
+    run_auto_text_batch         4 * 3600    (per-CHUNK watchdog*)
+    run_auto_visual_batch       4 * 3600    (per-CHUNK watchdog*)
+    run_yoloe_batch             4 * 3600    (per-CHUNK watchdog*)
     extract_frames_for_video    30 * 60     (frames extraction)
     run_retrain_job             24 * 3600   (training is the long pole)
+
+* The four auto-annotate batches are now *chunked* (see
+  ``inference.batch``): each RQ execution attempts at most
+  ``BATCH_CHUNK_WINDOW`` assets then re-enqueues itself. The timeout
+  here is therefore no longer a function of dataset size — it only
+  guards a single hung asset/model call within one chunk. A dataset of
+  any size (3.6K / 20K / 100K …) completes across many chunks. Enqueue
+  these via :func:`enqueue_batch_job` / :func:`enqueue_batch_continuation`
+  so every chunk also carries an RQ ``Retry`` and resumes from the
+  cursor if its work-horse is killed (deploy/OOM/timeout).
 
 Unknown callables fall back to RQ's default timeout and the ``default``
 lane. Callers may also pass an explicit ``job_timeout`` kwarg, which
@@ -37,7 +49,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from redis import Redis
-from rq import Queue
+from rq import Queue, Retry
 from rq.job import Job
 
 from carve_api.config import get_settings
@@ -46,9 +58,14 @@ from carve_api.config import get_settings
 # Per-callable job_timeout (seconds). Keep keys as bare callable names so
 # the table doesn't import the worker modules at queue.py import time
 # (the FastAPI app shouldn't pull in heavy worker deps just to enqueue).
+# NOTE: the four auto-annotate batches below are *chunked*; this is a
+# per-chunk hung-asset watchdog, NOT a cap on the whole batch. See the
+# module docstring + ``inference.batch.begin_chunk``.
 _JOB_TIMEOUTS: dict[str, int] = {
-    "run_batch_auto_annotate": 2 * 3600,
-    "run_auto_text_batch": 2 * 3600,
+    "run_batch_auto_annotate": 4 * 3600,
+    "run_auto_text_batch": 4 * 3600,
+    "run_auto_visual_batch": 4 * 3600,
+    "run_yoloe_batch": 4 * 3600,
     "extract_frames_for_video": 30 * 60,
     "run_retrain_job": 24 * 3600,
 }
@@ -124,6 +141,88 @@ def enqueue_with_defaults(
         queue = Queue(target_lane, connection=queue.connection)
 
     return queue.enqueue(fn, *args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Chunked-batch enqueue. The auto-annotate batches (SAM text / SAM visual
+# / YOLOE / YOLO predict) run as a *chain* of RQ jobs: each execution
+# attempts a bounded window of assets then re-enqueues the next window
+# (see ``inference.batch``). Every link carries an RQ ``Retry`` so a
+# work-horse killed mid-chunk (deploy / OOM / per-chunk timeout) is
+# requeued and resumes from the persisted cursor instead of stalling.
+# ---------------------------------------------------------------------------
+
+# A chunk that fails (timeout / horse-kill / unexpected raise) is retried
+# this many times before RQ gives up. With the cursor persisted per asset
+# each retry resumes; max is a backstop against an infinitely-poisoned
+# chunk, not normal operation.
+BATCH_CHUNK_RETRY_MAX = 5
+# Backoff (seconds) between automatic chunk retries. Generous early waits
+# ride out a model-service restart / GPU thrash. RQ reuses the last entry
+# once the list is exhausted.
+BATCH_CHUNK_RETRY_INTERVALS = [30, 60, 120, 300, 600]
+
+
+def _rq_connection() -> Redis:
+    """A bytes Redis connection for RQ (NOT ``decode_responses`` — RQ
+    pickles job payloads). Built from settings so it works both inside a
+    request and inside a worker re-enqueueing its own continuation."""
+    s = get_settings()
+    return Redis(host=s.redis_host, port=s.redis_port)
+
+
+def _batch_retry() -> Retry:
+    return Retry(
+        max=BATCH_CHUNK_RETRY_MAX, interval=BATCH_CHUNK_RETRY_INTERVALS
+    )
+
+
+def enqueue_batch_job(
+    runner_fn: Callable[..., Any],
+    payload: Any,
+    *,
+    connection: Redis | None = None,
+) -> Job:
+    """First enqueue of a chunked batch (chunk 0).
+
+    Pins the RQ ``job_id`` to the batch's progress-hash id so the
+    existing cancel/poll endpoints keep working unchanged, and attaches
+    ``Retry`` so even chunk 0 resumes from the cursor if its work-horse
+    is killed before it can re-enqueue the next window. Pass the request
+    ``connection`` when calling from an API handler; omit it elsewhere.
+    """
+    conn = connection or _rq_connection()
+    q = Queue(_QUEUE_DEFAULT, connection=conn)
+    return enqueue_with_defaults(
+        q,
+        runner_fn,
+        payload,
+        job_id=payload.job_id,
+        retry=_batch_retry(),
+    )
+
+
+def enqueue_batch_continuation(
+    runner_fn: Callable[..., Any],
+    payload: Any,
+    *,
+    chunk_index: int,
+) -> Job:
+    """Re-enqueue the SAME runner for the next window.
+
+    Uses a distinct RQ ``job_id`` per chunk (RQ refuses to re-create a
+    finished id) while the progress hash stays keyed by
+    ``payload.job_id`` so cancel/poll remain stable. Builds its own
+    connection because this runs inside a worker, not a request.
+    """
+    q = Queue(_QUEUE_DEFAULT, connection=_rq_connection())
+    return enqueue_with_defaults(
+        q,
+        runner_fn,
+        payload,
+        job_id=f"{payload.job_id}::c{int(chunk_index)}",
+        retry=_batch_retry(),
+    )
 
 
 # Priority lanes the worker drains, highest first. Single source of

@@ -185,6 +185,12 @@ export const samApi = {
       // dialog auto-enables this when any project class has a parent.
       resolve_hierarchy?: boolean;
       hierarchy_iou?: number;
+      // v3.33 — cross-class winner-takes-all NMS. Drops the lower-
+      // confidence annotation in any unrelated-class overlap above
+      // ``cross_class_iou``. Defers ancestor/descendant pairs to the
+      // hierarchy resolver. OFF by default; opt-in via dialog toggle.
+      resolve_cross_class?: boolean;
+      cross_class_iou?: number;
     },
   ): Promise<{
     annotations_created: number;
@@ -229,6 +235,12 @@ export const samApi = {
       // v3.31 — cross-class hierarchical NMS; see autoText.
       resolve_hierarchy?: boolean;
       hierarchy_iou?: number;
+      // v3.33 — cross-class winner-takes-all NMS. Drops the lower-
+      // confidence annotation in any unrelated-class overlap above
+      // ``cross_class_iou``. Defers ancestor/descendant pairs to the
+      // hierarchy resolver. OFF by default; opt-in via dialog toggle.
+      resolve_cross_class?: boolean;
+      cross_class_iou?: number;
     },
   ): Promise<{ job_id: string }> =>
     (

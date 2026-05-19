@@ -19,6 +19,7 @@ import { ACTIONS } from "@/lib/shortcuts/actions";
 import { shouldOpenCheatSheet } from "@/lib/cheat-sheet-hotkey";
 import { drainTextureLru, touchTextureLru } from "@/lib/texture-lru";
 import { findSnapTarget } from "@/lib/snap-target";
+import { inferenceErrorMessage } from "@/lib/inferenceErrors";
 
 /**
  * Capacity of the in-canvas texture LRU. The currently-displayed
@@ -5100,6 +5101,17 @@ function toolCursor(t: ToolName): string {
  * generic SAM failure.
  */
 export function describeSamError(err: unknown): string {
+  // First check the inference-admission error path (gpu_busy /
+  // gpu_oom_risk / model_service_unreachable / sam3_not_enabled). The
+  // api wraps these as ``detail: {code, message, ...}`` and the helper
+  // already has accurate, actionable copy. Without this delegation, a
+  // ``gpu_busy`` 503 from a concurrent batch falls through to the
+  // generic "SAM unavailable — model service is not running" branch
+  // below, which is misleading: the service is running, it's just
+  // saturated. See lib/inferenceErrors.ts for the mapping.
+  const inferenceMsg = inferenceErrorMessage(err);
+  if (inferenceMsg !== null) return inferenceMsg;
+
   // Axios error shape: ``err.response.data.{error,state,detail}``. The
   // api wraps structured payloads at the response root (FastAPI's
   // exception_handler unwraps a dict ``detail`` into the body), so

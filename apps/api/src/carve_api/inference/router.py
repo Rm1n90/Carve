@@ -341,29 +341,20 @@ def enqueue_batch_auto_annotate(
     # try/except returned a phantom job_id when Redis was unreachable
     # or the RQ enqueue raised. The frontend then polled forever showing
     # "Initialising…". 503 lets the user retry instead.
-    from rq import Queue
-
-    from carve_api.jobs.queue import enqueue_with_defaults
+    from carve_api.jobs.queue import enqueue_batch_job
 
     client = _redis_client_or_none()
     if client is None:
         raise HTTPException(status_code=503, detail="redis_unavailable")
     try:
-        q = Queue("default", connection=client)
-        # plan-09 task-09 — predict batches can run long; bump
-        # job_timeout to 2h so RQ doesn't reap the worker mid-batch.
-        # v3.22 — pin RQ's job_id to our progress key so the cancel
-        # endpoint can ``send_stop_job_command`` and free the
-        # single-worker queue immediately, instead of waiting for
-        # the in-flight asset's HTTP call to the model service to
-        # return at the next per-asset cancel checkpoint.
-        enqueue_with_defaults(
-            q,
-            run_batch_auto_annotate,
-            payload,
-            job_id=payload.job_id,
-            job_timeout=2 * 3600,
-        )
+        # Chunked + resumable: enqueue_batch_job pins RQ's job_id to our
+        # progress key (so the cancel endpoint's send_stop_job_command
+        # still frees the worker) and attaches an RQ Retry so even chunk
+        # 0 resumes from the cursor if its work-horse is killed. The
+        # per-chunk job_timeout (table-driven) is now only a hung-asset
+        # watchdog — the batch spans many chunks, so dataset size no
+        # longer races a fixed timeout (the v3600-image-batch failure).
+        enqueue_batch_job(run_batch_auto_annotate, payload, connection=client)
     except Exception as exc:
         log.exception("yolo_batch: enqueue failed")
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
@@ -374,7 +365,10 @@ def enqueue_batch_auto_annotate(
     # start, so a blip here only costs a brief "Initialising…".
     try:
         prepare_progress(
-            client, payload.job_id, count_assets_for_task(db, task_id)
+            client,
+            payload.job_id,
+            count_assets_for_task(db, task_id),
+            kind="yolo-predict-batch",
         )
     except Exception:  # noqa: BLE001
         log.warning("yolo_batch: prepare_progress failed", exc_info=True)
@@ -445,6 +439,9 @@ class SamAutoTextBatchIn(BaseModel):
     # v3.31 -- cross-class hierarchical NMS; see SamAutoTextIn.
     resolve_hierarchy: bool = Field(default=False)
     hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
+    # v3.33 -- cross-class winner-takes-all NMS; see SamAutoTextIn.
+    resolve_cross_class: bool = Field(default=False)
+    cross_class_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 @task_inference_router.post("/{task_id}/sam/auto-text-batch")
@@ -495,34 +492,33 @@ def enqueue_sam_auto_text_batch(
         ),
         resolve_hierarchy=payload.resolve_hierarchy,
         hierarchy_iou=payload.hierarchy_iou,
+        resolve_cross_class=payload.resolve_cross_class,
+        cross_class_iou=payload.cross_class_iou,
     )
     # Enqueue MUST surface failures loudly. Previously this was a
     # best-effort try/except that silently swallowed every error and
     # returned a phantom job_id — the frontend then polled a job that
     # never existed forever, rendering "Initialising…" with no error
     # toast. Surface 503 so the user can retry.
-    from rq import Queue
-    from carve_api.jobs.queue import enqueue_with_defaults
+    from carve_api.jobs.queue import enqueue_batch_job
 
     client = _redis_client_or_none()
     if client is None:
         raise HTTPException(status_code=503, detail="redis_unavailable")
     try:
-        q = Queue("default", connection=client)
-        # v3.22 — pin RQ's job_id (see YOLO enqueue above) so cancel
-        # can ``send_stop_job_command`` and free the worker.
-        enqueue_with_defaults(
-            q,
-            run_auto_text_batch,
-            job_payload,
-            job_id=job_payload.job_id,
-        )
+        # Chunked + resumable (see the YOLO-predict enqueue above): pins
+        # the RQ job_id to the progress key for cancel + attaches Retry
+        # so a killed chunk resumes from the cursor.
+        enqueue_batch_job(run_auto_text_batch, job_payload, connection=client)
     except Exception as exc:
         log.exception("sam_auto_text_batch: enqueue failed")
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     try:
         prepare_progress(
-            client, job_payload.job_id, count_assets_for_task(db, task_id)
+            client,
+            job_payload.job_id,
+            count_assets_for_task(db, task_id),
+            kind="sam-auto-text",
         )
     except Exception:  # noqa: BLE001
         log.warning("sam_auto_text_batch: prepare_progress failed", exc_info=True)
@@ -713,6 +709,14 @@ class SamAutoTextIn(BaseModel):
     # IS-A hierarchies the user encoded on the Class editor.
     resolve_hierarchy: bool = Field(default=False)
     hierarchy_iou: float = Field(default=0.7, ge=0.0, le=1.0)
+    # v3.33 -- cross-class winner-takes-all NMS. Drops the lower-
+    # confidence annotation in any UNRELATED-class overlap above
+    # ``cross_class_iou``. Defers ancestor/descendant pairs to the
+    # hierarchy resolver so the two never fight. OFF by default; the
+    # dialog toggle opts in. Targets the user-reported "motorbike
+    # tagged as racing car" false-positive case.
+    resolve_cross_class: bool = Field(default=False)
+    cross_class_iou: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class SamAutoTextOut(BaseModel):
@@ -814,6 +818,8 @@ def sam_auto_text_endpoint(
             epsilon_factor=payload.epsilon_factor,
             resolve_hierarchy=payload.resolve_hierarchy,
             hierarchy_iou=payload.hierarchy_iou,
+            resolve_cross_class=payload.resolve_cross_class,
+            cross_class_iou=payload.cross_class_iou,
         )
     except AutoTextNoEligibleClasses as exc:
         raise _http(exc) from exc
@@ -953,26 +959,23 @@ def enqueue_sam_auto_visual_batch(
         resolve_hierarchy=payload.resolve_hierarchy,
         hierarchy_iou=payload.hierarchy_iou,
     )
-    from rq import Queue
-    from carve_api.jobs.queue import enqueue_with_defaults
+    from carve_api.jobs.queue import enqueue_batch_job
 
     client = _redis_client_or_none()
     if client is None:
         raise HTTPException(status_code=503, detail="redis_unavailable")
     try:
-        q = Queue("default", connection=client)
-        enqueue_with_defaults(
-            q,
-            run_auto_visual_batch,
-            job_payload,
-            job_id=job_payload.job_id,
-        )
+        # Chunked + resumable (see the YOLO-predict enqueue above).
+        enqueue_batch_job(run_auto_visual_batch, job_payload, connection=client)
     except Exception as exc:
         log.exception("sam_auto_visual_batch: enqueue failed")
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     try:
         prepare_progress(
-            client, job_payload.job_id, count_assets_for_task(db, task_id)
+            client,
+            job_payload.job_id,
+            count_assets_for_task(db, task_id),
+            kind="sam-auto-visual",
         )
     except Exception:  # noqa: BLE001
         log.warning("sam_auto_visual_batch: prepare_progress failed", exc_info=True)
@@ -1608,28 +1611,23 @@ def enqueue_yoloe_batch(
         resolve_hierarchy=payload.resolve_hierarchy,
         hierarchy_iou=payload.hierarchy_iou,
     )
-    from rq import Queue
-
-    from carve_api.jobs.queue import enqueue_with_defaults
+    from carve_api.jobs.queue import enqueue_batch_job
 
     client = _redis_client_or_none()
     if client is None:
         raise HTTPException(status_code=503, detail="redis_unavailable")
     try:
-        q = Queue("default", connection=client)
-        enqueue_with_defaults(
-            q,
-            run_yoloe_batch,
-            job_payload,
-            job_id=job_payload.job_id,
-            job_timeout=2 * 3600,
-        )
+        # Chunked + resumable (see the YOLO-predict enqueue above).
+        enqueue_batch_job(run_yoloe_batch, job_payload, connection=client)
     except Exception as exc:
         log.exception("yoloe_batch: enqueue failed")
         raise HTTPException(status_code=503, detail="enqueue_failed") from exc
     try:
         prepare_progress(
-            client, job_payload.job_id, count_assets_for_task(db, task_id)
+            client,
+            job_payload.job_id,
+            count_assets_for_task(db, task_id),
+            kind="yoloe-batch",
         )
     except Exception:  # noqa: BLE001
         log.warning("yoloe_batch: prepare_progress failed", exc_info=True)
