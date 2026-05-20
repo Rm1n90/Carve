@@ -1,7 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
@@ -1102,15 +1102,21 @@ function FilteredTasksList({
   tasks,
   isLoading,
   hasAnyTasks,
+  projectClassesCount,
   renderClassesChip,
   renderMenu,
   renderActions,
   getToggleComplete,
+  onClassMismatch,
 }: {
   projectId: string;
   tasks: Task[];
   isLoading: boolean;
   hasAnyTasks: boolean;
+  /** Total project class count. ``null`` while the project classes query
+   *  is still loading — the per-row guard treats this as "skip the
+   *  mismatch check" so the user is never blocked by an in-flight query. */
+  projectClassesCount: number | null;
   renderClassesChip: (t: Task) => ReactNode;
   renderMenu: (t: Task) => ReactNode;
   renderActions?: (t: Task) => ReactNode;
@@ -1121,6 +1127,15 @@ function FilteredTasksList({
   getToggleComplete?: (
     t: Task,
   ) => { onToggle: (next: boolean) => void; pending: boolean };
+  /** Fires when the user clicks a task row whose effective class subset
+   *  is smaller than the project's full class set. The page renders a
+   *  dialog that lets the user open the task anyway or jump straight to
+   *  the Edit-classes flow so they can backfill the missing classes. */
+  onClassMismatch?: (
+    task: Task,
+    taskClassCount: number,
+    projectClassCount: number,
+  ) => void;
 }) {
   if (!isLoading && !hasAnyTasks) {
     return (
@@ -1165,19 +1180,203 @@ function FilteredTasksList({
       {tasks.map((t) => {
         const toggle = getToggleComplete?.(t);
         return (
-          <TaskRow
+          <TaskRowWithClassGuard
             key={t.id}
             projectId={projectId}
             task={t}
+            projectClassesCount={projectClassesCount}
             classesChip={renderClassesChip(t)}
             menuSlot={renderMenu(t)}
             actionsSlot={renderActions ? renderActions(t) : undefined}
             onToggleComplete={toggle?.onToggle}
             toggleCompletePending={toggle?.pending}
+            onClassMismatch={onClassMismatch}
           />
         );
       })}
     </ul>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-row guard that intercepts the task-row Link click when the task's
+// effective class subset is smaller than the project's full class set.
+//
+// The guard piggybacks on the same ``["task-classes", projectId, taskId]``
+// query already firing inside ``TaskClassesChip``, so subscribing here
+// costs no extra network — React Query dedupes by key. When ``projectClassesCount``
+// is null (page-level classes query still loading) the guard skips the
+// check and lets the Link navigate, so the user is never blocked by an
+// in-flight query.
+//
+// A task that opted into ``allowed_class_ids === null`` ("use all project
+// classes") is never flagged — it always tracks the project full set.
+// ---------------------------------------------------------------------------
+function TaskRowWithClassGuard({
+  projectId,
+  task,
+  projectClassesCount,
+  onClassMismatch,
+  classesChip,
+  menuSlot,
+  actionsSlot,
+  onToggleComplete,
+  toggleCompletePending,
+}: {
+  projectId: string;
+  task: Task;
+  projectClassesCount: number | null;
+  onClassMismatch?: (
+    task: Task,
+    taskClassCount: number,
+    projectClassCount: number,
+  ) => void;
+  classesChip: ReactNode;
+  menuSlot: ReactNode;
+  actionsSlot?: ReactNode;
+  onToggleComplete?: (next: boolean) => void;
+  toggleCompletePending?: boolean;
+}) {
+  const taskClassesQ = useQuery({
+    queryKey: ["task-classes", projectId, task.id],
+    queryFn: () => tasksApi.getClasses(projectId, task.id),
+  });
+
+  const handleClickIntercept = (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (!onClassMismatch) return;
+    const data = taskClassesQ.data;
+    // Skip when the query is mid-flight or the page-level project class
+    // count hasn't loaded — better to let navigation happen than to
+    // block the user on an in-flight query.
+    if (!data || projectClassesCount == null) return;
+    // ``null`` means "no override; use all project classes" — by
+    // definition there can be no missing classes for that task.
+    if (data.allowed_class_ids === null) return;
+    if (data.classes.length >= projectClassesCount) return;
+    e.preventDefault();
+    onClassMismatch(task, data.classes.length, projectClassesCount);
+  };
+
+  return (
+    <TaskRow
+      projectId={projectId}
+      task={task}
+      classesChip={classesChip}
+      menuSlot={menuSlot}
+      actionsSlot={actionsSlot}
+      onToggleComplete={onToggleComplete}
+      toggleCompletePending={toggleCompletePending}
+      onClickIntercept={onClassMismatch ? handleClickIntercept : undefined}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dialog shown when the user clicks a task whose class subset is smaller
+// than the project's class set. Offers three actions:
+//   * Cancel — close, stay on the project page.
+//   * Open task — navigate to the editor anyway (the user accepts the
+//     missing classes; useful when the subset is intentional).
+//   * Add classes — open the existing Edit-classes dialog so the user
+//     can backfill the missing classes before opening the task.
+//
+// The page owns the navigation and the Edit-classes dialog target, so
+// this component is purely presentational — it just fires callbacks.
+// ---------------------------------------------------------------------------
+function TaskClassMismatchDialog({
+  task,
+  taskClassCount,
+  projectClassCount,
+  open,
+  onOpenAnyway,
+  onAddClasses,
+  onClose,
+}: {
+  task: Task | null;
+  taskClassCount: number;
+  projectClassCount: number;
+  open: boolean;
+  onOpenAnyway: () => void;
+  onAddClasses: () => void;
+  onClose: () => void;
+}) {
+  const missing = Math.max(projectClassCount - taskClassCount, 0);
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent
+        className="w-[min(92vw,480px)]"
+        data-testid="task-class-mismatch-dialog"
+      >
+        <DialogHeader>
+          <DialogTitle>Task is missing some project classes</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-3 text-[13px] text-[color:var(--text-secondary)]">
+          <p>
+            <strong className="text-[color:var(--text-primary)]">
+              {task?.name}
+            </strong>{" "}
+            uses{" "}
+            <span className="font-mono tabular-nums text-[color:var(--text-primary)]">
+              {taskClassCount}
+            </span>{" "}
+            of{" "}
+            <span className="font-mono tabular-nums text-[color:var(--text-primary)]">
+              {projectClassCount}
+            </span>{" "}
+            project classes —{" "}
+            <span className="font-mono tabular-nums text-[color:var(--danger)]">
+              {missing}
+            </span>{" "}
+            {missing === 1 ? "class is" : "classes are"} missing from this
+            task.
+          </p>
+          <p className="text-[12px] text-[color:var(--text-tertiary)]">
+            You can open the task with its current subset, or add the
+            missing classes first so you don't forget about them later.
+          </p>
+        </div>
+        <DialogFooter>
+          <button
+            type="button"
+            onClick={onClose}
+            data-testid="task-class-mismatch-cancel"
+            className={cn(
+              "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px]",
+              "border border-[var(--border-subtle)] hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onOpenAnyway}
+            data-testid="task-class-mismatch-open-anyway"
+            className={cn(
+              "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px]",
+              "border border-[var(--border-subtle)] hover:bg-[var(--bg-hover)]",
+            )}
+          >
+            Open task
+          </button>
+          <button
+            type="button"
+            onClick={onAddClasses}
+            data-testid="task-class-mismatch-add-classes"
+            className={cn(
+              "h-8 px-3 rounded-[var(--radius-sm)] text-[12.5px] font-medium",
+              "bg-[var(--accent)] text-[color:var(--accent-fg)] hover:opacity-90",
+            )}
+          >
+            Add classes
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1234,6 +1433,26 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   // pattern; the dialog reused here is the same one mounted from the
   // task page's toolbar.
   const [importTaskTarget, setImportTaskTarget] = useState<Task | null>(null);
+
+  // Task-class-mismatch dialog: when the user clicks a task whose
+  // ``allowed_class_ids`` is a strict subset of the project's classes,
+  // we intercept the row's Link click and show this dialog so the user
+  // can open the task anyway or backfill the missing classes first.
+  const [mismatchTarget, setMismatchTarget] = useState<{
+    task: Task;
+    taskClassCount: number;
+    projectClassCount: number;
+  } | null>(null);
+  const navigate = useNavigate();
+
+  // Page-level project classes query — drives the mismatch comparison.
+  // Sharing the ``["classes", projectId]`` key with the EditTaskClasses
+  // dialog and ClassesEditor means we don't double-fetch.
+  const projectClassesPageQ = useQuery({
+    queryKey: ["classes", projectId],
+    queryFn: () => classesApi.listForProject(projectId),
+  });
+  const projectClassesCount = projectClassesPageQ.data?.length ?? null;
 
   // Plan 14 Phase 8 Task 2 — Tasks-toolbar state. Search is filtered
   // case-insensitively against task name; status uses the existing
@@ -1880,6 +2099,14 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                 tasks={filteredTasks}
                 isLoading={tasksQ.isLoading}
                 hasAnyTasks={(tasksQ.data?.length ?? 0) > 0}
+                projectClassesCount={projectClassesCount}
+                onClassMismatch={(task, taskClassCount, projectClassCount) =>
+                  setMismatchTarget({
+                    task,
+                    taskClassCount,
+                    projectClassCount,
+                  })
+                }
                 getToggleComplete={(t) => ({
                   onToggle: (next) =>
                     markComplete.mutate({ taskId: t.id, completed: next }),
@@ -2256,6 +2483,31 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
         task={classesTarget}
         open={classesTarget !== null}
         onClose={() => setClassesTarget(null)}
+      />
+
+      {/* Task-class-mismatch dialog — warns before opening a task whose
+          class subset is smaller than the project's full class set. */}
+      <TaskClassMismatchDialog
+        task={mismatchTarget?.task ?? null}
+        taskClassCount={mismatchTarget?.taskClassCount ?? 0}
+        projectClassCount={mismatchTarget?.projectClassCount ?? 0}
+        open={mismatchTarget !== null}
+        onClose={() => setMismatchTarget(null)}
+        onOpenAnyway={() => {
+          if (!mismatchTarget) return;
+          const taskId = mismatchTarget.task.id;
+          setMismatchTarget(null);
+          navigate({
+            to: "/projects/$projectId/tasks/$taskId",
+            params: { projectId, taskId },
+          });
+        }}
+        onAddClasses={() => {
+          if (!mismatchTarget) return;
+          const task = mismatchTarget.task;
+          setMismatchTarget(null);
+          setClassesTarget(task);
+        }}
       />
 
       {/* v3.4+ Phase 5 Task 6 — Retrain YOLO dialog. */}

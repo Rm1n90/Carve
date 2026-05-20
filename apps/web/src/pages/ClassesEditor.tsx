@@ -624,7 +624,7 @@ function ClassEditorRow({
 // Renders as a compact pill on the right side of each class row:
 //   * "↑ Specialization of <Parent>" with the parent's color dot, when
 //     parent_class_id is set.
-//   * "↑ Set parent" muted hint, when null.
+//   * "↑ Parent" muted hint, when null.
 //
 // Clicking the pill opens a Popover with the eligible-parent list:
 //   * "None (top-level)" at top.
@@ -759,7 +759,7 @@ function ParentPickerPill({
               <span className="truncate max-w-[140px]">{parent.name}</span>
             </>
           ) : (
-            <span>Set parent</span>
+            <span>Parent</span>
           )}
         </button>
       </PopoverTrigger>

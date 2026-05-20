@@ -70,6 +70,11 @@ interface TaskRowProps {
   /** Plan-21 — true while the toggle PATCH is in flight (disables
    *  the button so double-clicks don't fire two requests). */
   toggleCompletePending?: boolean;
+  /** Fires when the row's main Link is clicked. If the handler calls
+   *  ``e.preventDefault()`` the navigation is suppressed and the parent
+   *  takes over (used by the class-mismatch dialog flow so the user is
+   *  warned before opening a task whose class subset is missing items). */
+  onClickIntercept?: (e: MouseEvent<HTMLAnchorElement>) => void;
 }
 
 function formatPct(pct: number | null | undefined): string | null {
@@ -91,6 +96,7 @@ export function TaskRow({
   actionsSlot,
   onToggleComplete,
   toggleCompletePending = false,
+  onClickIntercept,
 }: TaskRowProps) {
   const annotated = formatPct(annotatedPct);
   const accepted = formatPct(acceptedPct);
@@ -130,6 +136,7 @@ export function TaskRow({
         to="/projects/$projectId/tasks/$taskId"
         params={{ projectId, taskId: task.id }}
         data-testid={`project-detail-task-row-${task.id}`}
+        onClick={onClickIntercept}
         className={cn(
           "flex flex-1 items-center gap-3 px-3 py-2 min-w-0",
           // Plan-21 — dim the row body when completed; the pill itself
