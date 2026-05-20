@@ -99,6 +99,9 @@ def open_session(payload: OpenSessionIn) -> OpenSessionOut:
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ts.TrackGpuExhausted as exc:
+        logger.error("open_session_gpu_oom frames=%d", len(payload.frame_urls))
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return OpenSessionOut(
@@ -131,6 +134,9 @@ def add_prompt(sid: str, payload: PromptIn) -> FrameMasksOut:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ts.TrackGpuExhausted as exc:
+        logger.error("add_prompt_gpu_oom sid=%s", sid)
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("add_prompt_failed sid=%s", sid)
         raise HTTPException(
@@ -195,6 +201,13 @@ def propagate_stream(sid: str, payload: PropagateIn) -> StreamingResponse:
                 yield (json.dumps(line) + "\n").encode()
         except LookupError as exc:
             yield (json.dumps({"__error__": str(exc), "code": 404}) + "\n").encode()
+        except ts.TrackGpuExhausted as exc:
+            logger.error("propagate_stream_gpu_oom sid=%s", sid)
+            yield (json.dumps({
+                "__error__": str(exc),
+                "code": 507,
+                "error_code": "track_gpu_exhausted",
+            }) + "\n").encode()
         except Exception as exc:  # noqa: BLE001
             logger.exception("propagate_stream_failed sid=%s", sid)
             yield (json.dumps({"__error__": repr(exc), "code": 502}) + "\n").encode()

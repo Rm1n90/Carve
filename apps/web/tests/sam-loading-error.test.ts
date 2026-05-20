@@ -245,34 +245,43 @@ describe("SamTool.addClick — loading error path", () => {
 });
 
 describe("SamTool.setBox — loading error path", () => {
+  // setBox now retries on SamLoadingError (bounded, 4 attempts with
+  // 1.5s backoff) to absorb the SAM model warmup window the user hit
+  // as "fails then suddenly works". The tests below use a steady
+  // loading-503 mock so every retry attempt rejects; the final
+  // attempt's error propagates as a SamLoadingError.
   it("on activate-time loading: throws, no box stored", async () => {
-    (samApi.encode as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+    vi.useFakeTimers();
+    (samApi.encode as ReturnType<typeof vi.fn>).mockRejectedValue(
       loading503("loading"),
     );
     const tool = new SamTool("a", () => "c-1", () => null);
     tool.setMode("box");
-    await expect(
-      tool.setBox([0, 0, 10, 10]),
-    ).rejects.toBeInstanceOf(SamLoadingError);
+    const p = tool.setBox([0, 0, 10, 10]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(p).rejects.toBeInstanceOf(SamLoadingError);
     expect(tool.getBox()).toBeNull();
+    vi.useRealTimers();
   });
 
   it("on decode-time loading: clears the box AND invalidates encoding", async () => {
-    (samApi.encode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    vi.useFakeTimers();
+    (samApi.encode as ReturnType<typeof vi.fn>).mockResolvedValue({
       image_hash: "h" + "0".repeat(31),
       shape: [10, 10],
     });
-    (samApi.decode as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+    (samApi.decode as ReturnType<typeof vi.fn>).mockRejectedValue(
       loading503("loading"),
     );
     const tool = new SamTool("a", () => "c-1", () => null);
     tool.setMode("box");
     await tool.activate();
-    await expect(
-      tool.setBox([0, 0, 10, 10]),
-    ).rejects.toBeInstanceOf(SamLoadingError);
+    const p = tool.setBox([0, 0, 10, 10]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(p).rejects.toBeInstanceOf(SamLoadingError);
     expect(tool.getBox()).toBeNull();
     expect(tool.isReady()).toBe(false);
+    vi.useRealTimers();
   });
 });
 

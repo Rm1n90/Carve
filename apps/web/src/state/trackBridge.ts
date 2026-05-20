@@ -26,13 +26,41 @@ interface State {
   totalFrames: number;
   framesPropagated: number;
   errorMessage: string | null;
+  /** Absolute asset frame index where the open session's window
+   *  starts (inclusive). ``null`` when no session is open. Stored on
+   *  the bridge — not on the panel-scoped TrackTool — so the value
+   *  survives panel unmount/remount (e.g., user switches to bbox
+   *  mode and back) and auto-track can pick up the open session. */
+  windowStart: number | null;
+  /** Last absolute asset frame index inside the open session's
+   *  window (inclusive). ``null`` when no session is open. */
+  windowEnd: number | null;
   objects: Map<number, TrackedObject>;
   trackIds: Map<number, string>;
   masksByFrame: Map<number, Map<number, RleMask>>;
+  /** True while ``TrackTool.autoTrackToEnd`` is iterating windows. The
+   *  panel and the badge read this to switch their copy from "one
+   *  window" to "auto-tracking N / M windows". */
+  autoTracking: boolean;
+  /** Approximate count of windows the auto-track loop expects to
+   *  cover (computed once at start from the remaining frames and the
+   *  initial window size). */
+  autoTotalWindows: number;
+  /** Number of windows already fully propagated (excludes the in-flight
+   *  one). */
+  autoCompletedWindows: number;
+  /** Last absolute asset frame index the auto-track loop must cover
+   *  (the video's last frame). */
+  autoLastFrame: number;
 }
 
 interface Actions {
-  setSession(sessionId: string, totalFrames: number): void;
+  setSession(
+    sessionId: string,
+    totalFrames: number,
+    windowStart?: number,
+    windowEnd?: number,
+  ): void;
   setStatus(status: TrackStatus, message?: string): void;
   setFramesPropagated(n: number): void;
   registerObject(obj: TrackedObject): void;
@@ -42,6 +70,15 @@ interface Actions {
   hitTest(frameIdx: number, x: number, y: number): number | null;
   collectTrackIds(): string[];
   reset(): void;
+  /** Start / update / clear auto-track progress counters. Pass
+   *  ``{ autoTracking: false }`` to mark the loop done; the totals stay
+   *  for one more render so the user sees the final window count. */
+  setAutoTracking(opts: {
+    autoTracking: boolean;
+    autoTotalWindows?: number;
+    autoCompletedWindows?: number;
+    autoLastFrame?: number;
+  }): void;
 }
 
 type TrackBridge = State & Actions;
@@ -52,6 +89,12 @@ const initial: State = {
   totalFrames: 0,
   framesPropagated: 0,
   errorMessage: null,
+  windowStart: null,
+  windowEnd: null,
+  autoTracking: false,
+  autoTotalWindows: 0,
+  autoCompletedWindows: 0,
+  autoLastFrame: 0,
   objects: new Map(),
   trackIds: new Map(),
   masksByFrame: new Map(),
@@ -82,8 +125,14 @@ function pointInPolygon(x: number, y: number, poly: [number, number][]): boolean
 export const useTrackBridge = create<TrackBridge>((set, get) => ({
   ...initial,
 
-  setSession: (sessionId, totalFrames) =>
-    set({ sessionId, totalFrames, status: "seeding" }),
+  setSession: (sessionId, totalFrames, windowStart, windowEnd) =>
+    set({
+      sessionId,
+      totalFrames,
+      status: "seeding",
+      windowStart: typeof windowStart === "number" ? windowStart : null,
+      windowEnd: typeof windowEnd === "number" ? windowEnd : null,
+    }),
 
   setStatus: (status, message) =>
     set({ status, errorMessage: message ?? null }),
@@ -148,12 +197,31 @@ export const useTrackBridge = create<TrackBridge>((set, get) => ({
   collectTrackIds: () => Array.from(get().trackIds.values()),
 
   reset: () =>
-    set({
+    set((s) => ({
       ...initial,
+      // Preserve auto-track progress across in-loop session resets so
+      // the badge keeps counting up; the loop driver clears it when it
+      // exits via setAutoTracking({autoTracking: false}).
+      autoTracking: s.autoTracking,
+      autoTotalWindows: s.autoTracking ? s.autoTotalWindows : 0,
+      autoCompletedWindows: s.autoTracking ? s.autoCompletedWindows : 0,
+      autoLastFrame: s.autoTracking ? s.autoLastFrame : 0,
+      // windowStart/windowEnd reset to null — the next openSession
+      // populates them with the new window's bounds.
+      windowStart: null,
+      windowEnd: null,
       objects: new Map(),
       trackIds: new Map(),
       masksByFrame: new Map(),
-    }),
+    })),
+
+  setAutoTracking: (opts) =>
+    set((s) => ({
+      autoTracking: opts.autoTracking,
+      autoTotalWindows: opts.autoTotalWindows ?? s.autoTotalWindows,
+      autoCompletedWindows: opts.autoCompletedWindows ?? s.autoCompletedWindows,
+      autoLastFrame: opts.autoLastFrame ?? s.autoLastFrame,
+    })),
 }));
 
 (useTrackBridge as unknown as { getInitialState: () => State }).getInitialState =

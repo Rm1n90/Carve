@@ -221,6 +221,95 @@ def _force_rebuild_predictor() -> None:
     _PREDICTOR = None
 
 
+class TrackGpuExhausted(RuntimeError):
+    """Raised when CUDA OOM trips during start_session / add_prompt.
+
+    Distinct from a generic RuntimeError so the HTTP router can map it
+    to a 507 with a friendly user-facing message ("GPU memory full —
+    try a smaller window or close the previous session") instead of a
+    generic 502.
+    """
+
+
+def _drain_gpu_state() -> None:
+    """Aggressive multi-pass GPU drain.
+
+    The sam3 native ``handle_request({"type": "close_session"})`` call
+    pops the inference state dict, but Python reference cycles (Tensors
+    pointed at by Tensors via grad fns / buffers / IPC handles) keep
+    the underlying CUDA memory pinned until the cyclic collector runs
+    multiple times. A single pass leaves ~7 GB held per closed session;
+    three gc rounds plus ``ipc_collect`` plus a second empty_cache pass
+    reliably return per-session allocations to the OS so the next
+    window's open_session has the full budget available.
+    """
+    try:
+        import gc as _gc
+        for _ in range(3):
+            _gc.collect()
+    except Exception:  # noqa: BLE001
+        pass
+    if _CUDA_DEVICE_INDEX is None:
+        return
+    try:
+        import torch  # type: ignore[import-not-found]
+        with _device_ctx():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:  # noqa: BLE001
+                pass
+            # Second pass — empty_cache only releases blocks that
+            # weren't in use at the moment of the call. After gc breaks
+            # remaining cycles a second pass picks up the stragglers.
+            try:
+                import gc as _gc
+                _gc.collect()
+            except Exception:  # noqa: BLE001
+                pass
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("track_session: GPU drain best-effort failed: %s", exc)
+
+
+def _pop_predictor_state(native_session_id: str) -> None:
+    """Drop the predictor's stored inference state for a session.
+
+    Defensive backup for sam3 versions that leak
+    ``_all_inference_states[sid]`` when handle_request close_session
+    raises mid-call. Best-effort.
+    """
+    if _PREDICTOR is None:
+        return
+    try:
+        states = getattr(_PREDICTOR, "_all_inference_states", None)
+        if isinstance(states, dict):
+            states.pop(native_session_id, None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "track_session: predictor state pop failed sid=%s: %s",
+            native_session_id, exc,
+        )
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """True when ``exc`` is (or wraps) a CUDA OOM."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        name = type(cur).__name__
+        if name == "OutOfMemoryError":
+            return True
+        msg = str(cur)
+        if "CUDA out of memory" in msg or "out of memory" in msg.lower():
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def open_session(
     *,
     frame_urls: list[str],
@@ -230,29 +319,41 @@ def open_session(
     # v3.27.4 — single-session policy. The SAM 3.1 multiplex inference
     # state grows to ~10 GB per asset (446-frame clip) once SAM2
     # propagation has run; on a single 24 GB GPU two concurrent
-    # sessions reliably trip
-    #   torch.OutOfMemoryError: CUDA out of memory.
-    # Evict every prior session before starting a new one and ask the
-    # CUDA allocator to release fragmented blocks back to the driver
-    # so the new session has a clean budget.
+    # sessions reliably trip ``torch.OutOfMemoryError: CUDA out of
+    # memory``. Evict every prior session, drop their predictor state,
+    # then drain the allocator + run gc so reference-cycle-pinned
+    # tensors actually go away before we ask the GPU for ~10 GB more.
     with _LOCK:
-        prior = list(_SESSIONS.keys())
-    for sid in prior:
+        prior_records = [
+            (sid, _SESSIONS[sid].native_session_id) for sid in list(_SESSIONS)
+        ]
+    for sid, _ in prior_records:
         close_session(sid)
-    if prior:
-        try:
-            import torch  # type: ignore[import-not-found]
-            torch.cuda.empty_cache()
-        except Exception:  # noqa: BLE001
-            pass
+    for _, native_sid in prior_records:
+        _pop_predictor_state(native_sid)
+    if prior_records:
+        _drain_gpu_state()
 
     frame_dir = ensure_cached(asset_hash=asset_hash, frame_urls=frame_urls)
     predictor = _get_predictor()
-    with _device_ctx():
-        resp = predictor.handle_request({
-            "type": "start_session",
-            "resource_path": str(frame_dir),
-        })
+    try:
+        with _device_ctx():
+            resp = predictor.handle_request({
+                "type": "start_session",
+                "resource_path": str(frame_dir),
+            })
+    except Exception as exc:  # noqa: BLE001
+        if _is_cuda_oom(exc):
+            # One more aggressive drain so a half-loaded session doesn't
+            # permanently squat on GPU.
+            _drain_gpu_state()
+            raise TrackGpuExhausted(
+                f"GPU memory exhausted while starting a "
+                f"{len(frame_urls)}-frame session. Close any other tracking "
+                f"sessions or reduce the window size, then retry. "
+                f"Underlying error: {exc!r}",
+            ) from exc
+        raise
     if not isinstance(resp, dict) or "session_id" not in resp:
         raise RuntimeError(
             f"start_session_unexpected_response: {resp!r}",
@@ -291,6 +392,11 @@ def close_session(session_id: str) -> bool:
             })
     except Exception as exc:  # noqa: BLE001
         logger.warning("close_session best-effort failed: %s", exc)
+    # Drop the predictor's stored state defensively and reclaim GPU.
+    # Without this, repeated open/close cycles eventually OOM because
+    # closed sessions' tensors linger via reference cycles.
+    _pop_predictor_state(sess.native_session_id)
+    _drain_gpu_state()
     return True
 
 
@@ -499,7 +605,18 @@ def add_prompt(
                     "track_session: cached_frame_outputs preseed skipped: %s",
                     exc,
                 )
-        resp = predictor.handle_request(request)
+        try:
+            resp = predictor.handle_request(request)
+        except Exception as exc:
+            if _is_cuda_oom(exc):
+                _drain_gpu_state()
+                raise TrackGpuExhausted(
+                    "GPU memory exhausted during add_prompt — typically a "
+                    "stale tracking session is still holding GPU. Close the "
+                    "session and reopen it on a smaller frame window. "
+                    f"Underlying error: {exc!r}",
+                ) from exc
+            raise
     return _extract_masks(resp)
 
 
@@ -552,17 +669,33 @@ def propagate_stream(
         stream = predictor.handle_stream_request(request)
         with_masks = 0
         total = 0
-        for resp in stream:
-            f = int(resp.get("frame_index", 0))
-            if start_frame is not None and f < start_frame:
-                continue
-            if end_frame is not None and f > end_frame:
-                break
-            masks = _extract_masks(resp)
-            total += 1
-            if masks:
-                with_masks += 1
-            yield {"frame_idx": f, "masks": masks}
+        try:
+            for resp in stream:
+                f = int(resp.get("frame_index", 0))
+                if start_frame is not None and f < start_frame:
+                    continue
+                if end_frame is not None and f > end_frame:
+                    break
+                masks = _extract_masks(resp)
+                total += 1
+                if masks:
+                    with_masks += 1
+                yield {"frame_idx": f, "masks": masks}
+        except Exception as exc:
+            # Map CUDA OOM in the propagate iterator to the friendly
+            # TrackGpuExhausted exception so the router can return a
+            # 507 instead of a generic 502. Without this, the user sees
+            # an opaque "propagate_stream_failed" toast and the
+            # auto-track loop bubbles the same generic message.
+            if _is_cuda_oom(exc):
+                _drain_gpu_state()
+                raise TrackGpuExhausted(
+                    "GPU memory exhausted during propagate_in_video — "
+                    "the current window is too large for the available "
+                    "GPU budget. Stop, close the session, and reopen "
+                    f"with a smaller window. Underlying error: {exc!r}",
+                ) from exc
+            raise
         logger.warning(
             "track_session.propagate_stream sid=%s start=%s end=%s "
             "yielded=%d with_masks=%d",

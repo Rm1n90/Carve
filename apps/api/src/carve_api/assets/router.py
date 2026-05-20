@@ -471,14 +471,31 @@ def delete_asset(
 from carve_api.inference import track as track_proxy
 
 
+class TrackOpenIn(BaseModel):
+    """Optional window for the SAM 3.1 tracking session.
+
+    Both bounds are absolute asset frame indices (inclusive). Defaults
+    open the session over every extracted frame, matching the legacy
+    behaviour. For long videos the client SHOULD pass a window
+    (typically 500-1000 frames) so the model service doesn't OOM
+    loading 30 k frames into GPU state at once.
+    """
+
+    start_frame: int | None = Field(default=None, ge=0)
+    end_frame: int | None = Field(default=None, ge=0)
+
+
 class TrackOpenOut(BaseModel):
     session_id: str
     frame_count: int
+    start_frame: int = 0
+    end_frame: int = 0
 
 
 @asset_router.post("/{asset_id}/track/sessions", response_model=TrackOpenOut)
 def track_open(
     asset_id: uuid.UUID,
+    payload: TrackOpenIn | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TrackOpenOut:
@@ -491,8 +508,13 @@ def track_open(
         require_visible_task(db, user, a.task_id)
     except AppError as exc:
         raise _http(exc) from exc
+    p = payload or TrackOpenIn()
     try:
-        body = track_proxy.open_session(a)
+        body = track_proxy.open_session(
+            a,
+            start_frame=int(p.start_frame or 0),
+            end_frame=p.end_frame,
+        )
     except AppError as exc:
         raise _http(exc) from exc
     return TrackOpenOut(**body)

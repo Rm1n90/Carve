@@ -51,6 +51,10 @@ function getStatusCode(err: unknown): number | null {
   return null;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Distinguishes "SAM model is still loading" from a hard failure.
  *
@@ -231,6 +235,69 @@ export class SamTool {
   }
 
   /**
+   * ``activate()`` with bounded retries on 503 ``sam_not_ready``. The
+   * model service can take 1–3s to warm the SAM weights on the first
+   * box prompt after process start / variant switch; without retry the
+   * user has to click again ("fails then suddenly works"). Retries on
+   * SamLoadingError only — all other failures propagate immediately.
+   */
+  private async activateWithLoadingRetry(): Promise<void> {
+    const maxAttempts = 4;
+    const delayMs = 1500;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.activate();
+        return;
+      } catch (err) {
+        const loading = asSamLoadingError(err);
+        if (loading && attempt < maxAttempts) {
+          await sleep(delayMs);
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  /**
+   * ``samApi.decode`` for box prompts with bounded retries on 503
+   * ``sam_not_ready``. Reuses the same image_hash / box across retries
+   * (the encode lives on the server). Aborts propagate; 409 stays in
+   * the caller's re-sync branch.
+   */
+  private async decodeBoxWithLoadingRetry(
+    box: SamBox,
+    signal: AbortSignal,
+  ): Promise<SamDecodeResult> {
+    const maxAttempts = 4;
+    const delayMs = 1500;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await samApi.decode(
+          this.assetId,
+          this.imageHash!,
+          [],
+          [],
+          signal,
+          box,
+          currentEpsilonFactor(),
+        );
+      } catch (err) {
+        if (signal.aborted) throw err;
+        const loading = asSamLoadingError(err);
+        if (loading && attempt < maxAttempts) {
+          lastErr = err;
+          await sleep(delayMs);
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr ?? new Error("sam_decode_retry_exhausted");
+  }
+
+  /**
    * Drop every cached piece of state tied to the previously-encoded
    * model: the image hash, any in-flight decode, and the live preview.
    * Used when the user hot-swaps SAM variants — the new model has its
@@ -360,10 +427,10 @@ export class SamTool {
     if (this.mode !== "box") return null;
     // Self-healing: if a prior activate() failed (e.g. the user clicked
     // during a variant hot-swap and got a 503 sam_not_ready), re-attempt
-    // encoding now. Any failure propagates upward so describeSamError
-    // can surface a friendly toast instead of silently no-op'ing.
+    // encoding now with bounded retries — the warmup window is the
+    // exact symptom the user described ("fails then suddenly works").
     if (this.imageHash === null) {
-      await this.activate();
+      await this.activateWithLoadingRetry();
       if (this.imageHash === null) return null;
     }
     this.boxes = [box];
@@ -375,15 +442,7 @@ export class SamTool {
     const ac = new AbortController();
     this.inFlight = ac;
     try {
-      const result = await samApi.decode(
-        this.assetId,
-        this.imageHash,
-        [],
-        [],
-        ac.signal,
-        box,
-        currentEpsilonFactor(),
-      );
+      const result = await this.decodeBoxWithLoadingRetry(box, ac.signal);
       if (ac.signal.aborted) return this.lastResult;
       this.lastResult = result;
       return result;

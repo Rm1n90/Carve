@@ -544,7 +544,18 @@ def track_open_session(
         "image_size": [int(image_size[0]), int(image_size[1])],
         "asset_hash": asset_hash,
     }
-    with _wrap_unreachable("track_open_session"), _client() as c:
+    # open_session has to load every extracted frame into the multiplex
+    # predictor (~55 frames/sec on a 24 GB GPU). A 2 230-frame clip is
+    # ~40 s; larger clips push past the default 120 s client timeout
+    # and the user sees a spurious "timeout" while the GPU is still
+    # genuinely warming. Override to 10 min for this single call.
+    s = get_settings()
+    timeout = max(float(s.model_timeout_seconds), 600.0)
+    with _wrap_unreachable("track_open_session"), httpx.Client(
+        base_url=s.model_base_url,
+        timeout=timeout,
+        transport=_TEST_TRANSPORT,
+    ) as c:
         r = c.post("/track/sessions", json=body)
         if r.status_code >= 400:
             raise ModelServiceError(r.status_code, _safe_json(r))

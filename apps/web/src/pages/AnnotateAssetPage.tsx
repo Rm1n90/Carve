@@ -43,6 +43,9 @@ import { ReviewPanel } from "@/components/annotation/ReviewPanel";
 import { AppearancePanel } from "@/components/annotation/AppearancePanel";
 import { TrackPanel } from "@/components/annotation/TrackPanel";
 import { TrackProgressBadge } from "@/components/annotation/TrackProgressBadge";
+import { useTrackBridge } from "@/state/trackBridge";
+import { useSamTrackBridge } from "@/state/samTrackBridge";
+import { trackApi } from "@/api/track";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { SelectionCountBadge } from "@/components/annotation/SelectionCountBadge";
@@ -388,7 +391,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // (extraction in progress / not yet started). Stops once any frame
   // is present so the editor doesn't keep hammering Redis.
   const isVideoAsset = assetQ.data?.asset.kind === "video";
-  const noFramesYet = (framesQ.data ?? []).length === 0;
+  // Only treat the asset as "missing frames" once the frames query has
+  // actually resolved at least once. Before that, ``framesQ.data`` is
+  // ``undefined`` and `(undefined ?? []).length === 0` evaluates true —
+  // which previously made every page refresh briefly look like an empty
+  // video and triggered the "Frames still extracting" toast / redirect
+  // even when 2 230 frames already existed in the DB.
+  const noFramesYet = framesQ.isFetched && (framesQ.data ?? []).length === 0;
   const extractStatusQ = useQuery({
     queryKey: ["frame-extract-status", assetId],
     queryFn: () => assetsApi.frameExtractStatus(assetId),
@@ -401,13 +410,15 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // whose frames haven't been extracted AND there is no in-flight
   // extract job, send them back to the task page with an info toast.
   // Normal flow blocks the click via the AssetGrid card overlay; this
-  // catches stale URLs / direct-paste navigation.
+  // catches stale URLs / direct-paste navigation. Waits for BOTH the
+  // frames query and the extract-status query to resolve before
+  // deciding — premature redirect would trip on the initial undefined
+  // state of framesQ.data and bounce the user out on every refresh.
   useEffect(() => {
-    if (!isVideoAsset || !noFramesYet) return;
+    if (!isVideoAsset) return;
+    if (!framesQ.isFetched) return;
+    if (!noFramesYet) return;
     const status = extractStatusQ.data?.status;
-    // Wait for first poll resolution; only redirect when we've confirmed
-    // there is no in-flight extract (idle/completed/failed all mean the
-    // user shouldn't be sitting on an empty editor).
     if (status === undefined || status === "running") return;
     showToast("Frames still extracting — opening when ready", {
       variant: "info",
@@ -418,6 +429,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     });
   }, [
     isVideoAsset,
+    framesQ.isFetched,
     noFramesYet,
     extractStatusQ.data?.status,
     navigate,
@@ -973,6 +985,32 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     return unsub;
   }, []);
 
+  // Tracking-in-flight detection. The leave-guard must fire when the
+  // user has a Run-full-track propagation streaming, even if all the
+  // polygons already happen to be flushed — closing the tab would
+  // otherwise silently kill the propagation with no warning.
+  const trackRunning = useTrackBridge((s) => s.status === "running");
+  const trackRunningRef = useRef(trackRunning);
+  trackRunningRef.current = trackRunning;
+
+  /** Tear down a live tracking session on the way out so the model
+   *  service stops streaming + frees GPU. Best-effort — failures are
+   *  swallowed; the browser will also TCP-close the stream once it
+   *  navigates, which the model service handles via its existing
+   *  BrokenPipe path plus the 10-min idle eviction. */
+  async function stopTrackingForExit(): Promise<void> {
+    const sid = useTrackBridge.getState().sessionId;
+    if (!sid) return;
+    try {
+      await trackApi.close(assetId, sid);
+    } catch {
+      /* best-effort */
+    } finally {
+      useSamTrackBridge.getState().setMarkers([]);
+      useTrackBridge.getState().reset();
+    }
+  }
+
   // Exit-confirmation dialog. The blocker's ``shouldBlockFn`` returns
   // a Promise that resolves when the user clicks a button. Storing the
   // resolver here lets the buttons drive the promise from React state.
@@ -985,7 +1023,8 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const [exitSaving, setExitSaving] = useState(false);
 
   useBlocker({
-    enableBeforeUnload: () => dirtyCountRef.current > 0,
+    enableBeforeUnload: () =>
+      dirtyCountRef.current > 0 || trackRunningRef.current,
     shouldBlockFn: async ({ next }) => {
       // Don't gate movement inside the same task editor — the
       // asset-switch flush effect above already drains pending changes,
@@ -996,7 +1035,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       ) {
         return false;
       }
-      if (dirtyCountRef.current === 0) return false;
+      if (dirtyCountRef.current === 0 && !trackRunningRef.current) {
+        return false;
+      }
       return await new Promise<boolean>((resolve) => {
         setExitPrompt({ resolve });
       });
@@ -1021,12 +1062,14 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       } finally {
         setExitSaving(false);
       }
+      await stopTrackingForExit();
       setExitPrompt(null);
       prompt.resolve(false);
       return;
     }
     if (choice === "discard") {
       useAnnotations.getState().discardLocal();
+      await stopTrackingForExit();
       setExitPrompt(null);
       prompt.resolve(false);
       return;
@@ -1489,18 +1532,34 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     const sel = useAnnotations.getState().selectedId;
     if (sel) useAnnotations.getState().sendBackward(sel);
   });
-  // v3.8 Phase 4-video step F8 -- on video assets plain ArrowLeft/Right
-  // steps frames (FrameTimeline owns that handler); Shift+Arrow falls
-  // through to asset navigation. We mirror that gate here: bail out
-  // when on a video AND the user did NOT hold shift, regardless of
-  // whether the user customized the chord.
+  // v3.8 Phase 4-video step F8 — on video assets plain ArrowLeft/Right
+  // steps frames; Shift+Arrow navigates between assets. Frame stepping
+  // was previously delegated to FrameTimeline, but FrameTimeline only
+  // registers the bracket / comma variants — so plain Arrow on a video
+  // did nothing (the early-return swallowed it). Step frames here.
   useShortcutHandler("frame_prev", (e) => {
-    if (isVideoAsset && !e.shiftKey) return;
+    if (isVideoAsset && !e.shiftKey) {
+      const total = (framesQ.data ?? []).length;
+      if (total <= 1) return;
+      const step = Math.max(
+        1, Math.round(useEditorSettings.getState().playerStep),
+      );
+      setCurrentFrameIdx((idx) => Math.max(0, idx - step));
+      return;
+    }
     const target = navAssetRef.current.prev;
     if (target) goToAsset(target.id);
   });
   useShortcutHandler("frame_next", (e) => {
-    if (isVideoAsset && !e.shiftKey) return;
+    if (isVideoAsset && !e.shiftKey) {
+      const total = (framesQ.data ?? []).length;
+      if (total <= 1) return;
+      const step = Math.max(
+        1, Math.round(useEditorSettings.getState().playerStep),
+      );
+      setCurrentFrameIdx((idx) => Math.min(total - 1, idx + step));
+      return;
+    }
     const target = navAssetRef.current.next;
     if (target) goToAsset(target.id);
   });
@@ -2142,11 +2201,30 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       >
         <DialogContent className="w-[min(92vw,480px)]">
           <DialogHeader>
-            <DialogTitle>Unsaved annotations</DialogTitle>
+            <DialogTitle>
+              {trackRunning && dirtyCount === 0
+                ? "Tracking is in progress"
+                : trackRunning
+                  ? "Tracking is in progress — and you have unsaved annotations"
+                  : "Unsaved annotations"}
+            </DialogTitle>
             <DialogDescription>
-              You have {dirtyCount} unsaved annotation
-              {dirtyCount === 1 ? "" : "s"} that won&apos;t be sent to
-              the server if you leave now. What would you like to do?
+              {trackRunning && (
+                <span className="block mb-2">
+                  Run-full-track is still propagating across this
+                  window. Leaving now will stop the propagation — any
+                  frames not yet reached will be skipped. Already-tracked
+                  polygons stay saved on the asset.
+                </span>
+              )}
+              {dirtyCount > 0 && (
+                <span className="block">
+                  You have {dirtyCount} unsaved annotation
+                  {dirtyCount === 1 ? "" : "s"} that won&apos;t be sent
+                  to the server if you leave now.
+                </span>
+              )}
+              <span className="block mt-2">What would you like to do?</span>
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="flex-wrap gap-2 sm:flex-nowrap">
@@ -2156,23 +2234,27 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
               disabled={exitSaving}
               data-testid="exit-cancel"
             >
-              Cancel
+              {trackRunning ? "Keep tracking" : "Cancel"}
             </Button>
-            <Button
-              variant="danger"
-              onClick={() => void handleExitPrompt("discard")}
-              disabled={exitSaving}
-              data-testid="exit-discard"
-            >
-              Discard and exit
-            </Button>
+            {dirtyCount > 0 && (
+              <Button
+                variant="danger"
+                onClick={() => void handleExitPrompt("discard")}
+                disabled={exitSaving}
+                data-testid="exit-discard"
+              >
+                Discard and exit
+              </Button>
+            )}
             <Button
               variant="primary"
               onClick={() => void handleExitPrompt("save")}
               loading={exitSaving}
               data-testid="exit-save"
             >
-              Save and exit
+              {dirtyCount > 0
+                ? (trackRunning ? "Save, stop and exit" : "Save and exit")
+                : "Stop tracking and exit"}
             </Button>
           </DialogFooter>
         </DialogContent>

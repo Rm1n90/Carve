@@ -2648,11 +2648,19 @@ export function AnnotationCanvas({
     });
     const tag = new TagTool(getClass, getFrame, idGen);
 
-    if (tool === "sam") {
+    if (tool === "sam" && samMode !== "track") {
       // SAM activation calls /sam/encode. When the model service is offline
       // (audit bug 8a), the api now returns 503 model_service_unreachable.
       // Surface that to the user as a toast — without it the failed promise
       // would just become an unhandled rejection in the console.
+      //
+      // Skipped in track mode: track uses TrackTool (SAM 3.1 multiplex
+      // video predictor) — the SAM image predictor's /sam/encode is
+      // pure waste there AND it competes for GPU with the running
+      // propagation. Every frame nav while a track propagate was
+      // streaming triggered an encode that 503'd because the GPU was
+      // busy, surfacing as "SAM unavailable — model service is not
+      // running." Track mode never needs this round-trip.
       //
       // v3.5 Phase C — first-encode after a model load can block 5-30s.
       // Open a status-polling overlay if activate() hasn't resolved
@@ -4028,7 +4036,7 @@ export function AnnotationCanvas({
       samTrackBoxDraftRef.current = null;
       unsubMaskRadius();
     };
-  }, [tool, activeClassId, frameId, imageSize, samTool, classMap, classesProp]);
+  }, [tool, samMode, activeClassId, frameId, imageSize, samTool, classMap, classesProp]);
 
   const crosshairsOn = useTool((s) => s.visibility.crosshairs);
   const showCrosshair =

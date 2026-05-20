@@ -152,6 +152,15 @@ def extract_frames_for_video(
     except (ValueError, AttributeError, ZeroDivisionError):
         fps = 0.0
 
+    # Capture video dimensions for downstream tools (e.g. SAM 3.1 track
+    # open_session needs Asset.width/height). Without this the Asset row
+    # stays NULL after extraction and Track open 422's.
+    try:
+        probe_w = int(v.get("width") or 0)
+        probe_h = int(v.get("height") or 0)
+    except (TypeError, ValueError):
+        probe_w, probe_h = 0, 0
+
     step = _resolve_step(strategy, total_frames, n)
 
     log.info(
@@ -328,10 +337,46 @@ def extract_frames_for_video(
                         pts_ms=pts_ms,
                     )
                 )
+            update_values: dict[str, int] = {"frames": len(kept)}
+            if probe_w > 0 and probe_h > 0:
+                update_values["width"] = probe_w
+                update_values["height"] = probe_h
             s.execute(
                 update(Asset)
                 .where(Asset.id == asset_uuid)
-                .values(frames=len(kept))
+                .values(**update_values)
+            )
+
+        # v3.31+ — generate the asset's tile thumbnail from the FIRST kept
+        # frame instead of from the original video. The original is
+        # deleted right after extraction (below), so the previous
+        # probe-based poster grab fails on a race where extraction wins
+        # the queue. Reading the first kept JPEG is deterministic, never
+        # races, and yields a thumbnail consistent with the extracted
+        # frame set. Best-effort: leave thumbnail_minio_key NULL on
+        # failure so the UI falls back to the camera icon.
+        try:
+            from carve_api.jobs.thumbs import (
+                _make_thumbnail_jpeg,
+                _persist_thumbnail_key,
+                thumbnail_key,
+            )
+
+            first_frame_bytes = kept[0][2]
+            thumb_bytes = _make_thumbnail_jpeg(first_frame_bytes)
+            thumb_key = thumbnail_key(asset_hash)
+            storage.put_object(
+                thumb_key,
+                BytesIO(thumb_bytes),
+                len(thumb_bytes),
+                "image/jpeg",
+            )
+            _persist_thumbnail_key(asset_id, thumb_key)
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "extract_frames_for_video: thumbnail generation failed for "
+                "asset %s; UI falls back to icon tile",
+                asset_id,
             )
 
         # v3.8 Phase 4-video step F5 — delete the original video file
