@@ -88,8 +88,10 @@ Reuses the same index. Both queries together are sub-millisecond on indexed look
 ### New endpoint
 
 ```
-GET /tasks/{task_id}/resume
+GET /projects/{project_id}/tasks/{task_id}/resume
 ```
+
+All task routes in this codebase are project-scoped (mounted via `projects/router.py`); the new route mirrors the existing `/projects/{project_id}/tasks/{task_id}/completion-status` shape.
 
 **Auth:** existing task-access middleware (user must be a project member with task visibility). The authenticated user is the `:user_id` — clients never pass a user id.
 
@@ -97,9 +99,10 @@ GET /tasks/{task_id}/resume
 
 ```json
 {
-  "last_frame_id": "f4e2…",
-  "annotated_count": 350,
-  "task_frame_count": 1000,
+  "last_asset_id": "a4e2…",
+  "last_frame_id": "f1b8…",
+  "annotated_assets": 350,
+  "total_assets": 1000,
   "last_activity_at": "2026-05-26T16:04:00Z"
 }
 ```
@@ -108,12 +111,15 @@ When the user has no annotations in this task:
 
 ```json
 {
+  "last_asset_id": null,
   "last_frame_id": null,
-  "annotated_count": 0,
-  "task_frame_count": 1000,
+  "annotated_assets": 0,
+  "total_assets": 1000,
   "last_activity_at": null
 }
 ```
+
+**Field-naming rationale:** `total_assets` and `annotated_assets` mirror the existing `TaskCompletionStatus` endpoint so future readers see one consistent vocabulary. Annotations are stored against frames, but the editor URL routes by asset — so the response returns both: `last_asset_id` (the routing key the banner uses) and `last_frame_id` (kept for future video deep-link).
 
 **Errors:** 401 unauthenticated, 403 no task access, 404 task not found. No bespoke error codes.
 
