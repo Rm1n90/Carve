@@ -1252,6 +1252,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       );
       return;
     }
+    if (curr.kind !== "image") {
+      showToast(
+        "Copy from previous asset is image-only in v1 (video coming soon).",
+        { variant: "info" },
+      );
+      return;
+    }
     const allowed = taskClassesQ.data?.allowed_class_ids ?? null;
     const allowedSet = allowed ? new Set<string>(allowed) : null;
 
@@ -1267,7 +1274,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       });
     } catch (err) {
       showToast(
-        err instanceof Error ? err.message : "Couldn't copy annotations.",
+        err instanceof Error
+          ? `Couldn't load source annotations: ${err.message}`
+          : "Couldn't load source annotations.",
         { variant: "error" },
       );
       return;
