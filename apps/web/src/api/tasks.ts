@@ -47,6 +47,22 @@ export interface TaskCompletionStatusResponse {
   percent: number;
 }
 
+/**
+ * Per-user resume payload returned by
+ * ``GET /projects/{pid}/tasks/{tid}/resume``. Drives the
+ * <ResumeProgressBanner /> on AnnotateAssetPage.
+ *
+ * All four ``last_*`` fields are null together when the user has no
+ * annotations in this task yet.
+ */
+export interface TaskResumeStatusResponse {
+  last_asset_id: string | null;
+  last_frame_id: string | null;
+  annotated_assets: number;
+  total_assets: number;
+  last_activity_at: string | null;
+}
+
 export interface ListTasksOptions {
   includeArchived?: boolean;
   onlyArchived?: boolean;
@@ -122,6 +138,18 @@ export const tasksApi = {
     (
       await api.get<TaskCompletionStatusResponse>(
         `/projects/${projectId}/tasks/${taskId}/completion-status`,
+      )
+    ).data,
+  // Per-user resume payload. Drives the editor's
+  // <ResumeProgressBanner />. The response shape mirrors the
+  // Pydantic ``TaskResumeStatus``.
+  resumeStatus: async (
+    projectId: string,
+    taskId: string,
+  ): Promise<TaskResumeStatusResponse> =>
+    (
+      await api.get<TaskResumeStatusResponse>(
+        `/projects/${projectId}/tasks/${taskId}/resume`,
       )
     ).data,
   delete: async (projectId: string, taskId: string): Promise<void> => {
