@@ -173,6 +173,7 @@ function useLiveShortcutGroups(): ShortcutGroup[] {
     group_assets: chordTokens(useShortcut("group_assets")),
     // v3.x annotator-accelerators batch.
     copy_from_previous_asset: chordTokens(useShortcut("copy_from_previous_asset")),
+    copy_from_any_asset: chordTokens(useShortcut("copy_from_any_asset")),
     skip_next_empty: chordTokens(useShortcut("skip_next_empty")),
     skip_prev_empty: chordTokens(useShortcut("skip_prev_empty")),
     skip_next_unreviewed: chordTokens(useShortcut("skip_next_unreviewed")),
@@ -276,6 +277,7 @@ function useLiveShortcutGroups(): ShortcutGroup[] {
           { keys: t.paste, desc: "Paste" },
           { keys: t.duplicate, desc: "Duplicate selected" },
           { keys: t.copy_from_previous_asset, desc: "Copy annotations from previous asset" },
+          { keys: t.copy_from_any_asset, desc: "Copy annotations from any asset (opens picker)" },
           { keys: t.global_search, desc: "Global search" },
           { keys: ["L"], desc: "Lock / unlock selected" },
           { keys: ["?"], desc: "Show this cheat sheet" },
