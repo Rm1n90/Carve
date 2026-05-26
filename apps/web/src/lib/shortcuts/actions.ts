@@ -192,6 +192,14 @@ const list: ShortcutAction[] = [
       "Duplicate every annotation from the previous asset onto the current one. Sequential / similar-image datasets become 5–10× faster.",
   },
   {
+    id: "copy_from_any_asset",
+    label: "Copy annotations from any asset",
+    category: "Editor",
+    default: "shift+p",
+    description:
+      "Open a picker to copy every annotation from any asset in the task onto the current one. Right-click a thumbnail to use the menu instead.",
+  },
+  {
     id: "skip_next_empty",
     label: "Next empty asset",
     category: "Navigation",
