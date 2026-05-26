@@ -1370,28 +1370,51 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // line lights up without an extra network round-trip on confirm.
   // Shares its queryKey with the filter-active query above; TanStack
   // dedupes the request when both subscribers want fresh data.
-  // Realtime resyncs (``realtime/applyOps.ts:handleResyncMessage``)
-  // invalidate ``["task-annotations-raw", taskId]`` whenever a WebSocket
-  // op arrives. Without ``refetchOnMount: "always"`` the dialog can
-  // open on stale-but-cleared cache and report "Nothing to copy" for a
-  // source that actually has annotations. Forcing a refetch on mount
-  // ensures the breakdown always reflects the server's current state.
-  const copyDialogRawQ = useQuery({
-    queryKey: ["task-annotations-raw", taskId],
-    queryFn: () => annotationsApi.listForTaskRaw(taskId),
-    enabled: copyDialogSourceId !== null,
-    staleTime: 30_000,
-    refetchOnMount: "always",
-  });
+  // Imperative fetch driven by the dialog's open state. We deliberately
+  // do NOT use ``useQuery`` here — ``refetchOnMount: "always"`` only
+  // fires on observer mount (already happened at page mount), not on
+  // ``enabled`` flips, so the first dialog open after a realtime
+  // resync could leave isFetching=true forever (the auto-fetch gets
+  // cancelled by the invalidation before it completes). Driving the
+  // fetch via ``qc.fetchQuery`` in an effect makes it deterministic:
+  // exactly one fetch per dialog open, deduped against any other
+  // in-flight call to the same queryKey, immune to upstream
+  // invalidation.
+  const [breakdownRows, setBreakdownRows] = useState<
+    Awaited<ReturnType<typeof annotationsApi.listForTaskRaw>> | null
+  >(null);
+  const [breakdownLoading, setBreakdownLoading] = useState(false);
+  useEffect(() => {
+    if (!copyDialogSourceId) {
+      setBreakdownRows(null);
+      setBreakdownLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setBreakdownLoading(true);
+    setBreakdownRows(null);
+    qc.fetchQuery({
+      queryKey: ["task-annotations-raw", taskId],
+      queryFn: () => annotationsApi.listForTaskRaw(taskId),
+    })
+      .then((data) => {
+        if (cancelled) return;
+        setBreakdownRows(data);
+        setBreakdownLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setBreakdownLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [copyDialogSourceId, qc, taskId]);
 
   const copyDialogBreakdown: BreakdownCounts | "loading" | null = useMemo(() => {
     if (!copyDialogSourceId) return null;
-    // ``isFetching`` (not ``isLoading``) covers BOTH the initial fetch
-    // and post-invalidation refetches. Using ``isLoading`` alone makes
-    // the dialog briefly render an empty cache as "Nothing to copy"
-    // during a realtime-triggered refetch.
-    if (copyDialogRawQ.isFetching || !copyDialogRawQ.data) return "loading";
-    const rows = copyDialogRawQ.data.filter(
+    if (breakdownLoading || !breakdownRows) return "loading";
+    const rows = breakdownRows.filter(
       (r) => r.asset_id === copyDialogSourceId,
     );
     const counts = { bbox: 0, polygon: 0, tag: 0, mask: 0 };
@@ -1402,7 +1425,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       else if (r.kind === "mask") counts.mask += 1;
     }
     return { ...counts, total: rows.length } satisfies BreakdownCounts;
-  }, [copyDialogSourceId, copyDialogRawQ.data, copyDialogRawQ.isLoading]);
+  }, [copyDialogSourceId, breakdownRows, breakdownLoading]);
 
   // Live count of existing annotations on the current asset. We
   // CANNOT use ``Object.keys(byId).length`` directly — the store's
