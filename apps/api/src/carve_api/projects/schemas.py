@@ -328,3 +328,21 @@ class ClassKeybindingListOut(BaseModel):
 
 class ClassKeybindingPutIn(BaseModel):
     class_id: uuid.UUID
+
+
+class TaskResumeStatus(BaseModel):
+    """Per-user resume payload returned by
+    ``GET /projects/{pid}/tasks/{tid}/resume``. Drives the editor's
+    "You last annotated N of M" banner.
+
+    All four ``last_*`` fields are ``None`` together when the
+    authenticated user has no annotations in this task.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    last_asset_id: uuid.UUID | None
+    last_frame_id: uuid.UUID | None
+    annotated_assets: int = Field(ge=0)
+    total_assets: int = Field(ge=0)
+    last_activity_at: datetime | None
