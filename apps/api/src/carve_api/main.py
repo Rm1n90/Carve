@@ -128,6 +128,12 @@ def create_app() -> FastAPI:
     from carve_api.views.router import router as views_router
     app.include_router(views_router)
 
+    # Realtime collaboration — Phase 1 foundation (ticket + WS hello/ping).
+    # Phases 2-7 layer data-sync + presence onto the same router without
+    # re-wiring here.
+    from carve_api.realtime.router import router as realtime_router
+    app.include_router(realtime_router)
+
     from fastapi import APIRouter, Depends
 
     from carve_api.auth.models import UserRole
