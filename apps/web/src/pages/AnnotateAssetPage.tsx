@@ -70,6 +70,7 @@ import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { SelectionCountBadge } from "@/components/annotation/SelectionCountBadge";
 import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip";
 import { SamUnavailableBanner } from "@/components/annotation/SamUnavailableBanner";
+import { ResumeProgressBanner } from "@/components/annotation/ResumeProgressBanner";
 import { SavedViewsMenu } from "@/components/search/SavedViewsMenu";
 import { viewsApi, type SavedView, type SavedViewQuery } from "@/api/views";
 import { TopBar } from "@/components/nav/TopBar";
@@ -2125,6 +2126,13 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
           />
 
           <SamUnavailableBanner />
+
+          <ResumeProgressBanner
+            projectId={projectId}
+            taskId={taskId}
+            currentAssetId={assetId}
+            onResume={(targetAssetId) => goToAsset(targetAssetId)}
+          />
 
           <ThumbnailStripGate
             taskId={taskId}
