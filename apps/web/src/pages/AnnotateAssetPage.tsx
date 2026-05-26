@@ -120,11 +120,7 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { BackgroundJobsLeaveGuard } from "@/components/BackgroundJobsLeaveGuard";
 import { keybindingsApi } from "@/api/keybindings";
 import { effectiveBindings } from "@/lib/class-keybindings";
-import {
-  copyAnnotationsToTarget,
-  type CopySource,
-} from "@/lib/copy-from-previous";
-import type { Geometry } from "@/state/annotations";
+import { copyAnnotationsFromAssetTo } from "@/lib/copy-from-asset";
 import {
   findNextEmptyAsset,
   findNextUnreviewedAsset,
@@ -1249,70 +1245,53 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       });
       return;
     }
-    // v1: image → image only. Video frame correspondence is out of
-    // scope; surface a clear toast so the user understands.
-    if (prev.kind !== "image" || curr.kind !== "image") {
+    if (prev.kind !== "image") {
       showToast(
         "Copy from previous asset is image-only in v1 (video coming soon).",
         { variant: "info" },
       );
       return;
     }
-    // Reuse the cached task-annotations-raw query when available;
-    // otherwise fetch on demand. Either way the cache stays warm so
-    // filter-aware nav doesn't pay the cost again.
-    let raw;
+    const allowed = taskClassesQ.data?.allowed_class_ids ?? null;
+    const allowedSet = allowed ? new Set<string>(allowed) : null;
+
+    let result;
     try {
-      raw = await qc.fetchQuery({
-        queryKey: ["task-annotations-raw", taskId],
-        queryFn: () => annotationsApi.listForTaskRaw(taskId),
-        staleTime: 0,
+      result = await copyAnnotationsFromAssetTo({
+        sourceAssetId: prev.id,
+        targetAsset: curr,
+        taskId,
+        allowedClassIds: allowedSet,
+        frameId: frameIdRef.current,
+        qc,
       });
     } catch (err) {
       showToast(
-        err instanceof Error ? `Couldn't load source annotations: ${err.message}` : "Couldn't load source annotations.",
+        err instanceof Error ? err.message : "Couldn't copy annotations.",
         { variant: "error" },
       );
       return;
     }
-    const sourceRows = raw.filter((r) => r.asset_id === prev.id);
-    if (sourceRows.length === 0) {
-      showToast(`No annotations on previous asset "${prev.original_name}".`, {
-        variant: "info",
-      });
+
+    if (result.sourceTotal === 0) {
+      showToast(
+        `No annotations on previous asset "${prev.original_name}".`,
+        { variant: "info" },
+      );
       return;
     }
-    const allowed = taskClassesQ.data?.allowed_class_ids ?? null;
-    const allowedSet = allowed ? new Set<string>(allowed) : null;
-    const targetSize =
-      typeof curr.width === "number" && typeof curr.height === "number"
-        ? { w: curr.width, h: curr.height }
-        : null;
-    const source: CopySource[] = sourceRows.map((r) => ({
-      classId: r.class_id,
-      kind: r.kind,
-      geometry: r.geometry as unknown as Geometry,
-    }));
-    const { accepted, skippedByClass, skippedByGeometry } = copyAnnotationsToTarget(
-      source,
-      {
-        targetImageSize: targetSize,
-        allowedClassIds: allowedSet,
-        targetFrameId: frameIdRef.current,
-        // Match BboxTool's generator shape so the tempId is unique
-        // across both copy-from-previous and live-draw streams.
-        genTempId: () => `c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      },
-    );
-    if (accepted.length === 0) {
-      if (skippedByClass > 0 && skippedByGeometry === 0) {
+    if (result.accepted.length === 0) {
+      if (result.skippedByClass > 0 && result.skippedByGeometry === 0) {
         showToast(
-          `0 copied — all ${skippedByClass} annotations use classes not in this task.`,
+          `0 copied — all ${result.skippedByClass} annotations use classes not in this task.`,
           { variant: "warning" },
         );
-      } else if (skippedByGeometry > 0 && skippedByClass === 0) {
+      } else if (
+        result.skippedByGeometry > 0 &&
+        result.skippedByClass === 0
+      ) {
         showToast(
-          `0 copied — ${skippedByGeometry} annotations had geometry incompatible with this image.`,
+          `0 copied — ${result.skippedByGeometry} annotations had geometry incompatible with this image.`,
           { variant: "warning" },
         );
       } else {
@@ -1322,17 +1301,30 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       }
       return;
     }
-    useAnnotations.getState().addMany(accepted);
+
+    useAnnotations.getState().addMany(result.accepted);
     const parts: string[] = [
-      `Copied ${accepted.length} annotation${accepted.length === 1 ? "" : "s"}`,
+      `Copied ${result.accepted.length} annotation${result.accepted.length === 1 ? "" : "s"}`,
       `from "${prev.original_name}"`,
     ];
     const tail: string[] = [];
-    if (skippedByClass > 0) tail.push(`${skippedByClass} skipped (class)`);
-    if (skippedByGeometry > 0) tail.push(`${skippedByGeometry} skipped (off-image)`);
-    const msg = tail.length > 0 ? `${parts.join(" ")} · ${tail.join(", ")}` : parts.join(" ") + ".";
+    if (result.skippedByClass > 0)
+      tail.push(`${result.skippedByClass} skipped (class)`);
+    if (result.skippedByGeometry > 0)
+      tail.push(`${result.skippedByGeometry} skipped (off-image)`);
+    const msg =
+      tail.length > 0
+        ? `${parts.join(" ")} · ${tail.join(", ")}`
+        : parts.join(" ") + ".";
     showToast(msg, { variant: "success" });
-  }, [currentAssetIdx, taskAssets, assetQ.data?.asset, qc, taskId, taskClassesQ.data?.allowed_class_ids]);
+  }, [
+    currentAssetIdx,
+    taskAssets,
+    assetQ.data?.asset,
+    qc,
+    taskId,
+    taskClassesQ.data?.allowed_class_ids,
+  ]);
   useShortcutHandler("copy_from_previous_asset", () => {
     void runCopyFromPreviousAsset();
   });
