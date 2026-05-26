@@ -102,7 +102,13 @@ interface State {
    * them so the user can unlock from the context menu.
    */
   lockedIds: Set<string>;
-  clipboard: ClipboardEntry | null;
+  /**
+   * May 26 — clipboard now holds an ARRAY of entries so Ctrl+C can
+   * capture every selected annotation (the user's flow: select 10
+   * bboxes → Ctrl+C → navigate → Ctrl+V on a different asset). ``null``
+   * (or empty) means nothing is on the clipboard and Paste is disabled.
+   */
+  clipboard: ClipboardEntry[] | null;
   history: { past: HistorySnapshot[]; future: HistorySnapshot[] };
   /** See {@link LastEditMeta}. Plan-09 Phase 5 Task 13. */
   lastEditMeta: LastEditMeta | null;
@@ -185,7 +191,7 @@ interface State {
     dy?: number,
     imageBounds?: { w: number; h: number },
   ) => string | null;
-  copyToClipboard: (id: string) => void;
+  copyToClipboard: (idOrIds: string | string[]) => void;
   /**
    * Paste the clipboard entry at the given image-space position. The
    * pasted annotation's geometry is positioned so its top-left (bbox)
@@ -666,7 +672,12 @@ export const useAnnotations = create<State>((set, get) => ({
         // creates / updates above.
         pendingDeletes: s.pendingDeletes,
         lockedIds: new Set<string>(),
-        clipboard: null,
+        // May 26 — clipboard must survive asset switches so the user can
+        // Ctrl+C on one image and Ctrl+V on another. The store is the
+        // single owner of clipboard state; only ``discardLocal`` wipes
+        // it (explicit user discard) — autosave-driven refetches and
+        // navigation-driven resets do not.
+        clipboard: s.clipboard,
         // Preserve history across same-scope refetches. The page-level
         // effect explicitly wipes it on asset/frame switch — clearing
         // it here made every autosave-triggered annotations refetch
@@ -839,18 +850,22 @@ export const useAnnotations = create<State>((set, get) => ({
     }));
     return newId;
   },
-  copyToClipboard: (id) =>
+  copyToClipboard: (idOrIds) =>
     set((s) => {
-      const cur = s.byId[id];
-      if (!cur) return s;
-      return {
-        clipboard: {
+      const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+      const entries: ClipboardEntry[] = [];
+      for (const id of ids) {
+        const cur = s.byId[id];
+        if (!cur) continue;
+        entries.push({
           geometry: cur.geometry,
           classId: cur.classId,
           kind: cur.kind,
           colorOverride: cur.colorOverride ?? null,
-        },
-      };
+        });
+      }
+      if (entries.length === 0) return s;
+      return { clipboard: entries };
     }),
   setActiveClassForSelected: (classId, ids) =>
     set((s) => {
@@ -874,31 +889,60 @@ export const useAnnotations = create<State>((set, get) => ({
   pasteFromClipboard: (atX, atY, frameId = null, imageBounds) => {
     const s0 = get();
     const cb = s0.clipboard;
-    if (!cb) return null;
-    const newId = `pst-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const placed = placeGeometryAt(cb.geometry, atX, atY, imageBounds);
-    const draft: AnnotationDraft = {
-      tempId: newId,
-      classId: cb.classId,
-      kind: cb.kind,
-      geometry: placed,
-      frameId,
-      serverId: null,
-      dirty: true,
-      status: "proposed",
-      reviewedById: null,
-      reviewedAt: null,
-      prevGeometry: null,
-      colorOverride: cb.colorOverride,
-    };
+    if (!cb || cb.length === 0) return null;
+
+    // For a single entry, behave exactly like before: place at (atX, atY).
+    // For multiple entries (Ctrl+V after multi-select copy), translate the
+    // WHOLE group so the first entry's natural anchor lands at (atX, atY)
+    // and every other entry keeps its relative offset from that first
+    // anchor — preserves the original layout when pasting across assets.
+    const first = cb[0];
+    let firstX = 0;
+    let firstY = 0;
+    if (first.geometry.kind === "bbox") {
+      firstX = first.geometry.x;
+      firstY = first.geometry.y;
+    } else if (
+      first.geometry.kind === "polygon" &&
+      first.geometry.points.length > 0
+    ) {
+      firstX = first.geometry.points[0][0];
+      firstY = first.geometry.points[0][1];
+    }
+    const dx = atX - firstX;
+    const dy = atY - firstY;
+
+    const newDrafts: Record<string, AnnotationDraft> = {};
+    const newIds: string[] = [];
+    let i = 0;
+    for (const e of cb) {
+      const newId = `pst-${Date.now()}-${i++}-${Math.random().toString(36).slice(2, 8)}`;
+      const placed = shiftGeometry(e.geometry, dx, dy, imageBounds);
+      newDrafts[newId] = {
+        tempId: newId,
+        classId: e.classId,
+        kind: e.kind,
+        geometry: placed,
+        frameId,
+        serverId: null,
+        dirty: true,
+        status: "proposed",
+        reviewedById: null,
+        reviewedAt: null,
+        prevGeometry: null,
+        colorOverride: e.colorOverride,
+      };
+      newIds.push(newId);
+    }
+    if (newIds.length === 0) return null;
     set((s) => ({
-      byId: { ...s.byId, [newId]: draft },
-      selectedId: newId,
-      selectedIds: [newId],
+      byId: { ...s.byId, ...newDrafts },
+      selectedId: newIds[0],
+      selectedIds: newIds,
       history: pushPast(s),
       lastEditMeta: null,
     }));
-    return newId;
+    return newIds[0];
   },
 }));
 

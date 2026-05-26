@@ -1724,18 +1724,34 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     qc.invalidateQueries({ queryKey: ["annotations", taskId] });
   }, [confirm, dirtyCount, qc, taskId]);
 
-  // Ctrl/Cmd+C — copy the currently selected bbox to the clipboard
-  // slice. Other kinds (polygon, mask, tag) are intentionally ignored
-  // per user request — bboxes are by far the most common case and the
-  // single-line guard keeps the UX predictable.
+  // Ctrl/Cmd+C — copy every selected bbox to the clipboard. The
+  // clipboard now holds an array (state/annotations.ts), survives
+  // asset switches, and pastes preserving the original group layout.
+  // Other kinds (polygon, mask, tag) are intentionally filtered out
+  // per the existing single-bbox UX — bboxes are by far the most
+  // common case and silently dropping the rest keeps the toast count
+  // honest.
   useShortcutHandler("copy", () => {
     const state = useAnnotations.getState();
-    const id = state.selectedId;
-    if (!id) return;
-    const ann = state.byId[id];
-    if (!ann || ann.kind !== "bbox") return;
-    state.copyToClipboard(id);
-    showToast("Bbox copied", { variant: "info", duration: 1200 });
+    const ids =
+      state.selectedIds.length > 0
+        ? state.selectedIds
+        : state.selectedId
+          ? [state.selectedId]
+          : [];
+    if (ids.length === 0) return;
+    const bboxIds = ids.filter((id) => state.byId[id]?.kind === "bbox");
+    if (bboxIds.length === 0) return;
+    state.copyToClipboard(bboxIds);
+    const skipped = ids.length - bboxIds.length;
+    const msg =
+      bboxIds.length === 1
+        ? "Bbox copied"
+        : `${bboxIds.length} bboxes copied`;
+    showToast(
+      skipped > 0 ? `${msg} (${skipped} non-bbox skipped)` : msg,
+      { variant: "info", duration: 1500 },
+    );
   });
 
   // Editor-wide guard: any chord that the editor binds (everything in
@@ -1797,21 +1813,43 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     }
   });
 
-  // Ctrl/Cmd+V — paste the clipboard bbox at a small offset from the
-  // source so the duplicate is visible and selectable, ready to drag.
-  // The store auto-selects the new draft for the user.
+  // Ctrl/Cmd+V — paste every entry currently on the clipboard onto
+  // the active asset's frame. For a single entry we keep the legacy
+  // +16/+16 offset so duplicating on the SAME asset stays visible.
+  // For multi-entry pastes (the user just multi-selected and copied
+  // on another image) we anchor at the FIRST entry's original
+  // position so the group lands in the same spot on the new asset,
+  // preserving the layout. The store auto-selects the new drafts.
   useShortcutHandler("paste", () => {
     const state = useAnnotations.getState();
     const cb = state.clipboard;
-    if (!cb || cb.kind !== "bbox") return;
-    const src = cb.geometry;
-    if (src.kind !== "bbox") return;
+    if (!cb || cb.length === 0) return;
     const a = assetQ.data?.asset;
     const bounds =
       a && typeof a.width === "number" && typeof a.height === "number"
         ? { w: a.width, h: a.height }
         : undefined;
-    state.pasteFromClipboard(src.x + 16, src.y + 16, frameIdRef.current, bounds);
+    let atX = 0;
+    let atY = 0;
+    const first = cb[0];
+    if (first.geometry.kind === "bbox") {
+      atX = first.geometry.x;
+      atY = first.geometry.y;
+    } else if (
+      first.geometry.kind === "polygon" &&
+      first.geometry.points.length > 0
+    ) {
+      atX = first.geometry.points[0][0];
+      atY = first.geometry.points[0][1];
+    }
+    if (cb.length === 1) {
+      atX += 16;
+      atY += 16;
+    }
+    state.pasteFromClipboard(atX, atY, frameIdRef.current, bounds);
+    const msg =
+      cb.length === 1 ? "Bbox pasted" : `${cb.length} bboxes pasted`;
+    showToast(msg, { variant: "success", duration: 1500 });
   });
 
   // v3.20 -- customizable shortcuts. Every action below is editable in
