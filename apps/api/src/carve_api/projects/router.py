@@ -37,6 +37,7 @@ from carve_api.projects.schemas import (
     TaskIn,
     TaskOut,
     TaskPatch,
+    TaskResumeStatus,
 )
 from carve_api.projects.service import (
     ClassService,
@@ -327,6 +328,79 @@ def task_completion_status(
         total_assets=total,
         annotated_assets=annotated,
         percent=percent,
+    )
+
+
+@router.get(
+    "/{project_id}/tasks/{task_id}/resume",
+    response_model=TaskResumeStatus,
+)
+def task_resume(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TaskResumeStatus:
+    """Per-user resume status for the editor banner.
+
+    Returns the asset id of the user's most recently updated annotation
+    in this task (joined via ``Frame.asset_id``), plus a distinct count
+    of assets they've annotated. All four ``last_*`` fields are ``None``
+    together when the user has no annotations here yet.
+    """
+    try:
+        project = require_project_role(db, user, project_id, _READ_ROLES)
+        task = TaskService(db).get(project=project, task_id=task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+    total_assets = int(
+        db.execute(
+            select(func.count(Asset.id)).where(Asset.task_id == task.id)
+        ).scalar_one()
+        or 0
+    )
+
+    last_row = db.execute(
+        select(Annotation.frame_id, Annotation.updated_at, Frame.asset_id)
+        .join(Frame, Frame.id == Annotation.frame_id)
+        .where(
+            Annotation.task_id == task.id,
+            Annotation.created_by == user.id,
+            Annotation.frame_id.is_not(None),
+        )
+        .order_by(Annotation.updated_at.desc())
+        .limit(1)
+    ).first()
+
+    annotated_assets = int(
+        db.execute(
+            select(func.count(func.distinct(Frame.asset_id)))
+            .select_from(Annotation)
+            .join(Frame, Frame.id == Annotation.frame_id)
+            .where(
+                Annotation.task_id == task.id,
+                Annotation.created_by == user.id,
+            )
+        ).scalar_one()
+        or 0
+    )
+
+    if last_row is None:
+        return TaskResumeStatus(
+            last_asset_id=None,
+            last_frame_id=None,
+            annotated_assets=annotated_assets,
+            total_assets=total_assets,
+            last_activity_at=None,
+        )
+
+    return TaskResumeStatus(
+        last_asset_id=last_row.asset_id,
+        last_frame_id=last_row.frame_id,
+        annotated_assets=annotated_assets,
+        total_assets=total_assets,
+        last_activity_at=last_row.updated_at,
     )
 
 
