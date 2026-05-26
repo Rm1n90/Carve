@@ -42,6 +42,13 @@ interface Props {
   onBulkDelete?: (ids: string[]) => void;
   onBulkMove?: (ids: string[]) => void;
   onBulkTag?: (ids: string[]) => void;
+  /**
+   * Feature May 26 — right-click a non-active tile fires this. The
+   * host page mounts the actual context menu + dialog; the strip only
+   * emits the request (with cursor coordinates) so it stays free of
+   * dialog state.
+   */
+  onContextMenuCopy?: (assetId: string, pos: { x: number; y: number }) => void;
 }
 
 // v3.9 Plan 09 Task 8: switched from a single eager `listForTask` query +
@@ -202,6 +209,7 @@ export function AssetThumbnailStrip({
   onBulkDelete,
   onBulkMove,
   onBulkTag,
+  onContextMenuCopy,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
@@ -581,7 +589,23 @@ export function AssetThumbnailStrip({
             }
             const isActive = asset.id === activeAssetId;
             return (
-              <div key={asset.id} style={style}>
+              <div
+                key={asset.id}
+                style={style}
+                onContextMenu={(e) => {
+                  // Feature May 26 — right-click on a non-active tile
+                  // emits the copy request with cursor coordinates.
+                  // Active tile keeps the browser default (copying to
+                  // self is meaningless, so we don't usurp the menu).
+                  if (!onContextMenuCopy) return;
+                  if (isActive) return;
+                  e.preventDefault();
+                  onContextMenuCopy(asset.id, {
+                    x: e.clientX,
+                    y: e.clientY,
+                  });
+                }}
+              >
                 <ThumbItem
                   asset={asset}
                   projectId={projectId}
