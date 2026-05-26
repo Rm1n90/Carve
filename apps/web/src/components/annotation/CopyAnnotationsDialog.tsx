@@ -139,14 +139,23 @@ export function CopyAnnotationsDialog({
                   Counting annotations…
                 </span>
               ) : counts ? (
-                <span data-testid="copy-dialog-breakdown">
-                  {renderBreakdownLine(counts)}
-                </span>
+                counts.total === 0 ? (
+                  <span data-testid="copy-dialog-breakdown">
+                    {renderBreakdownLine(counts)}
+                  </span>
+                ) : (
+                  <span data-testid="copy-dialog-breakdown">
+                    <span className="text-[color:var(--text-tertiary)]">
+                      Will copy:{" "}
+                    </span>
+                    {renderBreakdownLine(counts)}
+                  </span>
+                )
               ) : null}
             </div>
             {!empty && !loading && targetExistingCount > 0 && (
               <span className="text-[11px] text-[color:var(--text-tertiary)]">
-                Adds to {targetExistingCount} existing{" "}
+                Onto this asset's {targetExistingCount} existing{" "}
                 {pluralize(targetExistingCount, "annotation")} (Cmd+Z to undo)
               </span>
             )}

@@ -42,7 +42,10 @@ describe("CopyAnnotationsDialog", () => {
     expect(screen.getByText(/42 ?\/ ?1247/)).toBeInTheDocument();
     expect(screen.getByText(/17 bbox/)).toBeInTheDocument();
     expect(screen.getByText(/3 polygon/)).toBeInTheDocument();
-    expect(screen.getByText(/Adds to 4 existing annotations/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Onto this asset's 4 existing annotations/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Will copy:/)).toBeInTheDocument();
 
     const confirmBtn = screen.getByRole("button", { name: /Copy 20 annotations/i });
     expect(confirmBtn).not.toBeDisabled();
