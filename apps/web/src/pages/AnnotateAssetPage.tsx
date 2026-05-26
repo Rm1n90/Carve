@@ -1370,16 +1370,27 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   // line lights up without an extra network round-trip on confirm.
   // Shares its queryKey with the filter-active query above; TanStack
   // dedupes the request when both subscribers want fresh data.
+  // Realtime resyncs (``realtime/applyOps.ts:handleResyncMessage``)
+  // invalidate ``["task-annotations-raw", taskId]`` whenever a WebSocket
+  // op arrives. Without ``refetchOnMount: "always"`` the dialog can
+  // open on stale-but-cleared cache and report "Nothing to copy" for a
+  // source that actually has annotations. Forcing a refetch on mount
+  // ensures the breakdown always reflects the server's current state.
   const copyDialogRawQ = useQuery({
     queryKey: ["task-annotations-raw", taskId],
     queryFn: () => annotationsApi.listForTaskRaw(taskId),
     enabled: copyDialogSourceId !== null,
     staleTime: 30_000,
+    refetchOnMount: "always",
   });
 
   const copyDialogBreakdown: BreakdownCounts | "loading" | null = useMemo(() => {
     if (!copyDialogSourceId) return null;
-    if (copyDialogRawQ.isLoading || !copyDialogRawQ.data) return "loading";
+    // ``isFetching`` (not ``isLoading``) covers BOTH the initial fetch
+    // and post-invalidation refetches. Using ``isLoading`` alone makes
+    // the dialog briefly render an empty cache as "Nothing to copy"
+    // during a realtime-triggered refetch.
+    if (copyDialogRawQ.isFetching || !copyDialogRawQ.data) return "loading";
     const rows = copyDialogRawQ.data.filter(
       (r) => r.asset_id === copyDialogSourceId,
     );
