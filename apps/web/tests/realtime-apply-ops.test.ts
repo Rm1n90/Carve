@@ -184,6 +184,89 @@ describe("handleOpsMessage — ops:batch", () => {
 
 // -------- handleResyncMessage ----------------------------------------------
 
+// -------- frame filter (Phase 7.5 bug fix) ----------------------------------
+
+describe("handleOpsMessage — frame filter", () => {
+  // Reuse the helper's default frame so tests reading it explicitly stay
+  // readable.
+  const DEFAULT_FRAME = "55555555-5555-5555-5555-555555555555";
+
+  it("skips upsert when annotation belongs to a different frame", () => {
+    // User B is viewing frame "current"; the inbound event is User A's
+    // bbox on frame DEFAULT_FRAME. Must NOT land in B's store.
+    handleOpsMessage(upsertMsg("aaa11111-1111-1111-1111-111111111111"), {
+      currentFrameId: "frame-current",
+    });
+    expect(listLocal()).toHaveLength(0);
+  });
+
+  it("applies upsert when annotation matches the current frame", () => {
+    handleOpsMessage(upsertMsg("aaa11111-1111-1111-1111-111111111111"), {
+      currentFrameId: DEFAULT_FRAME,
+    });
+    expect(listLocal()).toHaveLength(1);
+  });
+
+  it("applies upsert with null frame_id regardless of current frame (video whole-asset tag)", () => {
+    // Video tasks can carry annotations whose frame_id is null —
+    // whole-asset tags valid on every frame. Filter must NOT drop them.
+    const msg: ServerOpsUpsert = {
+      v: PROTOCOL_VERSION,
+      type: "ops:upsert",
+      seq: 1,
+      ts: 1,
+      annotation: serverAnnotation("aaa11111-1111-1111-1111-111111111111", {
+        frame_id: null,
+      }),
+      actor_id: "66666666-6666-6666-6666-666666666666",
+      origin_session: null,
+    };
+    handleOpsMessage(msg, { currentFrameId: "any-frame-at-all" });
+    expect(listLocal()).toHaveLength(1);
+  });
+
+  it("applies all upserts when no current frame context is provided (back-compat)", () => {
+    // Existing callers that omit options must continue to work.
+    handleOpsMessage(upsertMsg("aaa11111-1111-1111-1111-111111111111"));
+    expect(listLocal()).toHaveLength(1);
+  });
+
+  it("filters per-entry inside ops:batch (cross-frame entries skipped)", () => {
+    const a = "aaa00000-0000-0000-0000-000000000001";
+    const b = "bbb00000-0000-0000-0000-000000000002";
+    handleOpsMessage(
+      batchMsg([
+        // a is on the local user's current frame → applied.
+        {
+          type: "ops:upsert",
+          annotation: serverAnnotation(a, { frame_id: "match-me" }),
+        },
+        // b is on a different frame → skipped.
+        {
+          type: "ops:upsert",
+          annotation: serverAnnotation(b, { frame_id: "other-frame" }),
+        },
+      ]),
+      { currentFrameId: "match-me" },
+    );
+    const local = listLocal();
+    expect(local).toHaveLength(1);
+    expect(local[0]?.serverId).toBe(a);
+  });
+
+  it("always applies ops:delete even with frame mismatch (idempotent no-op for unknown ids)", () => {
+    // Delete is safe to pass through regardless: the store invariant
+    // is "byId only holds current-frame rows", so a delete for an id
+    // we never had is a clean no-op (matches server REST contract).
+    expect(() =>
+      handleOpsMessage(deleteMsg("zzz99999-9999-9999-9999-999999999999"), {
+        currentFrameId: "frame-current",
+      }),
+    ).not.toThrow();
+    expect(listLocal()).toHaveLength(0);
+  });
+});
+
 describe("handleResyncMessage", () => {
   it("invalidates both annotation react-query keys for the task", () => {
     const invalidateQueries = vi.fn();

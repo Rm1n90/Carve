@@ -248,7 +248,14 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   realtimeClientRef.current = useTaskStream({
     taskId,
     onHello: handleHelloPresence,
-    onOps: handleOpsMessage,
+    // Phase 7.5 — gate inbound upserts by the local frame so a
+    // teammate drawing on image 200 doesn't briefly flash on user
+    // B's canvas while they're viewing image 360. ``frameIdRef`` is
+    // already a live ref of the current asset's frame_id; reading
+    // it inside the callback picks up frame switches without
+    // re-mounting the WS.
+    onOps: (msg) =>
+      handleOpsMessage(msg, { currentFrameId: frameIdRef.current }),
     onResync: (msg) => handleResyncMessage(qc, taskId, msg),
     onPresence: (msg) => {
       switch (msg.type) {

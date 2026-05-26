@@ -122,16 +122,38 @@ function applyDelete(annotationId: string): void {
 
 // -------- public entry points -----------------------------------------------
 
+export interface HandleOpsOptions {
+  /** The frame_id the local user is currently viewing. When set,
+   *  inbound ``ops:upsert`` envelopes whose annotation belongs to a
+   *  *different* frame are skipped — they're for a teammate working
+   *  on another image and would briefly flash on the local canvas
+   *  until the next frame-scoped refetch wiped them. Whole-asset
+   *  tags (annotation.frame_id === null) bypass the filter because
+   *  they're valid on every frame of the asset. Pass ``null`` /
+   *  omit to disable the filter entirely (e.g. an external sync
+   *  consumer that owns its own scoping). */
+  currentFrameId?: string | null;
+}
+
 /**
  * Apply one ops envelope. ``ServerOpsBatch`` entries are applied in
  * order — the server publishes them in transaction order, and
  * client-side application must preserve that so a sequence like
  * ``[upsert A, delete A]`` ends with A removed.
+ *
+ * ``options.currentFrameId`` gates inbound upserts to the frame the
+ * local user is currently viewing. Deletes are always applied: the
+ * store invariant is "byId only contains the current frame's
+ * annotations", so a delete for a row we don't have is a clean
+ * no-op (matches the server's idempotent REST DELETE).
  */
 export function handleOpsMessage(
   msg: ServerOpsUpsert | ServerOpsDelete | ServerOpsBatch,
+  options?: HandleOpsOptions,
 ): void {
+  const currentFrameId = options?.currentFrameId ?? null;
   if (msg.type === "ops:upsert") {
+    if (!matchesCurrentFrame(msg.annotation, currentFrameId)) return;
     applyUpsert(msg.annotation as unknown as AnnotationOut);
     return;
   }
@@ -140,14 +162,39 @@ export function handleOpsMessage(
     return;
   }
   // ``ops:batch`` — each entry is a mini-message that the server
-  // built via realtime.events.make_upsert_op / make_delete_op.
+  // built via realtime.events.make_upsert_op / make_delete_op. Each
+  // upsert entry is independently frame-gated; deletes go through
+  // unconditionally (idempotent for cross-frame ids the local store
+  // never had).
   for (const op of msg.ops) {
     if (op.type === "ops:upsert" && op.annotation) {
+      if (!matchesCurrentFrame(op.annotation, currentFrameId)) continue;
       applyUpsert(op.annotation as unknown as AnnotationOut);
     } else if (op.type === "ops:delete" && op.annotation_id) {
       applyDelete(op.annotation_id);
     }
   }
+}
+
+/**
+ * Whether an annotation payload belongs to the frame the local user
+ * is viewing. Returns true when:
+ *
+ *   * no current frame context is set (caller opted out of filtering
+ *     OR the local asset is still loading); OR
+ *   * the annotation has no frame_id (video whole-asset tag, valid on
+ *     every frame); OR
+ *   * the annotation's frame_id matches the current frame.
+ */
+function matchesCurrentFrame(
+  annotation: Record<string, unknown> | null | undefined,
+  currentFrameId: string | null,
+): boolean {
+  if (!annotation) return false;
+  if (currentFrameId === null) return true;
+  const annFrameId = annotation.frame_id;
+  if (annFrameId === null || annFrameId === undefined) return true;
+  return annFrameId === currentFrameId;
 }
 
 /**
