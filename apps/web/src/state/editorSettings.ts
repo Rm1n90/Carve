@@ -81,6 +81,16 @@ export interface EditorSettings {
    * clean look; toggled from the Appearance panel.
    */
   showCrosshairReadout: boolean;
+  /**
+   * Phase 7 — when ``true``, suppress the realtime presence overlays
+   * (other users' cursors + focus halos) entirely. Outbound presence
+   * is unaffected — the local user still publishes their cursor so
+   * teammates can see them — only INBOUND rendering is gated. Default
+   * ``false`` (collaborators visible) because that's the headline
+   * feature of the realtime work; users who find them distracting
+   * (dense annotation work, recording demos) can opt out here.
+   */
+  hideCollaborators: boolean;
 
   // CVAT-feature parity (deferred — UI shows them disabled with a tooltip
   // explaining the dependency). Storing the values on the settings object
@@ -136,6 +146,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   outlinedBorderColor: "#FFFFFF",
   showProjections: false,
   showCrosshairReadout: false,
+  hideCollaborators: false,
 
   // Deferred CVAT parity — value preserved but UI is disabled.
   showAllInterpolationTracks: false,

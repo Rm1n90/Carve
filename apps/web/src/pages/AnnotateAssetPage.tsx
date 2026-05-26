@@ -46,10 +46,12 @@ import type { RealtimeClient } from "@/realtime/ws";
 import type { ClientPresenceCursor, ClientPresenceFocus } from "@/realtime/types";
 import { AnnotationCanvas, type ImageLoadStatus } from "@/components/annotation/AnnotationCanvas";
 import { PresenceChips } from "@/components/annotation/PresenceChips";
+import { PresenceConnectionStatus } from "@/components/annotation/PresenceConnectionStatus";
 import {
   PresenceCursorLayer,
   type CanvasTransform,
 } from "@/components/annotation/PresenceCursorLayer";
+import { PresenceFocusLayer } from "@/components/annotation/PresenceFocusLayer";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
 import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
@@ -1936,6 +1938,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 transform={canvasTransform}
                 assetId={assetId}
               />
+              <PresenceFocusLayer transform={canvasTransform} />
               <SelectionCountBadge
                 // v3.27.11 — pass the LIVE active frame id so the badge
                 // can split a multi-selection into "here" vs "elsewhere"
@@ -2552,11 +2555,13 @@ function RightRailFooter() {
         </PopoverContent>
       </Popover>
 
-      {/* Phase 6 — presence chips. ``ml-auto`` pushes the chips +
-          status group to the right edge as a single block. The chips
-          component returns null when nobody else is connected so an
-          empty placeholder doesn't shift the status text. */}
+      {/* Phase 6 — presence chips. Phase 7 — connection status sits
+          on the left of the chips so the user sees a degraded WS
+          state next to the avatars (the natural place to look for
+          "who's here"). Both components return null in their
+          happy-path states so the bar stays clean during normal use. */}
       <div className="ml-auto flex items-center gap-3">
+        <PresenceConnectionStatus />
         <PresenceChips />
         {/* Live status on the right — frame's annotation count + how
             many are currently selected. Updates reactively. */}

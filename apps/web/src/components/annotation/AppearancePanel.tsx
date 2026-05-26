@@ -308,6 +308,18 @@ export function AppearancePanel(
             testId="appearance-showCrosshairReadout"
           />
 
+          {/* Phase 7 — toggle the realtime presence overlays
+              (collaborators' cursors + focus halos). Default on; users
+              annotating densely or recording a screencast can opt out
+              without affecting outbound presence (teammates still see
+              this user's cursor). */}
+          <CheckboxRow
+            label="Show collaborators"
+            checked={!settings.hideCollaborators}
+            onChange={(v) => set("hideCollaborators", !v)}
+            testId="appearance-showCollaborators"
+          />
+
           {/* Show projections — disabled with a tooltip until v3. */}
           <CheckboxRow
             label="Show projections"

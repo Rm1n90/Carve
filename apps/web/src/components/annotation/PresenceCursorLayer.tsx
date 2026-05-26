@@ -24,6 +24,7 @@ import { useEffect, useState } from "react";
 
 import { usePresence } from "@/realtime/presence";
 import { useConnectionStatus } from "@/realtime/connectionStatus";
+import { useEditorSettings } from "@/state/editorSettings";
 
 const STALE_AFTER_MS = 5_000;
 const REMOVE_AFTER_MS = 30_000;
@@ -47,14 +48,23 @@ interface Props {
 export function PresenceCursorLayer({ transform, assetId }: Props) {
   const bySession = usePresence((s) => s.bySession);
   const selfSession = useConnectionStatus((s) => s.currentSessionId);
+  // Phase 7 — user-facing toggle in the Appearance panel. When set,
+  // the layer renders nothing. Outbound presence still flows so the
+  // local user remains visible to teammates; only this client's
+  // inbound cursor display is suppressed.
+  const hideCollaborators = useEditorSettings((s) => s.hideCollaborators);
 
   // Force a periodic re-render so the stale / removed time thresholds
-  // are honoured even when no new cursor events arrive.
+  // are honoured even when no new cursor events arrive. Skip the
+  // ticker entirely when the layer is hidden — nothing to refresh.
   const [, setTick] = useState(0);
   useEffect(() => {
+    if (hideCollaborators) return;
     const id = setInterval(() => setTick((n) => n + 1), REFRESH_TICK_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [hideCollaborators]);
+
+  if (hideCollaborators) return null;
 
   const now = Date.now();
 
