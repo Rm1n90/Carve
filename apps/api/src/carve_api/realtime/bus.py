@@ -195,44 +195,90 @@ class RealtimeBus:
                 gap = True
         return newer, gap
 
+    async def open_subscription(self, task_id: uuid.UUID):
+        """Return a pub/sub object **already subscribed** to the task
+        channel.
+
+        Two-step subscribe (open then iterate) exists so callers like
+        the WebSocket handler can guarantee the SUBSCRIBE has reached
+        Redis *before* they do anything that depends on the
+        subscription being live (notably: before reading
+        ``current_seq`` and sending ``hello``). Without this guarantee
+        there's a sub-millisecond race where a publish landing between
+        the subscribe call and Redis acknowledging it would be missed
+        by the live forwarder — the replay buffer would still catch
+        it, but only on a *future* reconnect, not the current session.
+
+        The returned pubsub is owned by the caller; pair with
+        :meth:`close_subscription`.
+        """
+        pubsub = self._get_client().pubsub()
+        await pubsub.subscribe(_channel(task_id))
+        return pubsub
+
+    async def close_subscription(self, pubsub) -> None:
+        """Unsubscribe + close. Tolerates a pubsub that's already
+        broken (e.g. underlying connection dropped) so callers can
+        unconditionally invoke this from a ``finally`` block. Silent
+        suppression is deliberate — by the time cleanup runs the
+        socket is gone, and re-raising would mask the original
+        disconnect error."""
+        try:
+            await pubsub.unsubscribe()
+        except Exception:  # noqa: BLE001, S110 — best-effort cleanup
+            pass
+        try:
+            await pubsub.aclose()
+        except Exception:  # noqa: BLE001, S110 — best-effort cleanup
+            pass
+
+    async def iter_envelopes(self, pubsub) -> AsyncIterator[EventEnvelope]:
+        """Yield decoded envelopes from a pre-subscribed pub/sub object.
+
+        Used together with :meth:`open_subscription` so the moment of
+        SUBSCRIBE-reaches-Redis is visible to the caller. The async-gen
+        terminates cleanly on cancellation (cancellation is the
+        contract for ending a WS session's forwarder task).
+        """
+        while True:
+            msg = await pubsub.get_message(
+                ignore_subscribe_messages=True,
+                timeout=None,
+            )
+            if msg is None:
+                # ``timeout=None`` blocks until a message arrives;
+                # ``None`` surfaces on transient connection issues.
+                # Yield so cancellation can land.
+                await asyncio.sleep(0)
+                continue
+            if msg.get("type") != "message":
+                continue
+            data = msg.get("data")
+            if not isinstance(data, str):
+                continue
+            try:
+                envelope = EventEnvelope.from_dict(json.loads(data))
+            except (ValueError, KeyError, TypeError):
+                continue
+            yield envelope
+
     async def subscribe(
         self,
         task_id: uuid.UUID,
     ) -> AsyncIterator[EventEnvelope]:
-        """Yield envelopes published to ``task_id`` until cancelled.
+        """Convenience wrapper: open + iter + close in one call.
 
-        Caller is responsible for cancellation (e.g. cancelling the
-        consumer task on disconnect).
+        Use when you do *not* need a synchronisation point between
+        SUBSCRIBE landing at Redis and your next action. WS handlers
+        should prefer the explicit :meth:`open_subscription` so they
+        can safely send ``hello`` only after the subscription is live.
         """
-        pubsub = self._get_client().pubsub()
-        await pubsub.subscribe(_channel(task_id))
+        pubsub = await self.open_subscription(task_id)
         try:
-            while True:
-                msg = await pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=None,
-                )
-                if msg is None:
-                    # ``timeout=None`` blocks until a message arrives;
-                    # ``None`` only surfaces on connection drop. Yield
-                    # control so cancellation can land.
-                    await asyncio.sleep(0)
-                    continue
-                if msg.get("type") != "message":
-                    continue
-                data = msg.get("data")
-                if not isinstance(data, str):
-                    continue
-                try:
-                    envelope = EventEnvelope.from_dict(json.loads(data))
-                except (ValueError, KeyError, TypeError):
-                    continue
-                yield envelope
+            async for env in self.iter_envelopes(pubsub):
+                yield env
         finally:
-            try:
-                await pubsub.unsubscribe(_channel(task_id))
-            finally:
-                await pubsub.aclose()
+            await self.close_subscription(pubsub)
 
 
 def _now_ms() -> int:

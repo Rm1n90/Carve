@@ -165,6 +165,20 @@ class ServerPresenceFocus(_OutboundBase):
     target: ClientFocusTarget | None = None
 
 
+class ServerResync(_OutboundBase):
+    """Phase 2 — tell the client to throw away its local annotation
+    state and re-fetch from REST.
+
+    Sent when the client reconnected with a ``last_event_seq`` older
+    than the replay buffer's oldest entry (bus reports ``gap=True``).
+    A future server might also emit this on an internal error that
+    leaves the in-memory connection state inconsistent.
+    """
+
+    type: Literal["resync"] = "resync"
+    reason: Literal["gap_replay", "internal"] = "gap_replay"
+
+
 class ErrorCode:
     """Stable error codes the frontend may pattern-match on."""
 
@@ -195,4 +209,5 @@ __all__ = [
     "ServerPresenceFocus",
     "ServerPresenceJoin",
     "ServerPresenceLeave",
+    "ServerResync",
 ]

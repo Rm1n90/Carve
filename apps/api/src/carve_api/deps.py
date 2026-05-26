@@ -1,4 +1,5 @@
 # Armin Mehri — mehri.armin@gmail.com
+import uuid
 from collections.abc import Iterator
 
 from fastapi import Depends, Header, HTTPException, status
@@ -72,3 +73,27 @@ def get_current_admin_user(user: User = Depends(get_current_user)) -> User:
     if user.role != UserRole.admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
     return user
+
+
+def get_origin_session(
+    x_origin_session: str | None = Header(default=None, alias="X-Origin-Session"),
+) -> uuid.UUID | None:
+    """Parse the realtime origin-session header for echo suppression.
+
+    Mutating REST routes accept an optional ``X-Origin-Session`` header
+    carrying the calling tab's WebSocket session UUID. The annotations
+    router stamps it on the broadcast envelope so the *originating*
+    WebSocket can skip its own echo (the local store already applied
+    the mutation optimistically).
+
+    Returns ``None`` for missing or malformed headers — realtime is an
+    enhancement, not a hard requirement, so non-WS clients (CLI tools,
+    server-to-server jobs, older browsers without realtime support)
+    keep working.
+    """
+    if not x_origin_session:
+        return None
+    try:
+        return uuid.UUID(x_origin_session)
+    except (ValueError, AttributeError):
+        return None

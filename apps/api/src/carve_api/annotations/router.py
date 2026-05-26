@@ -8,14 +8,27 @@ from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation, AnnotationKind
 from carve_api.annotations.schemas import (
-    AnnotationIn, AnnotationOut, AnnotationPatch, AnnotationStatus, BatchIn, BatchOut,
+    AnnotationIn,
+    AnnotationOut,
+    AnnotationPatch,
+    AnnotationStatus,
+    BatchIn,
+    BatchOut,
 )
 from carve_api.annotations.service import AnnotationService
 from carve_api.auth.models import User
-from carve_api.deps import get_current_user, get_db
+from carve_api.deps import get_current_user, get_db, get_origin_session
 from carve_api.errors import AppError
-from carve_api.projects.models import Task as TaskModel, TaskKind
+from carve_api.projects.models import Task as TaskModel
+from carve_api.projects.models import TaskKind
 from carve_api.projects.service import require_visible_task
+from carve_api.realtime.events import (
+    emit_ops_batch,
+    emit_ops_delete,
+    emit_ops_upsert,
+    make_delete_op,
+    make_upsert_op,
+)
 
 router = APIRouter(prefix="/tasks", tags=["annotations"])
 ann_router = APIRouter(prefix="/annotations", tags=["annotations"])
@@ -44,11 +57,12 @@ def _require_frame_id_for_image_task(task: TaskModel, frame_id: str | None) -> N
 
 
 @router.post("/{task_id}/annotations", response_model=AnnotationOut, status_code=status.HTTP_201_CREATED)
-def create_annotation(
+async def create_annotation(
     task_id: uuid.UUID,
     payload: AnnotationIn,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    origin_session: uuid.UUID | None = Depends(get_origin_session),
 ) -> AnnotationOut:
     try:
         task = require_visible_task(db, user, task_id)
@@ -67,7 +81,17 @@ def create_annotation(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
-    return AnnotationOut.from_orm_annotation(a)
+    out = AnnotationOut.from_orm_annotation(a)
+    # Realtime fan-out (Phase 2): publish AFTER the DB commit, so a
+    # publish failure can never roll back a real annotation. The
+    # emitter swallows errors and logs — see realtime.events.
+    await emit_ops_upsert(
+        task_id=task_id,
+        annotation=out.model_dump(mode="json"),
+        actor_id=user.id,
+        origin_session=origin_session,
+    )
+    return out
 
 
 @router.get("/{task_id}/annotations", response_model=list[AnnotationOut])
@@ -128,11 +152,12 @@ class BulkTagOut(BaseModel):
 
 
 @router.post("/{task_id}/assets:bulk-tag", response_model=BulkTagOut)
-def bulk_tag_assets(
+async def bulk_tag_assets(
     task_id: uuid.UUID,
     payload: BulkTagIn,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    origin_session: uuid.UUID | None = Depends(get_origin_session),
 ) -> BulkTagOut:
     from carve_api.assets.models import Asset, AssetKind
     from carve_api.assets.service import AssetService
@@ -162,6 +187,10 @@ def bulk_tag_assets(
     tagged = 0
     skipped = 0
     failed = 0
+    # Phase 2 — collect every successfully-tagged Annotation so the
+    # post-commit broadcast can publish one ops:batch instead of
+    # N individual upserts.
+    tagged_annotations: list[Annotation] = []
 
     for asset_id in asset_uuids:
         asset = db.get(Asset, asset_id)
@@ -188,7 +217,7 @@ def bulk_tag_assets(
             skipped += 1
             continue
         try:
-            ann_svc.create(
+            ann = ann_svc.create(
                 task=task, actor_id=user.id,
                 frame_id=uuid.UUID(frame_id),
                 class_id=class_uuid,
@@ -197,19 +226,32 @@ def bulk_tag_assets(
                 track_id=None,
             )
             tagged += 1
+            tagged_annotations.append(ann)
         except AppError as exc:
             raise _http(exc) from exc
 
     db.commit()
+    if tagged_annotations:
+        ops = [
+            make_upsert_op(AnnotationOut.from_orm_annotation(a).model_dump(mode="json"))
+            for a in tagged_annotations
+        ]
+        await emit_ops_batch(
+            task_id=task_id,
+            ops=ops,
+            actor_id=user.id,
+            origin_session=origin_session,
+        )
     return BulkTagOut(tagged=tagged, skipped=skipped, failed=failed)
 
 
 @router.post("/{task_id}/annotations:batch", response_model=BatchOut)
-def batch(
+async def batch(
     task_id: uuid.UUID,
     payload: BatchIn,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    origin_session: uuid.UUID | None = Depends(get_origin_session),
 ) -> BatchOut:
     try:
         task = require_visible_task(db, user, task_id)
@@ -271,9 +313,25 @@ def batch(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
+    created_out = [AnnotationOut.from_orm_annotation(a) for a in created]
+    updated_out = [AnnotationOut.from_orm_annotation(a) for a in updated]
+    # Phase 2 — one batch broadcast for the whole transaction.
+    # ``deleted`` carries the IDs we promised to remove (including the
+    # idempotent "already gone" case, which is harmless on the wire —
+    # other clients will treat it as a no-op).
+    ops: list[dict] = [
+        make_upsert_op(a.model_dump(mode="json")) for a in created_out + updated_out
+    ]
+    ops.extend(make_delete_op(d) for d in deleted)
+    await emit_ops_batch(
+        task_id=task_id,
+        ops=ops,
+        actor_id=user.id,
+        origin_session=origin_session,
+    )
     return BatchOut(
-        created=[AnnotationOut.from_orm_annotation(a) for a in created],
-        updated=[AnnotationOut.from_orm_annotation(a) for a in updated],
+        created=created_out,
+        updated=updated_out,
         deleted=deleted,
         created_temp_ids=created_temp_ids,
     )
@@ -296,11 +354,12 @@ def _resolve_annotation_for_user(db: Session, user: User, annotation_id: uuid.UU
 
 
 @ann_router.patch("/{annotation_id}", response_model=AnnotationOut)
-def patch_annotation(
+async def patch_annotation(
     annotation_id: uuid.UUID,
     payload: AnnotationPatch,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    origin_session: uuid.UUID | None = Depends(get_origin_session),
 ) -> AnnotationOut:
     _a, task = _resolve_annotation_for_user(db, user, annotation_id)
     try:
@@ -314,14 +373,22 @@ def patch_annotation(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
-    return AnnotationOut.from_orm_annotation(a)
+    out = AnnotationOut.from_orm_annotation(a)
+    await emit_ops_upsert(
+        task_id=task.id,
+        annotation=out.model_dump(mode="json"),
+        actor_id=user.id,
+        origin_session=origin_session,
+    )
+    return out
 
 
 @ann_router.delete("/{annotation_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_annotation(
+async def delete_annotation(
     annotation_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    origin_session: uuid.UUID | None = Depends(get_origin_session),
 ) -> None:
     _a, task = _resolve_annotation_for_user(db, user, annotation_id)
     try:
@@ -329,6 +396,12 @@ def delete_annotation(
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()
+    await emit_ops_delete(
+        task_id=task.id,
+        annotation_id=annotation_id,
+        actor_id=user.id,
+        origin_session=origin_session,
+    )
 
 
 @ann_router.post("/cleanup-orphaned")

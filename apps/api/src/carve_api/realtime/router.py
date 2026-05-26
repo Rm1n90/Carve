@@ -20,6 +20,7 @@ import json
 import logging
 import time
 import uuid
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -35,7 +36,7 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.projects.service import require_visible_task
-from carve_api.realtime.bus import get_bus
+from carve_api.realtime.bus import EventEnvelope, get_bus
 from carve_api.realtime.manager import Connection, get_manager
 from carve_api.realtime.schemas import (
     PROTOCOL_VERSION,
@@ -46,6 +47,7 @@ from carve_api.realtime.schemas import (
     ServerError,
     ServerHello,
     ServerPong,
+    ServerResync,
 )
 from carve_api.realtime.tickets import (
     TICKET_TTL_SECONDS,
@@ -99,13 +101,32 @@ async def realtime_ws(
     websocket: WebSocket,
     task_id: uuid.UUID,
     ticket: str = Query(..., min_length=1, max_length=128),
+    last_event_seq: int = Query(
+        default=0,
+        ge=0,
+        description=(
+            "Highest seq the client already applied. 0 means cold start. "
+            "On reconnect the server replays buffered events newer than "
+            "this; if the buffer's oldest is younger, the server sends a "
+            "``resync`` envelope so the client refetches from REST."
+        ),
+    ),
 ) -> None:
-    """WebSocket endpoint. Validates ticket, upgrades, runs the loop.
+    """WebSocket endpoint. Validates ticket, upgrades, runs three
+    cooperating async tasks until the socket closes:
 
-    Phase 1 only handles ``ping``. Unknown / malformed inbound messages
-    get a structured ``error`` envelope. Disconnects propagate as a
-    normal ``WebSocketDisconnect``; cancellation cleans up the sender
-    task and unregisters the connection.
+      * the **receive loop** (main coroutine) — drains client frames,
+        replies to ``ping`` with ``pong``;
+      * a **sender task** — drains the manager's outbound queue to
+        ``ws.send_text`` (centralises backpressure);
+      * a **subscriber task** (Phase 2) — replays any events newer
+        than ``last_event_seq`` from the bus and then listens for
+        live events to forward to this connection.
+
+    Unknown / malformed inbound messages get a structured ``error``
+    envelope. Disconnects propagate as a normal ``WebSocketDisconnect``;
+    cancellation cleans up the sender + subscriber tasks and
+    unregisters the connection.
     """
     payload = await consume_ticket(ticket)
     if payload is None:
@@ -131,26 +152,43 @@ async def realtime_ws(
     manager.register(conn)
 
     sender_task = asyncio.create_task(manager.run_sender(conn))
+    subscriber_task: asyncio.Task[None] | None = None
+    pubsub = None
     try:
+        # Phase 2 — subscribe to the bus BEFORE reading current_seq /
+        # sending hello. Doing it here (rather than inside the
+        # subscriber task) guarantees the SUBSCRIBE has landed at
+        # Redis before any value we read or send. So hello's
+        # ``last_event_seq`` is a watermark: anything published with
+        # seq > that value is guaranteed to be delivered live, never
+        # missed-and-only-replayable.
+        pubsub = await bus.open_subscription(task_id)
+
         # ``hello`` carries the session id, current event seq for
         # gap-detection, and a server timestamp clients can use to skew
         # their own clock when interpreting ``ts`` fields.
-        last_event_seq = await bus.current_seq(task_id)
+        current_seq = await bus.current_seq(task_id)
         hello = ServerHello(
             session_id=session_id,
             user_id=payload.user_id,
             task_id=task_id,
             server_time=int(time.time() * 1000),
-            last_event_seq=last_event_seq,
+            last_event_seq=current_seq,
             presence=[],  # Phase 5 fills this in.
         )
         manager.enqueue(conn, hello.model_dump(mode="json"))
 
+        # Subscriber task receives the already-subscribed pubsub so
+        # it never has to do its own SUBSCRIBE call.
+        subscriber_task = asyncio.create_task(
+            _ws_subscriber(conn, task_id, last_event_seq, pubsub)
+        )
+
         # --- receive loop ---------------------------------------------
-        # Phase 1 only recognises ``ping``. All other types reply with
-        # ``error`` (structured) and keep the connection alive — that
-        # matches forward-compat semantics: older servers shouldn't kill
-        # newer clients that send a type the server hasn't learned yet.
+        # Phase 1+2 honour ``ping``. Presence types (Phase 5) validate
+        # but reply with ``unknown_type`` so the wire stays
+        # forward-compatible — older servers don't kill newer clients
+        # that send a type the server hasn't learned yet.
         while True:
             if conn.overflowed:
                 # The sender already started closing; just leave.
@@ -171,23 +209,116 @@ async def realtime_ws(
                     ),
                 )
                 continue
-            # Phase 1 doesn't handle presence types yet — but they
+            # Phase 1+2 don't handle presence types yet — but they
             # validate fine, so reply with a deliberate "not yet" error.
             manager.enqueue(
                 conn,
                 ServerError(
                     code=ErrorCode.UNKNOWN_TYPE,
-                    message=f"type not handled in phase 1: {type(envelope).__name__}",
+                    message=f"type not handled yet: {type(envelope).__name__}",
                 ).model_dump(mode="json"),
             )
     finally:
         manager.unregister(conn)
         await manager.request_close(conn)
+        # Tear down the subscriber first so it can't enqueue a stale
+        # message after we've unregistered — that would just leak a
+        # queue entry, but it's noise.
+        if subscriber_task is not None:
+            subscriber_task.cancel()
+            try:
+                await asyncio.wait_for(subscriber_task, timeout=1.0)
+            except (TimeoutError, asyncio.CancelledError):
+                pass
+        # Now close the pub/sub channel. Subscriber owned the read
+        # loop; we own the resource lifecycle.
+        if pubsub is not None:
+            await bus.close_subscription(pubsub)
         # Give the sender a moment to drain + close cleanly.
         try:
             await asyncio.wait_for(sender_task, timeout=1.0)
         except (TimeoutError, asyncio.CancelledError):
             sender_task.cancel()
+
+
+# --- Phase 2 subscriber loop -------------------------------------------------
+
+
+async def _ws_subscriber(
+    conn: Connection,
+    task_id: uuid.UUID,
+    replay_from_seq: int,
+    pubsub,
+) -> None:
+    """Replay any missed events, then forward live ones to ``conn``.
+
+    The caller (``realtime_ws``) owns the pub/sub lifecycle and passes
+    an already-subscribed object in via ``pubsub``. That way the
+    SUBSCRIBE has landed at Redis before any publish that can race
+    with this loop.
+
+    Order of operations:
+
+      1. If ``replay_from_seq > 0``, ask the bus for everything newer
+         from the replay buffer. ``gap=True`` means the client's
+         last_event_seq fell out of the replay window, so we send a
+         ``resync`` envelope and skip the partial replay (the client
+         will throw away its local state and refetch via REST).
+      2. Forward every live envelope to the connection's send queue.
+
+    Echo-suppression: the publisher tags each envelope with the
+    originating tab's ``origin_session``. If that matches *this*
+    connection's session_id we skip the enqueue — that tab already
+    applied the mutation optimistically and would otherwise see it
+    flicker.
+
+    Cancellation: the parent ``realtime_ws`` cancels this task in its
+    finally block. ``iter_envelopes`` propagates the CancelledError
+    cleanly; the parent closes the pubsub afterwards.
+    """
+    bus = get_bus()
+    manager = get_manager()
+
+    if replay_from_seq > 0:
+        newer, gap = await bus.replay_since(task_id, replay_from_seq)
+        if gap:
+            manager.enqueue(
+                conn,
+                ServerResync(reason="gap_replay").model_dump(mode="json"),
+            )
+        else:
+            for env in newer:
+                if _is_echo(conn, env):
+                    continue
+                manager.enqueue(conn, _flatten(env))
+
+    async for env in bus.iter_envelopes(pubsub):
+        if _is_echo(conn, env):
+            continue
+        manager.enqueue(conn, _flatten(env))
+
+
+def _is_echo(conn: Connection, env: EventEnvelope) -> bool:
+    """True when the envelope originated from this connection's tab.
+
+    Mutating REST calls echo the caller's ``X-Origin-Session`` header
+    onto the broadcast (see :mod:`carve_api.realtime.events`); the
+    originating WS skips its own echo so optimistic local state
+    doesn't flicker on the round-trip.
+    """
+    origin = env.payload.get("origin_session")
+    return isinstance(origin, str) and origin == str(conn.session_id)
+
+
+def _flatten(env: EventEnvelope) -> dict[str, Any]:
+    """Merge the bus-stamped ``seq``/``ts`` into the payload so the
+    outbound frame matches the schemas advertised in
+    :mod:`carve_api.realtime.schemas` (``ServerOpsUpsert`` &c.).
+
+    Done at send time rather than publish time so the seq is allocated
+    once by the bus and consumed by every subscriber identically.
+    """
+    return {**env.payload, "seq": env.seq, "ts": env.ts}
 
 
 def _parse_inbound(raw: str, conn: Connection):
