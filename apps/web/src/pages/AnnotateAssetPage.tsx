@@ -122,6 +122,12 @@ import { keybindingsApi } from "@/api/keybindings";
 import { effectiveBindings } from "@/lib/class-keybindings";
 import { copyAnnotationsFromAssetTo } from "@/lib/copy-from-asset";
 import {
+  CopyAnnotationsDialog,
+  type BreakdownCounts,
+} from "@/components/annotation/CopyAnnotationsDialog";
+import { CopyFromPromptDialog } from "@/components/annotation/CopyFromPromptDialog";
+import { ThumbContextMenu } from "@/components/annotation/ThumbContextMenu";
+import {
   findNextEmptyAsset,
   findNextUnreviewedAsset,
   type SkipDirection,
@@ -143,10 +149,15 @@ function ThumbnailStripGate({
   taskId,
   projectId,
   activeAssetId,
+  onContextMenuCopy,
 }: {
   taskId: string;
   projectId: string;
   activeAssetId: string;
+  onContextMenuCopy?: (
+    assetId: string,
+    pos: { x: number; y: number },
+  ) => void;
 }) {
   const enabled = useTool((s) => s.visibility.thumbnails);
   if (!enabled) return null;
@@ -155,6 +166,7 @@ function ThumbnailStripGate({
       taskId={taskId}
       projectId={projectId}
       activeAssetId={activeAssetId}
+      onContextMenuCopy={onContextMenuCopy}
     />
   );
 }
@@ -1338,6 +1350,158 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     void runCopyFromPreviousAsset();
   });
 
+  // ──────────────────────────────────────────────────────────────────
+  // May 26 — "copy annotations from any asset" feature. Both the
+  // right-click thumbnail menu and the Shift+P prompt funnel into the
+  // same confirm dialog. The page owns dialog state; the strip only
+  // emits the click position via onContextMenuCopy.
+  // ──────────────────────────────────────────────────────────────────
+  const [copyDialogSourceId, setCopyDialogSourceId] = useState<string | null>(
+    null,
+  );
+  const [copyPromptOpen, setCopyPromptOpen] = useState(false);
+  const [thumbMenu, setThumbMenu] = useState<{
+    sourceAssetId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  // Fetch the raw annotations once the dialog opens so the breakdown
+  // line lights up without an extra network round-trip on confirm.
+  // Shares its queryKey with the filter-active query above; TanStack
+  // dedupes the request when both subscribers want fresh data.
+  const copyDialogRawQ = useQuery({
+    queryKey: ["task-annotations-raw", taskId],
+    queryFn: () => annotationsApi.listForTaskRaw(taskId),
+    enabled: copyDialogSourceId !== null,
+    staleTime: 30_000,
+  });
+
+  const copyDialogBreakdown: BreakdownCounts | "loading" | null = useMemo(() => {
+    if (!copyDialogSourceId) return null;
+    if (copyDialogRawQ.isLoading || !copyDialogRawQ.data) return "loading";
+    const rows = copyDialogRawQ.data.filter(
+      (r) => r.asset_id === copyDialogSourceId,
+    );
+    const counts = { bbox: 0, polygon: 0, tag: 0, mask: 0 };
+    for (const r of rows) {
+      if (r.kind === "bbox") counts.bbox += 1;
+      else if (r.kind === "polygon") counts.polygon += 1;
+      else if (r.kind === "tag") counts.tag += 1;
+      else if (r.kind === "mask") counts.mask += 1;
+    }
+    return { ...counts, total: rows.length } satisfies BreakdownCounts;
+  }, [copyDialogSourceId, copyDialogRawQ.data, copyDialogRawQ.isLoading]);
+
+  // Live count of existing annotations on the current asset. The
+  // editor's annotation store is scoped to the active asset (reset on
+  // navigation), so byId-length is a faithful "current asset count".
+  // Subtract pendingDeletes so the hint reflects the user's optimistic
+  // state, not the pre-delete count.
+  const targetExistingCount = useAnnotations(
+    (s) =>
+      Object.keys(s.byId).length -
+      (s.pendingDeletes?.length ?? 0),
+  );
+
+  const dialogSourceAsset = useMemo(
+    () =>
+      copyDialogSourceId
+        ? taskAssets.find((a) => a.id === copyDialogSourceId) ?? null
+        : null,
+    [copyDialogSourceId, taskAssets],
+  );
+  const dialogSourceOrdinal = useMemo(() => {
+    if (!copyDialogSourceId) return null;
+    const idx = taskAssets.findIndex((a) => a.id === copyDialogSourceId);
+    return idx >= 0 ? idx + 1 : null;
+  }, [copyDialogSourceId, taskAssets]);
+
+  const runCopyFromAsset = useCallback(
+    async (sourceAssetId: string) => {
+      const curr = assetQ.data?.asset;
+      if (!curr) {
+        showToast(
+          "Asset metadata not loaded yet — try again in a moment.",
+          { variant: "warning" },
+        );
+        return;
+      }
+      const sourceAsset = taskAssets.find((a) => a.id === sourceAssetId);
+      const sourceName = sourceAsset?.original_name ?? "(unknown)";
+      const allowed = taskClassesQ.data?.allowed_class_ids ?? null;
+      const allowedSet = allowed ? new Set<string>(allowed) : null;
+      let result;
+      try {
+        result = await copyAnnotationsFromAssetTo({
+          sourceAssetId,
+          targetAsset: curr,
+          taskId,
+          allowedClassIds: allowedSet,
+          frameId: frameIdRef.current,
+          qc,
+        });
+      } catch (err) {
+        showToast(
+          err instanceof Error ? err.message : "Couldn't copy annotations.",
+          { variant: "error" },
+        );
+        return;
+      }
+      if (result.sourceTotal === 0) {
+        showToast(`No annotations on "${sourceName}".`, { variant: "info" });
+        return;
+      }
+      if (result.accepted.length === 0) {
+        if (result.skippedByClass > 0 && result.skippedByGeometry === 0) {
+          showToast(
+            `0 copied — all ${result.skippedByClass} annotations use classes not in this task.`,
+            { variant: "warning" },
+          );
+        } else if (
+          result.skippedByGeometry > 0 &&
+          result.skippedByClass === 0
+        ) {
+          showToast(
+            `0 copied — ${result.skippedByGeometry} annotations had geometry incompatible with this image.`,
+            { variant: "warning" },
+          );
+        } else {
+          showToast(`Nothing valid to copy from "${sourceName}".`, {
+            variant: "info",
+          });
+        }
+        return;
+      }
+      useAnnotations.getState().addMany(result.accepted);
+      const parts: string[] = [
+        `Copied ${result.accepted.length} annotation${result.accepted.length === 1 ? "" : "s"}`,
+        `from "${sourceName}"`,
+      ];
+      const tail: string[] = [];
+      if (result.skippedByClass > 0)
+        tail.push(`${result.skippedByClass} skipped (class)`);
+      if (result.skippedByGeometry > 0)
+        tail.push(`${result.skippedByGeometry} skipped (off-image)`);
+      const msg =
+        tail.length > 0
+          ? `${parts.join(" ")} · ${tail.join(", ")}`
+          : parts.join(" ") + ".";
+      showToast(msg, { variant: "success" });
+    },
+    [
+      assetQ.data?.asset,
+      taskAssets,
+      taskId,
+      taskClassesQ.data?.allowed_class_ids,
+      qc,
+    ],
+  );
+
+  useShortcutHandler("copy_from_any_asset", () => {
+    setCopyPromptOpen(true);
+  });
+
   // F2 — skip-nav to next/prev empty / unreviewed asset. The walks
   // happen against the cached task-annotations-raw query when present;
   // when the cache is cold the handlers fetch on demand so the first
@@ -1875,6 +2039,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             taskId={taskId}
             projectId={projectId}
             activeAssetId={assetId}
+            onContextMenuCopy={(sourceAssetId, pos) => {
+              setThumbMenu({ sourceAssetId, x: pos.x, y: pos.y });
+            }}
           />
 
 
@@ -2083,6 +2250,53 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   the cheat-sheet dialog here without its own button so
                   ``carve:open-cheat-sheet`` events still toggle it. */}
               <KeyboardCheatSheet hideTrigger />
+
+              {/* Arbitrary-source annotation copy — May 26 */}
+              {thumbMenu && (
+                <ThumbContextMenu
+                  open
+                  x={thumbMenu.x}
+                  y={thumbMenu.y}
+                  onClose={() => setThumbMenu(null)}
+                  onCopy={() => {
+                    setCopyDialogSourceId(thumbMenu.sourceAssetId);
+                    setThumbMenu(null);
+                  }}
+                />
+              )}
+
+              <CopyFromPromptDialog
+                open={copyPromptOpen}
+                onOpenChange={setCopyPromptOpen}
+                totalAssets={taskAssets.length}
+                currentOrdinal={currentAssetIdx + 1}
+                onPick={(ordinal) => {
+                  const picked = taskAssets[ordinal - 1];
+                  setCopyPromptOpen(false);
+                  if (picked) {
+                    setCopyDialogSourceId(picked.id);
+                  }
+                }}
+              />
+
+              <CopyAnnotationsDialog
+                open={copyDialogSourceId !== null}
+                onOpenChange={(o) => {
+                  if (!o) setCopyDialogSourceId(null);
+                }}
+                sourceAsset={dialogSourceAsset}
+                sourceOrdinal={dialogSourceOrdinal}
+                totalAssets={taskAssets.length}
+                targetAsset={assetQ.data?.asset ?? null}
+                targetExistingCount={targetExistingCount}
+                breakdown={copyDialogBreakdown}
+                onConfirm={async () => {
+                  if (!copyDialogSourceId) return;
+                  const sourceId = copyDialogSourceId;
+                  setCopyDialogSourceId(null);
+                  await runCopyFromAsset(sourceId);
+                }}
+              />
               {/* v3.27.9 — fixed progress chip that survives tool
                   switches. <SamTrackModeGate> below only mounts the
                   full TrackPanel while SAM Track is active; this badge
