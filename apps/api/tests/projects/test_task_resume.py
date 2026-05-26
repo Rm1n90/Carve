@@ -220,8 +220,14 @@ def test_resume_returns_latest_asset_and_correct_counts(db_session) -> None:
     a2, f2 = _make_asset_with_frame(db_session, _uuid.UUID(tid), idx_suffix="2")
     a3, f3 = _make_asset_with_frame(db_session, _uuid.UUID(tid), idx_suffix="3")
 
+    # Commit each annotation in its own transaction so the database
+    # stamps a distinct ``updated_at`` per row. Without this, all three
+    # rows would share one transaction timestamp and the endpoint's
+    # ORDER BY updated_at DESC LIMIT 1 would be non-deterministic.
     _make_bbox(db_session, _uuid.UUID(tid), f1.id, cls.id, user_id)
+    db_session.commit()
     _make_bbox(db_session, _uuid.UUID(tid), f2.id, cls.id, user_id)
+    db_session.commit()
     _make_bbox(db_session, _uuid.UUID(tid), f3.id, cls.id, user_id)
     db_session.commit()
 
@@ -229,11 +235,8 @@ def test_resume_returns_latest_asset_and_correct_counts(db_session) -> None:
     assert r.status_code == 200, r.text
     body = r.json()
 
-    # All three annotations are committed in one transaction so updated_at is
-    # identical; the endpoint picks one deterministically per DB but we only
-    # assert membership rather than a specific asset to stay ordering-agnostic.
-    assert body["last_asset_id"] in {str(a1.id), str(a2.id), str(a3.id)}
-    assert body["last_frame_id"] in {str(f1.id), str(f2.id), str(f3.id)}
+    assert body["last_asset_id"] == str(a3.id)
+    assert body["last_frame_id"] == str(f3.id)
     assert body["annotated_assets"] == 3
     assert body["total_assets"] == 3
     assert body["last_activity_at"] is not None
