@@ -309,8 +309,15 @@ export class RealtimeClient {
       case "ops:delete":
       case "ops:batch": {
         const opMsg = msg as ServerOpsUpsert | ServerOpsDelete | ServerOpsBatch;
-        // Bump the watermark monotonically. The store's bumpSeq is
-        // idempotent — re-deliveries do not advance it.
+        // Phase 4 — dedupe by seq. Replay + live PUBSUB can overlap
+        // during the sub-millisecond window between the server's
+        // SUBSCRIBE and its read of last_event_seq for hello, so the
+        // same envelope can hit the wire twice. Apply once: only call
+        // onOps when seq strictly advances the watermark.
+        const current = useConnectionStatus.getState().lastEventSeq;
+        if (opMsg.seq <= current) {
+          return;
+        }
         useConnectionStatus.getState().bumpSeq(opMsg.seq);
         this.options.onOps?.(opMsg);
         return;

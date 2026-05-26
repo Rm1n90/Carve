@@ -1,6 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
 import axios, { AxiosError, AxiosHeaders, type AxiosInstance } from "axios";
 import { useAuth } from "@/auth/store";
+import { getCurrentSessionId } from "@/realtime/connectionStatus";
 
 const baseURL = import.meta.env.VITE_API_BASE ?? "/api";
 
@@ -23,6 +24,17 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers = config.headers ?? new AxiosHeaders();
     config.headers.set("Authorization", `Bearer ${token}`);
+  }
+  // Realtime echo suppression (Phase 4). When a WebSocket is open the
+  // session id captured in the most recent ``hello`` is attached to
+  // every outgoing request. The annotations service stamps it on the
+  // bus broadcast so the originating tab's WS handler can skip the
+  // echo. Read-only GETs carry the header too — the server only acts
+  // on it for mutating routes, so it's harmless on the read path.
+  const originSession = getCurrentSessionId();
+  if (originSession) {
+    config.headers = config.headers ?? new AxiosHeaders();
+    config.headers.set("X-Origin-Session", originSession);
   }
   return config;
 });

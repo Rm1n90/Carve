@@ -335,6 +335,53 @@ describe("RealtimeClient — connect + hello", () => {
 // ---------------- Dispatch --------------------------------------------------
 
 describe("RealtimeClient — dispatch", () => {
+  it("skips onOps when the incoming seq has already been applied (dedupe)", async () => {
+    // Replay + live PUBSUB can overlap on first connect (server-side
+    // race window between SUBSCRIBE and the read of current_seq). The
+    // transport must drop the duplicate so onOps fires exactly once.
+    useConnectionStatus.setState({ lastEventSeq: 5 });
+    const onOps = vi.fn();
+    const client = makeClient({ onOps });
+    await client.start();
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.simulateMessage(helloMessage({ seq: 5 }));
+
+    // seq=5 (== current) — duplicate. seq=3 — even older. Both skipped.
+    ws.simulateMessage({
+      v: PROTOCOL_VERSION,
+      type: "ops:upsert",
+      seq: 5,
+      ts: 5,
+      annotation: { id: "x" },
+      actor_id: "u",
+      origin_session: null,
+    } as ServerMessage);
+    ws.simulateMessage({
+      v: PROTOCOL_VERSION,
+      type: "ops:upsert",
+      seq: 3,
+      ts: 3,
+      annotation: { id: "y" },
+      actor_id: "u",
+      origin_session: null,
+    } as ServerMessage);
+    // seq=6 — new. Fires once.
+    ws.simulateMessage({
+      v: PROTOCOL_VERSION,
+      type: "ops:upsert",
+      seq: 6,
+      ts: 6,
+      annotation: { id: "z" },
+      actor_id: "u",
+      origin_session: null,
+    } as ServerMessage);
+
+    expect(onOps).toHaveBeenCalledTimes(1);
+    expect(useConnectionStatus.getState().lastEventSeq).toBe(6);
+    client.stop();
+  });
+
   it("routes ops:* envelopes to onOps and bumps lastEventSeq", async () => {
     const onOps = vi.fn();
     const client = makeClient({ onOps });

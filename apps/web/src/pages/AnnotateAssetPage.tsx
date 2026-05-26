@@ -32,6 +32,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/Popover";
 
+import { handleOpsMessage, handleResyncMessage } from "@/realtime/applyOps";
+import { useTaskStream } from "@/realtime/useTaskStream";
 import { AnnotationCanvas, type ImageLoadStatus } from "@/components/annotation/AnnotationCanvas";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
 import { CommandPalette } from "@/components/annotation/CommandPalette";
