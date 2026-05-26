@@ -48,3 +48,25 @@ export function formatRelative(value: string | Date | null | undefined): string 
     day: "numeric",
   });
 }
+
+const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+
+/**
+ * Format an ISO-8601 timestamp as a relative phrase like
+ * "moments ago", "30 minutes ago", "yesterday", "6 days ago".
+ *
+ * @param iso  past timestamp, or null (returns empty string)
+ * @param now  optional reference time in ms — for deterministic tests
+ */
+export function formatRelativeTime(
+  iso: string | null,
+  now: number = Date.now(),
+): string {
+  if (iso === null) return "";
+  const past = new Date(iso).getTime();
+  const diff = now - past;
+  if (diff < MINUTE) return "moments ago";
+  if (diff < HOUR) return formatter.format(-Math.floor(diff / MINUTE), "minute");
+  if (diff < DAY) return formatter.format(-Math.floor(diff / HOUR), "hour");
+  return formatter.format(-Math.floor(diff / DAY), "day");
+}
