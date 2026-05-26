@@ -24,14 +24,26 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
-    op.create_index(
-        "ix_annotations_task_user_updated",
-        "annotations",
-        ["task_id", "created_by", "updated_at"],
-        postgresql_where="frame_id IS NOT NULL",
-        postgresql_ops={"updated_at": "DESC"},
-    )
+    # CONCURRENTLY avoids write-locking the annotations table during
+    # the index build on production-sized data. Must run outside a
+    # transaction, hence the autocommit_block.
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "ix_annotations_task_user_updated",
+            "annotations",
+            ["task_id", "created_by", "updated_at"],
+            postgresql_where="frame_id IS NOT NULL",
+            postgresql_ops={"updated_at": "DESC"},
+            postgresql_concurrently=True,
+            if_not_exists=True,
+        )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_annotations_task_user_updated", table_name="annotations")
+    with op.get_context().autocommit_block():
+        op.drop_index(
+            "ix_annotations_task_user_updated",
+            table_name="annotations",
+            postgresql_concurrently=True,
+            if_exists=True,
+        )
