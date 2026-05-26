@@ -2088,6 +2088,43 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                   reads useTrackBridge directly so the user sees the
                   propagation tick even after switching to Drag/Bbox/etc. */}
               <TrackProgressBadge />
+              {/* Bug-fix May 26 — asset-switch loading indicator. The
+                  ``placeholderData: prev => prev`` on ``assetQ`` keeps
+                  the previously-loaded asset on screen while the next
+                  one fetches, which avoids the disorienting "flash to
+                  Loading…" screen on every navigation but historically
+                  meant the user had no visible signal that their
+                  thumbnail click did anything. The chip below appears
+                  only while the route's ``assetId`` differs from the
+                  asset currently rendered, so it matches the "click
+                  registered, switch in flight" window exactly and
+                  disappears the moment the new asset paints. */}
+              {assetQ.data && assetQ.data.asset.id !== assetId && (
+                <div
+                  data-testid="asset-switch-loading-overlay"
+                  className={cn(
+                    "pointer-events-none absolute inset-x-0 top-4 z-30",
+                    "flex justify-center",
+                  )}
+                  aria-hidden
+                >
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-2 px-3 py-1.5",
+                      "rounded-full text-[12px] font-medium",
+                      "bg-[var(--bg-elev)]/95 backdrop-blur-sm",
+                      "border border-[var(--border-subtle)] shadow",
+                      "text-[color:var(--text-secondary)]",
+                    )}
+                  >
+                    <Loader2
+                      className="h-3.5 w-3.5 animate-spin"
+                      aria-hidden
+                    />
+                    Loading asset…
+                  </span>
+                </div>
+              )}
             </main>
 
             <div

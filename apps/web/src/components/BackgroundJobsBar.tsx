@@ -230,6 +230,16 @@ function usePollJob(job: BackgroundJob): PollResult {
           qc.invalidateQueries({
             queryKey: ["task-assets-count", job.taskId],
           });
+          // Bug-fix May 26 — auto-annotation can run for several
+          // minutes; presigned MinIO URLs on cached per-asset
+          // ``["asset", assetId]`` records will have expired well
+          // before the operator clicks back into the editor. Mark
+          // every per-asset query stale so the next click refetches
+          // and lands on a fresh URL instead of a broken image. The
+          // prefix-only key (no taskId, since the per-asset query is
+          // keyed by assetId only) leans on TanStack Query's partial-
+          // match invalidation to hit every cached asset record.
+          qc.invalidateQueries({ queryKey: ["asset"] });
         }
       }
     }

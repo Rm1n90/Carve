@@ -2,6 +2,7 @@
 import {
   keepPreviousData,
   useInfiniteQuery,
+  useIsFetching,
 } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -18,6 +19,7 @@ import {
   ChevronDown,
   ChevronUp,
   FolderInput,
+  ImageOff,
   Images,
   Tag,
   Trash2,
@@ -63,6 +65,7 @@ function ThumbItem({
   taskId,
   active,
   selected,
+  pending,
   onClick,
 }: {
   asset: Asset;
@@ -70,6 +73,13 @@ function ThumbItem({
   taskId: string;
   active: boolean;
   selected: boolean;
+  /**
+   * Bug-fix May 26 — true while the route param has switched to this
+   * tile but the editor's ``["asset", assetId]`` query is still
+   * resolving. Used to show a "loading" affordance on the clicked
+   * tile so rapid clicks always look responsive.
+   */
+  pending: boolean;
   /**
    * Plan 14 Phase 8 Task 3 — when the host's click handler returns
    * ``true`` it has consumed the click for multi-select; the Link's
@@ -84,7 +94,34 @@ function ThumbItem({
   // and never came in fast enough for arrow-key navigation to feel
   // smooth. Falling back to the asset's full ``url`` is unnecessary
   // here — image tiles only need the cheaper thumbnail surface.
-  const url = asset.thumbnail_url ?? null;
+  const baseUrl = asset.thumbnail_url ?? null;
+
+  // Bug-fix May 26 — presigned URLs expire after 600 s. Until this
+  // change the strip had no onError handler, so an expired or
+  // transiently-failing URL produced a permanent broken-image icon.
+  // Now: one cache-busting retry, then a visible placeholder. State
+  // is per-mount; when virtualisation re-mounts the tile we give the
+  // URL another fresh chance.
+  const [errState, setErrState] = useState<"idle" | "retrying" | "failed">(
+    "idle",
+  );
+  // Reset error state when the underlying URL changes (e.g. the
+  // strip query refetched and got a fresh presigned URL).
+  useEffect(() => {
+    setErrState("idle");
+  }, [baseUrl]);
+  const src = useMemo(() => {
+    if (!baseUrl) return null;
+    if (errState === "retrying") {
+      // Append a cache-bust so the browser doesn't serve the cached
+      // failure response — and so an expired-URL retry actually hits
+      // the network with the (now-refreshed) presigned URL the next
+      // strip refetch will supply.
+      const sep = baseUrl.includes("?") ? "&" : "?";
+      return `${baseUrl}${sep}_carve_retry=1`;
+    }
+    return baseUrl;
+  }, [baseUrl, errState]);
 
   return (
     <Link
@@ -97,7 +134,7 @@ function ThumbItem({
         }
       }}
       className={cn(
-        "shrink-0 block h-[56px] w-[80px] rounded-[var(--radius-sm)] border overflow-hidden",
+        "shrink-0 relative block h-[56px] w-[80px] rounded-[var(--radius-sm)] border overflow-hidden",
         "bg-[var(--bg-subtle)] transition-all duration-150",
         active
           ? "border-[var(--accent)] outline-2 outline-offset-1 outline-[var(--accent)]"
@@ -109,16 +146,50 @@ function ThumbItem({
       data-testid={`thumb-${asset.id}`}
       data-active={active ? "true" : undefined}
       data-selected={selected ? "true" : undefined}
+      data-thumb-state={errState === "failed" ? "failed" : "ok"}
+      data-pending={pending ? "true" : undefined}
     >
-      {url ? (
+      {src && errState !== "failed" ? (
         <img
-          src={url}
+          src={src}
           alt={asset.original_name}
           decoding="async"
           className="h-full w-full object-cover"
+          onError={() => {
+            setErrState((prev) =>
+              prev === "idle" ? "retrying" : "failed",
+            );
+          }}
         />
       ) : (
-        <span className="block h-full w-full" aria-hidden />
+        <span
+          className={cn(
+            "flex h-full w-full items-center justify-center",
+            "text-[color:var(--text-tertiary)]",
+          )}
+          aria-label={
+            errState === "failed"
+              ? "Thumbnail unavailable"
+              : "No preview"
+          }
+          title={
+            errState === "failed"
+              ? "Thumbnail unavailable — open the asset to view"
+              : undefined
+          }
+        >
+          <ImageOff className="h-4 w-4" aria-hidden />
+        </span>
+      )}
+      {pending && (
+        <span
+          className={cn(
+            "pointer-events-none absolute inset-0",
+            "bg-[var(--accent)]/15 animate-pulse",
+          )}
+          aria-hidden
+          data-testid="thumb-pending-overlay"
+        />
       )}
     </Link>
   );
@@ -160,8 +231,26 @@ export function AssetThumbnailStrip({
   const [jumpDraft, setJumpDraft] = useState("");
   const jumpInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Bug-fix May 26 — three changes from the previous version:
+  //   1. Query key now nests under the shared ``["task-assets", taskId, …]``
+  //      prefix. TanStack Query invalidations use prefix matching, so
+  //      every existing ``invalidateQueries({ queryKey: ["task-assets",
+  //      taskId] })`` call (BackgroundJobsBar, AutoAnnotateDialog,
+  //      YoloeDialog) now also marks the strip stale. Previously the
+  //      strip used an isolated ``["task-assets-strip", taskId]`` key
+  //      and never received those invalidations — so after a multi-
+  //      minute auto-annotation run the strip kept rendering its
+  //      (long-expired) presigned thumbnail URLs.
+  //   2. ``staleTime`` is 5 min. Presigned MinIO URLs expire after
+  //      10 min; staleness within half that window means the strip
+  //      naturally refetches before any URL goes dead, eliminating the
+  //      "all thumbnails turn into broken-image icons after 10 min"
+  //      class of bug.
+  //   3. ``refetchOnWindowFocus`` is true. After the operator tabs
+  //      away (e.g. to grab a coffee while auto-annotation runs) we
+  //      want fresh URLs the moment they come back, not on next click.
   const pagesQ = useInfiniteQuery({
-    queryKey: ["task-assets-strip", taskId],
+    queryKey: ["task-assets", taskId, "strip"],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       assetsApi.listPage(taskId, {
@@ -173,7 +262,21 @@ export function AssetThumbnailStrip({
       return fetchedSoFar < lastPage.total ? fetchedSoFar : undefined;
     },
     placeholderData: keepPreviousData,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: true,
   });
+
+  // Bug-fix May 26 — surface "navigation in flight" on the active
+  // tile. ``useIsFetching`` returns a count of in-flight queries
+  // matching the key; >0 means the editor's per-asset query for the
+  // tile the user just clicked is still resolving. The strip uses
+  // this to draw a subtle pulse overlay so rapid clicks always
+  // produce visible feedback even when ``placeholderData`` keeps the
+  // previous asset on the canvas.
+  const activeAssetFetchingCount = useIsFetching({
+    queryKey: ["asset", activeAssetId],
+  });
+  const activeAssetPending = activeAssetFetchingCount > 0;
 
   const assets: Asset[] = useMemo(
     () => pagesQ.data?.pages.flatMap((p) => p.items) ?? [],
@@ -286,6 +389,21 @@ export function AssetThumbnailStrip({
 
   const handleThumbClick = useCallback(
     (index: number, asset: Asset, e: ReactMouseEvent<HTMLAnchorElement>): boolean => {
+      // Bug-fix May 26 — plain click on the already-active tile is a
+      // router no-op (path unchanged → no transition). The operator
+      // perceives this as "click did nothing"; they click another tile
+      // and the strip seemingly "wakes up". Suppress that case
+      // explicitly so a no-op never blocks anything queued behind it,
+      // and so the click handler stays a single source of truth for
+      // "what does a tile click do".
+      if (
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.shiftKey &&
+        asset.id === activeAssetId
+      ) {
+        return true;
+      }
       // Cmd/Ctrl-click — toggle a single id. Anchor moves to the
       // toggled asset so a subsequent shift-click extends from here.
       if (e.metaKey || e.ctrlKey) {
@@ -326,7 +444,7 @@ export function AssetThumbnailStrip({
       setAnchorIndex(index);
       return false;
     },
-    [anchorIndex, assets, selectedAssetIds],
+    [activeAssetId, anchorIndex, assets, selectedAssetIds],
   );
 
   // Plan 14 Phase 8 Task 3 -- ``Esc`` clears the multi-select set / closes
@@ -461,14 +579,16 @@ export function AssetThumbnailStrip({
                 />
               );
             }
+            const isActive = asset.id === activeAssetId;
             return (
               <div key={asset.id} style={style}>
                 <ThumbItem
                   asset={asset}
                   projectId={projectId}
                   taskId={taskId}
-                  active={asset.id === activeAssetId}
+                  active={isActive}
                   selected={selectedAssetIds.has(asset.id)}
+                  pending={isActive && activeAssetPending}
                   onClick={(e) => handleThumbClick(vi.index, asset, e)}
                 />
               </div>
