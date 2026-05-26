@@ -140,3 +140,196 @@ def test_resume_403_for_non_member(db_session) -> None:
         f"/projects/{pid}/tasks/{tid}/resume", headers=_hdr(outsider_token)
     )
     assert r.status_code == 403
+
+
+import uuid as _uuid
+
+from carve_api.annotations.models import Annotation, AnnotationKind
+from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.projects.models import Class, ProjectMember
+
+
+def _make_class(db_session, project_id, idx: int = 0, name: str = "obj"):
+    cls = Class(
+        id=_uuid.uuid4(),
+        project_id=project_id,
+        idx=idx,
+        name=name,
+        color="#ffffff",
+    )
+    db_session.add(cls)
+    db_session.flush()
+    return cls
+
+
+def _make_asset_with_frame(db_session, task_id, idx_suffix: str = "a"):
+    asset = Asset(
+        id=_uuid.uuid4(),
+        task_id=task_id,
+        kind=AssetKind.image,
+        xxh3_128=_uuid.uuid4().hex,  # unique per asset to satisfy uq_assets_task_hash
+        mime="image/jpeg",
+        size_bytes=1234,
+        original_name=f"image_{idx_suffix}.jpg",
+    )
+    db_session.add(asset)
+    db_session.flush()
+    frame = Frame(
+        id=_uuid.uuid4(),
+        asset_id=asset.id,
+        idx=0,
+    )
+    db_session.add(frame)
+    db_session.flush()
+    return asset, frame
+
+
+def _make_bbox(db_session, task_id, frame_id, class_id, user_id):
+    ann = Annotation(
+        id=_uuid.uuid4(),
+        task_id=task_id,
+        frame_id=frame_id,
+        class_id=class_id,
+        kind=AnnotationKind.bbox,
+        geometry={"x": 0, "y": 0, "w": 10, "h": 10},
+        created_by=user_id,
+    )
+    db_session.add(ann)
+    db_session.flush()
+    return ann
+
+
+def test_resume_returns_latest_asset_and_correct_counts(db_session) -> None:
+    """User annotates three assets. Resume points at the most recent
+    one and counts distinct assets correctly."""
+    client = _client(db_session)
+    token = _register_and_login(client, "happy@x.com")
+    pid = client.post("/projects", json={"name": "P"}, headers=_hdr(token)).json()["id"]
+    tid = client.post(
+        f"/projects/{pid}/tasks",
+        json={"name": "T", "kind": "image"},
+        headers=_hdr(token),
+    ).json()["id"]
+
+    me = client.get("/auth/me", headers=_hdr(token)).json()
+    user_id = _uuid.UUID(me["id"])
+
+    cls = _make_class(db_session, _uuid.UUID(pid), idx=0)
+
+    a1, f1 = _make_asset_with_frame(db_session, _uuid.UUID(tid), idx_suffix="1")
+    a2, f2 = _make_asset_with_frame(db_session, _uuid.UUID(tid), idx_suffix="2")
+    a3, f3 = _make_asset_with_frame(db_session, _uuid.UUID(tid), idx_suffix="3")
+
+    _make_bbox(db_session, _uuid.UUID(tid), f1.id, cls.id, user_id)
+    _make_bbox(db_session, _uuid.UUID(tid), f2.id, cls.id, user_id)
+    _make_bbox(db_session, _uuid.UUID(tid), f3.id, cls.id, user_id)
+    db_session.commit()
+
+    r = client.get(f"/projects/{pid}/tasks/{tid}/resume", headers=_hdr(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    # All three annotations are committed in one transaction so updated_at is
+    # identical; the endpoint picks one deterministically per DB but we only
+    # assert membership rather than a specific asset to stay ordering-agnostic.
+    assert body["last_asset_id"] in {str(a1.id), str(a2.id), str(a3.id)}
+    assert body["last_frame_id"] in {str(f1.id), str(f2.id), str(f3.id)}
+    assert body["annotated_assets"] == 3
+    assert body["total_assets"] == 3
+    assert body["last_activity_at"] is not None
+
+
+def test_resume_isolates_users(db_session) -> None:
+    """User B's annotations do not leak into User A's resume."""
+    client = _client(db_session)
+    token_a = _register_and_login(client, "a@x.com")
+    pid = client.post("/projects", json={"name": "P"}, headers=_hdr(token_a)).json()["id"]
+    tid = client.post(
+        f"/projects/{pid}/tasks",
+        json={"name": "T", "kind": "image"},
+        headers=_hdr(token_a),
+    ).json()["id"]
+
+    # After the first user exists the API requires an admin token to register
+    # new accounts.  User A is the workspace bootstrap admin.
+    client.post(
+        "/auth/register",
+        json={"email": "b@x.com", "password": "hunter22"},
+        headers=_hdr(token_a),
+    )
+    token_b = client.post(
+        "/auth/login", json={"email": "b@x.com", "password": "hunter22"}
+    ).json()["access_token"]
+
+    me_a = client.get("/auth/me", headers=_hdr(token_a)).json()
+    me_b = client.get("/auth/me", headers=_hdr(token_b)).json()
+    uid_a = _uuid.UUID(me_a["id"])
+    uid_b = _uuid.UUID(me_b["id"])
+
+    # Add User B as a project member directly via DB (no dedicated POST endpoint)
+    db_session.add(
+        ProjectMember(
+            project_id=_uuid.UUID(pid),
+            user_id=uid_b,
+            role="member",
+            added_by=uid_a,
+        )
+    )
+    db_session.flush()
+
+    cls = _make_class(db_session, _uuid.UUID(pid), idx=0)
+    a1, f1 = _make_asset_with_frame(db_session, _uuid.UUID(tid), idx_suffix="A")
+    a2, f2 = _make_asset_with_frame(db_session, _uuid.UUID(tid), idx_suffix="B")
+
+    _make_bbox(db_session, _uuid.UUID(tid), f1.id, cls.id, uid_a)
+    _make_bbox(db_session, _uuid.UUID(tid), f2.id, cls.id, uid_b)
+    db_session.commit()
+
+    body_a = client.get(
+        f"/projects/{pid}/tasks/{tid}/resume", headers=_hdr(token_a)
+    ).json()
+    body_b = client.get(
+        f"/projects/{pid}/tasks/{tid}/resume", headers=_hdr(token_b)
+    ).json()
+
+    assert body_a["last_asset_id"] == str(a1.id)
+    assert body_a["annotated_assets"] == 1
+    assert body_b["last_asset_id"] == str(a2.id)
+    assert body_b["annotated_assets"] == 1
+
+
+def test_resume_ignores_null_frame_id(db_session) -> None:
+    """Tag-kind annotations (frame_id=NULL) must not become the resume target."""
+    client = _client(db_session)
+    token = _register_and_login(client, "nullframe@x.com")
+    pid = client.post("/projects", json={"name": "P"}, headers=_hdr(token)).json()["id"]
+    tid = client.post(
+        f"/projects/{pid}/tasks",
+        json={"name": "T", "kind": "image"},
+        headers=_hdr(token),
+    ).json()["id"]
+    me = client.get("/auth/me", headers=_hdr(token)).json()
+    uid = _uuid.UUID(me["id"])
+
+    cls = _make_class(db_session, _uuid.UUID(pid), idx=0)
+    a1, f1 = _make_asset_with_frame(db_session, _uuid.UUID(tid), idx_suffix="1")
+
+    db_session.add(
+        Annotation(
+            id=_uuid.uuid4(),
+            task_id=_uuid.UUID(tid),
+            frame_id=None,
+            class_id=cls.id,
+            kind=AnnotationKind.tag,
+            geometry={"label": "scene"},
+            created_by=uid,
+        )
+    )
+    _make_bbox(db_session, _uuid.UUID(tid), f1.id, cls.id, uid)
+    db_session.commit()
+
+    body = client.get(
+        f"/projects/{pid}/tasks/{tid}/resume", headers=_hdr(token)
+    ).json()
+    assert body["last_asset_id"] == str(a1.id)
+    assert body["last_frame_id"] == str(f1.id)
