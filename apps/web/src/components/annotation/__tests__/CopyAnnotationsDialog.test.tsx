@@ -38,7 +38,7 @@ describe("CopyAnnotationsDialog", () => {
       />,
     );
 
-    expect(screen.getByText(/src\.png/)).toBeInTheDocument();
+    expect(screen.getAllByText(/src\.png/).length).toBeGreaterThan(0);
     expect(screen.getByText(/42 ?\/ ?1247/)).toBeInTheDocument();
     expect(screen.getByText(/17 bbox/)).toBeInTheDocument();
     expect(screen.getByText(/3 polygon/)).toBeInTheDocument();
@@ -105,5 +105,25 @@ describe("CopyAnnotationsDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Copy 1 annotation/i }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables confirm and shows 'Close' when breakdown is null", () => {
+    render(
+      <CopyAnnotationsDialog
+        open
+        onOpenChange={() => {}}
+        sourceAsset={makeAsset({ id: "src" })}
+        sourceOrdinal={1}
+        totalAssets={10}
+        targetAsset={makeAsset({ id: "tgt" })}
+        targetExistingCount={0}
+        breakdown={null}
+        onConfirm={() => Promise.resolve()}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /Close/i });
+    expect(btn).toBeInTheDocument();
+    // Should NOT show "Copy 0 annotations" label
+    expect(screen.queryByRole("button", { name: /Copy 0/i })).not.toBeInTheDocument();
   });
 });

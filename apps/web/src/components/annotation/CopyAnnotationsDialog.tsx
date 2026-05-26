@@ -16,6 +16,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
@@ -72,8 +73,9 @@ export function CopyAnnotationsDialog({
   const counts = breakdown && breakdown !== "loading" ? breakdown : null;
   const total = counts?.total ?? 0;
   const empty = !loading && counts !== null && total === 0;
+  const noData = !loading && counts === null;
 
-  const primaryLabel = empty
+  const primaryLabel = empty || noData
     ? "Close"
     : `Copy ${total} ${pluralize(total, "annotation")}`;
 
@@ -86,6 +88,11 @@ export function CopyAnnotationsDialog({
       >
         <DialogHeader>
           <DialogTitle>Copy annotations</DialogTitle>
+          <DialogDescription className="sr-only">
+            Confirm copying annotations from{" "}
+            {sourceAsset?.original_name ?? "source"} to{" "}
+            {targetAsset?.original_name ?? "current asset"}.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="grid grid-cols-[112px_1fr] gap-3 py-2">
@@ -155,10 +162,10 @@ export function CopyAnnotationsDialog({
             Cancel
           </Button>
           <Button
-            variant={empty ? "ghost" : "primary"}
+            variant={empty || noData ? "ghost" : "primary"}
             disabled={loading}
             onClick={async () => {
-              if (empty) {
+              if (empty || noData) {
                 onOpenChange(false);
                 return;
               }
