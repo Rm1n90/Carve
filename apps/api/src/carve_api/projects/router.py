@@ -381,6 +381,7 @@ def task_resume(
             .where(
                 Annotation.task_id == task.id,
                 Annotation.created_by == user.id,
+                Annotation.frame_id.is_not(None),
             )
         ).scalar_one()
         or 0
