@@ -43,7 +43,7 @@ export function ResumeProgressBanner({
   return (
     <div
       role="status"
-      className="flex items-center justify-between gap-3 border-b border-zinc-700 bg-zinc-900 px-4 py-2 text-sm text-zinc-100"
+      className="flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-elev)] px-4 py-2 text-sm text-[color:var(--text-primary)]"
       data-testid="resume-progress-banner"
     >
       <p>
@@ -57,14 +57,14 @@ export function ResumeProgressBanner({
       <div className="flex gap-2">
         <button
           type="button"
-          className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500"
+          className="rounded bg-[var(--accent)] px-3 py-1 text-[color:var(--accent-fg)] hover:bg-[var(--accent-hover)]"
           onClick={() => onResume(targetAssetId)}
         >
           Resume there
         </button>
         <button
           type="button"
-          className="rounded border border-zinc-600 px-3 py-1 text-zinc-200 hover:bg-zinc-800"
+          className="rounded border border-[var(--border-subtle)] px-3 py-1 text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
           onClick={() => setDismissed(true)}
         >
           Dismiss
