@@ -123,7 +123,7 @@ describe("AppearancePanel — controls render", () => {
     expect(screen.queryByTestId("appearance-opacity")).toBeNull();
   });
 
-  it("renders all controls: colorBy x3, opacity, selected opacity, outlined borders, show bitmap, show projections", () => {
+  it("renders all controls: colorBy x3, opacity, selected opacity, outlined borders, show labels, show bitmap, show projections", () => {
     renderPanel();
     expect(screen.getByTestId("appearance-colorBy-label")).toBeInTheDocument();
     expect(screen.getByTestId("appearance-colorBy-instance")).toBeInTheDocument();
@@ -131,8 +131,18 @@ describe("AppearancePanel — controls render", () => {
     expect(screen.getByTestId("appearance-opacity")).toBeInTheDocument();
     expect(screen.getByTestId("appearance-selectedOpacity")).toBeInTheDocument();
     expect(screen.getByTestId("appearance-outlinedBorders")).toBeInTheDocument();
+    expect(screen.getByTestId("appearance-showLabels")).toBeInTheDocument();
     expect(screen.getByTestId("appearance-showBitmap")).toBeInTheDocument();
     expect(screen.getByTestId("appearance-showProjections")).toBeInTheDocument();
+  });
+
+  it("toggling 'Show labels' flips visibility.labels on the tool store", () => {
+    renderPanel();
+    expect(useTool.getState().visibility.labels).toBe(true);
+    fireEvent.click(screen.getByTestId("appearance-showLabels"));
+    expect(useTool.getState().visibility.labels).toBe(false);
+    fireEvent.click(screen.getByTestId("appearance-showLabels"));
+    expect(useTool.getState().visibility.labels).toBe(true);
   });
 });
 

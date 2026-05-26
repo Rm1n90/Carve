@@ -279,6 +279,17 @@ export function AppearancePanel(
             }
           />
 
+          {/* Show labels — hides class-name chips above bboxes/polygons so
+              close-packed logos can be drawn/inspected without label
+              occlusion. Wired to the same visibility.labels flag the
+              toolbar visibility menu uses, so both stay in sync. */}
+          <CheckboxRow
+            label="Show labels"
+            checked={visibility.labels}
+            onChange={(v) => setVisibility("labels", v)}
+            testId="appearance-showLabels"
+          />
+
           {/* Show bitmap — gates mask raster rendering. */}
           <CheckboxRow
             label="Show bitmap"
