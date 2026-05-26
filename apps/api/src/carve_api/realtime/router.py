@@ -38,6 +38,7 @@ from carve_api.deps import get_current_user, get_db
 from carve_api.projects.service import require_visible_task
 from carve_api.realtime.bus import EventEnvelope, get_bus
 from carve_api.realtime.manager import Connection, get_manager
+from carve_api.realtime.presence import color_for_user, get_tracker
 from carve_api.realtime.schemas import (
     PROTOCOL_VERSION,
     ClientPing,
@@ -89,8 +90,31 @@ async def post_ticket(
     # ``require_visible_task`` raises HTTPException on 403/404 which is
     # exactly what we want to surface to the client.
     require_visible_task(db, user, payload.task_id)
-    token = await issue_ticket(user.id, payload.task_id)
+    # Phase 5 — derive a presence display name from the email's local
+    # part. We capture it at ticket-issue time so the WS handler doesn't
+    # need its own DB session to look the user up. Worst case (user
+    # changes their email between ticket issue + WS upgrade — 30 s
+    # window) the presence label is briefly stale; acceptable.
+    user_name = _display_name_for_email(user.email)
+    token = await issue_ticket(
+        user.id, payload.task_id, user_name=user_name,
+    )
     return TicketResponse(ticket=token, expires_in=TICKET_TTL_SECONDS)
+
+
+def _display_name_for_email(email: str) -> str:
+    """Trim ``user@host.tld`` down to a short display label.
+
+    Phase 5 uses the local-part (everything before ``@``), capped at
+    32 chars so very long emails don't break the presence chips.
+    Empty or malformed emails fall back to a neutral "User" label.
+    """
+    if not email or "@" not in email:
+        return "User"
+    local = email.split("@", 1)[0].strip()
+    if not local:
+        return "User"
+    return local[:32]
 
 
 # --- WebSocket: /realtime/ws/{task_id} --------------------------------------
@@ -141,6 +165,7 @@ async def realtime_ws(
     await websocket.accept()
 
     manager = get_manager()
+    tracker = get_tracker()
     bus = get_bus()
     session_id = uuid.uuid4()
     conn = Connection(
@@ -148,6 +173,10 @@ async def realtime_ws(
         user_id=payload.user_id,
         task_id=task_id,
         ws=websocket,
+        # Phase 5 — presence metadata baked in at construct time so
+        # downstream broadcasts don't need a DB lookup per event.
+        user_name=payload.user_name or "User",
+        color=color_for_user(payload.user_id),
     )
     manager.register(conn)
 
@@ -165,18 +194,28 @@ async def realtime_ws(
         pubsub = await bus.open_subscription(task_id)
 
         # ``hello`` carries the session id, current event seq for
-        # gap-detection, and a server timestamp clients can use to skew
-        # their own clock when interpreting ``ts`` fields.
+        # gap-detection, a server timestamp clients can use to skew
+        # their own clock when interpreting ``ts`` fields, and (Phase
+        # 5) the snapshot of every other user currently connected to
+        # this task — so a fresh join doesn't have to wait for the
+        # next presence:join from each peer to render avatars.
         current_seq = await bus.current_seq(task_id)
+        presence_snapshot = tracker.snapshot(
+            task_id, exclude_session=session_id,
+        )
         hello = ServerHello(
             session_id=session_id,
             user_id=payload.user_id,
             task_id=task_id,
             server_time=int(time.time() * 1000),
             last_event_seq=current_seq,
-            presence=[],  # Phase 5 fills this in.
+            presence=presence_snapshot,
         )
         manager.enqueue(conn, hello.model_dump(mode="json"))
+        # Phase 5 — fan out a join to peers AFTER the new client has
+        # received its own hello. The order matters: existing peers
+        # see "X joined" only once X exists in the manager.
+        tracker.broadcast_join(conn)
 
         # Subscriber task receives the already-subscribed pubsub so
         # it never has to do its own SUBSCRIBE call.
@@ -209,8 +248,24 @@ async def realtime_ws(
                     ),
                 )
                 continue
-            # Phase 1+2 don't handle presence types yet — but they
-            # validate fine, so reply with a deliberate "not yet" error.
+            if isinstance(envelope, ClientPresenceCursor):
+                # Tracker does the throttle + broadcast — the result is
+                # only useful for telemetry / tests.
+                tracker.update_cursor(
+                    conn,
+                    asset_id=envelope.asset_id,
+                    frame_id=envelope.frame_id,
+                    x=envelope.x,
+                    y=envelope.y,
+                )
+                continue
+            if isinstance(envelope, ClientPresenceFocus):
+                tracker.update_focus(
+                    conn,
+                    envelope.target.model_dump(mode="json") if envelope.target else None,
+                )
+                continue
+            # Unknown / unhandled type — reply with a structured error.
             manager.enqueue(
                 conn,
                 ServerError(
@@ -219,6 +274,14 @@ async def realtime_ws(
                 ).model_dump(mode="json"),
             )
     finally:
+        # Phase 5 — broadcast leave BEFORE unregister so peers still
+        # in the task's connection set actually receive the envelope.
+        # Unregistering first would skip them because broadcast walks
+        # the live set.
+        try:
+            tracker.broadcast_leave(conn)
+        except Exception:  # noqa: BLE001 — never block teardown
+            logger.exception("realtime: broadcast_leave failed")
         manager.unregister(conn)
         await manager.request_close(conn)
         # Tear down the subscriber first so it can't enqueue a stale

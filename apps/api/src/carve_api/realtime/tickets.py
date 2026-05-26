@@ -52,6 +52,12 @@ class TicketPayload:
     user_id: uuid.UUID
     task_id: uuid.UUID
     issued_at: int  # epoch seconds
+    # Phase 5 — display name captured at ticket-issue time so the WS
+    # handler doesn't need a DB session for presence broadcasts.
+    # Default is empty so existing tickets from before this change
+    # still parse cleanly (defensive — tickets are short-lived but the
+    # field is a contract).
+    user_name: str = ""
 
 
 # Module-level client; created lazily.
@@ -76,7 +82,12 @@ def set_client_for_test(client: aioredis.Redis | None) -> None:
     _client = client
 
 
-async def issue_ticket(user_id: uuid.UUID, task_id: uuid.UUID) -> str:
+async def issue_ticket(
+    user_id: uuid.UUID,
+    task_id: uuid.UUID,
+    *,
+    user_name: str = "",
+) -> str:
     """Mint a fresh ticket bound to (user, task). Returns the token."""
     token = secrets.token_urlsafe(32)
     payload = json.dumps(
@@ -84,6 +95,7 @@ async def issue_ticket(user_id: uuid.UUID, task_id: uuid.UUID) -> str:
             "user_id": str(user_id),
             "task_id": str(task_id),
             "issued_at": int(time.time()),
+            "user_name": user_name,
         },
         separators=(",", ":"),
     )
@@ -110,6 +122,7 @@ async def consume_ticket(token: str) -> TicketPayload | None:
             user_id=uuid.UUID(data["user_id"]),
             task_id=uuid.UUID(data["task_id"]),
             issued_at=int(data["issued_at"]),
+            user_name=str(data.get("user_name", "")),
         )
     except (ValueError, KeyError, TypeError):
         return None

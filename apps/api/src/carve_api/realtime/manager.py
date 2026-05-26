@@ -52,6 +52,12 @@ class Connection:
     ``session_id`` is what the client sees in its ``hello`` envelope and
     what mutating REST calls echo back via ``X-Origin-Session`` so we
     can suppress the originator's own broadcast.
+
+    Phase 5 — presence fields. ``user_name`` + ``color`` are baked in
+    at construction time (from the ticket payload + deterministic
+    palette hash) so broadcasts don't need a DB lookup per event. The
+    cursor + focus fields are live state mutated by inbound presence
+    frames and read by ``snapshot()`` for late-joiners.
     """
 
     session_id: uuid.UUID
@@ -65,6 +71,25 @@ class Connection:
     # receive loop checks this so it can break out instead of trying to
     # read from a doomed socket.
     overflowed: bool = False
+
+    # ---- Phase 5: presence ---------------------------------------------
+
+    user_name: str = ""
+    color: str = "#888888"  # neutral grey — overwritten at register time
+    # Last cursor reported by this client. ``None`` until the first
+    # presence:cursor frame arrives. Image-pixel coords (floats); the
+    # frontend coalesces zoom-space to image-space before sending.
+    cursor_asset_id: uuid.UUID | None = None
+    cursor_frame_id: uuid.UUID | None = None
+    cursor_x: float = 0.0
+    cursor_y: float = 0.0
+    # Used by :class:`carve_api.realtime.presence.PresenceTracker` to
+    # throttle outbound cursor broadcasts. Epoch ms.
+    last_cursor_broadcast_ms: int = 0
+    # Annotation the user is currently editing / interacting with, if
+    # any. Stored as the literal dict the wire frame carries (kind,
+    # id) so we can rebroadcast it without re-validating.
+    focus_target: dict | None = None
 
 
 class ConnectionManager:
