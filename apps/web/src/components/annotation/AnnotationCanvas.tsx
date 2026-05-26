@@ -132,6 +132,20 @@ interface Props {
    *  the legacy ``c.idx === digit - 1`` lookup. Optional so older test
    *  mounts that don't pass it fall back to legacy behaviour. */
   digitToClassId?: Record<number, string>;
+  /** Phase 6 — fired on every pointermove with image-space coords (the
+   *  same coordinate system annotations live in). The page throttles
+   *  + forwards to the realtime channel as ``presence:cursor``. The
+   *  listener attaches its own pointermove handler on the host
+   *  element — it does NOT branch the existing tool flow. */
+  onPointerMoveImage?: (imageX: number, imageY: number) => void;
+  /** Phase 6 — fired whenever the canvas's zoom/pan transform changes,
+   *  so external overlays (presence cursor layer) can re-position
+   *  their image-space children. Receives the same ``{scale, offset}``
+   *  values ``applyFrame`` writes into the internal refs. */
+  onTransformChange?: (transform: {
+    scale: number;
+    offset: { x: number; y: number };
+  }) => void;
 }
 
 const DEFAULT_AMBER = 0xeab308;
@@ -197,6 +211,8 @@ export function AnnotationCanvas({
   classNameMap,
   classes: classesProp,
   digitToClassId,
+  onPointerMoveImage,
+  onTransformChange,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<CanvasApp | null>(null);
@@ -1133,7 +1149,34 @@ export function AnnotationCanvas({
       layer.scale.set(frame.scale, frame.scale);
     });
     onZoomChange?.(frame.scale * 100);
-  }, [onZoomChange]);
+    // Phase 6 — surface the transform to external overlays (presence
+    // cursor layer) so they can re-position their image-space children
+    // synchronously with the canvas's Pixi layers.
+    onTransformChange?.({
+      scale: frame.scale,
+      offset: { x: frame.offset.x, y: frame.offset.y },
+    });
+  }, [onZoomChange, onTransformChange]);
+
+  // Phase 6 — emit image-space pointer coords for the realtime
+  // ``presence:cursor`` broadcast. Attaches a passive listener on the
+  // host element that does NOT touch the existing tool flow — it only
+  // reads the bounding rect + transform refs and calls back.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !onPointerMoveImage) return;
+    const handler = (e: PointerEvent) => {
+      const rect = host.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      // Inverse of ``applyFrame``: image = (screen - offset) / scale.
+      const scale = scaleRef.current || 1;
+      const off = offsetRef.current;
+      onPointerMoveImage((sx - off.x) / scale, (sy - off.y) / scale);
+    };
+    host.addEventListener("pointermove", handler, { passive: true });
+    return () => host.removeEventListener("pointermove", handler);
+  }, [onPointerMoveImage]);
 
   /**
    * Smoothly ease the rendered transform toward `target` over

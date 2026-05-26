@@ -33,8 +33,23 @@ import {
 } from "@/components/ui/Popover";
 
 import { handleOpsMessage, handleResyncMessage } from "@/realtime/applyOps";
+import {
+  handleHelloPresence,
+  handlePresenceCursor,
+  handlePresenceFocus,
+  handlePresenceJoin,
+  handlePresenceLeave,
+} from "@/realtime/applyPresence";
+import { usePresence } from "@/realtime/presence";
 import { useTaskStream } from "@/realtime/useTaskStream";
+import type { RealtimeClient } from "@/realtime/ws";
+import type { ClientPresenceCursor, ClientPresenceFocus } from "@/realtime/types";
 import { AnnotationCanvas, type ImageLoadStatus } from "@/components/annotation/AnnotationCanvas";
+import { PresenceChips } from "@/components/annotation/PresenceChips";
+import {
+  PresenceCursorLayer,
+  type CanvasTransform,
+} from "@/components/annotation/PresenceCursorLayer";
 import { ClassesPanel } from "@/components/annotation/ClassesPanel";
 import { CommandPalette } from "@/components/annotation/CommandPalette";
 import { FrameTimeline } from "@/components/annotation/FrameTimeline";
@@ -210,6 +225,106 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   useEffect(() => {
     recordTaskVisit(projectId, taskId);
   }, [projectId, taskId, recordTaskVisit]);
+
+  // Realtime collaboration. Phase 4 wires data sync; Phase 6 layers
+  // presence (chips + cursors). Recovery: a previous edit cycle lost
+  // the page-level useTaskStream mount, so Phase 4 shipped silently
+  // disabled — this restores it AND adds the Phase 6 callbacks in one
+  // pass. The store holds OTHER users; the transport keeps it in sync
+  // via the on* callbacks. We capture the live client in a ref so the
+  // throttled cursor + focus emitters can call ``client.send``
+  // synchronously from event handlers.
+  const realtimeClientRef = useRef<RealtimeClient | null>(null);
+  realtimeClientRef.current = useTaskStream({
+    taskId,
+    onHello: handleHelloPresence,
+    onOps: handleOpsMessage,
+    onResync: (msg) => handleResyncMessage(qc, taskId, msg),
+    onPresence: (msg) => {
+      switch (msg.type) {
+        case "presence:join":
+          handlePresenceJoin(msg);
+          break;
+        case "presence:leave":
+          handlePresenceLeave(msg);
+          break;
+        case "presence:cursor":
+          handlePresenceCursor(msg);
+          break;
+        case "presence:focus":
+          handlePresenceFocus(msg);
+          break;
+      }
+    },
+  });
+  // Drop stale presence state on task switch + on unmount so a brief
+  // mount window doesn't show prior teammates' avatars.
+  useEffect(() => {
+    usePresence.getState().reset();
+    return () => usePresence.getState().reset();
+  }, [taskId]);
+
+  // Phase 6 — the canvas transform feeds the presence cursor overlay.
+  // AnnotationCanvas calls ``onTransformChange`` whenever ``applyFrame``
+  // runs (zoom / pan), and the overlay re-projects image-space cursors
+  // into wrapper-local pixel coords on the next render.
+  const [canvasTransform, setCanvasTransform] = useState<CanvasTransform>({
+    scale: 1,
+    offset: { x: 0, y: 0 },
+  });
+
+  // Phase 6 — outbound presence:cursor with a 50 ms (20 Hz) throttle.
+  // The server caps at 33 ms (~30 Hz) so we always stay under the
+  // defensive ceiling. ``perfNow`` is held in a ref so callback
+  // identity stays stable across re-renders.
+  const lastCursorSendRef = useRef(0);
+  const handlePointerMoveImage = useCallback(
+    (imgX: number, imgY: number) => {
+      const client = realtimeClientRef.current;
+      if (!client) return;
+      const now = performance.now();
+      if (now - lastCursorSendRef.current < 50) return;
+      lastCursorSendRef.current = now;
+      // ``presence:cursor`` is best-effort: if the WS is closed the
+      // send is dropped silently inside RealtimeClient.send.
+      const msg: ClientPresenceCursor = {
+        v: 1,
+        type: "presence:cursor",
+        asset_id: assetId,
+        // frame_id intentionally omitted — the resolved video frame
+        // uuid lives behind a query and the cursor layer doesn't need
+        // it (it filters by asset_id).
+        x: imgX,
+        y: imgY,
+      };
+      client.send(msg);
+    },
+    [assetId],
+  );
+
+  // Phase 6 — outbound presence:focus. Tracks the *resolved* serverId
+  // of the locally-selected annotation so a unsaved optimistic draft
+  // (no serverId yet) doesn't trigger a broadcast. Re-fires only when
+  // the resolved id changes; Zustand's referential equality keeps it
+  // cheap.
+  const focusServerId = useAnnotations((s) => {
+    const id = s.selectedId;
+    if (!id) return null;
+    return s.byId[id]?.serverId ?? null;
+  });
+  useEffect(() => {
+    const client = realtimeClientRef.current;
+    if (!client) return;
+    const msg: ClientPresenceFocus = {
+      v: 1,
+      type: "presence:focus",
+      target: focusServerId
+        ? { kind: "annotation", id: focusServerId }
+        : null,
+    };
+    client.send(msg);
+  }, [focusServerId]);
+
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
   const [zoomPct, setZoomPct] = useState(100);
   // When the user enables Settings → Player → "Reset zoom on frame change",
@@ -1814,6 +1929,12 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 classNameMap={classNameMap}
                 classes={classesQ.data ?? []}
                 digitToClassId={digitToClassId}
+                onPointerMoveImage={handlePointerMoveImage}
+                onTransformChange={setCanvasTransform}
+              />
+              <PresenceCursorLayer
+                transform={canvasTransform}
+                assetId={assetId}
               />
               <SelectionCountBadge
                 // v3.27.11 — pass the LIVE active frame id so the badge
@@ -2431,15 +2552,22 @@ function RightRailFooter() {
         </PopoverContent>
       </Popover>
 
-      {/* Live status on the right — frame's annotation count + how
-          many are currently selected. Updates reactively. */}
-      <span
-        data-testid="right-rail-status"
-        className="ml-auto text-[10.5px] text-[color:var(--text-tertiary)] font-mono tabular-nums whitespace-nowrap"
-      >
-        {totalCount} object{totalCount === 1 ? "" : "s"}
-        {selectedCount > 0 ? ` · ${selectedCount} selected` : ""}
-      </span>
+      {/* Phase 6 — presence chips. ``ml-auto`` pushes the chips +
+          status group to the right edge as a single block. The chips
+          component returns null when nobody else is connected so an
+          empty placeholder doesn't shift the status text. */}
+      <div className="ml-auto flex items-center gap-3">
+        <PresenceChips />
+        {/* Live status on the right — frame's annotation count + how
+            many are currently selected. Updates reactively. */}
+        <span
+          data-testid="right-rail-status"
+          className="text-[10.5px] text-[color:var(--text-tertiary)] font-mono tabular-nums whitespace-nowrap"
+        >
+          {totalCount} object{totalCount === 1 ? "" : "s"}
+          {selectedCount > 0 ? ` · ${selectedCount} selected` : ""}
+        </span>
+      </div>
     </div>
   );
 }

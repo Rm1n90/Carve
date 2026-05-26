@@ -51,6 +51,7 @@ export function useTaskStream(
     onResync: options.onResync,
     onError: options.onError,
     onUnknown: options.onUnknown,
+    onPresence: options.onPresence,
   });
   callbacksRef.current = {
     onHello: options.onHello,
@@ -58,6 +59,7 @@ export function useTaskStream(
     onResync: options.onResync,
     onError: options.onError,
     onUnknown: options.onUnknown,
+    onPresence: options.onPresence,
   };
 
   useEffect(() => {
@@ -76,6 +78,7 @@ export function useTaskStream(
       onResync: (msg) => callbacksRef.current.onResync?.(msg),
       onError: (msg) => callbacksRef.current.onError?.(msg),
       onUnknown: (msg) => callbacksRef.current.onUnknown?.(msg),
+      onPresence: (msg) => callbacksRef.current.onPresence?.(msg),
     });
     clientRef.current = client;
     void client.start();

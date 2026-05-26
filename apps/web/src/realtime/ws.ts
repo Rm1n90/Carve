@@ -39,9 +39,19 @@ import {
   type ServerOpsBatch,
   type ServerOpsDelete,
   type ServerOpsUpsert,
+  type ServerPresenceCursor,
+  type ServerPresenceFocus,
+  type ServerPresenceJoin,
+  type ServerPresenceLeave,
   type ServerResync,
   type ServerUnknown,
 } from "@/realtime/types";
+
+export type PresenceEnvelope =
+  | ServerPresenceJoin
+  | ServerPresenceLeave
+  | ServerPresenceCursor
+  | ServerPresenceFocus;
 
 // -------- Configuration ------------------------------------------------------
 
@@ -77,6 +87,11 @@ export interface RealtimeCallbacks {
   /** Fired for ``type`` values this client doesn't recognise (e.g.
    *  newer server version). Telemetry hook for forward-compat. */
   onUnknown?: (msg: ServerUnknown) => void;
+  /** Phase 6 — fired for every ``presence:*`` envelope. Consumer
+   *  switches on ``msg.type`` and forwards to the matching store
+   *  handler in ``applyPresence.ts``. One callback (rather than four
+   *  typed ones) keeps the public surface small. */
+  onPresence?: (msg: PresenceEnvelope) => void;
 }
 
 export interface RealtimeClientOptions extends RealtimeCallbacks {
@@ -327,6 +342,12 @@ export class RealtimeClient {
         return;
       case "error":
         this.options.onError?.(msg as ServerError);
+        return;
+      case "presence:join":
+      case "presence:leave":
+      case "presence:cursor":
+      case "presence:focus":
+        this.options.onPresence?.(msg as PresenceEnvelope);
         return;
       default:
         this.options.onUnknown?.(msg as ServerUnknown);
