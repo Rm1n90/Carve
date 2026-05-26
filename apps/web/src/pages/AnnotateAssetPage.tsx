@@ -1393,16 +1393,28 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     return { ...counts, total: rows.length } satisfies BreakdownCounts;
   }, [copyDialogSourceId, copyDialogRawQ.data, copyDialogRawQ.isLoading]);
 
-  // Live count of existing annotations on the current asset. The
-  // editor's annotation store is scoped to the active asset (reset on
-  // navigation), so byId-length is a faithful "current asset count".
-  // Subtract pendingDeletes so the hint reflects the user's optimistic
-  // state, not the pre-delete count.
-  const targetExistingCount = useAnnotations(
-    (s) =>
-      Object.keys(s.byId).length -
-      (s.pendingDeletes?.length ?? 0),
-  );
+  // Live count of existing annotations on the current asset. We
+  // CANNOT use ``Object.keys(byId).length`` directly — the store's
+  // ``reset()`` preserves never-saved dirty creates across asset
+  // switches (so the user doesn't lose work mid-navigation), which
+  // means byId can carry leftover drafts from previously-visited
+  // assets whose frameId is no longer current. Filtering by
+  // ``frameId === current frame`` gives a faithful per-asset count
+  // for both image and video assets, and subtracting pendingDeletes
+  // reflects the user's optimistic delete state.
+  const localById = useAnnotations((s) => s.byId);
+  const localPendingDeletes = useAnnotations((s) => s.pendingDeletes);
+  const targetExistingCount = useMemo(() => {
+    if (!frameId) return 0;
+    const pending = new Set(localPendingDeletes);
+    let n = 0;
+    for (const draft of Object.values(localById)) {
+      if (draft.frameId !== frameId) continue;
+      if (pending.has(draft.tempId)) continue;
+      n += 1;
+    }
+    return n;
+  }, [localById, localPendingDeletes, frameId]);
 
   const dialogSourceAsset = useMemo(
     () =>
