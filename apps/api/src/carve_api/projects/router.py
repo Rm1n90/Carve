@@ -7,6 +7,17 @@ from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation
 from carve_api.assets.models import Asset, Frame
+from carve_api.assets.video_extract_schemas import (
+    BatchEnqueueIn,
+    BatchEnqueueOut,
+    BatchStatusOut,
+)
+from carve_api.assets.video_extract_service import (
+    VideoExtractError,
+    cancel_batch as ve_cancel_batch,
+    enqueue_batch as ve_enqueue_batch,
+    get_batch_status as ve_get_batch_status,
+)
 from carve_api.audit import service as audit_service
 from carve_api.audit.actions import TASK_DELETED
 from carve_api.auth.models import User
@@ -403,6 +414,87 @@ def task_resume(
         total_assets=total_assets,
         last_activity_at=last_row.updated_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# Mixed-upload video → image extraction batch endpoints.
+# Service layer in carve_api.assets.video_extract_service raises
+# VideoExtractError on bad input / 409 conflict — convert to HTTPException
+# using its ``status_code`` so callers see a consistent JSON shape.
+# ---------------------------------------------------------------------------
+def _http_ve(err: VideoExtractError) -> HTTPException:
+    return HTTPException(status_code=err.status_code, detail=str(err))
+
+
+@router.post(
+    "/{project_id}/tasks/{task_id}/video-extract/batch",
+    response_model=BatchEnqueueOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def enqueue_video_extract_batch(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: BatchEnqueueIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BatchEnqueueOut:
+    """Enqueue one RQ job per video to extract frames into image assets."""
+    try:
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
+        task = TaskService(db).get(project=project, task_id=task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        return ve_enqueue_batch(db, task=task, payload=payload)
+    except VideoExtractError as exc:
+        raise _http_ve(exc) from exc
+
+
+@router.get(
+    "/{project_id}/tasks/{task_id}/video-extract/batch/{batch_id}",
+    response_model=BatchStatusOut,
+)
+def get_video_extract_batch_status(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BatchStatusOut:
+    """Per-batch job status. Read-only — uses the read role."""
+    try:
+        project = require_project_role(db, user, project_id, _READ_ROLES)
+        task = TaskService(db).get(project=project, task_id=task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        return ve_get_batch_status(task=task, batch_id=batch_id)
+    except VideoExtractError as exc:
+        raise _http_ve(exc) from exc
+
+
+@router.post(
+    "/{project_id}/tasks/{task_id}/video-extract/batch/{batch_id}/cancel",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def cancel_video_extract_batch(
+    project_id: uuid.UUID,
+    task_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    """Cancel queued/running jobs in the batch. Source videos preserved
+    for cancelled jobs (per the video-extract spec)."""
+    try:
+        project = require_project_role(db, user, project_id, _MUTATING_ROLES)
+        task = TaskService(db).get(project=project, task_id=task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        ve_cancel_batch(task=task, batch_id=batch_id)
+    except VideoExtractError as exc:
+        raise _http_ve(exc) from exc
 
 
 @router.delete(
