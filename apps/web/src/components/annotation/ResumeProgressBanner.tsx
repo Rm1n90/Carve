@@ -59,26 +59,40 @@ export function ResumeProgressBanner({
     data.last_asset_id !== null &&
     data.last_asset_id !== currentAssetId;
 
+  // Open only when the field has been clear for SETTLE_MS continuously.
+  // This handles two cases:
+  //   1. A foreign dialog (e.g. SAM-variant) is already on screen — we
+  //      wait for it to close.
+  //   2. A foreign dialog is about to mount but hasn't yet — our hook
+  //      resolved a tick earlier than theirs. The settle delay lets the
+  //      page quiesce so we don't open then immediately get buried.
   useEffect(() => {
     if (!wantsToOpen) {
       setReadyToShow(false);
       return;
     }
+    const SETTLE_MS = 400;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const isFieldClear = () =>
       document.querySelectorAll('[role="dialog"], [role="alertdialog"]')
         .length === 0;
-    if (isFieldClear()) {
-      setReadyToShow(true);
-      return;
-    }
-    const obs = new MutationObserver(() => {
-      if (isFieldClear()) {
-        setReadyToShow(true);
-        obs.disconnect();
+    const scheduleOpen = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
       }
-    });
+      if (!isFieldClear()) return;
+      timer = setTimeout(() => {
+        if (isFieldClear()) setReadyToShow(true);
+      }, SETTLE_MS);
+    };
+    scheduleOpen();
+    const obs = new MutationObserver(() => scheduleOpen());
     obs.observe(document.body, { childList: true, subtree: false });
-    return () => obs.disconnect();
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+      obs.disconnect();
+    };
   }, [wantsToOpen]);
 
   if (!wantsToOpen || !readyToShow) return null;
