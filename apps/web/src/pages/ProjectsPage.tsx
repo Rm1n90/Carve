@@ -618,7 +618,12 @@ function WorkspaceDeadlines({ projects }: { projects: Project[] }) {
     const project = targets[i];
     if (!q.data || !project) return;
     for (const t of q.data) {
-      if (!t.due_date || t.archived_at != null) continue;
+      if (
+        !t.due_date ||
+        t.archived_at != null ||
+        t.completed_at != null
+      )
+        continue;
       const due = Date.parse(t.due_date);
       if (!Number.isFinite(due)) continue;
       entries.push({
