@@ -179,12 +179,35 @@ export function ProjectsPage() {
     return null;
   }, [recentIds, projects]);
 
-  // v3.30 — per-project task summary fan-out. Shares the same cache key
-  // as ``WorkspaceDeadlines`` so no duplicate network calls. Capped at
-  // the same 24-project ceiling for huge workspaces; cards past the
-  // cap simply render without the ring (acceptable degradation).
-  const STATS_LIMIT = 24;
-  const statsTargets = useMemo(() => projects.slice(0, STATS_LIMIT), [projects]);
+  // Pagination — 20 visible projects per page. Filter/search/sort
+  // operate over the full set; only the visible window is paged. The
+  // stats fan-out (below) targets the current page so every visible
+  // card has its completion ring (no silent orphans past index 24).
+  const PAGE_SIZE = 20;
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // Clamp page when the filtered set shrinks (filter/search/sort change
+  // that removes pages out from under the cursor).
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+  // Reset to page 1 whenever the filter dimension changes — keeping the
+  // user on page 5 of an empty result set after typing in the search is
+  // disorienting. ``filter``/``debouncedQuery``/``sort`` cover all
+  // controls that can change the result set.
+  useEffect(() => {
+    setPage(1);
+  }, [filter, debouncedQuery, sort]);
+  const pagedProjects = useMemo(
+    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [filtered, page],
+  );
+
+  // v3.30 — per-project task summary fan-out. Targets the current page
+  // so the rings always match what's on screen. Previously this was
+  // capped to ``projects.slice(0, 24)`` which silently left cards past
+  // index 24 without a ring.
+  const statsTargets = pagedProjects;
   const statsQueries = useQueries({
     queries: statsTargets.map((p) => ({
       queryKey: ["tasks", p.id, "with-archived"] as const,
@@ -408,14 +431,30 @@ export function ProjectsPage() {
               }
             />
           ) : (
-            <ProjectsList
-              projects={filtered}
-              pinnedSet={pinnedSet}
-              onTogglePin={togglePin}
-              onDelete={(id) => deleteM.mutate(id)}
-              view={view}
-              projectStats={projectStats}
-            />
+            <>
+              <ProjectsList
+                projects={pagedProjects}
+                pinnedSet={pinnedSet}
+                onTogglePin={togglePin}
+                onDelete={(id) => deleteM.mutate(id)}
+                view={view}
+                projectStats={projectStats}
+              />
+              {filtered.length > PAGE_SIZE && (
+                <ProjectsPagination
+                  page={page}
+                  pageCount={pageCount}
+                  total={filtered.length}
+                  pageSize={PAGE_SIZE}
+                  onPageChange={(p) => {
+                    setPage(p);
+                    // Scroll to the top of the list so the user sees the
+                    // new page from the start, not from where they were.
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }}
+                />
+              )}
+            </>
           )}
         </>
       )}
@@ -428,6 +467,120 @@ interface ProjectStatsEntry {
   completed: number;
   percent: number;
   lastActivityAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Client-side pagination control for the projects list. Renders only
+// when ``total > pageSize``. Shows a windowed numeric list (1 ... cur-1
+// cur cur+1 ... last) so deep pagination still fits on one line.
+// ---------------------------------------------------------------------------
+function ProjectsPagination({
+  page,
+  pageCount,
+  total,
+  pageSize,
+  onPageChange,
+}: {
+  page: number;
+  pageCount: number;
+  total: number;
+  pageSize: number;
+  onPageChange: (next: number) => void;
+}) {
+  // Windowed page numbers: always include 1 and pageCount; collapse
+  // gaps wider than one with an ellipsis. Cur and its immediate
+  // neighbours are always shown.
+  const items: Array<number | "ellipsis"> = [];
+  const push = (n: number | "ellipsis") => {
+    const prev = items[items.length - 1];
+    if (prev === n) return;
+    if (n === "ellipsis" && prev === "ellipsis") return;
+    items.push(n);
+  };
+  const windowStart = Math.max(2, page - 1);
+  const windowEnd = Math.min(pageCount - 1, page + 1);
+  push(1);
+  if (windowStart > 2) push("ellipsis");
+  for (let n = windowStart; n <= windowEnd; n++) push(n);
+  if (windowEnd < pageCount - 1) push("ellipsis");
+  if (pageCount > 1) push(pageCount);
+
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, total);
+
+  return (
+    <nav
+      aria-label="Projects pagination"
+      data-testid="projects-pagination"
+      className="mt-4 flex flex-col items-center gap-2 text-[12px]"
+    >
+      <p className="text-[color:var(--text-tertiary)]">
+        Showing{" "}
+        <span className="font-mono tabular-nums">
+          {start}–{end}
+        </span>{" "}
+        of <span className="font-mono tabular-nums">{total}</span>
+      </p>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onPageChange(page - 1)}
+          disabled={page <= 1}
+          className={cn(
+            "h-7 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+            "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+            "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent",
+          )}
+          aria-label="Previous page"
+          data-testid="projects-pagination-prev"
+        >
+          ‹ Prev
+        </button>
+        {items.map((it, i) =>
+          it === "ellipsis" ? (
+            <span
+              key={`ellipsis-${i}`}
+              aria-hidden
+              className="px-1 text-[color:var(--text-tertiary)]"
+            >
+              …
+            </span>
+          ) : (
+            <button
+              key={it}
+              type="button"
+              onClick={() => onPageChange(it)}
+              aria-current={it === page ? "page" : undefined}
+              aria-label={`Page ${it}`}
+              data-testid={`projects-pagination-page-${it}`}
+              className={cn(
+                "h-7 min-w-7 px-2 rounded-[var(--radius-sm)] border font-mono tabular-nums",
+                it === page
+                  ? "border-[var(--accent)] bg-[var(--accent)] text-[color:var(--accent-fg)]"
+                  : "border-[var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+              )}
+            >
+              {it}
+            </button>
+          ),
+        )}
+        <button
+          type="button"
+          onClick={() => onPageChange(page + 1)}
+          disabled={page >= pageCount}
+          className={cn(
+            "h-7 px-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)]",
+            "text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[color:var(--text-primary)]",
+            "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent",
+          )}
+          aria-label="Next page"
+          data-testid="projects-pagination-next"
+        >
+          Next ›
+        </button>
+      </div>
+    </nav>
+  );
 }
 
 interface ProjectsListProps {
