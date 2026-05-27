@@ -1,5 +1,5 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import {
@@ -34,6 +34,12 @@ interface ResumeProgressBannerProps {
  *   - the resume target is the asset already on screen
  *   - the user dismissed it in this session (Dismiss button, overlay
  *     click, ESC, or X close — all routed through onOpenChange).
+ *
+ * Queued behind any other open Radix dialog (e.g. the SAM-variant
+ * prompt on first task entry) so this dialog is never visually
+ * buried. A MutationObserver waits for the field to clear, then
+ * opens — the field-clear check uses `role="dialog"` which every
+ * project dialog inherits from Radix.
  */
 export function ResumeProgressBanner({
   projectId,
@@ -42,16 +48,38 @@ export function ResumeProgressBanner({
   onResume,
 }: ResumeProgressBannerProps) {
   const [dismissed, setDismissed] = useState(false);
+  const [readyToShow, setReadyToShow] = useState(false);
   const { data, isLoading } = useTaskResume(projectId, taskId);
 
-  const shouldOpen =
+  const wantsToOpen =
     !isLoading &&
     !!data &&
     !dismissed &&
     data.last_asset_id !== null &&
     data.last_asset_id !== currentAssetId;
 
-  if (!shouldOpen) return null;
+  useEffect(() => {
+    if (!wantsToOpen) {
+      setReadyToShow(false);
+      return;
+    }
+    const isFieldClear = () =>
+      document.querySelectorAll('[role="dialog"]').length === 0;
+    if (isFieldClear()) {
+      setReadyToShow(true);
+      return;
+    }
+    const obs = new MutationObserver(() => {
+      if (isFieldClear()) {
+        setReadyToShow(true);
+        obs.disconnect();
+      }
+    });
+    obs.observe(document.body, { childList: true, subtree: false });
+    return () => obs.disconnect();
+  }, [wantsToOpen]);
+
+  if (!wantsToOpen || !readyToShow) return null;
 
   const relativeTime = formatRelativeTime(data.last_activity_at);
   const targetAssetId = data.last_asset_id as string;

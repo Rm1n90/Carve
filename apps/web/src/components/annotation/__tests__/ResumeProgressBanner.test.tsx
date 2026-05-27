@@ -157,4 +157,43 @@ describe("<ResumeProgressBanner />", () => {
     fireEvent.click(dismiss);
     expect(screen.queryByText(/you last annotated/i)).not.toBeInTheDocument();
   });
+
+  it("stays hidden while another dialog is open, then opens once it closes", async () => {
+    // Plant a pre-existing dialog in the DOM to simulate the SAM-variant
+    // prompt (or any other Radix dialog) being on screen first.
+    const foreignDialog = document.createElement("div");
+    foreignDialog.setAttribute("role", "dialog");
+    foreignDialog.setAttribute("data-foreign", "true");
+    document.body.appendChild(foreignDialog);
+
+    mockResumeStatus.mockResolvedValue({
+      last_asset_id: "a-resume",
+      last_frame_id: "f-resume",
+      annotated_assets: 5,
+      total_assets: 10,
+      last_activity_at: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    render(
+      withClient(
+        <ResumeProgressBanner
+          projectId="p1"
+          taskId="t1"
+          currentAssetId="a-current"
+          onResume={() => undefined}
+        />,
+      ),
+    );
+
+    // Wait long enough for the query to resolve; the queue guard should
+    // keep us closed while the foreign dialog is still present.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/you last annotated/i)).not.toBeInTheDocument();
+
+    // Remove the foreign dialog — MutationObserver should fire and open us.
+    foreignDialog.remove();
+    expect(
+      await screen.findByText((t) => /5 of 10/.test(t)),
+    ).toBeInTheDocument();
+  });
 });
