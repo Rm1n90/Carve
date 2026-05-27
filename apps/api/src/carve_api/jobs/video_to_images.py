@@ -323,8 +323,11 @@ def run_video_to_images(payload: VideoToImagesPayload) -> dict[str, Any]:
                     s.flush()
                     s.add(Frame(id=uuid.uuid4(), asset_id=new_asset.id, idx=0))
                     s.flush()
+                    # Canonical asset key — matches what AssetService.upload
+                    # writes (``assets/{hash}/original.{ext}``); the editor's
+                    # presigned-URL builder reads from the same path.
                     storage.put_object(
-                        f"assets/{h}/source.jpg",
+                        f"assets/{h}/original.jpg",
                         io.BytesIO(jpeg),
                         length=len(jpeg),
                         content_type="image/jpeg",
