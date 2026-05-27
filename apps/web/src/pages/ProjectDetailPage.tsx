@@ -2242,7 +2242,12 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
           className="focus-visible:outline-none"
           data-testid="project-tab-content-settings"
         >
+          {/* ``key={projectId}`` forces a remount when the user switches
+              project via the left rail; otherwise the form's internal
+              ``useState(initialName)`` keeps the previous project's
+              values because props are only read on the first render. */}
           <ProjectSettingsForm
+            key={projectId}
             projectId={projectId}
             initialName={project.name}
             initialDescription={project.description}
