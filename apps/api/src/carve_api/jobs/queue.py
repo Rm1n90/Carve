@@ -67,6 +67,7 @@ _JOB_TIMEOUTS: dict[str, int] = {
     "run_auto_visual_batch": 4 * 3600,
     "run_yoloe_batch": 4 * 3600,
     "extract_frames_for_video": 30 * 60,
+    "run_video_to_images": 60 * 60,
     "run_retrain_job": 24 * 3600,
 }
 
@@ -85,6 +86,9 @@ _JOB_QUEUES: dict[str, str] = {
     # Background fan-out — one per uploaded asset, floods on bulk upload.
     "generate_image_thumbnail": _QUEUE_LOW,
     "probe_video_metadata": _QUEUE_LOW,
+    # v3.32 — mixed-upload video → image extraction. One job per uploaded
+    # video; can be many at once after a bulk drop.
+    "run_video_to_images": _QUEUE_LOW,
 }
 
 # Sensible defaults applied to every enqueue.

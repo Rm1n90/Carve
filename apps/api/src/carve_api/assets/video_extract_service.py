@@ -102,10 +102,17 @@ def _enqueue(payload: VideoToImagesPayload) -> str:
     Pre-allocates ``payload.job_id`` and forwards it as the RQ ``job_id``
     kwarg so the same identifier appears in our Redis progress hash AND
     in RQ's own job registry. Tests monkeypatch this function.
+
+    ``enqueue_with_defaults`` takes ``(queue, fn, *args, **kwargs)`` —
+    the lane (high/default/low) is derived from ``fn.__name__`` via
+    ``_JOB_QUEUES`` so we just hand it the bootstrap default queue.
     """
-    from carve_api.jobs.queue import enqueue_with_defaults
+    from carve_api.jobs.queue import enqueue_with_defaults, get_queue
     enqueue_with_defaults(
-        run_video_to_images, payload, kind="low", job_id=payload.job_id
+        get_queue(),
+        run_video_to_images,
+        payload,
+        job_id=payload.job_id,
     )
     return payload.job_id
 
