@@ -5,12 +5,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Upload, FileImage, ArrowLeft, X } from "lucide-react";
 
 import { assetsApi } from "@/api/assets";
+import { videoExtractApi } from "@/api/video_extract";
 import { Button } from "@/components/ui/Button";
 import {
   VideoExtractPanel,
   DEFAULT_EXTRACT_STRATEGY,
   type ExtractStrategy,
 } from "@/components/annotation/VideoExtractPanel";
+import { VideoExtractProgressDialog } from "@/components/annotation/VideoExtractProgressDialog";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
@@ -131,6 +133,15 @@ function formatBytes(n: number): string {
 interface Props {
   projectId: string;
   taskId: string;
+  /**
+   * v3.32 — mixed-upload mode for image-kind tasks. When ``true``, any
+   * videos in the upload are kept as ``Asset(kind=video)`` long enough
+   * to be re-extracted into image assets via the new
+   * ``/video-extract/batch`` endpoint, then the originals are deleted.
+   * Default ``false`` preserves the original per-video ``frames/extract``
+   * flow used by video-kind tasks.
+   */
+  mixedMode?: boolean;
 }
 
 /**
@@ -144,10 +155,19 @@ interface Props {
  * job in the BackgroundJobs store. The dialog auto-closes after the
  * upload pool drains and the BackgroundJobsBar takes over progress.
  */
-export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
+export function AssetUploadDialog({
+  projectId,
+  taskId,
+  mixedMode = false,
+}: Props) {
   const qc = useQueryClient();
   const addJob = useBackgroundJobs((s) => s.add);
   const [phase, setPhase] = useState<Phase>({ kind: "pick" });
+  // v3.32 — when ``mixedMode`` is set the per-video reextract branch
+  // collects ids here so the post-upload step can enqueue a single
+  // batch through ``videoExtractApi.enqueueBatch``.
+  const mixedVideoIdsRef = useRef<string[]>([]);
+  const [extractBatchId, setExtractBatchId] = useState<string | null>(null);
   // AbortController lives in a ref so the Cancel handler can fire
   // from any render without stale-closure issues. ``cancelledRef``
   // mirrors the cancelled flag so the worker loop sees it the moment
@@ -270,29 +290,35 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
               signal,
             );
             if (isVideo && asset?.id) {
-              try {
-                const needsN =
-                  cfg.strategy.strategy === "every_nth" ||
-                  cfg.strategy.strategy === "count";
-                const { job_id } = await assetsApi.reextractFrames(asset.id, {
-                  strategy: cfg.strategy.strategy,
-                  n: needsN ? Math.max(1, cfg.strategy.n ?? 1) : null,
-                  quality: cfg.strategy.quality,
-                });
-                addJob({
-                  jobId: job_id,
-                  taskId,
-                  kind: "frame-extract",
-                  label: `Extracting ${file.name}`,
-                  startedAt: Date.now(),
-                  assetId: asset.id,
-                  cancel: async () => {},
-                });
-              } catch {
-                errors.push({
-                  name: file.name,
-                  error: "extract_failed_open_re_extract_in_editor",
-                });
+              if (mixedMode) {
+                // v3.32 — mixed-upload flow: defer extraction until all
+                // uploads land, then call the batch endpoint once.
+                mixedVideoIdsRef.current.push(asset.id);
+              } else {
+                try {
+                  const needsN =
+                    cfg.strategy.strategy === "every_nth" ||
+                    cfg.strategy.strategy === "count";
+                  const { job_id } = await assetsApi.reextractFrames(asset.id, {
+                    strategy: cfg.strategy.strategy,
+                    n: needsN ? Math.max(1, cfg.strategy.n ?? 1) : null,
+                    quality: cfg.strategy.quality,
+                  });
+                  addJob({
+                    jobId: job_id,
+                    taskId,
+                    kind: "frame-extract",
+                    label: `Extracting ${file.name}`,
+                    startedAt: Date.now(),
+                    assetId: asset.id,
+                    cancel: async () => {},
+                  });
+                } catch {
+                  errors.push({
+                    name: file.name,
+                    error: "extract_failed_open_re_extract_in_editor",
+                  });
+                }
               }
             }
           }
@@ -393,6 +419,31 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
     // reflects the final state — covers both clean completion and a
     // mid-batch cancel.
     invalidateAssetQueries();
+
+    // v3.32 — mixed-upload: enqueue the single batch extraction over
+    // the collected video asset ids and open the progress dialog.
+    if (
+      mixedMode &&
+      !cancelledRef.current &&
+      mixedVideoIdsRef.current.length > 0
+    ) {
+      try {
+        const env = await videoExtractApi.enqueueBatch(projectId, taskId, {
+          source_asset_ids: [...mixedVideoIdsRef.current],
+          mode: cfg.strategy.strategy,
+          n_or_k: cfg.strategy.n ?? 0,
+          quality: cfg.strategy.quality,
+        });
+        setExtractBatchId(env.batch_id);
+      } catch {
+        showToast("Failed to start video frame extraction.", {
+          variant: "error",
+          duration: 6000,
+        });
+      } finally {
+        mixedVideoIdsRef.current = [];
+      }
+    }
 
     if (cancelledRef.current) {
       showToast(
@@ -607,6 +658,18 @@ export function AssetUploadDialog({ projectId: _projectId, taskId }: Props) {
             </Button>
           </div>
         </>
+      )}
+      {extractBatchId && (
+        <VideoExtractProgressDialog
+          projectId={projectId}
+          taskId={taskId}
+          batchId={extractBatchId}
+          onBackground={() => setExtractBatchId(null)}
+          onClose={() => {
+            setExtractBatchId(null);
+            invalidateAssetQueries();
+          }}
+        />
       )}
     </section>
   );
