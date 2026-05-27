@@ -1,97 +1,68 @@
+# Armin Mehri — mehri.armin@gmail.com
+"""Pydantic schemas for the video → image extraction batch endpoints.
+
+The strategy vocabulary (``auto | all | every_nth | count``) intentionally
+matches the existing ``extract_frames_for_video`` worker in
+``carve_api/jobs/frames.py`` so there is one set of names in the codebase.
+The frontend labels ``count`` as "Total of K (smart)" to the user but the
+wire value is ``count``.
 """
-Pydantic schemas for video extract batch endpoints.
+from __future__ import annotations
 
-Handles input validation, response serialization, and field constraints for:
-- Batch enqueue requests
-- Batch enqueue responses
-- Job status tracking
-"""
+import uuid
+from typing import Literal
 
-from typing import List, Literal
-
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-ExtractMode = Literal["every_nth", "count"]
-JobStatus = Literal["pending", "processing", "completed", "failed"]
+ExtractMode = Literal["auto", "all", "every_nth", "count"]
+JobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 
 
 class BatchEnqueueIn(BaseModel):
-    """Input schema for batch video extraction enqueue."""
+    """Request body for ``POST /…/video-extract/batch``."""
 
-    sources: List[str] = Field(
-        ...,
-        min_length=1,
-        description="List of video source paths. Must contain at least one source.",
-    )
-    mode: ExtractMode = Field(
-        ...,
-        description="Extraction mode: 'every_nth' or 'count'.",
-    )
-    n_or_k: int = Field(
-        ...,
-        ge=0,
-        description="Frame interval (every_nth) or count (count). Must be >= 0.",
-    )
-    quality: int = Field(
-        default=85,
-        ge=1,
-        le=100,
-        description="Output image quality (1-100, clamped).",
-    )
+    source_asset_ids: list[uuid.UUID] = Field(min_length=1)
+    mode: ExtractMode
+    n_or_k: int = Field(ge=0)
+    quality: int = Field(ge=1, le=100)
 
-    @field_validator("n_or_k")
-    @classmethod
-    def validate_n_or_k(cls, v: int, info) -> int:
-        """Enforce n_or_k > 0 for every_nth and count modes."""
-        if v <= 0:
-            raise ValueError("n_or_k must be > 0 for extraction modes")
-        return v
+    model_config = ConfigDict(extra="forbid")
 
     @field_validator("quality", mode="before")
     @classmethod
-    def clamp_quality(cls, v) -> int:
-        """Clamp quality to valid range 1..100."""
-        if not isinstance(v, int):
-            v = int(v)
-        return max(1, min(100, v))
+    def _clamp_quality(cls, v):  # type: ignore[no-untyped-def]
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            return v
+        return max(1, min(100, iv))
 
-
-class BatchEnqueueOut(BaseModel):
-    """Response schema for batch video extraction enqueue."""
-
-    batch_id: str = Field(
-        ...,
-        description="Unique identifier for the batch job.",
-    )
+    @field_validator("n_or_k")
+    @classmethod
+    def _n_or_k_for_step_modes(cls, v: int, info) -> int:  # type: ignore[no-untyped-def]
+        mode = info.data.get("mode")
+        if mode in ("every_nth", "count") and v <= 0:
+            raise ValueError(f"n_or_k must be >= 1 for mode={mode}")
+        return v
 
 
 class BatchJobItem(BaseModel):
-    """Individual job info in batch status response."""
+    job_id: str
+    source_asset_id: uuid.UUID
+    source_filename: str
+    status: JobStatus
+    progress: int = Field(ge=0, le=100)
+    frames_extracted: int = Field(ge=0)
+    dedup_skipped: int = Field(ge=0)
+    error_message: str | None = None
 
-    source: str = Field(
-        ...,
-        description="Video source path.",
-    )
-    status: JobStatus = Field(
-        ...,
-        description="Current job status.",
-    )
-    frames_extracted: int = Field(
-        ...,
-        ge=0,
-        description="Number of frames extracted so far.",
-    )
+
+class BatchEnqueueOut(BaseModel):
+    batch_id: uuid.UUID
+    jobs: list[BatchJobItem]
 
 
 class BatchStatusOut(BaseModel):
-    """Response schema for batch status query."""
-
-    batch_id: str = Field(
-        ...,
-        description="Unique identifier for the batch job.",
-    )
-    jobs: List[BatchJobItem] = Field(
-        default_factory=list,
-        description="List of individual job statuses.",
-    )
+    batch_id: uuid.UUID
+    jobs: list[BatchJobItem]
