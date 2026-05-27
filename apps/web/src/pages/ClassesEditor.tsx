@@ -477,10 +477,11 @@ function ClassEditorRow({
       className={cn(
         "grid gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--bg-app)] px-3 py-1.5",
         "transition-colors hover:border-[var(--border-strong)]",
+        "min-w-0 overflow-hidden",
         "group",
       )}
     >
-      <div className="flex items-center gap-2.5">
+      <div className="flex items-center gap-2.5 min-w-0">
         <ClassColorPopover
           color={cls.color}
           ariaLabel={`Change color of class ${cls.name}`}
@@ -734,7 +735,7 @@ function ParentPickerPill({
           }
           data-testid={`class-parent-trigger-${cls.id}`}
           className={cn(
-            "inline-flex items-center gap-1.5 h-6 px-2 rounded-[var(--radius-pill)] text-[11px]",
+            "inline-flex items-center gap-1.5 h-6 px-2 rounded-[var(--radius-pill)] text-[11px] shrink-0 whitespace-nowrap",
             "border border-transparent transition-colors",
             "hover:bg-[var(--bg-hover)] hover:border-[var(--border-subtle)]",
             "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",

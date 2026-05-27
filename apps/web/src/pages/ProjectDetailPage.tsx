@@ -829,7 +829,7 @@ function TaskClassesChip({
           : `${count} classes (all project classes)`
       }
       className={cn(
-        "inline-flex items-center gap-1 h-6 px-2 rounded-full",
+        "inline-flex items-center gap-1 h-6 px-2 rounded-full shrink-0 whitespace-nowrap",
         "border border-[var(--border-subtle)] bg-[var(--bg-subtle)]",
         "text-[10.5px] font-mono tabular-nums tracking-tight",
         "text-[color:var(--text-tertiary)]",
@@ -837,7 +837,7 @@ function TaskClassesChip({
         "transition-colors",
       )}
     >
-      <Tag className="h-2.5 w-2.5" />
+      <Tag className="h-2.5 w-2.5 shrink-0" />
       {q.isLoading ? "…" : `${count} classes`}
       {isSubset && (
         <span
