@@ -315,7 +315,12 @@ function UpcomingDueStrip({
   const DAY = 24 * 60 * 60 * 1000;
   const now = Date.now();
   const ranked = tasks
-    .filter((t) => t.due_date != null && t.archived_at == null)
+    .filter(
+      (t) =>
+        t.due_date != null &&
+        t.archived_at == null &&
+        t.completed_at == null,
+    )
     .map((t) => {
       const due = Date.parse(t.due_date as string);
       const ms = Number.isFinite(due) ? due - now : Number.POSITIVE_INFINITY;
@@ -829,7 +834,7 @@ function TaskClassesChip({
           : `${count} classes (all project classes)`
       }
       className={cn(
-        "inline-flex items-center gap-1 h-6 px-2 rounded-full shrink-0 whitespace-nowrap",
+        "inline-flex items-center gap-1 h-6 px-2 rounded-full shrink-0 whitespace-nowrap min-w-max",
         "border border-[var(--border-subtle)] bg-[var(--bg-subtle)]",
         "text-[10.5px] font-mono tabular-nums tracking-tight",
         "text-[color:var(--text-tertiary)]",

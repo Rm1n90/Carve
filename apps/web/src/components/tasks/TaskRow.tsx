@@ -210,7 +210,7 @@ export function TaskRow({
           <Clock aria-hidden className="h-3 w-3" />
           {formatShortDate(task.created_at)}
         </span>
-        {dueIso && (
+        {dueIso && !isCompleted && (
           <span
             data-testid={`task-row-due-${task.id}`}
             className={cn(
