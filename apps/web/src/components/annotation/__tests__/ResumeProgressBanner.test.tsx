@@ -158,11 +158,15 @@ describe("<ResumeProgressBanner />", () => {
     expect(screen.queryByText(/you last annotated/i)).not.toBeInTheDocument();
   });
 
-  it("stays hidden while another dialog is open, then opens once it closes", async () => {
+  it.each([
+    ["dialog"],
+    ["alertdialog"],
+  ])("stays hidden while a foreign %s is open, then opens once it closes", async (role) => {
     // Plant a pre-existing dialog in the DOM to simulate the SAM-variant
-    // prompt (or any other Radix dialog) being on screen first.
+    // prompt (alertdialog) or any other Radix dialog being on screen
+    // first. Both roles must trigger the queue guard.
     const foreignDialog = document.createElement("div");
-    foreignDialog.setAttribute("role", "dialog");
+    foreignDialog.setAttribute("role", role);
     foreignDialog.setAttribute("data-foreign", "true");
     document.body.appendChild(foreignDialog);
 

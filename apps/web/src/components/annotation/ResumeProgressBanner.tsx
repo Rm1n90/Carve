@@ -35,11 +35,12 @@ interface ResumeProgressBannerProps {
  *   - the user dismissed it in this session (Dismiss button, overlay
  *     click, ESC, or X close — all routed through onOpenChange).
  *
- * Queued behind any other open Radix dialog (e.g. the SAM-variant
- * prompt on first task entry) so this dialog is never visually
- * buried. A MutationObserver waits for the field to clear, then
- * opens — the field-clear check uses `role="dialog"` which every
- * project dialog inherits from Radix.
+ * Queued behind any other open Radix dialog or alert-dialog (e.g.
+ * the SAM-variant prompt on first task entry, which is a
+ * `role="alertdialog"`) so this dialog is never visually buried. A
+ * MutationObserver waits for the field to clear, then opens — the
+ * field-clear check looks at both `role="dialog"` and
+ * `role="alertdialog"`.
  */
 export function ResumeProgressBanner({
   projectId,
@@ -64,7 +65,8 @@ export function ResumeProgressBanner({
       return;
     }
     const isFieldClear = () =>
-      document.querySelectorAll('[role="dialog"]').length === 0;
+      document.querySelectorAll('[role="dialog"], [role="alertdialog"]')
+        .length === 0;
     if (isFieldClear()) {
       setReadyToShow(true);
       return;
