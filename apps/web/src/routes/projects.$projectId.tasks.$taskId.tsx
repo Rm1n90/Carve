@@ -143,7 +143,11 @@ function TaskDetail() {
                 <DialogHeader>
                   <DialogTitle>Upload assets</DialogTitle>
                 </DialogHeader>
-                <AssetUploadDialog projectId={projectId} taskId={taskId} />
+                <AssetUploadDialog
+                  projectId={projectId}
+                  taskId={taskId}
+                  mixedMode={task?.kind === "image"}
+                />
               </DialogContent>
             </Dialog>
 

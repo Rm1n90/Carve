@@ -2442,6 +2442,7 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
             <AssetUploadDialog
               projectId={projectId}
               taskId={uploadTaskTarget.id}
+              mixedMode={uploadTaskTarget.kind === "image"}
             />
           )}
         </DialogContent>
