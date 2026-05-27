@@ -116,12 +116,13 @@ export function ResumeProgressBanner({
         <DialogHeader>
           <DialogTitle>Welcome back</DialogTitle>
           <DialogDescription>
-            You last annotated{" "}
+            You&rsquo;ve annotated{" "}
             <strong className="text-[color:var(--text-primary)]">
-              {data.annotated_assets} of {data.total_assets}
+              {data.annotated_assets}{" "}
+              {data.annotated_assets === 1 ? "image" : "images"}
             </strong>{" "}
-            images here
-            {relativeTime ? ` — last activity ${relativeTime}` : ""}.
+            in this task ({data.total_assets} total)
+            {relativeTime ? `. Last activity ${relativeTime}` : ""}.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

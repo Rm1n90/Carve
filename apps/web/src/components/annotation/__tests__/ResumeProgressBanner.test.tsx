@@ -38,7 +38,7 @@ describe("<ResumeProgressBanner />", () => {
       ),
     );
     expect(
-      screen.queryByText(/you last annotated/i),
+      screen.queryByText(/you[''']ve annotated/i),
     ).not.toBeInTheDocument();
   });
 
@@ -61,7 +61,7 @@ describe("<ResumeProgressBanner />", () => {
       ),
     );
     await new Promise((r) => setTimeout(r, 0));
-    expect(screen.queryByText(/you last annotated/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/you[''']ve annotated/i)).not.toBeInTheDocument();
   });
 
   it("renders nothing when the resume target is the current asset", async () => {
@@ -83,7 +83,7 @@ describe("<ResumeProgressBanner />", () => {
       ),
     );
     await new Promise((r) => setTimeout(r, 0));
-    expect(screen.queryByText(/you last annotated/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/you[''']ve annotated/i)).not.toBeInTheDocument();
   });
 
   it("shows banner with counts and offers Resume + Dismiss", async () => {
@@ -104,11 +104,32 @@ describe("<ResumeProgressBanner />", () => {
         />,
       ),
     );
-    expect(
-      await screen.findByText((t) => /350 of 1000/.test(t)),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/350 images/)).toBeInTheDocument();
+    expect(screen.getByText(/\(1000 total\)/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /resume/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /dismiss/i })).toBeInTheDocument();
+  });
+
+  it("uses singular 'image' when only one is annotated", async () => {
+    mockResumeStatus.mockResolvedValue({
+      last_asset_id: "a-resume",
+      last_frame_id: "f-resume",
+      annotated_assets: 1,
+      total_assets: 917,
+      last_activity_at: new Date(Date.now() - 60_000).toISOString(),
+    });
+    render(
+      withClient(
+        <ResumeProgressBanner
+          projectId="p1"
+          taskId="t1"
+          currentAssetId="a-current"
+          onResume={() => undefined}
+        />,
+      ),
+    );
+    expect(await screen.findByText(/^1 image$/)).toBeInTheDocument();
+    expect(screen.getByText(/\(917 total\)/)).toBeInTheDocument();
   });
 
   it("calls onResume with the last_asset_id when Resume clicked", async () => {
@@ -155,7 +176,7 @@ describe("<ResumeProgressBanner />", () => {
     );
     const dismiss = await screen.findByRole("button", { name: /dismiss/i });
     fireEvent.click(dismiss);
-    expect(screen.queryByText(/you last annotated/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/you[''']ve annotated/i)).not.toBeInTheDocument();
   });
 
   it.each([
@@ -192,12 +213,13 @@ describe("<ResumeProgressBanner />", () => {
     // Wait long enough for the query to resolve; the queue guard should
     // keep us closed while the foreign dialog is still present.
     await new Promise((r) => setTimeout(r, 50));
-    expect(screen.queryByText(/you last annotated/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/you[''']ve annotated/i)).not.toBeInTheDocument();
 
     // Remove the foreign dialog — MutationObserver should fire and open us.
     foreignDialog.remove();
     expect(
-      await screen.findByText((t) => /5 of 10/.test(t)),
+      await screen.findByText(/5 images/),
     ).toBeInTheDocument();
+    expect(screen.getByText(/\(10 total\)/)).toBeInTheDocument();
   });
 });
