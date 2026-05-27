@@ -309,8 +309,13 @@ class AssetService:
             kind = AssetKind.video
         else:
             raise AssetMimeUnsupported(f"unsupported mime {mime}")
-        if task_kind == TaskKind.image and kind != AssetKind.image:
-            raise AssetMismatchTask("image task accepts images only")
+        # v3.32 — image tasks now accept video uploads. The mixed-upload
+        # flow in the frontend ``AssetUploadDialog`` calls the new
+        # ``/video-extract/batch`` endpoint after each video is uploaded;
+        # that worker extracts frames into image-kind assets and deletes
+        # the source video. A video uploaded to an image task without
+        # that follow-up is harmless — it just sits as an orphan video
+        # asset until the user re-triggers extraction or deletes it.
         if task_kind == TaskKind.video and kind != AssetKind.video:
             raise AssetMismatchTask("video task accepts videos only")
         return kind
