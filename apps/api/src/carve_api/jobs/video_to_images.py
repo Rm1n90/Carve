@@ -180,9 +180,14 @@ def run_video_to_images(payload: VideoToImagesPayload) -> dict[str, Any]:
     errors (``OSError`` from disk pressure) propagate so RQ surfaces them.
     """
     # Lazy imports so the planner module can be unit-tested without
-    # DB drivers / MinIO available at import time.
+    # DB drivers / MinIO available at import time. ``Task`` is imported
+    # purely for its side-effect: it registers the ``tasks`` mapper so
+    # SQLAlchemy can resolve the ``assets.task_id → tasks.id`` foreign
+    # key when we query Asset below. Without this we crash with
+    # ``NoReferencedTableError: 'tasks'``.
     from carve_api.assets.models import Asset, AssetKind, Frame
     from carve_api.db import get_session_factory
+    from carve_api.projects.models import Task  # noqa: F401 — registers FK target
     from carve_api.storage.client import MinioClient
 
     SessionLocal = get_session_factory()
