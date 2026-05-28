@@ -200,7 +200,7 @@ class AssetService:
         ).scalar_one_or_none()
         return str(frame_id) if frame_id is not None else None
 
-    def thumbnail_url_for(self, asset: Asset, *, expires_seconds: int = 600) -> str | None:
+    def thumbnail_url_for(self, asset: Asset, *, expires_seconds: int = 14400) -> str | None:
         """Presigned URL for the cached 200x200 JPEG thumbnail.
 
         Returns ``None`` when no thumbnail has been generated yet so the
@@ -208,6 +208,14 @@ class AssetService:
         assets fall back to the original (still useful but heavier) when
         the thumbnail key is unset; video assets return ``None`` since
         the original video bytes aren't a usable preview.
+
+        v3.33 — default TTL is 4 hours. The editor's thumbnail strip
+        caches one presigned URL per asset for the whole annotation
+        session. The previous 10 minute default meant every thumbnail
+        simultaneously turned into a broken-image icon ten minutes into
+        the session, with no recovery path on the client. The web
+        client also proactively refetches the strip query every hour so
+        URLs stay fresh well within the new window.
         """
         if asset.thumbnail_minio_key:
             return self.storage.presigned_get(

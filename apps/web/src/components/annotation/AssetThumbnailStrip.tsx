@@ -3,6 +3,7 @@ import {
   keepPreviousData,
   useInfiniteQuery,
   useIsFetching,
+  useQueryClient,
 } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -74,6 +75,7 @@ function ThumbItem({
   selected,
   pending,
   onClick,
+  onTileError,
 }: {
   asset: Asset;
   projectId: string;
@@ -93,6 +95,13 @@ function ThumbItem({
    * default navigation must be suppressed.
    */
   onClick: (e: ReactMouseEvent<HTMLAnchorElement>) => boolean;
+  /**
+   * v3.33 — invoked when the tile's ``<img>`` fails to load. The
+   * strip throttles invocations and invalidates the asset-list query
+   * so a fresh batch of presigned URLs replaces any that may have
+   * expired mid-session.
+   */
+  onTileError: () => void;
 }) {
   // v3.31 — use the presigned ``thumbnail_url`` the list endpoint
   // already returns for every asset. Previously each tile fired its
@@ -103,32 +112,27 @@ function ThumbItem({
   // here — image tiles only need the cheaper thumbnail surface.
   const baseUrl = asset.thumbnail_url ?? null;
 
-  // Bug-fix May 26 — presigned URLs expire after 600 s. Until this
-  // change the strip had no onError handler, so an expired or
-  // transiently-failing URL produced a permanent broken-image icon.
-  // Now: one cache-busting retry, then a visible placeholder. State
-  // is per-mount; when virtualisation re-mounts the tile we give the
-  // URL another fresh chance.
+  // v3.33 — error lifecycle: idle → retrying → failed. On the FIRST
+  // error we ask the parent for a fresh batch of presigned URLs (it
+  // throttles invocations and invalidates ``["task-assets", taskId]``
+  // so every visible tile gets a fresh URL in one network call). When
+  // the new URL arrives ``baseUrl`` changes, the useEffect below
+  // resets errState to ``idle`` and the new src renders. A second
+  // error against the new URL is treated as a hard failure and the
+  // ImageOff placeholder is shown.
+  //
+  // The previous design appended ``?_carve_retry=1`` to the SAME
+  // expired URL — which still 403'd because the URL's signature is
+  // what's expired, not anything the browser cached — so every tile
+  // permanently flipped to "failed" the moment URLs expired and only
+  // recovered on a full page refresh.
   const [errState, setErrState] = useState<"idle" | "retrying" | "failed">(
     "idle",
   );
-  // Reset error state when the underlying URL changes (e.g. the
-  // strip query refetched and got a fresh presigned URL).
   useEffect(() => {
     setErrState("idle");
   }, [baseUrl]);
-  const src = useMemo(() => {
-    if (!baseUrl) return null;
-    if (errState === "retrying") {
-      // Append a cache-bust so the browser doesn't serve the cached
-      // failure response — and so an expired-URL retry actually hits
-      // the network with the (now-refreshed) presigned URL the next
-      // strip refetch will supply.
-      const sep = baseUrl.includes("?") ? "&" : "?";
-      return `${baseUrl}${sep}_carve_retry=1`;
-    }
-    return baseUrl;
-  }, [baseUrl, errState]);
+  const src = baseUrl;
 
   return (
     <Link
@@ -163,9 +167,18 @@ function ThumbItem({
           decoding="async"
           className="h-full w-full object-cover"
           onError={() => {
-            setErrState((prev) =>
-              prev === "idle" ? "retrying" : "failed",
-            );
+            setErrState((prev) => {
+              if (prev === "idle") {
+                // First failure on this URL — ask the parent to refresh.
+                // The new URL flows in via ``baseUrl`` and the effect
+                // above resets us back to ``idle``.
+                onTileError();
+                return "retrying";
+              }
+              // Second failure: even after the refetch, this URL is
+              // bad (real 404 / network down). Show the placeholder.
+              return "failed";
+            });
           }}
         />
       ) : (
@@ -257,6 +270,7 @@ export function AssetThumbnailStrip({
   //   3. ``refetchOnWindowFocus`` is true. After the operator tabs
   //      away (e.g. to grab a coffee while auto-annotation runs) we
   //      want fresh URLs the moment they come back, not on next click.
+  const qc = useQueryClient();
   const pagesQ = useInfiniteQuery({
     queryKey: ["task-assets", taskId, "strip"],
     initialPageParam: 0,
@@ -270,9 +284,30 @@ export function AssetThumbnailStrip({
       return fetchedSoFar < lastPage.total ? fetchedSoFar : undefined;
     },
     placeholderData: keepPreviousData,
+    // v3.33 — pair with the server's 4-hour presigned-URL TTL. URLs
+    // are kept fresh by a proactive hourly refetch; staleTime stays
+    // low so manual invalidations (after auto-annotate runs, bulk
+    // tag, etc.) still feel snappy.
     staleTime: 5 * 60 * 1000,
+    refetchInterval: 60 * 60 * 1000,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
+
+  // v3.33 — throttled tile-error recovery. When a tile's <img> fails
+  // (most often: the presigned URL outlived its TTL, or a transient
+  // network blip) every visible tile fires onError nearly
+  // simultaneously. Throttle to one invalidation every 30s — the
+  // single refetch supplies fresh URLs for every tile in one batch,
+  // and the cooldown prevents an unreachable backend from
+  // re-invalidating in a tight loop.
+  const lastTileErrorAtRef = useRef(0);
+  const handleTileError = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTileErrorAtRef.current < 30_000) return;
+    lastTileErrorAtRef.current = now;
+    void qc.invalidateQueries({ queryKey: ["task-assets", taskId] });
+  }, [qc, taskId]);
 
   // Bug-fix May 26 — surface "navigation in flight" on the active
   // tile. ``useIsFetching`` returns a count of in-flight queries
@@ -614,6 +649,7 @@ export function AssetThumbnailStrip({
                   selected={selectedAssetIds.has(asset.id)}
                   pending={isActive && activeAssetPending}
                   onClick={(e) => handleThumbClick(vi.index, asset, e)}
+                  onTileError={handleTileError}
                 />
               </div>
             );
