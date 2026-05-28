@@ -645,12 +645,19 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
   const annotationsQ = useQuery({
     queryKey: ["annotations", taskId, frameId],
     queryFn: async () => annotationsApi.listForTask(taskId, frameId ?? undefined),
-    // Note: the editor canvas doesn't mount until ``assetQ.data`` is
-    // available (see the early-return loading screen below), so even if
-    // this query briefly fires with frameId=null on first render, the
-    // user never sees the resulting (unscoped) annotations because the
-    // refetch under the correct frame_id has already replaced them by
-    // the time the canvas paints.
+    // v3.33 — gate on ``assetQ`` resolving so the unscoped fetch never
+    // fires. On a cold open the first render has ``assetQ.data ===
+    // undefined`` so ``frameId`` is null; the prior code still fired
+    // ``listForTask(taskId, undefined)``, and the server treats a
+    // missing ``frame_id`` as "every annotation in the task". For an
+    // auto-annotated 3600-image task (SAM3 polygons or YOLO bboxes)
+    // that response is tens of megabytes; the parse blocks the event
+    // loop long enough that the correctly-scoped per-frame refetch
+    // can't complete before the canvas paints. Symptom the user saw:
+    // annotations don't appear on the first image, and only do after
+    // navigating back and forth (which forces a fresh per-frame fetch
+    // long after the giant unscoped one has drained).
+    enabled: assetQ.data != null,
   });
 
   // Plan-09b Task 4 — workspace members for reviewer-name resolution. The
