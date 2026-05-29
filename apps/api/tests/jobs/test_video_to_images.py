@@ -17,6 +17,7 @@ import pytest  # noqa: F401 — pytest discovery
 from carve_api.jobs.video_to_images import (
     VideoToImagesPayload,
     _content_hash,
+    _image_dimensions,
     _progress_key,
     quality_to_qv,
 )
@@ -90,3 +91,34 @@ def test_content_hash_differs_for_different_inputs() -> None:
     a = _content_hash(b"hello world")
     b = _content_hash(b"hello, world")
     assert a != b
+
+
+def _make_jpeg(width: int, height: int) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (width, height), (123, 200, 50)).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def test_image_dimensions_reads_jpeg_size() -> None:
+    # Arrange: a JPEG frame as produced by ffmpeg in the worker.
+    jpeg = _make_jpeg(640, 360)
+
+    # Act
+    width, height = _image_dimensions(jpeg)
+
+    # Assert: the extracted frame asset must carry real dimensions so the
+    # YOLO/COCO export (which drops dimensionless assets) includes it.
+    assert (width, height) == (640, 360)
+
+
+def test_image_dimensions_returns_none_on_garbage() -> None:
+    # A corrupt/unreadable frame must not crash the whole extraction batch;
+    # it returns (None, None) and the asset is still created (its missing
+    # dimensions are a known, isolated cost, not a hard failure).
+    width, height = _image_dimensions(b"not a real jpeg")
+
+    assert (width, height) == (None, None)

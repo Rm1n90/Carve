@@ -224,6 +224,60 @@ def _fetch_asset_bytes(storage, key: str) -> bytes | None:
         return None
 
 
+def _image_size(body: bytes) -> tuple[int, int] | None:
+    """Decode ``body`` and return ``(width, height)``, or ``None`` if it
+    cannot be read. Used to self-heal assets that reached the export with
+    NULL dimensions (older extracted frames)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(body)) as im:
+            return int(im.width), int(im.height)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _backfill_missing_dimensions(session, storage, assets: list[Asset]) -> int:
+    """Self-heal image assets that reached the export without dimensions.
+
+    Frames extracted by older ``video_to_images`` runs were stored with
+    ``width``/``height`` = NULL. The archive builder drops every dimensionless
+    image asset (it normalises coordinates against them), so without this the
+    export would silently omit them — producing an archive with only
+    ``data.yaml`` / ``classes.json`` / ``README.md`` and no images or labels.
+
+    For each such asset this reads the blob from MinIO, decodes its size and
+    writes it back to the DB so the fix is one-time (subsequent exports skip
+    the now-populated rows). Best-effort: an unreadable/undecodable blob is
+    left untouched and simply won't appear in the archive. Returns the number
+    of rows healed.
+    """
+    healed = 0
+    for asset in assets:
+        if asset.kind != AssetKind.image:
+            continue
+        if asset.width is not None and asset.height is not None:
+            continue
+        ext = Path(asset.original_name).suffix.lstrip(".") or "bin"
+        body = _fetch_asset_bytes(storage, f"assets/{asset.xxh3_128}/original.{ext}")
+        if body is None:
+            continue
+        size = _image_size(body)
+        if size is None:
+            logger.warning(
+                "export: could not decode asset %s for dimension backfill", asset.id
+            )
+            continue
+        asset.width, asset.height = size
+        healed += 1
+    if healed:
+        session.flush()
+        logger.info("export: healed %d asset(s) with missing dimensions", healed)
+    return healed
+
+
 def _convert_for_yolo_mode(
     annotations: list[Annotation], mode: str
 ) -> list[Any]:
@@ -875,6 +929,11 @@ def run_export_inline(
         assets = list(
             session.execute(select(Asset).where(Asset.task_id == task.id)).scalars()
         )
+        # Self-heal: extracted frames created before the video_to_images fix
+        # have NULL width/height, which the archive builder drops silently.
+        # Populate dimensions from the stored image so every annotated frame
+        # makes it into the archive — automatically, on any deployment.
+        _backfill_missing_dimensions(session, storage, assets)
         # Group annotations by frame's asset_id
         ann_rows = list(
             session.execute(

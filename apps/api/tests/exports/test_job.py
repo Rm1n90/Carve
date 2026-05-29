@@ -151,6 +151,96 @@ def test_export_with_include_images_includes_image_bytes(db_session) -> None:
         assert zf.read(f"{root}/training_data/a.png") == b"PNG-IMAGE-BYTES"
 
 
+def _make_jpeg(width: int, height: int) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (width, height), (10, 20, 30)).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def test_image_size_decodes_jpeg() -> None:
+    from carve_api.exports.job import _image_size
+
+    assert _image_size(_make_jpeg(800, 600)) == (800, 600)
+
+
+def test_image_size_returns_none_on_garbage() -> None:
+    from carve_api.exports.job import _image_size
+
+    assert _image_size(b"not an image") is None
+
+
+def test_yolo_export_heals_assets_missing_dimensions(db_session) -> None:
+    """An extracted-frame asset with NULL width/height must still export.
+
+    Regression: video_to_images created frame assets without dimensions and
+    the archive builder dropped every dimensionless image, yielding an export
+    with only data.yaml/classes.json/README.md. The export now self-heals by
+    decoding the stored image, including the frame, and persisting the size.
+    """
+    # Arrange — asset with NULL dims (the bug) + its real 640x480 JPEG.
+    u = User(email=f"e-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u); db_session.flush()
+    p = Project(name="P", owner_id=u.id); db_session.add(p); db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t); db_session.flush()
+    a = Asset(
+        task_id=t.id, kind=AssetKind.image, xxh3_128=str(uuid.uuid4().hex)[:16],
+        mime="image/jpeg", size_bytes=10, width=None, height=None, frames=1,
+        original_name="clip.mp4 — frame 00000.jpg",
+    )
+    db_session.add(a); db_session.flush()
+    f = Frame(asset_id=a.id, idx=0, pts_ms=0); db_session.add(f); db_session.flush()
+    car = Class(project_id=p.id, idx=0, name="car", color="#ff0000")
+    db_session.add(car); db_session.flush()
+    db_session.add(Annotation(
+        task_id=t.id, frame_id=f.id, class_id=car.id,
+        kind=AnnotationKind.bbox,
+        geometry={"kind": "bbox", "x": 50, "y": 50, "w": 100, "h": 80},
+        created_by=u.id,
+    ))
+    e = Export(
+        task_id=t.id, format="yolo",
+        class_remap={str(car.id): {"export_id": 0, "name": "vehicle"}},
+        created_by=u.id,
+    )
+    db_session.add(e); db_session.flush()
+
+    storage = _FakeStorage()
+    storage.objects[f"assets/{a.xxh3_128}/original.jpg"] = _make_jpeg(640, 480)
+    payload = ExportJobPayload(
+        export_id=str(e.id),
+        actor_id=str(u.id),
+        task_id=str(t.id),
+        fmt="yolo",
+        class_remap={str(car.id): {"export_id": 0, "name": "vehicle"}},
+        include_images=True,
+        splits={"train": 1.0, "val": 0.0, "test": 0.0},
+        yolo_mode="detection",
+    )
+
+    # Act
+    result = run_export_inline(session=db_session, storage=storage, payload=payload)
+
+    # Assert — archive carries the frame's image + label, and the row is healed.
+    assert result["status"] == "completed"
+    _, body = storage.uploaded[0]
+    with zipfile.ZipFile(io.BytesIO(body)) as zf:
+        names = set(zf.namelist())
+        root = next(n.split("/", 1)[0] for n in names if n.endswith("/data.yaml"))
+        stem = "clip.mp4 — frame 00000"
+        assert f"{root}/training_data/{stem}.txt" in names, names
+        assert f"{root}/training_data/clip.mp4 — frame 00000.jpg" in names, names
+        label = zf.read(f"{root}/training_data/{stem}.txt").decode()
+        # bbox (50,50,100,80) on healed 640x480 → cx=0.156250 cy=0.187500.
+        assert label.strip().startswith("0 0.156250 0.187500"), label
+    db_session.refresh(a)
+    assert (a.width, a.height) == (640, 480)
+
+
 def _seed_two_assets(db) -> tuple[User, Task, list[Asset], Class, Export]:
     """Seed two assets in the same task to exercise split partitioning."""
     u = User(email=f"e-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)

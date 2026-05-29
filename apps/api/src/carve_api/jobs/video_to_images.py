@@ -117,6 +117,30 @@ def _content_hash(payload: bytes) -> str:
     return xxhash.xxh3_128_hexdigest(payload)
 
 
+def _image_dimensions(jpeg: bytes) -> tuple[int | None, int | None]:
+    """Return ``(width, height)`` of a JPEG frame, or ``(None, None)`` if it
+    cannot be decoded.
+
+    The YOLO/COCO export silently drops any image asset whose ``width`` or
+    ``height`` is NULL (it normalises coordinates against them), so every
+    extracted frame MUST carry real dimensions or it never lands in a
+    training archive. Mirrors ``AssetService.upload``, which sets dimensions
+    via ``Image.open(...).size`` on normal uploads. A single corrupt frame
+    must not abort the whole batch, so decode failures degrade to
+    ``(None, None)`` rather than raising.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(jpeg)) as im:
+            return int(im.width), int(im.height)
+    except Exception:  # noqa: BLE001
+        log.warning("video_to_images: could not read extracted frame dimensions")
+        return None, None
+
+
 def _extract_one_frame(source_url: str, ts: float, qv: int) -> bytes:
     """Run ffmpeg to seek to ``ts`` and emit one JPEG to stdout."""
     proc = subprocess.run(
@@ -309,6 +333,10 @@ def run_video_to_images(payload: VideoToImagesPayload) -> dict[str, Any]:
                 if existing is not None:
                     summary["dedup_skipped"] = int(summary["dedup_skipped"]) + 1
                 else:
+                    # Dimensions are mandatory: the YOLO/COCO export drops any
+                    # image asset with NULL width/height, so an extracted frame
+                    # without them would never appear in a training archive.
+                    fw, fh = _image_dimensions(jpeg)
                     new_asset = Asset(
                         id=uuid.uuid4(),
                         task_id=task_uuid,
@@ -316,6 +344,8 @@ def run_video_to_images(payload: VideoToImagesPayload) -> dict[str, Any]:
                         xxh3_128=h,
                         mime="image/jpeg",
                         size_bytes=len(jpeg),
+                        width=fw,
+                        height=fh,
                         frames=1,
                         original_name=f"{source_label} — frame {i:05d}.jpg",
                     )
