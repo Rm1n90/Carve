@@ -25,6 +25,34 @@ def _png_bytes(w: int = 16, h: int = 16) -> bytes:
     return buf.getvalue()
 
 
+def test_predict_text_feeds_bgr_to_ultralytics() -> None:
+    """YOLOE (Ultralytics) treats ndarray inputs as BGR; predict_text must
+    hand it BGR so the model perceives true RGB. Passing RGB swaps R/B and
+    corrupts open-vocab detections."""
+    captured: dict = {}
+
+    class _R:
+        boxes = None
+        masks = None
+        names: dict = {}
+
+    class _Cap:
+        model = None  # skips the inner-names normalisation branch
+
+        def set_classes(self, classes):  # noqa: D401 - stub
+            pass
+
+        def predict(self, img, **kw):
+            captured["px"] = np.array(img)[0, 0].tolist()
+            return [_R()]
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (255, 0, 0)).save(buf, format="PNG")  # pure red (RGB)
+    predict_mod.predict_text(_Cap(), buf.getvalue(), ["car"])
+    # Pure red in RGB must reach the model as BGR (0, 0, 255).
+    assert captured["px"] == [0, 0, 255], captured["px"]
+
+
 class _FakeBoxes:
     def __init__(
         self,

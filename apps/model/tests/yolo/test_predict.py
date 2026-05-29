@@ -52,6 +52,26 @@ def _png_bytes(w: int = 64, h: int = 48) -> bytes:
     return out.getvalue()
 
 
+def test_predict_feeds_bgr_to_ultralytics() -> None:
+    """Ultralytics treats ndarray inputs as BGR (BasePredictor.preprocess runs
+    ``im[..., ::-1]`` BGR->RGB). predict_image must hand it BGR so the model
+    perceives the true RGB image. Passing RGB swaps R/B and corrupts
+    detections — the cause of wrong/missing classes vs a cv2/file-path script.
+    """
+    captured: dict = {}
+
+    class _CapModel:
+        def predict(self, img, **kw):
+            captured["px"] = np.array(img)[0, 0].tolist()
+            return [_FakeResults(names={})]
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (255, 0, 0)).save(buf, format="PNG")  # pure red (RGB)
+    predict_image(_CapModel(), buf.getvalue())
+    # Pure red in RGB must reach the model as BGR (0, 0, 255).
+    assert captured["px"] == [0, 0, 255], captured["px"]
+
+
 def test_predict_returns_detections_and_polygons() -> None:
     boxes = _FakeBoxes(
         xyxy=[[10, 12, 30, 32], [40, 42, 60, 62]],

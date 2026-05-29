@@ -22,9 +22,16 @@ from PIL import Image
 log = logging.getLogger(__name__)
 
 
-def _bytes_to_rgb(image_bytes: bytes) -> np.ndarray:
-    """Decode JPEG/PNG bytes into an HxWx3 uint8 RGB array."""
-    return np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
+def _bytes_to_bgr(image_bytes: bytes) -> np.ndarray:
+    """Decode JPEG/PNG bytes into an HxWx3 uint8 **BGR** array for Ultralytics.
+
+    Ultralytics treats ndarray inputs as BGR (BasePredictor.preprocess runs
+    ``im[..., ::-1]`` BGR->RGB on every ndarray). Feeding an RGB array would
+    silently swap R/B and corrupt detections (wrong + missing classes), so we
+    decode to RGB then reverse the channels to BGR here.
+    """
+    rgb = np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
+    return np.ascontiguousarray(rgb[:, :, ::-1])
 
 
 def _to_numpy(arr: Any) -> np.ndarray:
@@ -107,7 +114,7 @@ def predict_text(
     cleaned = [c.strip() for c in classes if isinstance(c, str) and c.strip()]
     if not cleaned:
         raise ValueError("classes_empty")
-    img = _bytes_to_rgb(image_bytes)
+    img = _bytes_to_bgr(image_bytes)
     inner = getattr(model, "model", None)
     inner_names = getattr(inner, "names", None) if inner is not None else None
     if inner is not None and isinstance(inner_names, (list, tuple)):
@@ -162,7 +169,7 @@ def predict_visual(
         raise ValueError("bboxes_empty")
     if len(bboxes) != len(cls_indices):
         raise ValueError("bboxes_cls_length_mismatch")
-    target = _bytes_to_rgb(target_bytes)
+    target = _bytes_to_bgr(target_bytes)
     visual_prompts = {
         "bboxes": np.asarray(bboxes, dtype=float),
         "cls": np.asarray(cls_indices, dtype=int),
@@ -186,7 +193,7 @@ def predict_visual(
         "verbose": False,
     }
     if not same_image:
-        kwargs["refer_image"] = _bytes_to_rgb(refer_bytes)
+        kwargs["refer_image"] = _bytes_to_bgr(refer_bytes)
     if device:
         kwargs["device"] = device
     results = model.predict(target, **kwargs)[0]
@@ -214,7 +221,7 @@ def predict_prompt_free(
     ``max_det`` arg. ``None`` keeps the default (300). ``device``
     (v3.25) is forwarded to ``model.predict`` for inference routing.
     """
-    img = _bytes_to_rgb(image_bytes)
+    img = _bytes_to_bgr(image_bytes)
     kwargs: dict[str, Any] = {"conf": conf, "iou": iou, "verbose": False}
     if max_detections is not None and max_detections > 0:
         kwargs["max_det"] = int(max_detections)

@@ -42,7 +42,13 @@ def predict_image(
         kwargs["half"] = half
     if device:
         kwargs["device"] = device
-    results = model.predict(img, **kwargs)[0]
+    # Ultralytics treats ndarray inputs as BGR — BasePredictor.preprocess runs
+    # `im[..., ::-1]` (BGR->RGB) on every ndarray. Hand it BGR so the model
+    # perceives the true RGB image; passing RGB silently swaps R/B and corrupts
+    # detections (wrong + missing classes). File/PIL inputs avoid this because
+    # Ultralytics' loader pre-swaps RGB->BGR for them.
+    img_bgr = np.ascontiguousarray(img[:, :, ::-1])
+    results = model.predict(img_bgr, **kwargs)[0]
 
     detections: list[dict] = []
     polygons: list[dict] = []
