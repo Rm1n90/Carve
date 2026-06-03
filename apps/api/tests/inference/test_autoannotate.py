@@ -522,6 +522,56 @@ def test_auto_annotate_skip_yolo_load_does_not_call_load(
     )
 
 
+def test_min_confidence_filters_on_confidence_key(db_session, monkeypatch) -> None:
+    """The post-prediction gate must read the model's ``confidence`` key.
+
+    YOLO predict emits ``confidence`` (not ``score``); the old
+    ``det.get("score", 1.0)`` lookup always defaulted to 1.0, so the
+    ``min_confidence`` floor silently never dropped anything the model
+    returned. With the fix, detections below the floor are gated out.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import select as _select
+
+    from carve_api.assets.models import Asset
+    from carve_api.auth.models import User
+    from carve_api.inference import autoannotate as aa_mod
+    from carve_api.projects.models import Task
+    from carve_api.weights.models import Weight
+
+    def fake_yolo_predict(*args, **kwargs):
+        return {
+            "detections": [
+                {"class_name": "car", "confidence": 0.9, "bbox": {"x": 1, "y": 2, "w": 3, "h": 4}},
+                {"class_name": "car", "confidence": 0.3, "bbox": {"x": 5, "y": 6, "w": 7, "h": 8}},
+            ],
+            "polygons": [
+                {"class_name": "truck", "confidence": 0.2, "points": [[0, 0], [10, 0], [10, 10]]},
+            ],
+        }
+
+    monkeypatch.setattr(aa_mod, "yolo_load", lambda *a, **k: {"loaded": "ok"})
+    monkeypatch.setattr(aa_mod, "yolo_predict", fake_yolo_predict)
+
+    client = _client(db_session)
+    _token, _pid, tid, aid, wid, _car_id, _truck_id = _setup_full_world(client, monkeypatch)
+    user = db_session.execute(_select(User).where(User.email == "aa@x.com")).scalar_one()
+    task = db_session.get(Task, _uuid.UUID(tid))
+    asset = db_session.get(Asset, _uuid.UUID(aid))
+    weight = db_session.get(Weight, _uuid.UUID(wid))
+
+    result = aa_mod.auto_annotate_asset(
+        session=db_session, actor=user, task=task, asset=asset, weight=weight,
+        overwrite=False, presigned_url_for_weight="https://fake/weight.pt",
+        image_bytes=_tiny_png(), min_confidence=0.5,
+    )
+    # Only the 0.9 car clears the 0.5 floor; the 0.3 car and 0.2 truck drop.
+    assert result.annotations_created == 1
+    assert len(result.annotations) == 1
+    assert result.annotations[0].kind.value == "bbox"
+
+
 def test_no_overwrite_keeps_both_existing_and_new(db_session, monkeypatch) -> None:
     """v3.7.2 sanity — overwrite=false is additive regardless of detection
     counts. Existing annotations stay; matching detections add on top.

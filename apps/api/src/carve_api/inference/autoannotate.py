@@ -236,7 +236,10 @@ def auto_annotate_asset(
             continue
         # Confidence filter — skip low-score detections. Defaults to 0.0
         # (no filter) so legacy callers keep their existing behavior.
-        score = float(det.get("score", 1.0))
+        # NOTE: the model service emits ``confidence`` (Ultralytics), NOT
+        # ``score`` — reading the wrong key defaulted every detection to 1.0
+        # and made this gate a silent no-op.
+        score = float(det.get("confidence", 1.0))
         if score < min_confidence:
             continue
         b = det["bbox"]
@@ -258,7 +261,8 @@ def auto_annotate_asset(
         if cls_id is None:
             _bump_skipped(class_name or "<unknown>")
             continue
-        score = float(poly.get("score", 1.0))
+        # Polygons carry the model's ``confidence`` too (see bbox note above).
+        score = float(poly.get("confidence", 1.0))
         if score < min_confidence:
             continue
         pts = [[float(p[0]), float(p[1])] for p in poly.get("points", [])]
