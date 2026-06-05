@@ -1671,7 +1671,7 @@ export function AnnotationCanvas({
               : `${draft.geometry.kind}`;
         const shapeSig =
           `${geoKey}|c=${color}|sel=${isSelected ? 1 : 0}` +
-          `|hov=${isHovered ? 1 : 0}|h=${showHandles && isSelected ? 1 : 0}` +
+          `|hov=${isHovered ? 1 : 0}|h=${showHandles && (isSelected || isHovered) ? 1 : 0}` +
           `|fa=${fillAlpha.toFixed(3)}|sfa=${selectedFillAlpha.toFixed(3)}` +
           `|cps=${settings.controlPointsSize}` +
           `|ol=${outlineColor ?? "_"}|st=${draft.status ?? "proposed"}` +
@@ -1684,7 +1684,7 @@ export function AnnotationCanvas({
             draft.geometry,
             color,
             isSelected || isHovered,
-            showHandles && isSelected,
+            showHandles && (isSelected || isHovered),
             fillAlpha,
             selectedFillAlpha,
             settings.controlPointsSize,
@@ -1738,7 +1738,7 @@ export function AnnotationCanvas({
             draft.geometry,
             color,
             isSelected || isHovered,
-            showHandles && isSelected,
+            showHandles && (isSelected || isHovered),
             fillAlpha,
             selectedFillAlpha,
             settings.controlPointsSize,
@@ -2888,6 +2888,30 @@ export function AnnotationCanvas({
       return null;
     }
 
+    /** Resolve a bbox by annotation id (any id, not just the selection).
+     * Used by the hover-to-edit paths so the user can grab a handle of the
+     * annotation under the cursor without clicking to select it first. */
+    function getBboxById(id: string | null): { id: string; bbox: Bbox } | null {
+      if (!id) return null;
+      const d = useAnnotations.getState().byId[id];
+      if (d && d.geometry.kind === "bbox" && d.frameId === frameId) {
+        return { id, bbox: d.geometry };
+      }
+      return null;
+    }
+
+    /** Polygon mirror of ``getBboxById``. */
+    function getPolygonById(
+      id: string | null,
+    ): { id: string; poly: Polygon } | null {
+      if (!id) return null;
+      const d = useAnnotations.getState().byId[id];
+      if (d && d.geometry.kind === "polygon" && d.frameId === frameId) {
+        return { id, poly: d.geometry };
+      }
+      return null;
+    }
+
     function onDown(e: PointerEvent) {
       // v3.8 Phase 3 — pointerdowns originating inside the floating
       // Text-mode panel must NOT be eaten by the canvas. Without this
@@ -3059,6 +3083,94 @@ export function AnnotationCanvas({
                 /* ignore */
               }
               return;
+            }
+          }
+        }
+
+        // 1c. Resize / edit ON HOVER — if the pointer is on a handle or
+        // vertex of the hovered (but not-yet-selected) annotation, grab it
+        // directly and select it as part of the same gesture. This is what
+        // lets the user resize without the extra click-to-select step.
+        const hoverEditId =
+          useTool.getState().hoveredAnnotationId ?? hitTest(p);
+        if (
+          hoverEditId &&
+          !lockedIds.has(hoverEditId) &&
+          hoverEditId !== sel?.id &&
+          hoverEditId !== polySel?.id
+        ) {
+          const hb = getBboxById(hoverEditId);
+          if (hb) {
+            const handle = hitTestHandle(hb.bbox, p);
+            if (handle) {
+              useAnnotations.getState().select(hb.id);
+              dragRef.current = {
+                mode: "resize",
+                id: hb.id,
+                handle,
+                original: hb.bbox,
+                ctx: captureDragCtx(hb.id),
+              };
+              setDragCursor(cursorForHandle(handle));
+              try {
+                host!.setPointerCapture(e.pointerId);
+              } catch {
+                /* ignore */
+              }
+              return;
+            }
+          } else {
+            const hp = getPolygonById(hoverEditId);
+            if (hp) {
+              const idx = hitTestVertex(hp.poly, p);
+              if (idx !== null) {
+                useAnnotations.getState().select(hp.id);
+                dragRef.current = {
+                  mode: "vertex",
+                  id: hp.id,
+                  index: idx,
+                  original: hp.poly,
+                  ctx: captureDragCtx(hp.id),
+                };
+                setDragCursor("grabbing");
+                try {
+                  host!.setPointerCapture(e.pointerId);
+                } catch {
+                  /* ignore */
+                }
+                return;
+              }
+              // alt-click on an edge inserts a vertex and drags it — same as
+              // the selected-polygon path, but for the hovered polygon.
+              if (e.altKey) {
+                const edge = hitTestEdge(hp.poly, p);
+                if (edge !== null) {
+                  const nextPoly = insertVertex(
+                    hp.poly,
+                    edge.edgeIndex,
+                    edge.projected,
+                  );
+                  const newIndex = edge.edgeIndex + 1;
+                  useAnnotations.getState().select(hp.id);
+                  useAnnotations
+                    .getState()
+                    .update(hp.id, { geometry: nextPoly });
+                  dragRef.current = {
+                    mode: "vertex",
+                    id: hp.id,
+                    index: newIndex,
+                    original: nextPoly,
+                    ctx: captureDragCtx(hp.id),
+                  };
+                  setDragCursor("grabbing");
+                  try {
+                    host!.setPointerCapture(e.pointerId);
+                  } catch {
+                    /* ignore */
+                  }
+                  return;
+                }
+              }
             }
           }
         }
@@ -3495,10 +3607,42 @@ export function AnnotationCanvas({
         } else {
           clearEdgeGhost();
         }
-        if (cursorRef.current !== null) setDragCursor(null);
-        const hit = hitTest(p);
-        const cur = useTool.getState().hoveredAnnotationId;
-        if (hit !== cur) useTool.getState().setHoveredAnnotationId(hit);
+        // Hover-to-edit cursor + sticky hover. Resolve the annotation under
+        // the cursor (body), or — when the pointer sits just outside a shape
+        // in its handle/vertex ring — the currently hovered one, so its grab
+        // points stay live. Show the matching resize/grab cursor so the user
+        // can drag a point without selecting first.
+        const moveLocked = useAnnotations.getState().lockedIds;
+        const bodyHit = hitTest(p);
+        const curHover = useTool.getState().hoveredAnnotationId;
+        const hoverCandidate = bodyHit ?? curHover;
+        let nextHover = bodyHit;
+        let hoverCursor: string | null = null;
+        if (
+          hoverCandidate &&
+          !moveLocked.has(hoverCandidate) &&
+          hoverCandidate !== sel?.id &&
+          hoverCandidate !== polySel?.id
+        ) {
+          const hb = getBboxById(hoverCandidate);
+          if (hb) {
+            const handle = hitTestHandle(hb.bbox, p);
+            if (handle) {
+              hoverCursor = cursorForHandle(handle);
+              nextHover = hoverCandidate; // sticky while in the handle ring
+            }
+          } else {
+            const hp = getPolygonById(hoverCandidate);
+            if (hp && hitTestVertex(hp.poly, p) !== null) {
+              hoverCursor = "grab";
+              nextHover = hoverCandidate;
+            }
+          }
+        }
+        if (hoverCursor !== null) setDragCursor(hoverCursor);
+        else if (cursorRef.current !== null) setDragCursor(null);
+        if (nextHover !== curHover)
+          useTool.getState().setHoveredAnnotationId(nextHover);
       }
     }
 
