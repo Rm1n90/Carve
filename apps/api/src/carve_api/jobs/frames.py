@@ -32,6 +32,7 @@ import math
 import shutil
 import tempfile
 import uuid
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 
@@ -80,6 +81,39 @@ def _quality_to_qv(quality: int) -> int:
     """
     q = max(0, min(100, int(quality)))
     return max(1, min(31, round(31 - (q / 100.0) * 30)))
+
+
+def _upload_frames(
+    storage,
+    asset_hash: str,
+    files: list[Path],
+    step: int,
+    fps: float,
+    *,
+    progress: Callable[[int], None] | None = None,
+) -> list[tuple[int, int]]:
+    """Upload each extracted JPEG to MinIO one at a time.
+
+    Returns only lightweight ``(idx_in_video, pts_ms)`` metadata — never the
+    frame bytes. Holding every frame's bytes in memory at once (the old
+    accumulate-then-upload ``kept`` list) OOM'd the worker on a long
+    ``all``-strategy extraction: 100k+ frames * ~200 KB runs to tens of GB,
+    right beside SAM. Streaming the upload bounds memory to a single frame.
+    """
+    meta: list[tuple[int, int]] = []
+    total = len(files)
+    for i, fpath in enumerate(files):
+        idx_in_video = i * step
+        pts_ms = int((idx_in_video / fps) * 1000) if fps > 0 else 0
+        body = fpath.read_bytes()
+        storage.put_object(
+            _frame_key(asset_hash, idx_in_video), BytesIO(body), len(body), "image/jpeg"
+        )
+        meta.append((idx_in_video, pts_ms))
+        # Cheap heartbeat: every 5 uploads, plus the last one.
+        if progress is not None and (i % 5 == 0 or i == total - 1):
+            progress(i + 1)
+    return meta
 
 
 def extract_frames_for_video(
@@ -289,47 +323,44 @@ def extract_frames_for_video(
                 asset_id,
             )
 
-        # Build the (idx_in_video, pts_ms, body) tuples for each kept frame.
-        # idx_in_video is the original video-frame index (0, step, 2*step, ...).
-        kept: list[tuple[int, int, bytes]] = []
-        for i, fpath in enumerate(files):
-            idx_in_video = i * step
-            pts_ms = int((idx_in_video / fps) * 1000) if fps > 0 else 0
-            kept.append((idx_in_video, pts_ms, fpath.read_bytes()))
-
-        # Phase shift: decoding -> uploading. Emit per-batch progress so
-        # the UI bar moves smoothly even on a 500-frame upload.
-        total_kept = len(kept)
+        # Phase shift: decoding -> uploading. ``files`` are JPEGs already on
+        # disk (ffmpeg's image2 output); upload them one at a time so a long
+        # "all"-strategy extraction never holds every frame's bytes in RAM.
+        total_files = len(files)
         if _r is not None:
             try:
                 _r.hset(
                     progress_key,
                     mapping={
                         "phase": "uploading",
-                        "decoded": str(total_kept),
-                        "expected": str(total_kept),
+                        "decoded": str(total_files),
+                        "expected": str(total_files),
                         "uploaded": "0",
                     },
                 )
             except Exception:  # noqa: BLE001
                 pass
-        for i, (idx_in_video, _pts_ms, body) in enumerate(kept):
-            key = _frame_key(asset_hash, idx_in_video)
-            storage.put_object(
-                key, BytesIO(body), len(body), "image/jpeg"
-            )
-            # Cheap heartbeat: every 5 uploads, plus the last one.
-            if _r is not None and (i % 5 == 0 or i == total_kept - 1):
-                try:
-                    _r.hset(progress_key, "uploaded", str(i + 1))
-                except Exception:  # noqa: BLE001
-                    pass
+
+        def _push_uploaded(done: int) -> None:
+            if _r is None:
+                return
+            try:
+                _r.hset(progress_key, "uploaded", str(done))
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Returns only (idx_in_video, pts_ms) metadata — no frame bytes are
+        # retained, so memory stays flat regardless of frame count.
+        kept_meta = _upload_frames(
+            storage, asset_hash, files, step, fps, progress=_push_uploaded
+        )
+        total_kept = len(kept_meta)
 
         with SessionLocal.begin() as s:
             s.execute(
                 sa_delete(Frame).where(Frame.asset_id == asset_uuid)
             )
-            for idx_in_video, pts_ms, _body in kept:
+            for idx_in_video, pts_ms in kept_meta:
                 s.add(
                     Frame(
                         asset_id=asset_uuid,
@@ -337,7 +368,7 @@ def extract_frames_for_video(
                         pts_ms=pts_ms,
                     )
                 )
-            update_values: dict[str, int] = {"frames": len(kept)}
+            update_values: dict[str, int] = {"frames": total_kept}
             if probe_w > 0 and probe_h > 0:
                 update_values["width"] = probe_w
                 update_values["height"] = probe_h
@@ -362,7 +393,7 @@ def extract_frames_for_video(
                 thumbnail_key,
             )
 
-            first_frame_bytes = kept[0][2]
+            first_frame_bytes = files[0].read_bytes()
             thumb_bytes = _make_thumbnail_jpeg(first_frame_bytes)
             thumb_key = thumbnail_key(asset_hash)
             storage.put_object(
@@ -404,7 +435,7 @@ def extract_frames_for_video(
                     mapping={
                         "status": "completed",
                         "phase": "done",
-                        "uploaded": str(len(kept)),
+                        "uploaded": str(total_kept),
                     },
                 )
                 _r.expire(progress_key, 60)  # auto-clear after a minute
@@ -413,7 +444,7 @@ def extract_frames_for_video(
 
         return {
             "ok": True,
-            "extracted": len(kept),
+            "extracted": total_kept,
             "step": step,
             "total_source_frames": total_frames,
         }
