@@ -1,10 +1,15 @@
 /**
- * v3.0 C5 — LeftNav Annotate section now lists the user's projects.
+ * LeftNav Annotate section lists the user's projects.
+ *
+ * The rail lists EVERY project (no cap) inside a scroll container and ends
+ * with a persistent "All projects" row, so it fills the panel instead of
+ * truncating at 8 and leaving the lower half empty.
  *
  * Asserts:
- *   - With <=8 projects: each project name renders as a NavItem.
- *   - With >8 projects: only the first 8 render + a "Show all (N)" link.
- *   - With 0 projects: only the existing "All projects" entry renders.
+ *   - Any project count: every project name renders as a NavItem.
+ *   - The "All projects" row is always present; the old 8-cap
+ *     "leftnav-projects-show-all" link is gone.
+ *   - With 0 projects: only the "All projects" entry renders.
  */
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,6 +67,8 @@ vi.mock("@/api/projects", () => ({
   },
 }));
 
+import { TooltipProvider } from "@radix-ui/react-tooltip";
+
 import { projectsApi } from "@/api/projects";
 import { LeftNav } from "@/components/nav/LeftNav";
 import { ConfirmProvider } from "@/components/ui/ConfirmDialog";
@@ -72,7 +79,9 @@ function wrap(node: React.ReactNode) {
   });
   return (
     <QueryClientProvider client={qc}>
-      <ConfirmProvider>{node}</ConfirmProvider>
+      <TooltipProvider>
+        <ConfirmProvider>{node}</ConfirmProvider>
+      </TooltipProvider>
     </QueryClientProvider>
   );
 }
@@ -95,8 +104,8 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("LeftNav — Annotate section project list (v3.0 C5)", () => {
-  it("renders all projects when count <= 8", async () => {
+describe("LeftNav — Annotate section project list", () => {
+  it("renders every project (no cap) and a persistent 'All projects' row", async () => {
     const projects = makeProjects(5);
     (projectsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue(projects);
 
@@ -108,12 +117,14 @@ describe("LeftNav — Annotate section project list (v3.0 C5)", () => {
       });
       expect(screen.getByText(p.name)).toBeInTheDocument();
     }
+    // Persistent footer row, and the retired 8-cap link is gone.
+    expect(screen.getByTestId("leftnav-all-projects")).toBeInTheDocument();
     expect(
       screen.queryByTestId("leftnav-projects-show-all"),
     ).not.toBeInTheDocument();
   });
 
-  it("renders 8 projects + 'Show all (N)' link when count > 8", async () => {
+  it("renders ALL projects when count > 8 (the old 8-item cap is removed)", async () => {
     const projects = makeProjects(12);
     (projectsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue(projects);
 
@@ -123,18 +134,14 @@ describe("LeftNav — Annotate section project list (v3.0 C5)", () => {
       expect(screen.getByTestId("leftnav-project-p1")).toBeInTheDocument();
     });
 
-    for (let i = 1; i <= 8; i += 1) {
+    // Every one of the 12 projects renders — nothing is hidden behind a cap.
+    for (let i = 1; i <= 12; i += 1) {
       expect(screen.getByTestId(`leftnav-project-p${i}`)).toBeInTheDocument();
     }
-    for (let i = 9; i <= 12; i += 1) {
-      expect(
-        screen.queryByTestId(`leftnav-project-p${i}`),
-      ).not.toBeInTheDocument();
-    }
-
-    const showAll = screen.getByTestId("leftnav-projects-show-all");
-    expect(showAll).toBeInTheDocument();
-    expect(showAll.textContent).toContain("Show all (12)");
+    expect(screen.getByTestId("leftnav-all-projects")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("leftnav-projects-show-all"),
+    ).not.toBeInTheDocument();
   });
 
   it("with zero projects, only the static 'All projects' entry shows", async () => {

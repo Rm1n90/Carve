@@ -16,8 +16,8 @@
  *   │  │ Task 2                │
  *   │    Project B            │
  *   │    Project C            │
- *   │                         │
- *   │  See all 24 projects →  │
+ *   │    … every project …    │  full list — no cap; the rail scrolls
+ *   │  All projects        →  │  persistent last row → /projects grid
  *   │ (scroll)                │
  *   ├─────────────────────────┤
  *   │  [⚙] [📊] [🔑] [🗑] [ℹ] │  icon dock (h-9, tooltipped)
@@ -38,9 +38,10 @@
  *
  * Existing data-testids preserved: ``leftnav-project-{id}``,
  * ``leftnav-task-{id}``, ``leftnav-projects-loading``,
- * ``leftnav-all-projects``, ``leftnav-projects-show-all``,
- * ``leftnav-project-link-{id}``, ``leftnav-project-toggle-{id}``,
- * ``leftnav-tasks-loading-{id}``, ``leftnav-tasks-more-{id}``.
+ * ``leftnav-all-projects``, ``leftnav-project-link-{id}``,
+ * ``leftnav-project-toggle-{id}``, ``leftnav-tasks-loading-{id}``,
+ * ``leftnav-tasks-more-{id}``. (``leftnav-projects-show-all`` retired
+ * with the 8-project cap — the rail now lists every project and scrolls.)
  */
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
@@ -72,7 +73,6 @@ import { tasksApi } from "@/api/tasks";
 import { workspaceApi } from "@/api/workspace";
 import { useBackgroundJobs } from "@/state/backgroundJobs";
 
-const ANNOTATE_PROJECTS_LIMIT = 8;
 const ANNOTATE_TASKS_LIMIT = 5;
 
 // ---------------------------------------------------------------------------
@@ -507,8 +507,6 @@ export function LeftNav({
     staleTime: 5 * 60 * 1000,
   });
   const projectList = projectsQ.data ?? [];
-  const visibleProjects = projectList.slice(0, ANNOTATE_PROJECTS_LIMIT);
-  const overflowCount = projectList.length - visibleProjects.length;
 
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
     () => new Set<string>(),
@@ -716,7 +714,7 @@ export function LeftNav({
               </li>
             )}
             {!projectsQ.isLoading &&
-              visibleProjects.map((p) => (
+              projectList.map((p) => (
                 <ProjectNavItem
                   key={p.id}
                   project={p}
@@ -725,20 +723,17 @@ export function LeftNav({
                   onToggle={toggleProject}
                 />
               ))}
-            {!projectsQ.isLoading && overflowCount > 0 && (
-              <NavItem
-                label={`See all ${projectList.length} projects`}
-                to="/projects"
-                testId="leftnav-projects-show-all"
-                trailing="→"
-              />
-            )}
-            {!projectsQ.isLoading && projectList.length === 0 && (
+            {/* Persistent last row → the full /projects grid. The rail lists
+                every project above and the surrounding <nav> scrolls when
+                they overflow, so there's no artificial "see all N" cap that
+                would leave the panel half-empty. */}
+            {!projectsQ.isLoading && (
               <NavItem
                 label="All projects"
                 to="/projects"
                 active={path === "/projects"}
                 testId="leftnav-all-projects"
+                trailing={projectList.length > 0 ? "→" : undefined}
               />
             )}
           </ul>

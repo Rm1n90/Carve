@@ -74,6 +74,8 @@ vi.mock("@/api/tasks", () => ({
   },
 }));
 
+import { TooltipProvider } from "@radix-ui/react-tooltip";
+
 import { projectsApi } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
 import { LeftNav } from "@/components/nav/LeftNav";
@@ -85,7 +87,9 @@ function wrap(node: React.ReactNode) {
   });
   return (
     <QueryClientProvider client={qc}>
-      <ConfirmProvider>{node}</ConfirmProvider>
+      <TooltipProvider>
+        <ConfirmProvider>{node}</ConfirmProvider>
+      </TooltipProvider>
     </QueryClientProvider>
   );
 }
@@ -244,11 +248,12 @@ describe("LeftNav — project→tasks tree (v3.1 Issue 5)", () => {
     });
     expect(screen.getByTestId("leftnav-task-TA2")).toBeInTheDocument();
 
-    // Active task row carries the accent background utility class as a
-    // visual highlight. We inspect the inner span that owns the styling.
+    // Active task row carries the active highlight (the v3.24.9 "Edge"
+    // redesign uses a --bg-hover tint plus the accent beam). We inspect the
+    // inner span that owns the styling.
     const ta1Row = screen.getByTestId("leftnav-task-TA1");
     const styled = ta1Row.querySelector("span");
     expect(styled).not.toBeNull();
-    expect(styled?.className).toContain("bg-[var(--accent-bg)]");
+    expect(styled?.className).toContain("bg-[var(--bg-hover)]");
   });
 });
