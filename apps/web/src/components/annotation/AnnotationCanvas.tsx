@@ -31,7 +31,14 @@ import { inferenceErrorMessage } from "@/lib/inferenceErrors";
  * src/lib/texture-lru.ts for the rationale.
  */
 const TEXTURE_LRU_CAPACITY = 3;
-import { useAnnotations, type AnnotationDraft, type Bbox, type Polygon } from "@/state/annotations";
+import {
+  useAnnotations,
+  placeClipboardEntries,
+  type AnnotationDraft,
+  type Bbox,
+  type Polygon,
+  type ClipboardEntry,
+} from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
 import { useReviewCompare } from "@/state/reviewCompare";
@@ -276,6 +283,12 @@ export function AnnotationCanvas({
   const easeStartRef = useRef<{ frame: ZoomFrame; t0: number } | null>(null);
   const easeTargetRef = useRef<ZoomFrame | null>(null);
   const previewGfxRef = useRef<unknown | null>(null);
+  // CVAT-style floating paste — the translucent ghost Graphics that
+  // follows the cursor between Ctrl+V and the committing left-click.
+  const pasteGhostGfxRef = useRef<unknown | null>(null);
+  // Last pointer position in image space, so the ghost can appear at the
+  // cursor the instant Ctrl+V arms it (before any pointermove fires).
+  const lastPointerImgRef = useRef<Point | null>(null);
   // Monotonic counter bumped on every clearPreview(); drawPreviewRect
   // captures the value at entry and bails before painting if the
   // counter has moved on. Without this, an in-flight async drawPreviewRect
@@ -2122,6 +2135,66 @@ export function AnnotationCanvas({
     if (g && typeof g.clear === "function") g.clear();
   }
 
+  // ----- CVAT-style floating paste. Paint a translucent ghost of the
+  // copied bbox(es) at `cursor`, using the same `placeClipboardEntries`
+  // transform the commit uses (group bbox centre → cursor, clamped to
+  // image bounds) so what the user previews is exactly what lands. Each
+  // shape is drawn in its class colour. Stroke width is divided by the
+  // zoom so it stays ~2 screen-px at any scale (like the marquee rect).
+  async function drawPasteGhost(entries: ClipboardEntry[], cursor: Point) {
+    const app = appRef.current;
+    if (!app || entries.length === 0) return;
+    let Graphics: typeof import("pixi.js").Graphics | undefined;
+    try {
+      const pixi = await import("pixi.js");
+      Graphics = pixi.Graphics;
+    } catch {
+      return;
+    }
+    if (!Graphics) return;
+    // Bail if placement was cancelled while the dynamic import resolved.
+    if (!useTool.getState().pastePlacement) return;
+    let g = pasteGhostGfxRef.current as InstanceType<typeof Graphics> | null;
+    if (!g) {
+      g = new Graphics();
+      pasteGhostGfxRef.current = g;
+      app.overlayLayer.addChild(g);
+    }
+    g.clear();
+    const bounds =
+      imageSize.w > 1 && imageSize.h > 1 ? imageSize : undefined;
+    const placed = placeClipboardEntries(entries, cursor, bounds);
+    const strokePx = 2 / (scaleRef.current || 1);
+    for (const item of placed) {
+      const color = hexFromColor(item.colorOverride ?? classMap[item.classId]);
+      const geom = item.geometry;
+      if (geom.kind === "bbox") {
+        g.rect(geom.x, geom.y, geom.w, geom.h);
+        g.stroke({ color, width: strokePx, alpha: 0.95 });
+        g.fill({ color, alpha: 0.18 });
+      } else if (geom.kind === "polygon" && geom.points.length > 0) {
+        g.moveTo(geom.points[0][0], geom.points[0][1]);
+        for (let i = 1; i < geom.points.length; i++) {
+          g.lineTo(geom.points[i][0], geom.points[i][1]);
+        }
+        g.lineTo(geom.points[0][0], geom.points[0][1]);
+        g.stroke({ color, width: strokePx, alpha: 0.95 });
+        g.fill({ color, alpha: 0.18 });
+      }
+    }
+  }
+
+  function clearPasteGhost() {
+    const g = pasteGhostGfxRef.current as { clear?: () => void } | null;
+    if (g && typeof g.clear === "function") g.clear();
+  }
+
+  // Cancel any in-flight floating paste when the canvas unmounts (asset
+  // switch / leaving the editor) so a ghost never lingers into the next
+  // mount. The clipboard itself persists; only the transient placement
+  // gesture is dropped.
+  useEffect(() => () => useTool.getState().cancelPastePlacement(), []);
+
   // ----- Plan 14 Phase 8 Task 7 — marquee preview rectangle.
   async function drawMarqueeRect(rect: {
     x: number;
@@ -2953,6 +3026,33 @@ export function AnnotationCanvas({
         setDragCursor("grabbing");
         return;
       }
+      // CVAT-style floating paste — runs before tool routing so it works
+      // with any active tool. A LEFT click commits the ghost centred on
+      // the pointer (carrying each shape's class); any other button is
+      // consumed here (right-click cancellation is owned by the
+      // contextmenu handlers, which also suppress the menu).
+      const placement = useTool.getState().pastePlacement;
+      if (placement && placement.length > 0) {
+        if (e.button === 0) {
+          e.preventDefault();
+          const cur = pointerXY(e);
+          const bounds =
+            imageSize.w > 1 && imageSize.h > 1 ? imageSize : undefined;
+          const newId = useAnnotations
+            .getState()
+            .pastePlacedCentered(cur.x, cur.y, placement, frameId, bounds);
+          useTool.getState().cancelPastePlacement();
+          if (newId) {
+            showToast(
+              placement.length === 1
+                ? "Bbox pasted"
+                : `${placement.length} bboxes pasted`,
+              { variant: "success", duration: 1500 },
+            );
+          }
+        }
+        return;
+      }
       const rawP = pointerXY(e);
       // F6 — snap the down point for bbox/polygon when Shift is held.
       // The cursor tool's hit-test path uses the raw point because
@@ -3474,6 +3574,14 @@ export function AnnotationCanvas({
         return;
       }
       const rawP = pointerXY(e);
+      lastPointerImgRef.current = rawP;
+      // Floating-paste placement: the ghost follows the cursor and tool
+      // routing is suppressed until the placement is committed/cancelled.
+      const placementMove = useTool.getState().pastePlacement;
+      if (placementMove && placementMove.length > 0) {
+        void drawPasteGhost(placementMove, rawP);
+        return;
+      }
       // F6 — snap to nearest vertex/edge when drawing bbox/polygon and
       // Shift is held. The helper short-circuits when shift is off so
       // the non-snap path is unchanged.
@@ -3898,6 +4006,13 @@ export function AnnotationCanvas({
     }
 
     function onContextMenu(e: MouseEvent) {
+      // Right-click cancels an in-flight floating paste (and suppresses
+      // the menu) regardless of the active tool.
+      if (useTool.getState().pastePlacement) {
+        e.preventDefault();
+        useTool.getState().cancelPastePlacement();
+        return;
+      }
       // Plan-17 — right-click semantics in SAM mode:
       //   - hit-test lands on an annotation       → menu opens
       //   - any annotation is currently selected  → menu opens
@@ -3932,6 +4047,14 @@ export function AnnotationCanvas({
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+
+      // Esc cancels an in-flight floating paste before any other handling.
+      if (e.key === "Escape" && useTool.getState().pastePlacement) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        useTool.getState().cancelPastePlacement();
+        return;
+      }
 
       // v3.21 -- both ``/`` (open_class_palette), ``r`` (reassign_class),
       // and the mod+shift+c power-user alt (open_class_palette_alt) are
@@ -4188,6 +4311,32 @@ export function AnnotationCanvas({
       }
     });
 
+    // Floating paste: draw the ghost when placement arms (at the last
+    // cursor, or the image centre before the pointer has moved), clear it
+    // when it disarms, and keep a "copy" cursor while armed.
+    const ghostAnchor = (): Point =>
+      lastPointerImgRef.current ?? {
+        x: imageSize.w > 1 ? imageSize.w / 2 : 0,
+        y: imageSize.h > 1 ? imageSize.h / 2 : 0,
+      };
+    const unsubPaste = useTool.subscribe((s, prev) => {
+      if (s.pastePlacement === prev.pastePlacement) return;
+      if (s.pastePlacement && s.pastePlacement.length > 0) {
+        setDragCursor("copy");
+        void drawPasteGhost(s.pastePlacement, ghostAnchor());
+      } else {
+        clearPasteGhost();
+        setDragCursor(null);
+      }
+    });
+    // If placement is already armed when this effect (re)runs — e.g. an
+    // imageSize / frame change mid-placement re-registered the handlers —
+    // repaint the ghost so it survives the re-register.
+    {
+      const armed = useTool.getState().pastePlacement;
+      if (armed && armed.length > 0) void drawPasteGhost(armed, ghostAnchor());
+    }
+
     host.addEventListener("pointerdown", onDown);
     host.addEventListener("pointermove", onMove);
     host.addEventListener("pointerup", onUp);
@@ -4208,6 +4357,12 @@ export function AnnotationCanvas({
       window.removeEventListener("keyup", onAltKeyUp);
       clearEdgeGhost();
       unsubSel();
+      // Floating-paste subscription + ghost. The placement state itself
+      // is left intact across benign re-runs (frame/imageSize changes);
+      // the effect-setup repaint above re-draws it. True unmount cancels
+      // it via the dedicated cleanup effect.
+      unsubPaste();
+      clearPasteGhost();
       // Reset any in-flight bbox draft when the tool changes / the
       // asset unmounts. Without this, drawing a bbox fast and then
       // switching to the cursor tool mid-drag left the blue preview

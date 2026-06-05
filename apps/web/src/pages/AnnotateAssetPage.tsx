@@ -1828,43 +1828,24 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     }
   });
 
-  // Ctrl/Cmd+V — paste every entry currently on the clipboard onto
-  // the active asset's frame. For a single entry we keep the legacy
-  // +16/+16 offset so duplicating on the SAME asset stays visible.
-  // For multi-entry pastes (the user just multi-selected and copied
-  // on another image) we anchor at the FIRST entry's original
-  // position so the group lands in the same spot on the new asset,
-  // preserving the layout. The store auto-selects the new drafts.
+  // Ctrl/Cmd+V — CVAT-style floating paste. Instead of dropping the
+  // clipboard at a fixed offset, we ARM a placement: the canvas paints
+  // a translucent ghost of the copied bbox(es) that follows the cursor,
+  // and a left-click commits them centred on the pointer (Esc / right-
+  // click cancels). The ghost + commit share the same anchoring math so
+  // what the user sees is exactly what lands. A snapshot of the clipboard
+  // is handed to the tool store so a later Ctrl+C can't change what is
+  // mid-placement. Commit + the success toast live in AnnotationCanvas.
   useShortcutHandler("paste", () => {
-    const state = useAnnotations.getState();
-    const cb = state.clipboard;
+    const cb = useAnnotations.getState().clipboard;
     if (!cb || cb.length === 0) return;
-    const a = assetQ.data?.asset;
-    const bounds =
-      a && typeof a.width === "number" && typeof a.height === "number"
-        ? { w: a.width, h: a.height }
-        : undefined;
-    let atX = 0;
-    let atY = 0;
-    const first = cb[0];
-    if (first.geometry.kind === "bbox") {
-      atX = first.geometry.x;
-      atY = first.geometry.y;
-    } else if (
-      first.geometry.kind === "polygon" &&
-      first.geometry.points.length > 0
-    ) {
-      atX = first.geometry.points[0][0];
-      atY = first.geometry.points[0][1];
-    }
-    if (cb.length === 1) {
-      atX += 16;
-      atY += 16;
-    }
-    state.pasteFromClipboard(atX, atY, frameIdRef.current, bounds);
-    const msg =
-      cb.length === 1 ? "Bbox pasted" : `${cb.length} bboxes pasted`;
-    showToast(msg, { variant: "success", duration: 1500 });
+    useTool.getState().startPastePlacement(cb);
+    showToast(
+      cb.length === 1
+        ? "Click to place the copied bbox · Esc to cancel"
+        : `Click to place ${cb.length} copied bboxes · Esc to cancel`,
+      { variant: "info", duration: 2200 },
+    );
   });
 
   // v3.20 -- customizable shortcuts. Every action below is editable in

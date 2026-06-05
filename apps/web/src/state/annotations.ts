@@ -205,6 +205,21 @@ interface State {
     imageBounds?: { w: number; h: number },
   ) => string | null;
   /**
+   * CVAT-style floating paste. Commits `entries` (a clipboard snapshot)
+   * so the GROUP's bounding-box centre lands on the cursor (`cursorX`,
+   * `cursorY`), clamped to `imageBounds`. Inserts the whole batch as a
+   * single undo step (via {@link addMany}) and selects it. Returns the
+   * first new tempId, or ``null`` when there is nothing to place. When
+   * `entries` is empty/omitted it falls back to the live clipboard.
+   */
+  pastePlacedCentered: (
+    cursorX: number,
+    cursorY: number,
+    entries?: ClipboardEntry[],
+    frameId?: string | null,
+    imageBounds?: { w: number; h: number },
+  ) => string | null;
+  /**
    * Plan 14 Phase 8 Task 7 — bulk class-reassign for the current
    * ``selectedIds`` set. Mutates every selected draft's ``classId`` (and
    * marks it dirty) and pushes a SINGLE history entry covering the whole
@@ -944,6 +959,37 @@ export const useAnnotations = create<State>((set, get) => ({
     }));
     return newIds[0];
   },
+  pastePlacedCentered: (cursorX, cursorY, entries, frameId = null, imageBounds) => {
+    const src =
+      entries && entries.length > 0 ? entries : (get().clipboard ?? []);
+    // Drop degenerate clipboard entries so the commit can never insert an
+    // un-renderable draft (a <3-vertex polygon would crash export/save).
+    const usable = src.filter(
+      (e) => e.geometry.kind !== "polygon" || e.geometry.points.length >= 3,
+    );
+    if (usable.length === 0) return null;
+    const placed = placeClipboardEntries(usable, { x: cursorX, y: cursorY }, imageBounds);
+    const stamp = Date.now();
+    const drafts: AnnotationDraft[] = placed.map((e, i) => ({
+      tempId: `pst-${stamp}-${i}-${Math.random().toString(36).slice(2, 8)}`,
+      classId: e.classId,
+      kind: e.kind,
+      geometry: e.geometry,
+      frameId,
+      serverId: null,
+      dirty: true,
+      status: "proposed",
+      reviewedById: null,
+      reviewedAt: null,
+      prevGeometry: null,
+      colorOverride: e.colorOverride,
+    }));
+    if (drafts.length === 0) return null;
+    // addMany inserts the whole batch as ONE history step and selects it,
+    // so a single undo reverts the entire paste.
+    get().addMany(drafts);
+    return drafts[0].tempId;
+  },
 }));
 
 /**
@@ -1003,4 +1049,64 @@ function placeGeometryAt(
     return shiftGeometry(g, atX - ox, atY - oy, bounds);
   }
   return g;
+}
+
+/**
+ * Placed clipboard entry — the result of {@link placeClipboardEntries}.
+ * Carries the shifted geometry plus the class/colour metadata needed to
+ * both render the floating-paste ghost and commit the paste.
+ */
+export interface PlacedClipboardEntry {
+  geometry: Geometry;
+  classId: string;
+  kind: AnnotationKind;
+  colorOverride: string | null;
+}
+
+/**
+ * CVAT-style floating paste — translate every clipboard entry so the
+ * GROUP's spatial bounding-box centre lands on `cursor`, clamping each
+ * shape to `bounds` (via {@link shiftGeometry}). Bbox + polygon entries
+ * define the group bounds; mask/tag entries carry no shiftable position
+ * so they are excluded from the centroid (and returned unchanged). The
+ * same transform feeds both the canvas ghost preview and the commit, so
+ * what the user sees is exactly what lands.
+ */
+export function placeClipboardEntries(
+  entries: ClipboardEntry[],
+  cursor: { x: number; y: number },
+  bounds?: { w: number; h: number },
+): PlacedClipboardEntry[] {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const e of entries) {
+    const g = e.geometry;
+    if (g.kind === "bbox") {
+      minX = Math.min(minX, g.x);
+      minY = Math.min(minY, g.y);
+      maxX = Math.max(maxX, g.x + g.w);
+      maxY = Math.max(maxY, g.y + g.h);
+    } else if (g.kind === "polygon") {
+      for (const [px, py] of g.points) {
+        minX = Math.min(minX, px);
+        minY = Math.min(minY, py);
+        maxX = Math.max(maxX, px);
+        maxY = Math.max(maxY, py);
+      }
+    }
+  }
+  let dx = 0;
+  let dy = 0;
+  if (Number.isFinite(minX)) {
+    dx = cursor.x - (minX + maxX) / 2;
+    dy = cursor.y - (minY + maxY) / 2;
+  }
+  return entries.map((e) => ({
+    geometry: shiftGeometry(e.geometry, dx, dy, bounds),
+    classId: e.classId,
+    kind: e.kind,
+    colorOverride: e.colorOverride,
+  }));
 }

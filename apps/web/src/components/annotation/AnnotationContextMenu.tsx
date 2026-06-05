@@ -511,6 +511,15 @@ export function AnnotationContextMenu({
     if (!host) return;
     function onContextMenu(e: Event) {
       const me = e as MouseEvent;
+      // CVAT-style floating paste — a right-click cancels the in-flight
+      // placement and suppresses the menu (instead of opening it over
+      // the ghost). The canvas's own contextmenu handler is gated the
+      // same way; whichever fires owns the cancel.
+      if (useTool.getState().pastePlacement) {
+        me.preventDefault();
+        useTool.getState().cancelPastePlacement();
+        return;
+      }
       // Plan-20.11 / v3.27.9 — when the user is in the Smart (SAM)
       // tool's POINT or TRACK mode, right-click is reserved as a
       // *negative* point prompt. The SAM tool handles the click

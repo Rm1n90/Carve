@@ -2,6 +2,7 @@
 import { create } from "zustand";
 
 import type { SamMode } from "@/canvas/tools/SamTool";
+import type { ClipboardEntry } from "@/state/annotations";
 
 export type ToolName = "cursor" | "bbox" | "polygon" | "mask" | "tag" | "sam";
 
@@ -59,6 +60,15 @@ interface ToolState {
    */
   lastDrawClassId: string | null;
   streakCount: number;
+  /**
+   * CVAT-style floating paste. When non-null the editor is "placing" a
+   * copied selection: the canvas renders a translucent ghost of these
+   * entries following the cursor, and a left-click commits them at the
+   * pointer (right-click / Esc / tool-switch cancels). Holds a SNAPSHOT
+   * of the clipboard taken at Ctrl+V time so a later Ctrl+C can't change
+   * what is mid-placement. Transient — never persisted.
+   */
+  pastePlacement: ClipboardEntry[] | null;
   setActive: (t: ToolName) => void;
   setActiveClassId: (id: string | null) => void;
   /**
@@ -79,6 +89,10 @@ interface ToolState {
   setMaskEraser: (v: boolean) => void;
   toggleMaskEraser: () => void;
   setSamMode: (m: SamMode) => void;
+  /** Arm floating-paste placement with a clipboard snapshot. */
+  startPastePlacement: (entries: ClipboardEntry[]) => void;
+  /** Disarm floating-paste placement (commit, cancel, or tool switch). */
+  cancelPastePlacement: () => void;
 }
 
 const DEFAULT_VISIBILITY: VisibilityFlags = {
@@ -106,7 +120,10 @@ export const useTool = create<ToolState>((set) => ({
   samMode: "point",
   lastDrawClassId: null,
   streakCount: 0,
-  setActive: (t) => set({ active: t }),
+  pastePlacement: null,
+  // Switching tools cancels an in-flight floating paste so the ghost
+  // never lingers under a different tool.
+  setActive: (t) => set({ active: t, pastePlacement: null }),
   setActiveClassId: (id) => set({ activeClassId: id }),
   recordDraw: (classId) => {
     if (!classId) return;
@@ -132,4 +149,7 @@ export const useTool = create<ToolState>((set) => ({
   setMaskEraser: (v) => set({ maskEraser: !!v }),
   toggleMaskEraser: () => set((s) => ({ maskEraser: !s.maskEraser })),
   setSamMode: (m) => set({ samMode: m }),
+  startPastePlacement: (entries) =>
+    set({ pastePlacement: entries.length > 0 ? entries : null }),
+  cancelPastePlacement: () => set({ pastePlacement: null }),
 }));
