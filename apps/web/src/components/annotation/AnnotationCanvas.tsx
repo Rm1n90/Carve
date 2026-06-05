@@ -1655,6 +1655,11 @@ export function AnnotationCanvas({
         const isSelected =
           state.selectedId === id || state.selectedIds.includes(id);
         const isHovered = hovered === id;
+        // Hover-reveal of handles is opt-in (Settings → "Reveal handles on
+        // hover"). When off, handles show only on the selected shape.
+        const drawHandles =
+          showHandles &&
+          (isSelected || (isHovered && settings.revealHandlesOnHover));
         // Geometry signature folds in every visible input renderBbox /
         // renderPolygon depends on. If the cached signature matches and
         // the Graphics instance is the same, no Pixi geometry-buffer
@@ -1671,7 +1676,7 @@ export function AnnotationCanvas({
               : `${draft.geometry.kind}`;
         const shapeSig =
           `${geoKey}|c=${color}|sel=${isSelected ? 1 : 0}` +
-          `|hov=${isHovered ? 1 : 0}|h=${showHandles && (isSelected || isHovered) ? 1 : 0}` +
+          `|hov=${isHovered ? 1 : 0}|h=${drawHandles ? 1 : 0}` +
           `|fa=${fillAlpha.toFixed(3)}|sfa=${selectedFillAlpha.toFixed(3)}` +
           `|cps=${settings.controlPointsSize}` +
           `|ol=${outlineColor ?? "_"}|st=${draft.status ?? "proposed"}` +
@@ -1684,7 +1689,7 @@ export function AnnotationCanvas({
             draft.geometry,
             color,
             isSelected || isHovered,
-            showHandles && (isSelected || isHovered),
+            drawHandles,
             fillAlpha,
             selectedFillAlpha,
             settings.controlPointsSize,
@@ -1738,7 +1743,7 @@ export function AnnotationCanvas({
             draft.geometry,
             color,
             isSelected || isHovered,
-            showHandles && (isSelected || isHovered),
+            drawHandles,
             fillAlpha,
             selectedFillAlpha,
             settings.controlPointsSize,
@@ -3091,8 +3096,9 @@ export function AnnotationCanvas({
         // vertex of the hovered (but not-yet-selected) annotation, grab it
         // directly and select it as part of the same gesture. This is what
         // lets the user resize without the extra click-to-select step.
-        const hoverEditId =
-          useTool.getState().hoveredAnnotationId ?? hitTest(p);
+        const hoverEditId = useEditorSettings.getState().revealHandlesOnHover
+          ? (useTool.getState().hoveredAnnotationId ?? hitTest(p))
+          : null;
         if (
           hoverEditId &&
           !lockedIds.has(hoverEditId) &&
@@ -3612,6 +3618,7 @@ export function AnnotationCanvas({
         // in its handle/vertex ring — the currently hovered one, so its grab
         // points stay live. Show the matching resize/grab cursor so the user
         // can drag a point without selecting first.
+        const revealOnHover = useEditorSettings.getState().revealHandlesOnHover;
         const moveLocked = useAnnotations.getState().lockedIds;
         const bodyHit = hitTest(p);
         const curHover = useTool.getState().hoveredAnnotationId;
@@ -3619,6 +3626,7 @@ export function AnnotationCanvas({
         let nextHover = bodyHit;
         let hoverCursor: string | null = null;
         if (
+          revealOnHover &&
           hoverCandidate &&
           !moveLocked.has(hoverCandidate) &&
           hoverCandidate !== sel?.id &&

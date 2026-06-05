@@ -216,7 +216,8 @@ describe("Phase E v2.4 — wired editor options", () => {
   });
 
   it("DEFAULT_SETTINGS exposes the new fields with sensible defaults", () => {
-    expect(DEFAULT_SETTINGS.controlPointsSize).toBe(6);
+    expect(DEFAULT_SETTINGS.controlPointsSize).toBe(9);
+    expect(DEFAULT_SETTINGS.revealHandlesOnHover).toBe(true);
     expect(DEFAULT_SETTINGS.showAllInterpolationTracks).toBe(false);
     expect(DEFAULT_SETTINGS.automaticBordering).toBe(false);
     expect(DEFAULT_SETTINGS.intelligentPolygonCropping).toBe(false);

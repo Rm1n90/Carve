@@ -540,6 +540,17 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
               />
             </Field>
 
+            <Checkbox
+              checked={s.revealHandlesOnHover}
+              onChange={(v) => s.set("revealHandlesOnHover", v)}
+              label="Reveal handles on hover (resize without clicking to select)"
+              testId="setting-revealHandlesOnHover"
+            />
+            <p className="text-[11px] text-[color:var(--text-tertiary)] -mt-1">
+              On: hovering a shape shows its points and you can grab one to
+              resize. Off: points appear only after you select the shape.
+            </p>
+
             {/* Plan-15 Track C — removed the "Advanced (CVAT parity,
                 deferred)" group. Those toggles required underlying
                 engines (interpolation, AAM, polygon helpers) that

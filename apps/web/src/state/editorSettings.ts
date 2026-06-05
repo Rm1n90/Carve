@@ -55,6 +55,13 @@ export interface EditorSettings {
   polygonApproxPoints: number; // 0-100
   /** Pixel size of polygon vertex handles. 4–12. */
   controlPointsSize: number;
+  /**
+   * When true, hovering an annotation in the cursor (transform) tool reveals
+   * its resize handles / polygon vertices and lets the user grab a point to
+   * resize without clicking to select first. When false, handles appear only
+   * on the selected annotation (classic click-to-edit). Default true.
+   */
+  revealHandlesOnHover: boolean;
 
   // Appearance panel (right-panel) — v2.6.
   /**
@@ -140,6 +147,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   showTagsOnFrame: true,
   polygonApproxPoints: 55,
   controlPointsSize: 9,
+  revealHandlesOnHover: true,
 
   // Appearance panel defaults.
   outlinedBorders: false,
