@@ -217,6 +217,59 @@ async def _lifespan(_app: FastAPI):
         _SWEEPER_STOP.set()
 
 
+# --------------------------------------------------------------------------
+# Memory reclaim — backs the System page's "Free memory" button.
+# --------------------------------------------------------------------------
+def _rss_mb() -> int | None:
+    """Current resident-set size of THIS process in MB, or None."""
+    try:
+        import psutil  # type: ignore[import-not-found]
+
+        return int(psutil.Process().memory_info().rss / (1024 * 1024))
+    except Exception:  # noqa: BLE001 — best-effort metric only
+        return None
+
+
+def _gpu_reserved_mb() -> int | None:
+    """CUDA caching-allocator reserved MB for this process, or None."""
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if torch.cuda.is_available():
+            return int(torch.cuda.memory_reserved() / (1024 * 1024))
+    except Exception:  # noqa: BLE001 — best-effort metric only
+        pass
+    return None
+
+
+def _reclaim_process_memory() -> bool:
+    """gc + CUDA empty_cache + glibc malloc_trim. Returns whether the
+    malloc_trim succeeded (glibc only — silent no-op elsewhere).
+
+    The malloc_trim is what actually returns freed heap pages to the OS.
+    Without it, glibc keeps the freed model arenas on its own free list
+    and the host RAM gauge never drops after an unload.
+    """
+    import gc
+
+    gc.collect()
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:  # noqa: BLE001 — best-effort
+        pass
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+        return True
+    except Exception:  # noqa: BLE001 — non-glibc / no libc → best-effort
+        return False
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Carve Model Service",
@@ -306,6 +359,55 @@ def create_app() -> FastAPI:
                 }
             )
         return out
+
+    @app.post("/system/reclaim")
+    def system_reclaim() -> dict:
+        """Free RAM + VRAM held by this model service. Idempotent.
+
+        Drops the YOLO + YOLOE checkpoints, then runs gc + CUDA
+        empty_cache + glibc malloc_trim so freed heap is returned to the
+        OS. SAM + the FO1 sidecar are unloaded by the api orchestrator
+        via their own ``/sam/unload`` + ``/sam/vlm-fo1/unload`` calls;
+        because malloc_trim here runs in the SAME process as SAM/YOLO,
+        the api calls this LAST so it reclaims their freed pages too.
+        Best-effort: never raises.
+        """
+        from carve_model.yolo.registry import REGISTRY as _YOLO_REGISTRY
+
+        rss_before = _rss_mb()
+        gpu_before = _gpu_reserved_mb()
+        try:
+            yolo_evicted = _YOLO_REGISTRY.evict_all()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            yolo_evicted = []
+        try:
+            # YoloeKey is a str literal ("text" / "pf") — keep the keys as
+            # strings (list(k) would explode each into characters).
+            yoloe_evicted = list(_YOLOE_REGISTRY.evict_all())
+        except Exception:  # noqa: BLE001
+            yoloe_evicted = []
+        malloc_trimmed = _reclaim_process_memory()
+        rss_after = _rss_mb()
+        gpu_after = _gpu_reserved_mb()
+        rss_freed_mb = (
+            max(0, rss_before - rss_after)
+            if rss_before is not None and rss_after is not None
+            else None
+        )
+        gpu_freed_mb = (
+            max(0, gpu_before - gpu_after)
+            if gpu_before is not None and gpu_after is not None
+            else None
+        )
+        return {
+            "yolo_evicted": yolo_evicted,
+            "yoloe_evicted": yoloe_evicted,
+            "malloc_trimmed": malloc_trimmed,
+            "rss_before_mb": rss_before,
+            "rss_after_mb": rss_after,
+            "rss_freed_mb": rss_freed_mb,
+            "gpu_freed_mb": gpu_freed_mb,
+        }
 
     app.include_router(yolo_router)
     app.include_router(yoloe_router)

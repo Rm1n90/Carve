@@ -490,6 +490,27 @@ def sam_vlm_fo1_unload_detailed() -> dict:
         return {"evicted": False, "gpu_freed_mb": None}
 
 
+def model_reclaim() -> dict:
+    """POST /system/reclaim — best-effort, never raises.
+
+    Asks the model service to drop the YOLO + YOLOE checkpoints and
+    return freed heap to the OS (gc + CUDA empty_cache + malloc_trim).
+    Backs the System page's "Free memory" button; the api orchestrator
+    calls this AFTER ``sam_unload`` + ``sam_vlm_fo1_unload_detailed`` so
+    the model service's malloc_trim reclaims SAM's freed pages too.
+    Returns the model service's response dict (uniform empty-ish shape
+    on error so callers can inspect a stable structure).
+    """
+    try:
+        with _client() as c:
+            r = c.post("/system/reclaim")
+            if r.status_code >= 400:
+                return {"yolo_evicted": [], "yoloe_evicted": [], "gpu_freed_mb": None}
+            return r.json() or {}
+    except Exception:  # noqa: BLE001 — best-effort cleanup, never propagate
+        return {"yolo_evicted": [], "yoloe_evicted": [], "gpu_freed_mb": None}
+
+
 def sam_box_prompt(
     image_b64: str,
     boxes: list[list[float]],

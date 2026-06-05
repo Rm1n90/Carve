@@ -5,6 +5,7 @@ import {
   Activity,
   AlertTriangle,
   Cpu,
+  Eraser,
   HardDrive,
   MemoryStick,
   PowerOff,
@@ -17,6 +18,7 @@ import { Badge, Card } from "@/components/ui";
 import { showToast } from "@/lib/toast";
 import {
   systemApi,
+  type FreeMemoryResponse,
   type SystemCPUInfo,
   type SystemDiskPartition,
   type SystemGPUInfo,
@@ -557,6 +559,62 @@ function UnloadAllButton() {
   );
 }
 
+// ---------------------------- Free memory button ----------------------------
+//
+// The comprehensive "clear the RAM" action. Unlike "Unload all models"
+// (GPU-focused), this unloads EVERY model — SAM + FO1 + YOLO + YOLOE —
+// and then runs gc + CUDA empty_cache + glibc malloc_trim across the
+// services so freed heap is returned to the OS (the host RAM gauge
+// actually drops, not just glibc's free list). Admin-only. Reports the
+// real host RAM + VRAM reclaimed.
+
+function FreeMemoryButton() {
+  const qc = useQueryClient();
+  const mutation = useMutation<FreeMemoryResponse, Error, void>({
+    mutationFn: () => systemApi.freeMemory(),
+    onSuccess: (data) => {
+      const freed: string[] = [];
+      if (data.ram_freed_mb > 0) freed.push(`${formatBytes(data.ram_freed_mb * MB)} RAM`);
+      if ((data.vram_freed_mb ?? 0) > 0) {
+        freed.push(`${formatBytes((data.vram_freed_mb ?? 0) * MB)} VRAM`);
+      }
+      let msg: string;
+      if (freed.length > 0) {
+        msg = `Freed ${freed.join(" · ")}`;
+      } else if (data.models_evicted.length > 0) {
+        msg = `Memory reclaimed — unloaded ${data.models_evicted.length} model${
+          data.models_evicted.length === 1 ? "" : "s"
+        }`;
+      } else {
+        msg = "Memory reclaimed — nothing was loaded";
+      }
+      showToast(msg, { variant: "success" });
+      void qc.invalidateQueries({ queryKey: ["system", "info"] });
+    },
+    onError: (err) => {
+      showToast(`Free memory failed — ${err.message ?? "admin role required"}`, {
+        variant: "error",
+      });
+    },
+  });
+
+  const busy = mutation.isPending;
+
+  return (
+    <button
+      type="button"
+      onClick={() => mutation.mutate()}
+      disabled={busy}
+      data-testid="system-free-memory"
+      title="Unload every model and return freed RAM + VRAM to the OS. Models reload on next use."
+      className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--accent)]/40 bg-[var(--accent-bg)] px-3 py-1.5 text-[12.5px] font-semibold text-[color:var(--accent)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+    >
+      <Eraser className="h-3.5 w-3.5" aria-hidden />
+      {busy ? "Freeing…" : "Free memory"}
+    </button>
+  );
+}
+
 
 // ---------------------------- Page ----------------------------
 
@@ -592,6 +650,7 @@ export function SystemPage() {
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
+          <FreeMemoryButton />
           <UnloadAllButton />
           <div className="flex items-center gap-2 text-[11.5px] text-[color:var(--text-tertiary)]">
             <span

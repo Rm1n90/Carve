@@ -74,6 +74,27 @@ export interface UnloadModelsResponse {
   fo1_freed_mb?: number | null;
 }
 
+// Result of the admin "Free memory" button. Frees BOTH the server's
+// model memory (VRAM + the RAM the model services hold) and returns
+// freed heap to the OS so the host RAM gauge actually drops.
+export interface FreeMemoryResponse {
+  // Host RAM reclaimed = rise in available memory (after − before),
+  // clamped at 0. Reported with the absolute before/after so the UI can
+  // show the real picture even when concurrent load masks the delta.
+  ram_freed_mb: number;
+  ram_available_before_mb: number;
+  ram_available_after_mb: number;
+  ram_total_mb: number;
+  ram_percent_after: number;
+  // Sum of GPU MB freed across SAM + FO1 + YOLO/YOLOE. Null when CUDA
+  // isn't available on any side.
+  vram_freed_mb: number | null;
+  // Human-readable list of what was unloaded, e.g.
+  // ["sam:image", "fo1", "yolo:w1", "yoloe:text"].
+  models_evicted: string[];
+  malloc_trimmed: boolean;
+}
+
 export const systemApi = {
   info: async (): Promise<SystemInfo> =>
     (await api.get<SystemInfo>("/system/info")).data,
@@ -81,4 +102,8 @@ export const systemApi = {
   // (SAM image / SAM tracker / FO1 sidecar) actually evicted.
   unloadModels: async (): Promise<UnloadModelsResponse> =>
     (await api.post<UnloadModelsResponse>("/system/unload-models")).data,
+  // Admin-only "Free memory". Unloads every model AND returns freed heap
+  // to the OS (malloc_trim), reporting host RAM + VRAM reclaimed.
+  freeMemory: async (): Promise<FreeMemoryResponse> =>
+    (await api.post<FreeMemoryResponse>("/system/free-memory")).data,
 };

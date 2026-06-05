@@ -50,6 +50,18 @@ class WeightRegistry:
         with self._lock:
             return self._cache.pop(key, None) is not None
 
+    def evict_all(self) -> list[str]:
+        """Drop every loaded checkpoint. Returns the evicted keys.
+
+        Used by the System page's "Free memory" reclaim so YOLO weights
+        don't sit pinned in RAM/VRAM after the operator asks to clear
+        memory. Mirrors ``YoloeRegistry.evict_all``. Idempotent.
+        """
+        with self._lock:
+            keys = list(self._cache.keys())
+            self._cache.clear()
+            return keys
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._cache)

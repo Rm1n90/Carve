@@ -765,3 +765,113 @@ def unload_models_endpoint(
         sam_freed_mb=sam_result.get("gpu_freed_mb"),
         fo1_freed_mb=fo1_result.get("gpu_freed_mb"),
     )
+
+
+# --------------------------------------------------------------------------
+# "Free memory" — the System page button. Admin-only. Frees BOTH the
+# server's model memory (VRAM + the RAM the model services hold) AND
+# returns freed heap to the OS so the host RAM gauge actually drops.
+# --------------------------------------------------------------------------
+
+
+def _api_malloc_trim() -> bool:
+    """gc + glibc malloc_trim for THIS (api) process. Best-effort."""
+    import gc
+
+    gc.collect()
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+        return True
+    except Exception:  # noqa: BLE001 — non-glibc / no libc
+        return False
+
+
+class FreeMemoryResponse(BaseModel):
+    """Result of a /system/free-memory run.
+
+    ``ram_freed_mb`` is the host's *available*-memory delta (after −
+    before), clamped at 0 — a true number the System page can show. It
+    can read low even after a big unload when other processes
+    concurrently grow, so it is reported alongside the absolute
+    before/after so the operator sees the real picture.
+    """
+
+    ram_freed_mb: int
+    ram_available_before_mb: int
+    ram_available_after_mb: int
+    ram_total_mb: int
+    ram_percent_after: float
+    vram_freed_mb: int | None
+    models_evicted: list[str]
+    malloc_trimmed: bool
+
+
+@router.post("/free-memory", response_model=FreeMemoryResponse)
+def free_memory_endpoint(
+    _user: User = Depends(get_current_admin_user),  # noqa: ARG001 — admin gate
+) -> FreeMemoryResponse:
+    """Reclaim RAM + VRAM across the stack. Idempotent, best-effort.
+
+    Order matters: unload SAM + the FO1 sidecar first, then call the
+    model service's ``/system/reclaim`` LAST — its malloc_trim runs in
+    the same process as SAM/YOLO and so returns ALL their freed pages to
+    the OS in one pass. Finally trims the api process's own heap. Host
+    RAM is sampled before/after via psutil so the UI shows a real
+    freed-MB number.
+    """
+    from carve_api.inference.model_client import (
+        model_reclaim,
+        sam_unload,
+        sam_vlm_fo1_unload_detailed,
+    )
+
+    vm_before = psutil.virtual_memory()
+    sam = sam_unload(which="all")
+    fo1 = sam_vlm_fo1_unload_detailed()
+    reclaim = model_reclaim()
+    api_trimmed = _api_malloc_trim()
+    vm_after = psutil.virtual_memory()
+
+    # Convert to MB FIRST, then take the delta — so the reported freed
+    # number equals after_mb − before_mb exactly (deriving freed from the
+    # raw byte delta would disagree with the truncated before/after by up
+    # to 1 MB and confuse anyone reading all three).
+    ram_before_mb = int(vm_before.available) // (1024 * 1024)
+    ram_after_mb = int(vm_after.available) // (1024 * 1024)
+    # Freed = rise in available host memory (clamped). Honest even when
+    # the model-service bookkeeping reports nothing was loaded.
+    ram_freed_mb = max(0, ram_after_mb - ram_before_mb)
+    gpu_parts = [
+        sam.get("gpu_freed_mb"),
+        fo1.get("gpu_freed_mb"),
+        reclaim.get("gpu_freed_mb"),
+    ]
+    gpu_vals = [int(v) for v in gpu_parts if isinstance(v, int | float)]
+    vram_freed_mb: int | None = sum(gpu_vals) if gpu_vals else None
+
+    models: list[str] = [f"sam:{e}" for e in sam.get("evicted", [])]
+    if fo1.get("evicted"):
+        models.append("fo1")
+    for k in reclaim.get("yolo_evicted", []):
+        models.append(f"yolo:{k}")
+    for k in reclaim.get("yoloe_evicted", []):
+        label = "/".join(str(p) for p in k) if isinstance(k, list | tuple) else str(k)
+        models.append(f"yoloe:{label}")
+
+    # Drop the cached system snapshot so the next /info reflects the
+    # post-free numbers instead of a pre-free cache hit.
+    with _CACHE_LOCK:
+        _CACHE.pop("info", None)
+
+    return FreeMemoryResponse(
+        ram_freed_mb=ram_freed_mb,
+        ram_available_before_mb=ram_before_mb,
+        ram_available_after_mb=ram_after_mb,
+        ram_total_mb=int(vm_before.total) // (1024 * 1024),
+        ram_percent_after=round(float(vm_after.percent), 1),
+        vram_freed_mb=vram_freed_mb,
+        models_evicted=models,
+        malloc_trimmed=bool(reclaim.get("malloc_trimmed")) or api_trimmed,
+    )
