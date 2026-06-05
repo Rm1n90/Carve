@@ -62,19 +62,32 @@ def _http(err: AppError) -> HTTPException:
 # Plan-20.11 — rate limit removed. Self-hosted users uploading 1000+
 # images hit 429 even with retry-with-backoff, and there's no abuse
 # vector here that justifies a per-minute cap.
-async def upload_asset(
+def upload_asset(
     request: Request,
     task_id: uuid.UUID,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AssetOut:
-    body = await file.read()
+    # Stream the spooled upload straight to storage. Starlette already wrote
+    # the request body to a temp file on disk; the old ``await file.read()``
+    # pulled the whole thing back into one bytes object, which OOM'd on
+    # multi-GB videos (surfacing to the client as a timeout). ``def`` (not
+    # ``async def``) so FastAPI runs this in a worker thread — the hash pass
+    # and the potentially minutes-long multipart upload never block the event
+    # loop. ``file.file`` is the underlying seekable SpooledTemporaryFile.
+    upload = file.file
+    upload.seek(0, 2)  # SEEK_END
+    size = upload.tell()
+    upload.seek(0)
     try:
         task = require_visible_task(db, user, task_id)
-        asset = AssetService(db).upload(
-            task=task, original_name=file.filename or "unnamed",
-            mime=file.content_type or "application/octet-stream", body=body,
+        asset = AssetService(db).upload_stream(
+            task=task,
+            original_name=file.filename or "unnamed",
+            mime=file.content_type or "application/octet-stream",
+            stream=upload,
+            size=size,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -170,17 +183,22 @@ def asset_count(
 
 @router.post("/{task_id}/assets:zip", response_model=list[AssetOut], status_code=status.HTTP_201_CREATED)
 # Plan-20.11 — see ``upload_asset`` above. Self-hosted, no abuse vector.
-async def upload_archive(
+def upload_archive(
     request: Request,
     task_id: uuid.UUID,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[AssetOut]:
-    body = await file.read()
+    # Stream the spooled zip off disk (see ``upload_asset``). ``zipfile`` reads
+    # the central directory by seeking and decompresses one member at a time,
+    # so a large archive is never held whole in memory. ``def`` keeps the work
+    # off the event loop.
+    upload = file.file
+    upload.seek(0)
     try:
         task = require_visible_task(db, user, task_id)
-        assets = AssetService(db).upload_archive(task=task, archive_bytes=body)
+        assets = AssetService(db).upload_archive_stream(task=task, archive_stream=upload)
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()

@@ -178,6 +178,34 @@ def test_mime_mismatch_returns_400(db_session, monkeypatch) -> None:
     assert r.status_code == 400
 
 
+def test_default_upload_cap_is_at_least_fifty_gib() -> None:
+    """The single-asset ceiling must default to >= 50 GiB so multi-GB source
+    videos upload without the old 1 GiB ``asset_too_large`` rejection."""
+    from carve_api.assets.service import _max_upload_bytes
+
+    assert _max_upload_bytes() >= 50 * 1024 * 1024 * 1024
+
+
+def test_upload_over_configured_cap_returns_413(db_session, monkeypatch) -> None:
+    """Files larger than the configured cap are rejected with 413
+    ``asset_too_large`` — but the check is now on the spooled size, not on a
+    full in-memory read, so it stays memory-safe."""
+    from carve_api.assets import service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
+    # Shrink the ceiling to a few bytes so a tiny PNG trips it.
+    monkeypatch.setattr(svc_mod, "_max_upload_bytes", lambda: 8)
+    client = _client(db_session)
+    token, _pid, tid = _setup(client)
+    r = client.post(
+        f"/tasks/{tid}/assets",
+        files={"file": ("big.png", io.BytesIO(_tiny_png()), "image/png")},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 413, r.text
+    assert r.json()["detail"] == "asset_too_large"
+
+
 def _tiny_png() -> bytes:
     return bytes.fromhex(
         "89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C4890000000A4944415478DA63000000000200015C8B59FA0000000049454E44AE426082"

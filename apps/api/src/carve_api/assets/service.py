@@ -2,7 +2,7 @@
 import uuid
 import zipfile
 from io import BytesIO
-from typing import Literal
+from typing import BinaryIO, Literal
 
 from PIL import Image
 from sqlalchemy import distinct, exists, func, select
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation
 from carve_api.assets.models import Asset, AssetKind, Frame
+from carve_api.config import get_settings
 from carve_api.errors import AppError
 from carve_api.projects.models import Task, TaskKind
 from carve_api.storage.client import MinioClient
@@ -20,7 +21,17 @@ AssetStatusFilter = Literal["all", "annotated", "unannotated"]
 
 _IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp"}
 _VIDEO_MIMES = {"video/mp4", "video/webm", "video/quicktime"}
-_MAX_BYTES = 1024 * 1024 * 1024  # 1 GiB
+
+
+def _max_upload_bytes() -> int:
+    """Configurable single-asset upload ceiling (default 50 GiB).
+
+    The upload path streams to object storage in bounded-memory chunks and
+    uses S3 multipart, so this limit is a disk/time budget, not API RAM. Raise
+    ``ASSET_MAX_BYTES`` to accept larger source videos. Patched in tests to a
+    small value to exercise the 413 path without a multi-GB fixture.
+    """
+    return get_settings().asset_max_bytes
 
 
 class AssetTooLarge(AppError):
@@ -49,21 +60,50 @@ class AssetService:
         self.storage = MinioClient.from_settings()
 
     def upload(self, *, task: Task, original_name: str, mime: str, body: bytes) -> Asset:
-        if len(body) > _MAX_BYTES:
-            raise AssetTooLarge("upload exceeds 1 GiB")
+        """Bytes entry point (zip members, tests). Wraps the streaming path so
+        there is a single implementation of hash/dedup/store."""
+        return self.upload_stream(
+            task=task,
+            original_name=original_name,
+            mime=mime,
+            stream=BytesIO(body),
+            size=len(body),
+        )
+
+    def upload_stream(
+        self,
+        *,
+        task: Task,
+        original_name: str,
+        mime: str,
+        stream: BinaryIO,
+        size: int,
+    ) -> Asset:
+        """Store an upload by streaming ``stream`` (a seekable file object,
+        typically the temp file Starlette already spooled the request body
+        into) — never materialising the whole asset in memory.
+
+        ``size`` is the known content length; it gates the 413 ceiling before
+        any bytes are read. The hash pass and the storage upload each read the
+        stream in chunks, so a 50 GB video costs ~one chunk of RAM, not 50 GB.
+        """
+        if size > _max_upload_bytes():
+            raise AssetTooLarge(f"upload exceeds {_max_upload_bytes()} bytes")
         kind = self._kind_for(mime, task.kind)
-        h = stream_xxh3_128(BytesIO(body))
+        stream.seek(0)
+        h = stream_xxh3_128(stream)
         width = height = None
         frames = 1
         if kind == AssetKind.image:
-            with Image.open(BytesIO(body)) as im:
+            stream.seek(0)
+            with Image.open(stream) as im:
                 width, height = im.size
         else:
-            frames = 0  # populated by worker in Task 6
+            frames = 0  # populated by the video metadata/extract worker
         try:
             asset = Asset(
                 task_id=task.id, kind=kind, xxh3_128=h, mime=mime,
-                size_bytes=len(body), width=width, height=height,
+                size_bytes=size, width=width, height=height,
                 frames=frames, original_name=original_name,
             )
             self.session.add(asset)
@@ -75,7 +115,8 @@ class AssetService:
         ext = original_name.rsplit(".", 1)[-1] if "." in original_name else "bin"
         key = f"assets/{h}/original.{ext}"
         self.storage.ensure_bucket()
-        self.storage.put_object(key, BytesIO(body), len(body), mime)
+        stream.seek(0)
+        self.storage.put_object(key, stream, size, mime)
 
         if kind == AssetKind.image:
             self.session.add(Frame(asset_id=asset.id, idx=0, pts_ms=0))
@@ -277,8 +318,17 @@ class AssetService:
         self.session.flush()
 
     def upload_archive(self, *, task: Task, archive_bytes: bytes) -> list[Asset]:
-        if len(archive_bytes) > _MAX_BYTES:
-            raise AssetTooLarge("archive exceeds 1 GiB")
+        """Bytes entry point for zip upload (tests). Wraps the streaming path."""
+        return self.upload_archive_stream(task=task, archive_stream=BytesIO(archive_bytes))
+
+    def upload_archive_stream(self, *, task: Task, archive_stream: BinaryIO) -> list[Asset]:
+        """Extract image members from a zip read straight off ``archive_stream``.
+
+        ``zipfile`` reads the central directory by seeking and decompresses one
+        member at a time, so the whole archive is never held in memory — only
+        the current member is. Each member still streams to storage via
+        ``upload``/``upload_stream``.
+        """
         out: list[Asset] = []
         mime_for_ext = {
             "png": "image/png",
@@ -286,17 +336,19 @@ class AssetService:
             "jpeg": "image/jpeg",
             "webp": "image/webp",
         }
+        archive_stream.seek(0)
         try:
-            zf = zipfile.ZipFile(BytesIO(archive_bytes))
+            zf = zipfile.ZipFile(archive_stream)
         except zipfile.BadZipFile as exc:
             raise AssetArchiveInvalid("file is not a valid zip archive") from exc
         with zf:
             for member in zf.infolist():
                 if member.is_dir():
                     continue
-                # Reject obviously oversized members before decompressing into memory
-                # (zip-bomb mitigation). file_size is the central-directory uncompressed size.
-                if member.file_size > _MAX_BYTES:
+                # Reject oversized members before decompressing (zip-bomb
+                # mitigation). file_size is the central-directory uncompressed
+                # size, checked against the same configurable ceiling.
+                if member.file_size > _max_upload_bytes():
                     continue
                 ext = member.filename.lower().rsplit(".", 1)[-1] if "." in member.filename else ""
                 mime = mime_for_ext.get(ext)

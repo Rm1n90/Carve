@@ -2,10 +2,26 @@
 from typing import BinaryIO
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from carve_api.config import get_settings
+
+# Managed-transfer settings for object PUTs. boto3 switches to S3 multipart
+# once a body exceeds ``multipart_threshold`` and uploads parts in parallel,
+# reading the source in bounded ``multipart_chunksize`` chunks. This is what
+# lets a 50 GB video go up at all (single PUT is capped at 5 GiB) and keeps
+# API memory flat (~max_concurrency * chunksize peak) instead of buffering
+# the whole body. 64 MiB chunks keep a 50 GiB object at ~800 parts, well
+# under S3's 10 000-part ceiling.
+_PART_SIZE = 64 * 1024 * 1024  # 64 MiB
+_TRANSFER_CONFIG = TransferConfig(
+    multipart_threshold=_PART_SIZE,
+    multipart_chunksize=_PART_SIZE,
+    max_concurrency=4,
+    use_threads=True,
+)
 
 
 def _build_s3(endpoint: str, access_key: str, secret_key: str):
@@ -67,9 +83,21 @@ class MinioClient:
             self._s3.create_bucket(Bucket=self.bucket)
 
     def put_object(self, key: str, body: BinaryIO, length: int, content_type: str) -> None:
-        self._s3.put_object(
-            Bucket=self.bucket, Key=key, Body=body,
-            ContentLength=length, ContentType=content_type,
+        """Store ``body`` at ``key`` via boto3's managed transfer.
+
+        ``length`` is accepted for call-site back-compat but the transfer
+        manager derives it from the (seekable) stream. Using ``upload_fileobj``
+        rather than a raw ``put_object`` means bodies over the 5 GiB single-PUT
+        ceiling go out as S3 multipart, and the body streams in bounded chunks
+        instead of being held whole in memory — required for 50 GB videos.
+        """
+        body.seek(0)
+        self._s3.upload_fileobj(
+            Fileobj=body,
+            Bucket=self.bucket,
+            Key=key,
+            ExtraArgs={"ContentType": content_type},
+            Config=_TRANSFER_CONFIG,
         )
 
     def get_object(self, key: str):

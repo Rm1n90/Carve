@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     minio_root_user: str = Field(alias="MINIO_ROOT_USER")
     minio_root_password: str = Field(alias="MINIO_ROOT_PASSWORD")
     minio_bucket: str = Field(alias="MINIO_BUCKET", default="carve-assets")
+    # Maximum single-asset upload size. Default 50 GiB. The upload path
+    # streams to object storage in bounded-memory chunks and uses S3
+    # multipart, so this ceiling is a disk/time budget, not API RAM — raise
+    # it for larger source videos without touching code.
+    asset_max_bytes: int = Field(
+        default=50 * 1024 * 1024 * 1024, alias="ASSET_MAX_BYTES"
+    )
     redis_host: str = Field(alias="REDIS_HOST", default="redis")
     redis_port: int = Field(alias="REDIS_PORT", default=6379)
 
