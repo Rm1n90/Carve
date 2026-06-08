@@ -2,22 +2,28 @@
 
 Status: DESIGN — not yet implemented. Author: Armin Mehri. Date: 2026-06-08.
 
-## CRITICAL CONSTRAINT — SAM 3.1 ONLY (not SAM 3)
+## CRITICAL CORRECTION (2026-06-08, runtime-verified) — image clicks = SAM 3
 
-Armin: **"the difference between SAM 3.1 and SAM 3 is only the weight
-file."** Architecture is identical; only the checkpoint differs. Therefore:
+The earlier "SAM 3.1 only" framing was WRONG. Verified facts:
 
-- Both ONNX halves (`vision_encoder.onnx` AND
-  `prompt_encoder_mask_decoder.onnx`) MUST be **re-exported from
-  `facebook/sam3.1`** weights, using the same `Sam3Tracker` -> ONNX recipe
-  that produced `onnx-community/sam3-tracker-ONNX`.
-- `onnx-community/sam3-tracker-ONNX` is a **recipe/architecture reference
-  ONLY** — do NOT ship its SAM-3 weights at runtime. SAM-3 decoder weights
-  against a SAM-3.1 encoder = weight mismatch = wrong masks.
-- The Stage-0 golden parity test runs against the **SAM 3.1** server decode,
-  so any 3.0-vs-3.1 weight drift is caught before shipping.
-- SAM 3.1 video/multiplex weights and the interactive Tracker weights both
-  come from the 3.1 checkpoint; keep everything on `facebook/sam3.1`.
+- Our interactive image/click path (`build_sam3p1_image_predictor` ->
+  native `build_sam3_image_model`) **hardcodes**
+  `download_ckpt_from_hf(version="sam3")` -> **`sam3.pt`**. The image
+  builder has no `version` param — it can only load SAM 3.
+- `facebook/sam3.1` ships ONLY `sam3.1_multiplex.pt` — a **video
+  object-multiplex** checkpoint (different architecture). It drives our
+  VIDEO tracking path, not image clicking. **There is no SAM 3.1 image
+  model.**
+- Runtime confirms the image model loaded `models--facebook--sam3/.../sam3.pt`.
+- So `SAM_MODEL=sam3.1` only changes video tracking; ALL image annotation
+  (the primary use) is SAM 3.
+
+DECISION (Armin confirmed): client-side **click** decode uses the **SAM 3**
+image/tracker decoder, which matches the `sam3.pt` weights the click tool
+already runs. Source: `onnx-community/sam3-tracker-ONNX` (SAM 3) or
+re-export from `facebook/sam3`. The Stage-0 golden parity test compares
+client decode against the CURRENT SAM 3 server `/sam/decode`. Do NOT target
+`facebook/sam3.1` for image decode.
 
 ## Problem
 
@@ -52,14 +58,15 @@ never collide.
 | Mode | Client decode? | Source / contract |
 |---|---|---|
 | **SAM 2** click/box | feasible, mature | `samexporter` / `SharpAI/sam2-*-onnx`. Encoder out: `image_embed [1,256,64,64]` + `high_res_feats_0 [1,32,256,256]` + `high_res_feats_1 [1,64,128,128]`. Input 1024. |
-| **SAM 3.1** click/box (Tracker/PVS head) | feasible — RE-EXPORT from 3.1 | Recipe = `onnx-community/sam3-tracker-ONNX` (`vision_encoder.onnx` + `prompt_encoder_mask_decoder.onnx`); **weights from `facebook/sam3.1`, NOT SAM 3**. Embed `[1,256,72,72]` + hi-res at 288/144. Input 1008. The Tracker head is "SAM2 with the same API" (`SAM3InteractiveImagePredictor`). |
+| **SAM 3** click/box (Tracker/PVS head — what image clicks actually run) | feasible, export exists | `onnx-community/sam3-tracker-ONNX` (`vision_encoder.onnx` + `prompt_encoder_mask_decoder.onnx`, SAM 3 weights = same `sam3.pt` lineage). Embed `[1,256,72,72]` + hi-res at 288/144. Input 1008. The Tracker head is "SAM2 with the same API" (`SAM3InteractiveImagePredictor`). NOTE: no SAM 3.1 image model exists — see CRITICAL CORRECTION above. |
 | **SAM 3.1** text/concept/visual (PCS / `Sam3Model`, DETR) | NO — stays server-side | No separable per-click decoder by design. Handled by the existing one-shot server path + admission queue. |
 
 UNVERIFIED RISKS (must close in Stage 0):
-1. RESOLVED (decision): **re-export both ONNX halves from `facebook/sam3.1`**
-   via the `Sam3Tracker` -> ONNX recipe. Do NOT ship `onnx-community`'s
-   SAM-3 weights (architecture-identical but wrong checkpoint). Stage 0
-   verifies the 3.1 re-export against the 3.1 server decode (parity test).
+1. RESOLVED (runtime-verified): image clicks run **SAM 3** (`sam3.pt`); no
+   SAM 3.1 image model exists. Use the **SAM 3** tracker decoder
+   (`onnx-community/sam3-tracker-ONNX`). Parity test vs the SAM 3 server
+   decode. (Earlier "re-export from sam3.1" is void — see CRITICAL
+   CORRECTION above.)
 2. Exact ONNX input **node names** in `prompt_encoder_mask_decoder.onnx`
    (transformers.js API confirmed; raw graph not inspected).
 3. Whether a **transformers-exported** SAM 2 decoder exists (so the server
@@ -151,9 +158,10 @@ Existing fields kept. New structured payload (illustrative/synthetic):
 - The interactive encoder is a SEPARATE resident model from the native
   sam3 concept model; lifecycle/VRAM budgeting per [[project_gpu_admission_queue]].
 - A provisioning script:
-  - **SAM 3.1**: re-exports `vision_encoder.onnx` + `prompt_encoder_mask_decoder.onnx`
-    from **`facebook/sam3.1`** (transformers `Sam3Tracker` -> ONNX, same
-    recipe as `onnx-community/sam3-tracker-ONNX`). NOT the SAM-3 weights.
+  - **SAM 3** (image clicks): `onnx-community/sam3-tracker-ONNX`
+    (`vision_encoder.onnx` + `prompt_encoder_mask_decoder.onnx`) — SAM 3
+    weights, matching the `sam3.pt` the click path runs. (No SAM 3.1 image
+    model exists.)
   - **SAM 2**: `SharpAI/sam2-hiera-large-onnx` (or `samexporter` from the
     sam2.1-large checkpoint we already run).
   - places encoders in the model-service encoder dir + decoders in web
@@ -203,6 +211,45 @@ feeds a server-produced embedding through the browser decoder and compares.
 ## Non-goals
 - Client-side TEXT/concept/visual (impossible for the PCS head).
 - Removing the server `/sam/decode` path (kept as the universal fallback).
+
+## Stage 0 — VERIFIED ONNX contract (onnx-community/sam3-tracker-ONNX, 2026-06-08)
+
+Inspected the real graphs (`onnx.load`, external data not loaded). Repo is
+PUBLIC (no HF token). Files: `onnx/vision_encoder.onnx(+_data)`,
+`onnx/prompt_encoder_mask_decoder.onnx(+_data)` (+ fp16/q4/int8/... variants).
+
+**vision_encoder.onnx** (server, GPU, once per image)
+- input:  `pixel_values` FLOAT `[B,3,1008,1008]`
+- outputs (3): `image_embeddings.0`, `image_embeddings.1`, `image_embeddings.2`
+
+**prompt_encoder_mask_decoder.onnx** (browser, per click)
+- inputs:
+  - `input_points` FLOAT `[B,1,num_points,2]`  (point coords in 1008-space)
+  - `input_labels` INT64 `[B,1,num_points]`     (1 fg, 0 bg; box corners 2/3)
+  - `input_boxes`  FLOAT `[B,num_boxes,4]`
+  - `image_embeddings.0` FLOAT `[B,32,288,288]`
+  - `image_embeddings.1` FLOAT `[B,64,144,144]`
+  - `image_embeddings.2` FLOAT `[B,256,72,72]`
+- outputs:
+  - `iou_scores` FLOAT `[B,N,3]`
+  - `pred_masks` FLOAT `[B,N,num_masks,H,W]`
+  - `object_score_logits` FLOAT `[B,N,1]`
+
+**Preprocessing (preprocessor_config.json):** `do_resize` to 1008x1008,
+`do_normalize` with **mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5]** (NOT ImageNet —
+this corrects the earlier draft). `image_size: 1008`.
+
+**Payload:** the 3 feature maps = 32*288^2 + 64*144^2 + 256*72^2 = 5.31M
+floats ~= 21.2 MB fp32 / ~10.6 MB fp16 per image. Ship fp16.
+
+**IMPORTANT — no `mask_input`/`has_mask_input`.** Unlike SAM 1/2 CVAT
+decoders, this decoder has NO iterative mask-feedback input. Refinement =
+re-run with the FULL accumulated point set each click. Our server path uses
+mask_input for refinement, so multi-click masks may differ slightly — the
+golden parity test must compare BOTH single-click and multi-click cases and
+decide whether the no-mask_input client refinement is acceptable (likely
+yes; it's the transformers Sam3Tracker contract). SAM 2 contract (separate,
+has mask_input) still to be verified in its own Stage 0 pass.
 
 ## Sources
 SAM2: github.com/vietanhdev/samexporter; HF SharpAI/sam2-hiera-large-onnx;
