@@ -51,3 +51,9 @@ apps/web/ref-*.png
 # /app/weights/yoloe. ~150 MB total, not appropriate to track in git.
 weights/yoloe/*.pt
 state/*.json
+
+# Client-side SAM decode (Stage 4) — decoder ONNX bundles (~22 MB each) +
+# onnxruntime-web WASM runtime, provisioned by
+# apps/model/scripts/provision_sam_decoders.py. Fetched at deploy, not tracked.
+apps/web/public/models/*.onnx
+apps/web/public/models/ort/
