@@ -3,6 +3,12 @@ import { useAnnotations } from "@/state/annotations";
 import { useTool } from "@/state/tool";
 import { samApi, type SamDecodeResult, type SamPromptResult } from "@/api/sam";
 import { canDecodeLocally } from "@/canvas/sam/onnx";
+import {
+  EmbeddingCache,
+  cachedEmbeddingsFromEncode,
+  embeddingCache,
+} from "@/canvas/sam/embeddingCache";
+import { SamDecoderClient } from "@/canvas/sam/decoderClient";
 import { currentPolygonEpsilonFactor as currentEpsilonFactor } from "@/lib/polygon-approx";
 import type { Point } from "./BboxTool";
 
@@ -143,6 +149,13 @@ export class SamTool {
   // file is reachable. v1 always falls through to server-side decode;
   // v1.1 will branch on this flag inside `addClick`.
   private localDecodeReady = false;
+  // Stage 3 — client-side decode state. ``localEncoderId`` / ``localCacheKey``
+  // identify the cached embeddings for the active image; ``prevMask`` is the
+  // last shown binary mask, replayed for the track-prev selection rule.
+  private localEncoderId: string | null = null;
+  private localCacheKey: string | null = null;
+  private prevMask: Uint8Array | null = null;
+  private decoderClient: SamDecoderClient | null = null;
 
   constructor(
     private assetId: string,
@@ -151,7 +164,13 @@ export class SamTool {
     private generateTempId: () => string = () =>
       `t-${Math.random().toString(36).slice(2)}`,
     private onResync: SamResyncNotifier | null = null,
+    private makeDecoderClient: () => SamDecoderClient = () => new SamDecoderClient(),
   ) {}
+
+  private getDecoderClient(): SamDecoderClient {
+    if (!this.decoderClient) this.decoderClient = this.makeDecoderClient();
+    return this.decoderClient;
+  }
 
   isReady(): boolean {
     // v3.8 Phase 2 — Point AND Box modes both go through /sam/encode +
@@ -182,6 +201,7 @@ export class SamTool {
     this.lastResult = null;
     this.inFlight?.abort();
     this.inFlight = null;
+    this.prevMask = null;
   }
 
   async activate(): Promise<void> {
@@ -203,10 +223,28 @@ export class SamTool {
       const enc = await samApi.encode(this.assetId, currentFrame);
       this.imageHash = enc.image_hash;
       this.encodedFrameId = currentFrame;
-      // Best-effort probe — never let the readiness check block activation.
-      if (enc.embedding_b64) {
+      // Stage 3 — client-side decode. When the model service shipped the ONNX
+      // tensors, cache them on the main thread + in the decode worker so each
+      // click decodes locally with no server round-trip. Best-effort: any
+      // failure leaves ``localDecodeReady`` false and the click flow uses the
+      // server ``/sam/decode`` path unchanged.
+      this.prevMask = null;
+      this.localEncoderId = null;
+      this.localCacheKey = null;
+      this.localDecodeReady = false;
+      const cached = cachedEmbeddingsFromEncode(enc);
+      if (cached) {
         try {
-          this.localDecodeReady = await canDecodeLocally();
+          const cacheKey = EmbeddingCache.key(
+            this.assetId,
+            currentFrame,
+            cached.encoderId,
+          );
+          embeddingCache.set(this.assetId, currentFrame, cached.encoderId, cached);
+          this.getDecoderClient().setEmbeddings(cacheKey, cached);
+          this.localEncoderId = cached.encoderId;
+          this.localCacheKey = cacheKey;
+          this.localDecodeReady = await canDecodeLocally(cached.encoderId);
         } catch {
           this.localDecodeReady = false;
         }
@@ -319,6 +357,16 @@ export class SamTool {
     this.lastResult = null;
     this.inFlight?.abort();
     this.inFlight = null;
+    // Stage 3 — drop local-decode state so a stale embedding can't be reused
+    // (variant switch / frame change). The worker copy is evicted; the
+    // main-thread LRU entry ages out / is overwritten on the next activate().
+    if (this.localCacheKey && this.decoderClient) {
+      this.decoderClient.evict(this.localCacheKey);
+    }
+    this.prevMask = null;
+    this.localDecodeReady = false;
+    this.localEncoderId = null;
+    this.localCacheKey = null;
   }
 
   /** v1.1 hook: returns whether a local in-browser decode is provisioned. */
@@ -335,6 +383,7 @@ export class SamTool {
     this.lastResult = null;
     this.inFlight?.abort();
     this.inFlight = null;
+    this.prevMask = null; // new selection -> next click is a first click
   }
 
   /**
@@ -367,6 +416,12 @@ export class SamTool {
     const ac = new AbortController();
     this.inFlight = ac;
     try {
+      const local = await this.tryLocalDecode(points, labels, box, ac.signal);
+      if (local) {
+        if (ac.signal.aborted) return this.lastResult;
+        this.lastResult = local;
+        return local;
+      }
       const result = await samApi.decode(
         this.assetId,
         this.imageHash,
@@ -377,6 +432,7 @@ export class SamTool {
         currentEpsilonFactor(),
       );
       if (ac.signal.aborted) return this.lastResult;
+      this.prevMask = null;
       this.lastResult = result;
       return result;
     } catch (err) {
@@ -636,6 +692,51 @@ export class SamTool {
   }
 
   /**
+   * Attempt an in-browser decode for the accumulated clicks (Stage 3).
+   * Returns a ``SamDecodeResult`` on success, or ``null`` to tell the caller
+   * to use the server ``/sam/decode`` path. Falls back (null) for: box prompts
+   * (which diverge from the server box decode — Stage 0), local decode not
+   * provisioned, embeddings evicted from the cache, or any worker error. On
+   * success it records the binary mask as ``prevMask`` so the next refinement
+   * click replicates the server's mask tracking (the decoder has no
+   * ``mask_input``).
+   */
+  private async tryLocalDecode(
+    points: [number, number][],
+    labels: number[],
+    box: SamBox | null,
+    signal: AbortSignal,
+  ): Promise<SamDecodeResult | null> {
+    if (box !== null) return null; // boxes -> server fallback
+    if (!this.localDecodeReady || !this.localEncoderId || !this.localCacheKey) {
+      return null;
+    }
+    if (points.length === 0) return null;
+    if (!embeddingCache.get(this.assetId, this.getFrameId(), this.localEncoderId)) {
+      return null; // cache evicted -> let the server path re-encode
+    }
+    try {
+      const res = await this.getDecoderClient().decode(
+        this.localCacheKey,
+        points,
+        labels,
+        this.prevMask,
+        signal,
+      );
+      if (signal.aborted) return null;
+      this.prevMask = res.mask;
+      return {
+        counts: res.counts,
+        size: res.size,
+        score: res.score,
+        polygon: res.polygon,
+      };
+    } catch {
+      return null; // any local failure -> server fallback (no functionality loss)
+    }
+  }
+
+  /**
    * Add a point and refresh the mask. Returns the latest decode result.
    *
    * v3.5 Phase A3: if the server returns 409 (the model worker's
@@ -694,6 +795,14 @@ export class SamTool {
     const box = this.boxes.length > 0 ? this.boxes[0] : null;
 
     try {
+      // Stage 3 — decode locally when provisioned; the server path below is
+      // the universal fallback (box prompts, cache miss, any worker error).
+      const local = await this.tryLocalDecode(points, labels, box, ac.signal);
+      if (local) {
+        if (ac.signal.aborted) return this.lastResult;
+        this.lastResult = local;
+        return local;
+      }
       const result = await samApi.decode(
         this.assetId,
         this.imageHash,
@@ -704,6 +813,7 @@ export class SamTool {
         currentEpsilonFactor(),
       );
       if (ac.signal.aborted) return this.lastResult;
+      this.prevMask = null; // server path: no local mask to track from
       this.lastResult = result;
       return result;
     } catch (err) {
