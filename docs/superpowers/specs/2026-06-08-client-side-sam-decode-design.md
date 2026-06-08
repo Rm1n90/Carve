@@ -284,8 +284,33 @@ refinement) decodes faithfully in the browser; box falls back to server.
 Pipeline confirmed: 1008px resize, mean=std=0.5, point->1008-space, 3
 embeddings by name, decoder out 288x288 upscaled, selection rule above.
 
-REMAINING Stage-0: the SAM 2 pass (its decoder HAS mask_input, different
-selection). Then Stage 1 (server encode endpoint).
+### SAM 2.1 PARITY (2026-06-08) — PASS (same approach as SAM 3)
+
+The transformers-exported `onnx-community/sam2.1-hiera-large-ONNX` has the
+SAME contract family as the SAM 3 tracker (NOT the samexporter shape): same
+input/output names, 3 embeddings, and **NO mask_input** — so the SAME
+track-prev selection rule applies. Differs only in: input **1024** (vs
+1008), **ImageNet** normalization (mean=[0.485,0.456,0.406],
+std=[0.229,0.224,0.225]), embedding sizes `image_embeddings.0/1/2` =
+`[*,32,256,256]`,`[*,64,128,128]`,`[*,256,64,64]`.
+
+Parity vs live server on sam2.1-large (switched for the test, then restored
+to sam3.1):
+
+| Case | IoU | Verdict |
+|---|---|---|
+| single positive | 0.9907 | PASS |
+| two positive (refine) | 0.9891 | PASS |
+| positive+negative (refine, track-prev) | 0.9895 | PASS |
+| box only | 0.9105 | server fallback |
+
+So BOTH variants are proven: SAM 3 (`encoder_id="sam3.1"`, 1008px, 0.5 norm)
+and SAM 2.1 (`encoder_id="sam2.1-large"`, 1024px, ImageNet norm). Same client
+decoder logic (no mask_input, track-prev, 3-embedding feed, multimask pick),
+parameterized by encoder_id. Box -> server fallback for both.
+
+STAGE 0 COMPLETE. Next: Stage 1 (server `/sam/encode` returns the 3
+embeddings + encoder_id + input_size + norm params).
 
 ## Sources
 SAM2: github.com/vietanhdev/samexporter; HF SharpAI/sam2-hiera-large-onnx;
