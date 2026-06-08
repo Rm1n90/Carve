@@ -251,23 +251,41 @@ decide whether the no-mask_input client refinement is acceptable (likely
 yes; it's the transformers Sam3Tracker contract). SAM 2 contract (separate,
 has mask_input) still to be verified in its own Stage 0 pass.
 
-### PARITY RESULT (2026-06-08) — single click PASS
+### PARITY RESULTS (2026-06-08) — point clicking PASSES; box -> server fallback
 
-`apps/model/scripts/sam_tracker_parity_check.py` runs the ONNX encoder
-(fp16) + decoder (fp32) and compares to the LIVE native server `/sam/decode`
-(sam3.pt) on the SAM truck image, single positive click:
+ONNX encoder(fp16)+decoder(fp32) vs LIVE native server `/sam/decode`
+(sam3.pt), SAM truck image:
 
-    onnx area=640893  server area=641315  IoU=0.9912  PASS (target >= 0.98)
+| Case | IoU vs server | Verdict |
+|---|---|---|
+| single positive | 0.9912 | PASS |
+| two positive (refine) | 0.9876 | PASS |
+| positive + negative (refine, track-prev selection) | 0.9863 | PASS |
+| box only | 0.54 | DIVERGES -> server fallback |
 
-ONNX iou_scores [0.11, 0.97, 0.27] (chose 0.97); server score 0.9726.
-Confirms the whole pipeline: 1008px resize, mean=std=0.5 norm, point scaled
-to 1008-space, 3 embeddings by name, no mask_input, multimask pick by IoU,
-decoder out 288x288 upscaled to original. Conclusion: moving the click path
-to client-side ONNX decode does NOT visibly change masks.
+**CRITICAL DESIGN RULE — mask selection (no mask_input, so replicate it
+statelessly):** the decoder always returns 3 candidate masks.
+- **First click** (no previous mask): pick **best by `iou_scores`**.
+- **Refinement clicks** (a previous mask exists): pick the candidate with
+  the **highest IoU to the previously-shown mask** — NOT best-by-score.
+  This reproduces the server's `mask_input` tracking. Verified: for
+  positive+negative, best-by-score picks the wrong (collapsed, 53k) mask
+  (IoU 0.084 vs server) while track-prev picks the right one (IoU 0.986).
+  The client always has the previous mask in hand, so this is free.
 
-REMAINING Stage-0 parity (TODO): multi-click refinement (no mask_input) +
-box prompts; then the SAM 2 pass. After that -> Stage 1 (server encode
-endpoint).
+**Box prompts diverge** (none of the 3 candidates match the server's box
+mask; box has no previous mask to track). Decision: **box prompts use the
+server `/sam/decode` fallback** (boxes are far rarer than clicks, and the
+server path is concurrency-safe post-1be3070). Revisit box client-decode
+later if needed.
+
+Conclusion: ALL point clicking (single/multi positive + negative
+refinement) decodes faithfully in the browser; box falls back to server.
+Pipeline confirmed: 1008px resize, mean=std=0.5, point->1008-space, 3
+embeddings by name, decoder out 288x288 upscaled, selection rule above.
+
+REMAINING Stage-0: the SAM 2 pass (its decoder HAS mask_input, different
+selection). Then Stage 1 (server encode endpoint).
 
 ## Sources
 SAM2: github.com/vietanhdev/samexporter; HF SharpAI/sam2-hiera-large-onnx;
