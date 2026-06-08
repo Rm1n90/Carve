@@ -312,6 +312,131 @@ parameterized by encoder_id. Box -> server fallback for both.
 STAGE 0 COMPLETE. Next: Stage 1 (server `/sam/encode` returns the 3
 embeddings + encoder_id + input_size + norm params).
 
+### STAGE 1 COMPLETE (2026-06-08) — server encode endpoint
+
+New module `apps/model/src/carve_model/sam/onnx_encoder.py` owns the encoder
+half (preprocess -> run -> serialise). `/sam/encode` now also returns
+`encoder_id`, `input_size`, `norm{mean,std}`, and `tensors{name:{b64,
+dtype:"float16", shape}}` for the 3 feature maps; all are `null` together when
+client decode is unavailable, so the browser falls back to the (untouched)
+server `/sam/decode`. Key points:
+
+- `ENCODER_SPECS` registry keyed by SAM_MODEL value: `sam3.1` (1008px, mean=
+  std=0.5, `onnx-community/sam3-tracker-ONNX`) and `sam2.1-large` (1024px,
+  ImageNet, `onnx-community/sam2.1-hiera-large-ONNX`). Other variants ->
+  `encoder_id_for(...)` returns `None` -> server fallback.
+- `preprocess` reproduces the Stage-0 parity script byte-for-byte (PIL
+  bilinear resize, /255, per-channel `(x-mean)/std`, transpose to NCHW
+  float32). `serialize_tensor` ships fp16 to halve the payload.
+- Real ONNX loading is **opt-in via env `SAM_CLIENT_ENCODE=1`** (default off):
+  keeps the second resident encoder model opt-in per deploy and stops tests
+  from downloading weights. A `set_test_encoder` seam injects a fake in tests.
+  Resident sessions are cached per `encoder_id` and evicted on encode error
+  (CUDA-context loss won't pin a dead session forever).
+- The encode handler runs the ONNX encode under the existing admission slot
+  and captures the active model name *inside* the variant lease, so a
+  concurrent `/sam/switch` cannot mismatch `encoder_id` against the embedding.
+- Dep `onnxruntime-gpu==1.20.1` added to the `[gpu]` extras (CUDA 12 / cuDNN 9
+  base image; matches browser `onnxruntime-web@1.20.1`).
+- Tests: `apps/model/tests/sam/test_onnx_encoder.py` (12, all green); the rest
+  of the SAM suite shows 0 new regressions.
+
+### STAGE 2 COMPLETE (2026-06-08) — browser decoder
+
+Built under `apps/web/src/canvas/sam/` (vitest, 32 tests green, `pnpm tsc`
+clean). The old single-`sam2_decoder.onnx` scaffold was replaced.
+
+- `float16.ts` — base64 fp16 -> Float32Array (the decoder takes fp32 feeds).
+- `embeddingCache.ts` — per-`(asset, frame, encoder_id)` LRU (cap 16) so two
+  users on different images never share embeddings; `cachedEmbeddingsFromEncode`
+  returns `null` (server fallback) when the encode carried no tensors;
+  `invalidateEncoder` resets on a variant switch.
+- `decoder.ts` — pure, ORT-free (so it unit-tests without WASM). Owns the
+  numeric contract: `scalePromptToInput` (per-axis sx/sy to input_size, int64
+  labels, empty boxes), `candidateMasksFromLogits` (logit>0 + nearest resize to
+  original size), `selectCandidate` (**the Stage-0 track-prev rule** — first
+  click best-by-`iou_scores`, refinement = highest IoU to the previous mask),
+  and `decodeWithRunner` (injected session). Output `counts` reuses the existing
+  `canvas/maskio` `encodeRLE` (server-identical column-major format). Polygon
+  extraction is deferred — the editor commits the RLE as a `mask_rle`
+  annotation (same kind the mask brush produces), so there's no functionality
+  loss; a client contour tracer is a follow-up.
+- `ortRunner.ts` — onnxruntime-web adapter (feeds -> Tensor, parse outputs),
+  session + `Tensor` injected so it unit-tests. `workerHandler.ts` — the
+  message protocol (SET_EMBEDDINGS / DECODE / EVICT / CLEAR) + a worker-side
+  embedding store so per-click DECODE messages carry only the points, not the
+  ~10-21 MB maps. `decoder.worker.ts` — thin shell that dynamic-imports ORT and
+  wires `onmessage` (the only piece not unit-tested — real Worker + ORT).
+- `onnx.ts` — `decoderUrlFor` + `canDecodeLocally(encoderId?)`. NOTE: gated on
+  decoder-file presence, NOT WebGPU — onnxruntime-web's WASM EP is a valid
+  fallback (corrects this spec's earlier WebGPU-required wording).
+- `api/sam.ts` — `SamEncodeResult` extended with `encoder_id` / `input_size` /
+  `norm` / `tensors` (optional, back-compatible).
+
+Box prompts and any decode error / cache miss stay on the server `/sam/decode`
+fallback (unchanged). Stage 3 wires this into `SamTool` + spawns the worker.
+
+### STAGE 3 COMPLETE (2026-06-08) — SamTool wiring
+
+`apps/web/src/canvas/sam/decoderClient.ts` (NEW) bridges the main thread to the
+worker: lazy spawn, id-correlated DECODE responses, Promise API with
+AbortSignal, injectable `spawn` for tests. `SamTool` now:
+
+- on `activate()`, builds `cachedEmbeddingsFromEncode(enc)`, stores it in the
+  `embeddingCache` + hands it to the worker (`setEmbeddings`), and sets
+  `localDecodeReady = await canDecodeLocally(encoder_id)`;
+- `addClick` / `popLastClick` try `tryLocalDecode` first, falling through to the
+  server `/sam/decode` for box prompts, unprovisioned variants, cache misses, or
+  any worker error — so there is no functionality loss;
+- replays the previous mask (`prevMask`) into the worker for the track-prev
+  rule; resets local state on `reset` / `setMode` / `invalidateEncoding` (the
+  last also evicts the worker's copy).
+
+The existing 409 re-encode / 503 loading-retry / abort semantics are preserved.
+Tests (41 web tests green, `tsc` clean) cover local-vs-server selection, box
+fallback, error fallback, and the prevMask replay.
+
+**API proxy: no change required.** `apps/api` `sam_encode` returns the model
+service JSON verbatim and `/{asset_id}/sam/encode` returns a bare `dict` (no
+`response_model`), so `tensors` / `encoder_id` / `input_size` / `norm` already
+reach the browser.
+
+Remaining: Stage 4 (provision the decoder `.onnx` files into
+`apps/web/public/models/` + ORT wasm; enable `SAM_CLIENT_ENCODE=1`) and Stage 5
+(live multi-user verification). Until Stage 4, the decoder files 404 →
+`canDecodeLocally` is false → the click flow uses the server path, so Stage 3 is
+safe to ship "dark".
+
+### STAGE 4 COMPLETE (2026-06-08) — provisioning
+
+`apps/model/scripts/provision_sam_decoders.py` provisions the browser assets:
+
+- Downloads each variant's `prompt_encoder_mask_decoder.onnx` (+ external
+  `_data`) and re-saves it inline as a single self-contained file →
+  `apps/web/public/models/sam3.1.decoder.onnx` /
+  `sam2.1-large.decoder.onnx`. We ship the **fp32** decoder — the exact graph
+  the Stage-0 parity validated — so client masks match the server (~22 MB each,
+  cached after first load). onnxruntime-web can't auto-fetch `_data` sidecars by
+  URL, hence the inline re-save.
+- Copies onnxruntime-web's `*.wasm` + loaders to
+  `apps/web/public/models/ort/`; the worker sets
+  `ort.env.wasm.wasmPaths = "/models/ort/"` (self-hosted, no CDN) and
+  `numThreads = 1` (works without COOP/COEP cross-origin isolation; WebGPU is
+  the fast path when available).
+- `--check` verifies presence without downloading; `--prewarm-encoders`
+  optionally pulls the server-side vision encoders into the HF cache.
+- The decoder/wasm binaries are git-ignored (`apps/web/public/models/*.onnx`,
+  `.../ort/`) — fetched at deploy, not tracked.
+
+Operator turn-on: run the script, set `SAM_CLIENT_ENCODE=1` on the model
+service, restart it. VRAM: client encode adds one resident fp16 vision encoder
+(~0.9 GB) per active variant beside the native SAM model; decode then never
+touches the GPU.
+
+Only **Stage 5** remains: live 2+ user verification (different images, SAM 3.1)
+that the GPU shows only encodes, clicks decode locally, and there is no
+thrash/error — that requires running the script + a real browser.
+
 ## Sources
 SAM2: github.com/vietanhdev/samexporter; HF SharpAI/sam2-hiera-large-onnx;
 github.com/lucasgelfond/webgpu-sam2. SAM3: github.com/facebookresearch/sam3;

@@ -29,6 +29,13 @@ gpu = [
   # uses pyav by default; required for SAM 2/3 video tracker init_state.
   "av==13.1.0",
   "transformers==5.0.0",
+  # Client-side SAM decode, Stage 1 — runs the bundle's own
+  # vision_encoder.onnx server-side (Option A) so the browser decoder is
+  # compatible by construction. Pinned to 1.20.x to match the browser
+  # onnxruntime-web@1.20.1 (same opset family). The CUDA 12 / cuDNN 9 build
+  # matches the nvidia/cuda:12.6.0-cudnn base image. Loading is opt-in via
+  # SAM_CLIENT_ENCODE=1 — see carve_model.sam.onnx_encoder.
+  "onnxruntime-gpu==1.20.1",
 ]
 # Plan 11 (SAM 3.1 migration) — native sam3 package required for the
 # Object Multiplex multi-object joint tracker. The transformers

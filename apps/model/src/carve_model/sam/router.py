@@ -106,6 +106,23 @@ class EncodeIn(BaseModel):
     image_b64: str
 
 
+class TensorPayload(BaseModel):
+    # One serialised encoder feature map for the browser decoder. ``b64`` is
+    # base64-encoded little-endian float16 bytes; ``shape`` is row-major.
+    # ``dtype`` is pinned so the browser always selects the float16 typed
+    # array — a mismatch would silently misread the bytes.
+    b64: str
+    dtype: Literal["float16"]
+    shape: list[int]
+
+
+class NormParams(BaseModel):
+    # Per-channel RGB normalisation the browser must apply to point/box
+    # scaling context — surfaced so the client never hardcodes constants.
+    mean: list[float]
+    std: list[float]
+
+
 class EncodeOut(BaseModel):
     image_hash: str
     shape: list[int]
@@ -113,6 +130,19 @@ class EncodeOut(BaseModel):
     # exposes one. ``None`` for the test fake or predictors without
     # ``_features``; callers fall back to server-side decode in that case.
     embedding_b64: str | None = None
+    # v3.33 Stage 1 (client-side SAM decode) — when the active variant has a
+    # proven ONNX bundle AND ``SAM_CLIENT_ENCODE`` is enabled, the server
+    # runs ``vision_encoder.onnx`` once and ships the 3 feature maps so the
+    # browser can decode each click locally. ``encoder_id`` selects the
+    # browser decoder; ``input_size`` + ``norm`` parameterise point scaling.
+    # All four are ``None`` together when client decode is unavailable, in
+    # which case the browser falls back to the server ``/sam/decode`` path
+    # (which is untouched). See
+    # docs/superpowers/specs/2026-06-08-client-side-sam-decode-design.md.
+    encoder_id: str | None = None
+    input_size: int | None = None
+    norm: NormParams | None = None
+    tensors: dict[str, TensorPayload] | None = None
 
 
 class DecodeIn(BaseModel):
@@ -166,7 +196,9 @@ def encode(payload: EncodeIn) -> EncodeOut:
     # stable; the variant stores it as its ``cached_image_hash`` and a
     # subsequent /sam/decode can verify the embedding is still loaded.
     from carve_model.sam.lifecycle import manager, SamNotReadyError
+    from carve_model.sam.onnx_encoder import build_encode_payload
 
+    client_payload = None
     try:
         with admit(CostClass.SAM_IMAGE):
             with manager.lease_or_load() as sam:
@@ -194,6 +226,19 @@ def encode(payload: EncodeIn) -> EncodeOut:
                             embedding_bytes = extract_embedding(raw)
                         except Exception:  # noqa: BLE001
                             embedding_bytes = None
+                # Capture the active model WHILE the lease is held so the
+                # encoder_id we ship matches the embedding we just set — a
+                # concurrent /sam/switch must not race us into picking the
+                # wrong variant's ONNX encoder.
+                active_model = get_sam_model()
+            # Lease released (we no longer need the variant), but still
+            # holding the GPU admission slot. Run the ONNX vision encoder
+            # for the active variant so the browser can decode each click
+            # locally (Stage 1 — client-side SAM decode). Best-effort: a
+            # ``None`` payload (unsupported variant, gate off, or load/encode
+            # error) leaves the browser on the server /sam/decode fallback,
+            # which is left fully intact.
+            client_payload = build_encode_payload(img, active_model)
     except SamNotReadyError as e:
         err_msg = manager.status().error
         raise HTTPException(
@@ -206,7 +251,22 @@ def encode(payload: EncodeIn) -> EncodeOut:
         if embedding_bytes is not None
         else None
     )
-    return EncodeOut(image_hash=h, shape=shape, embedding_b64=embedding_b64)
+    client_fields: dict[str, Any] = {}
+    if client_payload is not None:
+        client_fields = {
+            "encoder_id": client_payload.encoder_id,
+            "input_size": client_payload.input_size,
+            "norm": NormParams(mean=client_payload.mean, std=client_payload.std),
+            "tensors": {
+                name: TensorPayload(
+                    b64=tensor["b64"], dtype=tensor["dtype"], shape=tensor["shape"]
+                )
+                for name, tensor in client_payload.tensors.items()
+            },
+        }
+    return EncodeOut(
+        image_hash=h, shape=shape, embedding_b64=embedding_b64, **client_fields
+    )
 
 
 @router.post("/decode", response_model=DecodeOut)
