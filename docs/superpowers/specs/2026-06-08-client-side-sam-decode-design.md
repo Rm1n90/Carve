@@ -251,6 +251,24 @@ decide whether the no-mask_input client refinement is acceptable (likely
 yes; it's the transformers Sam3Tracker contract). SAM 2 contract (separate,
 has mask_input) still to be verified in its own Stage 0 pass.
 
+### PARITY RESULT (2026-06-08) — single click PASS
+
+`apps/model/scripts/sam_tracker_parity_check.py` runs the ONNX encoder
+(fp16) + decoder (fp32) and compares to the LIVE native server `/sam/decode`
+(sam3.pt) on the SAM truck image, single positive click:
+
+    onnx area=640893  server area=641315  IoU=0.9912  PASS (target >= 0.98)
+
+ONNX iou_scores [0.11, 0.97, 0.27] (chose 0.97); server score 0.9726.
+Confirms the whole pipeline: 1008px resize, mean=std=0.5 norm, point scaled
+to 1008-space, 3 embeddings by name, no mask_input, multimask pick by IoU,
+decoder out 288x288 upscaled to original. Conclusion: moving the click path
+to client-side ONNX decode does NOT visibly change masks.
+
+REMAINING Stage-0 parity (TODO): multi-click refinement (no mask_input) +
+box prompts; then the SAM 2 pass. After that -> Stage 1 (server encode
+endpoint).
+
 ## Sources
 SAM2: github.com/vietanhdev/samexporter; HF SharpAI/sam2-hiera-large-onnx;
 github.com/lucasgelfond/webgpu-sam2. SAM3: github.com/facebookresearch/sam3;
