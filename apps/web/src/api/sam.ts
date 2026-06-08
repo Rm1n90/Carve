@@ -1,6 +1,19 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { api } from "./client";
 
+/** One serialised encoder feature map for the browser decoder (Stage 1). */
+export interface SamTensorPayload {
+  b64: string;
+  dtype: "float16";
+  shape: number[];
+}
+
+/** Per-channel RGB normalisation the browser applies for point scaling. */
+export interface SamEncodeNorm {
+  mean: number[];
+  std: number[];
+}
+
 export interface SamEncodeResult {
   image_hash: string;
   shape: [number, number]; // [h, w]
@@ -8,6 +21,15 @@ export interface SamEncodeResult {
   // it. `null` when the predictor lacks `_features` or torch isn't
   // available; callers must fall back to server-side decode in that case.
   embedding_b64: string | null;
+  // v3.33 Stage 1 (client-side SAM decode) — CVAT-style split. Present only
+  // when the active variant has a proven ONNX bundle AND the server gate
+  // (SAM_CLIENT_ENCODE) is on; otherwise all four are null/absent together
+  // and the browser falls back to server `/sam/decode`. `encoder_id` selects
+  // the browser decoder; `input_size` + `norm` parameterise point scaling.
+  encoder_id?: string | null;
+  input_size?: number | null;
+  norm?: SamEncodeNorm | null;
+  tensors?: Record<string, SamTensorPayload> | null;
 }
 
 export interface SamDecodeResult {

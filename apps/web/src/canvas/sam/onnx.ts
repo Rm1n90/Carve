@@ -1,31 +1,40 @@
 // Armin Mehri — mehri.armin@gmail.com
 /**
- * WebGPU + ONNX Runtime Web detection helpers for the in-browser SAM
- * decoder. The actual ONNX model file (`sam2_decoder.onnx`) is provisioned
- * by the operator and served from `/models/sam2_decoder.onnx` (i.e. the
- * web container's `public/models/` directory). When the file is missing or
- * the browser lacks WebGPU, callers should fall back to the server-side
- * `/sam/decode` endpoint.
+ * Capability detection for the in-browser SAM decoder. Each interactive
+ * variant ships its own decoder bundle (``/models/<encoder_id>.decoder.onnx``,
+ * provisioned by the operator in Stage 4). ``canDecodeLocally`` is the single
+ * yes/no gate SamTool consults before decoding a click locally; when it is
+ * false (unknown variant, decoder file missing, offline) the caller falls back
+ * to the server ``/sam/decode`` endpoint with no functionality loss.
+ *
+ * WebGPU is NOT required: onnxruntime-web runs the decoder on its WASM
+ * execution provider when WebGPU is absent. ``isWebGPUAvailable`` only lets the
+ * worker prefer the faster WebGPU EP when it exists.
  */
 
-export const SAM_DECODER_MODEL_URL = "/models/sam2_decoder.onnx";
+import { ENCODER_CONFIGS } from "./decoder";
 
-/**
- * Returns true when the runtime exposes `navigator.gpu`. Stable Chrome
- * supports WebGPU since 113; jsdom (used by tests) does not.
- */
+/** Decoder bundle URL for a variant, or null when it has no client decoder. */
+export function decoderUrlFor(encoderId: string): string | null {
+  return ENCODER_CONFIGS[encoderId]?.decoderUrl ?? null;
+}
+
+/** True when the runtime exposes ``navigator.gpu`` (Chrome 113+; not jsdom). */
 export function isWebGPUAvailable(): boolean {
   return typeof navigator !== "undefined" && "gpu" in navigator;
 }
 
 /**
- * HEAD-probe the ONNX model file to confirm it is present in the public
- * folder. Returns false on any network/HTTP failure so the caller can
- * cleanly fall back to the server decoder.
+ * HEAD-probe the variant's decoder file. Returns false on any network/HTTP
+ * failure so the caller cleanly falls back to the server decoder.
  */
-export async function checkDecoderModelAvailable(): Promise<boolean> {
+export async function checkDecoderModelAvailable(
+  encoderId: string,
+): Promise<boolean> {
+  const url = decoderUrlFor(encoderId);
+  if (!url) return false;
   try {
-    const response = await fetch(SAM_DECODER_MODEL_URL, { method: "HEAD" });
+    const response = await fetch(url, { method: "HEAD" });
     return response.ok;
   } catch {
     return false;
@@ -33,10 +42,13 @@ export async function checkDecoderModelAvailable(): Promise<boolean> {
 }
 
 /**
- * Returns true only when both WebGPU and the local model file are present.
- * Combines the two predicates so SamTool has a single yes/no signal.
+ * Whether a click for ``encoderId`` can be decoded in the browser. Requires a
+ * known variant and its decoder file to be present. ``undefined`` /
+ * ``null`` encoder id (e.g. an older server that didn't return one) -> false.
  */
-export async function canDecodeLocally(): Promise<boolean> {
-  if (!isWebGPUAvailable()) return false;
-  return await checkDecoderModelAvailable();
+export async function canDecodeLocally(
+  encoderId?: string | null,
+): Promise<boolean> {
+  if (!encoderId) return false;
+  return checkDecoderModelAvailable(encoderId);
 }
