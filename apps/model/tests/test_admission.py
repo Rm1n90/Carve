@@ -24,8 +24,22 @@ from carve_model.admission import (
     COST_FLOORS_MB,
     CostClass,
     _SLOTS,
+    _admission_wait_s,
     admit,
 )
+
+
+def test_admission_wait_parsing(monkeypatch) -> None:
+    """The wait timeout falls back to 60s for anything that would weaken
+    or disable the safety valve: <=0, non-finite (inf/nan), unparseable.
+    A valid positive value passes through."""
+    monkeypatch.setenv("MODEL_INFERENCE_WAIT_S", "30")
+    assert _admission_wait_s() == 30.0
+    for bad in ("0", "-5", "inf", "-inf", "nan", "notanumber"):
+        monkeypatch.setenv("MODEL_INFERENCE_WAIT_S", bad)
+        assert _admission_wait_s() == 60.0, bad
+    monkeypatch.delenv("MODEL_INFERENCE_WAIT_S", raising=False)
+    assert _admission_wait_s() == 60.0
 
 
 def _drain_semaphore() -> int:
@@ -77,28 +91,73 @@ def test_admit_rejects_when_free_vram_below_floor() -> None:
         assert "GPU memory" in e.detail["message"]
 
 
-def test_admit_rejects_when_slot_busy() -> None:
-    """Concurrent admit → second caller gets 503 gpu_busy fast."""
-    holder_started = threading.Event()
+def test_admit_queues_when_slot_busy_then_proceeds() -> None:
+    """Multi-user fix: a concurrent caller QUEUES on the slot instead of
+    being rejected. It blocks while the first holds the slot, then runs
+    once the slot is released — so two users sharing one GPU never see a
+    spurious ``gpu_busy``. This is the CVAT-style behaviour Armin asked
+    for ("even 10 ppl can use a loaded SAM3.1 ... without get failed").
+    """
+    holder_in = threading.Event()
+    holder_release = threading.Event()
+    second_ran = threading.Event()
+
+    def holder() -> None:
+        with patch("carve_model.admission._free_mb", return_value=24_000):
+            with admit(CostClass.SAM_IMAGE):
+                holder_in.set()
+                holder_release.wait(timeout=5)
+
+    def second() -> None:
+        holder_in.wait(timeout=2)
+        with patch("carve_model.admission._free_mb", return_value=24_000):
+            with admit(CostClass.SAM_TEXT):
+                second_ran.set()
+
+    th = threading.Thread(target=holder, daemon=True)
+    ts = threading.Thread(target=second, daemon=True)
+    th.start()
+    assert holder_in.wait(timeout=2), "holder did not enter admit"
+    ts.start()
+    # While the holder still owns the slot, the second caller must NOT
+    # have run — it is queued (blocked), not rejected.
+    assert not second_ran.wait(timeout=0.5), (
+        "second caller ran while the slot was held — expected it to queue"
+    )
+    # Release the holder; the queued caller now proceeds on its own.
+    holder_release.set()
+    assert second_ran.wait(timeout=3), (
+        "second caller did not run after the slot was released"
+    )
+    th.join(timeout=2)
+    ts.join(timeout=2)
+
+
+def test_admit_times_out_to_gpu_busy_when_slot_stuck(monkeypatch) -> None:
+    """Safety valve: if the slot never frees (a hung/crashed inference),
+    a waiter gives up after ``MODEL_INFERENCE_WAIT_S`` with 503 gpu_busy
+    rather than blocking forever."""
+    monkeypatch.setenv("MODEL_INFERENCE_WAIT_S", "0.2")
+    holder_in = threading.Event()
     holder_release = threading.Event()
     holder_exit = threading.Event()
 
     def holder() -> None:
         with patch("carve_model.admission._free_mb", return_value=24_000):
             with admit(CostClass.SAM_IMAGE):
-                holder_started.set()
+                holder_in.set()
                 holder_release.wait(timeout=5)
         holder_exit.set()
 
     t = threading.Thread(target=holder, daemon=True)
     t.start()
-    assert holder_started.wait(timeout=2), "holder did not enter admit"
+    assert holder_in.wait(timeout=2), "holder did not enter admit"
 
     try:
         with patch("carve_model.admission._free_mb", return_value=24_000):
             with pytest.raises(HTTPException) as exc_info:
                 with admit(CostClass.SAM_TEXT):
-                    pytest.fail("second admit must not run while slot is held")
+                    pytest.fail("must not run while the slot is stuck")
         e = exc_info.value
         assert e.status_code == 503
         assert isinstance(e.detail, dict)
@@ -108,6 +167,22 @@ def test_admit_rejects_when_slot_busy() -> None:
     finally:
         holder_release.set()
         assert holder_exit.wait(timeout=2)
+
+
+def test_admit_oom_check_runs_after_acquiring_slot() -> None:
+    """The VRAM floor check happens while holding the slot, and the slot
+    is released even when the OOM rejection fires — so a subsequent admit
+    can still acquire it. Guards the acquire-then-check ordering."""
+    needed = COST_FLOORS_MB[CostClass.SAM_TEXT]
+    with patch("carve_model.admission._free_mb", return_value=needed - 50):
+        with pytest.raises(HTTPException) as exc_info:
+            with admit(CostClass.SAM_TEXT):
+                pytest.fail("body must not run when headroom is insufficient")
+        assert exc_info.value.detail["code"] == "gpu_oom_risk"
+    # Slot was released despite the OOM rejection — this admit succeeds.
+    with patch("carve_model.admission._free_mb", return_value=24_000):
+        with admit(CostClass.SAM_TEXT):
+            pass
 
 
 def test_admit_releases_slot_on_success() -> None:

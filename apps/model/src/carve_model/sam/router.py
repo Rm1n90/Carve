@@ -547,24 +547,28 @@ def sam_text_prompt(payload: TextPromptIn) -> list[dict]:
     from carve_model.sam.lifecycle import manager, SamNotReadyError
 
     try:
-        with manager.lease_or_load() as sam:
-            if not sam.supports_text:
-                raise HTTPException(
-                    status_code=409,
-                    detail="text_prompt_not_supported_for_variant",
-                )
-            # Forward use_vlm_fo1 / threshold / epsilon_factor only when
-            # the client supplied them so older factories whose
-            # signatures predate the kwargs keep working — they're
-            # called exactly as before.
-            kwargs: dict = {"image_b64": payload.image_b64, "text": payload.text}
-            if payload.use_vlm_fo1:
-                kwargs["use_vlm_fo1"] = True
-            if payload.threshold is not None:
-                kwargs["threshold"] = payload.threshold
-            if payload.epsilon_factor is not None:
-                kwargs["epsilon_factor"] = payload.epsilon_factor
-            with admit(CostClass.SAM_TEXT):
+        # admit-outer (acquire the GPU slot BEFORE the manager's
+        # inference lock) keeps lock ordering consistent with
+        # encode/decode so the now-blocking admission gate can't ABBA
+        # deadlock against the lifecycle lock.
+        with admit(CostClass.SAM_TEXT):
+            with manager.lease_or_load() as sam:
+                if not sam.supports_text:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="text_prompt_not_supported_for_variant",
+                    )
+                # Forward use_vlm_fo1 / threshold / epsilon_factor only
+                # when the client supplied them so older factories whose
+                # signatures predate the kwargs keep working — they're
+                # called exactly as before.
+                kwargs: dict = {"image_b64": payload.image_b64, "text": payload.text}
+                if payload.use_vlm_fo1:
+                    kwargs["use_vlm_fo1"] = True
+                if payload.threshold is not None:
+                    kwargs["threshold"] = payload.threshold
+                if payload.epsilon_factor is not None:
+                    kwargs["epsilon_factor"] = payload.epsilon_factor
                 return sam.predict_text(**kwargs)
     except SamNotReadyError as e:
         err_msg = manager.status().error
@@ -589,23 +593,24 @@ def sam_text_prompt_multi(payload: TextPromptMultiIn) -> list[list[dict]]:
     from carve_model.sam.lifecycle import manager, SamNotReadyError
 
     try:
-        with manager.lease_or_load() as sam:
-            if not sam.supports_text:
-                raise HTTPException(
-                    status_code=409,
-                    detail="text_prompt_not_supported_for_variant",
-                )
-            kwargs: dict = {
-                "image_b64": payload.image_b64,
-                "texts": list(payload.texts),
-            }
-            if payload.use_vlm_fo1:
-                kwargs["use_vlm_fo1"] = True
-            if payload.threshold is not None:
-                kwargs["threshold"] = payload.threshold
-            if payload.epsilon_factor is not None:
-                kwargs["epsilon_factor"] = payload.epsilon_factor
-            with admit(CostClass.SAM_TEXT):
+        # admit-outer — see sam_text_prompt for the deadlock-ordering note.
+        with admit(CostClass.SAM_TEXT):
+            with manager.lease_or_load() as sam:
+                if not sam.supports_text:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="text_prompt_not_supported_for_variant",
+                    )
+                kwargs: dict = {
+                    "image_b64": payload.image_b64,
+                    "texts": list(payload.texts),
+                }
+                if payload.use_vlm_fo1:
+                    kwargs["use_vlm_fo1"] = True
+                if payload.threshold is not None:
+                    kwargs["threshold"] = payload.threshold
+                if payload.epsilon_factor is not None:
+                    kwargs["epsilon_factor"] = payload.epsilon_factor
                 return sam.predict_text_multi(**kwargs)
     except SamNotReadyError as e:
         err_msg = manager.status().error
@@ -665,13 +670,14 @@ def sam_box_prompt(payload: BoxPromptIn) -> list[dict]:
     from carve_model.sam.lifecycle import manager, SamNotReadyError
 
     try:
-        with manager.lease_or_load() as sam:
-            if not sam.supports_box:
-                raise HTTPException(
-                    status_code=409,
-                    detail="box_prompt_not_supported_for_variant",
-                )
-            with admit(CostClass.SAM_BOX):
+        # admit-outer — see sam_text_prompt for the deadlock-ordering note.
+        with admit(CostClass.SAM_BOX):
+            with manager.lease_or_load() as sam:
+                if not sam.supports_box:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="box_prompt_not_supported_for_variant",
+                    )
                 box_kwargs: dict = {
                     "image_b64": payload.image_b64,
                     "boxes": payload.boxes,
@@ -709,14 +715,15 @@ def sam_visual_prompt(payload: VisualPromptIn) -> list[dict]:
     from carve_model.sam.lifecycle import manager, SamNotReadyError
 
     try:
-        with manager.lease_or_load() as sam:
-            if not sam.supports_visual:
-                raise HTTPException(
-                    status_code=409,
-                    detail="visual_prompt_not_supported_for_variant",
-                )
-            regions = [r.model_dump(exclude_none=True) for r in payload.regions]
-            with admit(CostClass.SAM_VISUAL):
+        # admit-outer — see sam_text_prompt for the deadlock-ordering note.
+        with admit(CostClass.SAM_VISUAL):
+            with manager.lease_or_load() as sam:
+                if not sam.supports_visual:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="visual_prompt_not_supported_for_variant",
+                    )
+                regions = [r.model_dump(exclude_none=True) for r in payload.regions]
                 visual_kwargs: dict = {
                     "target_b64": payload.target_b64,
                     "refer_b64": payload.refer_b64,
