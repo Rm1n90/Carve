@@ -259,8 +259,13 @@ def test_yolo_export_densifies_label_indices(db_session) -> None:
     _, body = storage.uploaded[0]
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
         names = set(zf.namelist())
-        # Single asset → split 1.0/0/0 → train bucket.
-        label_files = [n for n in names if n.startswith("labels/train/")]
+        # Plan-20.4 — everything lives under a friendly <root>/ folder, and a
+        # single-set export flattens images+labels under <root>/training_data/.
+        root = next(n.split("/", 1)[0] for n in names if n.endswith("/data.yaml"))
+        label_files = [
+            n for n in names
+            if n.startswith(f"{root}/training_data/") and n.endswith(".txt")
+        ]
         assert label_files, names
         label = zf.read(label_files[0]).decode().strip().splitlines()
         # Three annotations, one per class. Each line starts with the dense
@@ -274,7 +279,7 @@ def test_yolo_export_densifies_label_indices(db_session) -> None:
         assert all(int(line.split()[0]) <= 2 for line in label)
 
         # data.yaml: nc=3 and names has exactly 3 entries.
-        yaml_text = zf.read("data.yaml").decode()
+        yaml_text = zf.read(f"{root}/data.yaml").decode()
         assert "nc: 3" in yaml_text
         # Crude but sufficient: every class name appears once.
         for cname in ("person", "car", "bicycle"):
@@ -282,7 +287,7 @@ def test_yolo_export_densifies_label_indices(db_session) -> None:
 
         # classes.json: every entry has export_idx field; included classes
         # have integer values 0..2.
-        manifest = json.loads(zf.read("classes.json"))
+        manifest = json.loads(zf.read(f"{root}/classes.json"))
         assert len(manifest) == 3
         for entry in manifest:
             assert "idx" in entry
@@ -323,9 +328,11 @@ def test_yolo_export_densifies_when_some_classes_skipped(db_session) -> None:
     assert result["status"] == "completed"
     _, body = storage.uploaded[0]
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
-        yaml_text = zf.read("data.yaml").decode()
+        names = set(zf.namelist())
+        root = next(n.split("/", 1)[0] for n in names if n.endswith("/data.yaml"))
+        yaml_text = zf.read(f"{root}/data.yaml").decode()
         assert "nc: 2" in yaml_text
-        manifest = json.loads(zf.read("classes.json"))
+        manifest = json.loads(zf.read(f"{root}/classes.json"))
         included = [m for m in manifest if m["export_idx"] is not None]
         excluded = [m for m in manifest if m["export_idx"] is None]
         assert len(included) == 2
@@ -361,7 +368,10 @@ def test_coco_export_densifies_category_ids(db_session) -> None:
     assert result["status"] == "completed"
     _, body = storage.uploaded[0]
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
-        coco = json.loads(zf.read("coco.json"))
+        root = next(
+            n.split("/", 1)[0] for n in zf.namelist() if n.endswith("/coco.json")
+        )
+        coco = json.loads(zf.read(f"{root}/coco.json"))
     cat_ids = sorted(c["id"] for c in coco["categories"])
     assert cat_ids == [0, 1, 2]
     ann_cat_ids = sorted({a["category_id"] for a in coco["annotations"]})

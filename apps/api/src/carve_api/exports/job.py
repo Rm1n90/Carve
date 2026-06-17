@@ -1,16 +1,17 @@
 # Armin Mehri — mehri.armin@gmail.com
 """Export RQ job — builds a ZIP archive and uploads to MinIO."""
 
-import io
 import json
 import logging
+import os
+import tempfile
 import uuid
 import zipfile
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 from sqlalchemy import select
 from sqlalchemy.orm import configure_mappers
@@ -46,6 +47,21 @@ configure_mappers()
 # ``zipfile`` is not thread-safe; the wins come from overlapping the
 # network roundtrips.
 _DOWNLOAD_WORKERS = 8
+
+# Hard cap on how many downloaded image blobs are resident in memory at once.
+# The archive builder streams assets through a sliding window of this size, so
+# peak download memory is ``_DOWNLOAD_WINDOW * avg_image_size`` regardless of
+# whether the task has 50 images or 50 000 — this is what stops large exports
+# (e.g. 3600 images / 24K masks) from OOM-killing the worker. Kept equal to the
+# worker count so every worker always has something in flight.
+_DOWNLOAD_WINDOW = _DOWNLOAD_WORKERS
+
+# The archive is built into a SpooledTemporaryFile: it stays in RAM while below
+# this threshold (fast path for small exports) and transparently spills to a
+# real on-disk temp file once it grows past it. Combined with the streaming
+# upload (MinioClient.put_object → upload_fileobj reads in bounded chunks), the
+# whole ZIP is never held in memory at once.
+_SPOOL_MAX_BYTES = 64 * 1024 * 1024  # 64 MiB
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +240,57 @@ def _fetch_asset_bytes(storage, key: str) -> bytes | None:
         return None
 
 
+def _iter_asset_bytes(
+    pool: ThreadPoolExecutor,
+    storage,
+    items: Iterable[Any],
+    key_of: Callable[[Any], str],
+    window: int,
+) -> Iterator[tuple[Any, bytes | None]]:
+    """Stream ``(item, body)`` pairs in input order with bounded memory.
+
+    At most ``window`` MinIO downloads are kept in flight at any instant, so
+    the number of image blobs resident in memory is capped by ``window`` —
+    independent of how many ``items`` there are. This is the heart of the
+    export OOM fix: previously every asset's download future was submitted
+    up-front, so a 3600-image export could hold thousands of decoded blobs
+    in RAM while the (single-threaded, ``zipfile``-bound) writer drained them.
+
+    ``body`` is ``None`` when the fetch missed/errored — the caller skips that
+    entry. Yielded order matches ``items`` order exactly, preserving
+    deterministic split partitioning and label/image correspondence.
+
+    Contract: the consumer MUST process and release each ``body`` before
+    requesting the next (a plain ``for`` loop does this) — retaining bodies
+    defeats the bound.
+    """
+    if window < 1:
+        window = 1
+    it = iter(items)
+    inflight: deque[tuple[Any, Any]] = deque()
+    # Prime the window.
+    for _ in range(window):
+        try:
+            nxt = next(it)
+        except StopIteration:
+            break
+        inflight.append((nxt, pool.submit(_fetch_asset_bytes, storage, key_of(nxt))))
+    while inflight:
+        item, fut = inflight.popleft()
+        body = fut.result()
+        # Top the window back up before yielding so the next download overlaps
+        # with the caller's (serial) ZIP write.
+        try:
+            nxt = next(it)
+        except StopIteration:
+            pass
+        else:
+            inflight.append(
+                (nxt, pool.submit(_fetch_asset_bytes, storage, key_of(nxt)))
+            )
+        yield item, body
+
+
 def _image_size(body: bytes) -> tuple[int, int] | None:
     """Decode ``body`` and return ``(width, height)``, or ``None`` if it
     cannot be read. Used to self-heal assets that reached the export with
@@ -386,6 +453,7 @@ def _convert_for_yolo_mode(
 
 def _yolo_archive(
     *,
+    out,
     task: Task,
     assets: list[Asset],
     annotations_by_asset_id: dict[uuid.UUID, list[Annotation]],
@@ -396,13 +464,17 @@ def _yolo_archive(
     classes_manifest: list[dict[str, Any]] | None = None,
     yolo_mode: str = "segmentation",
     root: str = "export",
-) -> bytes:
-    """Build a YOLO archive in memory. Returns the zip bytes.
+) -> None:
+    """Build a YOLO archive into ``out`` (a writable, seekable binary file).
+
+    Memory stays flat regardless of asset count: labels are tiny text written
+    inline, and image bytes are streamed through a bounded download window
+    (``_iter_asset_bytes``) straight into the ZIP, never accumulating.
 
     Layout:
       data.yaml
-      labels/{train,val,test}/<asset_basename>.txt
-      images/{train,val,test}/<asset_basename> (when include_images)
+      training_data[/<split>]/<asset_basename>.txt
+      training_data[/<split>]/<asset_basename> (when include_images)
     """
     splits = splits or {"train": 1.0, "val": 0.0, "test": 0.0}
     # Only image assets contribute to the YOLO archive; partition them
@@ -415,7 +487,6 @@ def _yolo_archive(
         and a.height is not None
     ]
     partitioned = _partition_assets_by_split(exportable_assets, splits)
-    buf = io.BytesIO()
     targets: list[RemapTarget] = []
     seen_target_ids: set[int] = set()
     # Single-set: only one bucket has data, so flatten the layout so
@@ -423,24 +494,22 @@ def _yolo_archive(
     # training_data/<split>/. data.yaml is aliased to match.
     populated = [k for k, v in partitioned.items() if v]
     single_set = len(populated) <= 1
+
     def _td_dir(split_name: str) -> str:
         return f"{root}/training_data" if single_set else f"{root}/training_data/{split_name}"
-    # Plan-20.2 — kick off MinIO downloads for every image in parallel
-    # before we walk the splits. zipfile is not thread-safe so we still
-    # write entries serially on the main thread; what's parallel is the
-    # network roundtrip, which dominates total time on tasks with
-    # hundreds of images.
-    download_futures: dict[uuid.UUID, Any] = {}
-    if include_images:
-        pool = ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS)
-        for asset in exportable_assets:
-            ext = (
-                Path(asset.original_name).suffix.lstrip(".")
-                or "bin"
-            )
-            key = f"assets/{asset.xxh3_128}/original.{ext}"
-            download_futures[asset.id] = pool.submit(_fetch_asset_bytes, storage, key)
-        pool.shutdown(wait=False)
+
+    def _asset_key(asset: Asset) -> str:
+        ext = Path(asset.original_name).suffix.lstrip(".") or "bin"
+        return f"assets/{asset.xxh3_128}/original.{ext}"
+
+    # Flat, deterministically-ordered (split, asset) work list. Iterating
+    # partitioned.items() keeps train→val→test order so splits stay stable.
+    items: list[tuple[str, Asset]] = [
+        (split_name, asset)
+        for split_name, split_assets in partitioned.items()
+        for asset in split_assets
+    ]
+
     # Build the densified targets list once. Used by data.yaml (for
     # detection/segmentation) and to look up class names for the
     # ImageFolder layout (for tags_only).
@@ -453,60 +522,65 @@ def _yolo_archive(
             targets.append(t)
     name_by_export_id = {t.export_id: t.name for t in targets}
 
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for split_name, split_assets in partitioned.items():
-            for asset in split_assets:
-                # exportable_assets was already filtered to image assets
-                # with known dimensions, so no per-asset gate is needed
-                # here. Video assets are exported via the separate frames
-                # flow; writing a .txt for them here would produce orphan
-                # labels with no images.
+    # ``zipfile`` is not thread-safe, so every write happens on this thread;
+    # only the MinIO downloads run in parallel, bounded to a sliding window so
+    # at most ``_DOWNLOAD_WINDOW`` image blobs are resident at any instant.
+    with ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS) as pool, \
+            zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        if yolo_mode == "tags_only":
+            # Ultralytics' classification trainer (`yolo task=classify`) expects
+            # an ImageFolder layout: <split>/<class_name>/<img>. Pick the first
+            # tag as the canonical label; images with no tags are skipped (the
+            # trainer can't use them). Resolve tags first (no image bytes
+            # needed) so only tagged images are downloaded.
+            tagged: list[tuple[str, Asset, str]] = []
+            for split_name, asset in items:
                 anns = annotations_by_asset_id.get(asset.id, [])
-                stem = Path(asset.original_name).stem
-                td = _td_dir(split_name)
-                if yolo_mode == "tags_only":
-                    # Ultralytics' classification trainer (`yolo task=classify`)
-                    # expects an ImageFolder layout: <split>/<class_name>/<img>.
-                    # We pick the first tag as the canonical label and skip
-                    # images that have no tags — the trainer can't use them.
-                    tag_ids = extract_image_tags(anns, remap=class_remap)
-                    if not tag_ids:
+                tag_ids = extract_image_tags(anns, remap=class_remap)
+                if not tag_ids:
+                    continue
+                class_name = _sanitize_for_path(
+                    name_by_export_id.get(tag_ids[0], f"class_{tag_ids[0]}"),
+                )
+                tagged.append((split_name, asset, class_name))
+            if include_images:
+                for (split_name, asset, class_name), body in _iter_asset_bytes(
+                    pool, storage, tagged,
+                    lambda t: _asset_key(t[1]), _DOWNLOAD_WINDOW,
+                ):
+                    if body is None:
                         continue
-                    primary_id = tag_ids[0]
-                    class_name = _sanitize_for_path(
-                        name_by_export_id.get(primary_id, f"class_{primary_id}"),
-                    )
-                    if include_images:
-                        fut = download_futures.get(asset.id)
-                        if fut is None:
-                            continue
-                        body = fut.result()
-                        if body is None:
-                            continue
-                        zf.writestr(
-                            f"{td}/{class_name}/{asset.original_name}",
-                            body,
-                        )
-                else:
-                    converted = _convert_for_yolo_mode(anns, yolo_mode)
-                    lines, _ = write_yolo_label(
-                        converted, remap=class_remap,
-                        image_w=int(asset.width), image_h=int(asset.height),
-                    )
-                    # Always write the .txt (empty = background image) so
-                    # there's a 1:1 correspondence between images and labels.
                     zf.writestr(
-                        f"{td}/{stem}.txt",
-                        ("\n".join(lines) + "\n") if lines else "",
+                        f"{_td_dir(split_name)}/{class_name}/{asset.original_name}",
+                        body,
                     )
-                    if include_images:
-                        fut = download_futures.get(asset.id)
-                        if fut is None:
-                            continue
-                        body = fut.result()
-                        if body is None:
-                            continue
-                        zf.writestr(f"{td}/{asset.original_name}", body)
+        else:
+            # Detection / segmentation. Labels are tiny text — write them all
+            # first (cheap, no image bytes), then stream the images. Always
+            # write a .txt per asset (empty = background) so there's a 1:1
+            # image:label correspondence.
+            for split_name, asset in items:
+                anns = annotations_by_asset_id.get(asset.id, [])
+                converted = _convert_for_yolo_mode(anns, yolo_mode)
+                lines, _ = write_yolo_label(
+                    converted, remap=class_remap,
+                    image_w=int(asset.width), image_h=int(asset.height),
+                )
+                zf.writestr(
+                    f"{_td_dir(split_name)}/{Path(asset.original_name).stem}.txt",
+                    ("\n".join(lines) + "\n") if lines else "",
+                )
+            if include_images:
+                for (split_name, asset), body in _iter_asset_bytes(
+                    pool, storage, items,
+                    lambda t: _asset_key(t[1]), _DOWNLOAD_WINDOW,
+                ):
+                    if body is None:
+                        continue
+                    zf.writestr(
+                        f"{_td_dir(split_name)}/{asset.original_name}", body,
+                    )
+
         if yolo_mode == "tags_only":
             # Classification: no data.yaml (not consumed by classify), but
             # emit a classes.txt listing the dense class names in id order
@@ -555,7 +629,6 @@ def _yolo_archive(
                 json.dumps(classes_manifest, indent=2),
             )
         zf.writestr(f"{root}/README.md", _yolo_readme(yolo_mode, single_set, root))
-    return buf.getvalue()
 
 
 def _yolo_readme(
@@ -725,6 +798,7 @@ def _layout_box_classify(single_set: bool, root: str) -> str:
 
 def _coco_archive(
     *,
+    out,
     assets: list[Asset],
     annotations_by_asset_id: dict[uuid.UUID, list[Annotation]],
     class_remap: dict,
@@ -732,9 +806,12 @@ def _coco_archive(
     storage,
     classes_manifest: list[dict[str, Any]] | None = None,
     root: str = "export",
-) -> bytes:
-    """Build a COCO archive (coco.json + optional images/ folder)."""
-    buf = io.BytesIO()
+) -> None:
+    """Build a COCO archive into ``out`` (coco.json + optional images/ folder).
+
+    Image bytes stream through a bounded download window so memory stays flat
+    regardless of asset count; coco.json is built from annotation metadata
+    only (no image bytes)."""
     images: list[dict] = []
     asset_to_image_id: dict[uuid.UUID, int] = {}
     for i, asset in enumerate(assets, start=1):
@@ -760,7 +837,15 @@ def _coco_archive(
         remap=class_remap,
     )
 
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    def _asset_key(asset: Asset) -> str:
+        ext = Path(asset.original_name).suffix.lstrip(".") or "bin"
+        return f"assets/{asset.xxh3_128}/original.{ext}"
+
+    # ``zipfile`` is not thread-safe → serial writes here; only the MinIO
+    # downloads are parallel, bounded to a sliding window so peak memory is
+    # independent of image count.
+    with ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS) as pool, \
+            zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{root}/coco.json", json.dumps(coco, indent=2))
         # Plan-20 — image-level tags go to a separate sidecar (COCO has
         # no canonical image-level label field). Only written when at
@@ -776,34 +861,21 @@ def _coco_archive(
                 json.dumps(image_tags, indent=2),
             )
         if include_images:
-            # Plan-20.2 — parallel MinIO downloads, serial ZIP writes.
-            fetch_keys: list[tuple[Asset, str]] = []
-            for asset in assets:
-                if asset.kind != AssetKind.image:
+            image_assets = [a for a in assets if a.kind == AssetKind.image]
+            for asset, body in _iter_asset_bytes(
+                pool, storage, image_assets, _asset_key, _DOWNLOAD_WINDOW,
+            ):
+                if body is None:
                     continue
-                ext = Path(asset.original_name).suffix.lstrip(".") or "bin"
-                fetch_keys.append(
-                    (asset, f"assets/{asset.xxh3_128}/original.{ext}"),
+                zf.writestr(
+                    f"{root}/training_data/{asset.original_name}", body,
                 )
-            with ThreadPoolExecutor(max_workers=_DOWNLOAD_WORKERS) as pool:
-                futures = [
-                    (asset, pool.submit(_fetch_asset_bytes, storage, key))
-                    for asset, key in fetch_keys
-                ]
-                for asset, fut in futures:
-                    body = fut.result()
-                    if body is None:
-                        continue
-                    zf.writestr(
-                        f"{root}/training_data/{asset.original_name}", body,
-                    )
         if classes_manifest is not None:
             zf.writestr(
                 f"{root}/classes.json",
                 json.dumps(classes_manifest, indent=2),
             )
         zf.writestr(f"{root}/README.md", _coco_readme(root))
-    return buf.getvalue()
 
 
 def _coco_readme(root: str = "export") -> str:
@@ -868,6 +940,7 @@ def _coco_readme(root: str = "export") -> str:
 
 def _build_archive(
     *,
+    out,
     task: Task,
     assets: list[Asset],
     annotations_by_asset_id: dict[uuid.UUID, list[Annotation]],
@@ -879,9 +952,13 @@ def _build_archive(
     classes_manifest: list[dict[str, Any]] | None = None,
     yolo_mode: str = "segmentation",
     root: str = "export",
-) -> bytes:
+) -> None:
+    """Stream the archive for ``fmt`` into ``out`` (a writable, seekable
+    binary file). Nothing is returned — the caller owns ``out`` and uploads
+    it. Raises ``ValueError`` for an unsupported format."""
     if fmt == "yolo":
-        return _yolo_archive(
+        _yolo_archive(
+            out=out,
             task=task,
             assets=assets,
             annotations_by_asset_id=annotations_by_asset_id,
@@ -893,9 +970,11 @@ def _build_archive(
             yolo_mode=yolo_mode,
             root=root,
         )
+        return
     if fmt == "coco":
         # COCO uses a single coco.json — split partitioning is YOLO-only here.
-        return _coco_archive(
+        _coco_archive(
+            out=out,
             assets=assets,
             annotations_by_asset_id=annotations_by_asset_id,
             class_remap=class_remap,
@@ -904,6 +983,7 @@ def _build_archive(
             classes_manifest=classes_manifest,
             root=root,
         )
+        return
     raise ValueError(f"unsupported export format: {fmt}")
 
 
@@ -978,33 +1058,44 @@ def run_export_inline(
         # ``_test1``/``_test2``/… suffix when prior completed exports
         # exist for the same task.
         root_name = _archive_root_name(session, task)
-        archive_bytes = _build_archive(
-            task=task,
-            assets=assets,
-            annotations_by_asset_id=anns_by_asset,
-            fmt=payload.fmt,
-            class_remap=densified_remap,
-            # Plan-20 — every export ZIP must carry images alongside the
-            # annotation files. We accept the legacy ``include_images``
-            # flag in the payload for API compatibility but always coerce
-            # it to True at the build boundary.
-            include_images=True,
-            storage=storage,
-            splits=payload.splits,
-            classes_manifest=classes_manifest,
-            yolo_mode=getattr(payload, "yolo_mode", "segmentation"),
-            root=root_name,
-        )
-
-        # Plan-20.4 — embed the friendly root name in the MinIO key so
-        # the URL path tail also reads as the user-friendly filename;
-        # the export_id segment keeps multiple exports of the same
-        # ``root_name`` from colliding on the storage side.
+        # Plan-20.4 — embed the friendly root name in the MinIO key so the URL
+        # path tail also reads as the user-friendly filename; the export_id
+        # segment keeps multiple exports of the same ``root_name`` from
+        # colliding on the storage side.
         minio_key = f"exports/{task.id}/{export.id}/{root_name}.zip"
         storage.ensure_bucket()
-        storage.put_object(
-            minio_key, io.BytesIO(archive_bytes), len(archive_bytes), "application/zip"
-        )
+        # Build the archive into a spooled temp file — it stays in RAM while
+        # small and transparently spills to disk past _SPOOL_MAX_BYTES — then
+        # stream it to MinIO (put_object → upload_fileobj reads in bounded
+        # chunks). Combined with the bounded download window inside the builder,
+        # peak memory is independent of how many images/annotations the task
+        # has, so large segmentation exports can no longer OOM-kill the worker.
+        # The file (and any on-disk spill) is always reclaimed on block exit.
+        with tempfile.SpooledTemporaryFile(
+            max_size=_SPOOL_MAX_BYTES, mode="w+b"
+        ) as archive:
+            _build_archive(
+                out=archive,
+                task=task,
+                assets=assets,
+                annotations_by_asset_id=anns_by_asset,
+                fmt=payload.fmt,
+                class_remap=densified_remap,
+                # Plan-20 — every export ZIP must carry images alongside the
+                # annotation files. We accept the legacy ``include_images``
+                # flag in the payload for API compatibility but always coerce
+                # it to True at the build boundary.
+                include_images=True,
+                storage=storage,
+                splits=payload.splits,
+                classes_manifest=classes_manifest,
+                yolo_mode=getattr(payload, "yolo_mode", "segmentation"),
+                root=root_name,
+            )
+            archive.seek(0, os.SEEK_END)
+            size = archive.tell()
+            archive.seek(0)
+            storage.put_object(minio_key, archive, size, "application/zip")
         svc.mark_completed(export_id=export.id, minio_key=minio_key)
         # Plan-13 Phase 7 Task 6 — register a DatasetVersion for the
         # exported bundle so it can be diffed / rolled back later.
@@ -1083,25 +1174,46 @@ def run_export_inline(
         # paths, secrets in messages, stack-frame hints) never leak via the
         # GET endpoint.
         logger.exception("export job failed for export_id=%s", payload.export_id)
-        # Plan-20.2 — DON'T reuse ``svc`` / ``session`` here. The outer
-        # ``with SessionLocal.begin()`` context wraps a transaction that
-        # is now in a dirty/poisoned state, so any further write on the
-        # same session raises 'Can't operate on closed transaction…'.
-        # Open a brand-new session purely to record the failure.
+        # The export row must never be left at 'pending'. Two-tier recording:
+        #
+        # 1) Try the CURRENT session inside a SAVEPOINT. For the common case —
+        #    a build/data error (bad geometry, unsupported format, encode
+        #    failure) that did NOT poison the DB transaction — this marks the
+        #    row using the session that already sees it, no second connection
+        #    needed.
+        # 2) Plan-20.2 — if the session's transaction is in a dirty/poisoned
+        #    state (e.g. a failed flush), the SAVEPOINT attempt itself raises;
+        #    fall back to a brand-new session so the failure is still recorded.
+        marked = False
         try:
-            from carve_api.db import get_session_factory
-            from carve_api.exports.service import ExportService
-
-            FactoryLocal = get_session_factory()
-            with FactoryLocal.begin() as fail_session:
-                ExportService(fail_session).mark_failed(
+            with session.begin_nested():
+                svc.mark_failed(
                     export_id=uuid.UUID(payload.export_id),
                     error="archive_build_failed",
                 )
+            marked = True
         except Exception:
-            logger.exception(
-                "failed to mark export as failed export_id=%s", payload.export_id,
+            logger.warning(
+                "export: in-session mark_failed failed; retrying on a fresh "
+                "session export_id=%s",
+                payload.export_id,
             )
+        if not marked:
+            try:
+                from carve_api.db import get_session_factory
+                from carve_api.exports.service import ExportService
+
+                FactoryLocal = get_session_factory()
+                with FactoryLocal.begin() as fail_session:
+                    ExportService(fail_session).mark_failed(
+                        export_id=uuid.UUID(payload.export_id),
+                        error="archive_build_failed",
+                    )
+            except Exception:
+                logger.exception(
+                    "failed to mark export as failed export_id=%s",
+                    payload.export_id,
+                )
         return {"status": "failed", "error": "archive_build_failed"}
 
 

@@ -101,14 +101,23 @@ def _named(name: str):
 @pytest.mark.parametrize(
     "callable_name,expected_timeout",
     [
-        ("run_batch_auto_annotate", 2 * 3600),
-        ("run_auto_text_batch", 2 * 3600),
+        ("run_batch_auto_annotate", 4 * 3600),
+        ("run_auto_text_batch", 4 * 3600),
         ("extract_frames_for_video", 30 * 60),
         ("run_retrain_job", 24 * 3600),
+        ("run_export_job", 2 * 3600),
     ],
 )
-def test_enqueue_with_defaults_sets_job_timeout(callable_name, expected_timeout):
+def test_enqueue_with_defaults_sets_job_timeout(
+    callable_name, expected_timeout, monkeypatch
+):
     queue = MagicMock()
+    # enqueue_with_defaults re-homes the job onto its priority lane by
+    # constructing a fresh Queue(target_lane, connection=...). With a bare
+    # MagicMock that reassignment would build a *real* rq.Queue and our mock's
+    # .enqueue would never be called. Patch the Queue symbol so the lane
+    # reassignment returns the same mock, isolating the timeout-injection logic.
+    monkeypatch.setattr("carve_api.jobs.queue.Queue", lambda *a, **k: queue)
     fn = _named(callable_name)
 
     enqueue_with_defaults(queue, fn, "arg1", "arg2")
@@ -120,8 +129,9 @@ def test_enqueue_with_defaults_sets_job_timeout(callable_name, expected_timeout)
     assert kwargs["failure_ttl"] == 86400
 
 
-def test_enqueue_with_defaults_omits_unknown_callable_timeout():
+def test_enqueue_with_defaults_omits_unknown_callable_timeout(monkeypatch):
     queue = MagicMock()
+    monkeypatch.setattr("carve_api.jobs.queue.Queue", lambda *a, **k: queue)
     fn = _named("some_other_function")
 
     enqueue_with_defaults(queue, fn, 1, 2)
@@ -132,9 +142,10 @@ def test_enqueue_with_defaults_omits_unknown_callable_timeout():
     assert kwargs["result_ttl"] == 86400
 
 
-def test_enqueue_with_defaults_caller_override_wins():
+def test_enqueue_with_defaults_caller_override_wins(monkeypatch):
     queue = MagicMock()
-    fn = _named("run_batch_auto_annotate")  # default would be 7200
+    monkeypatch.setattr("carve_api.jobs.queue.Queue", lambda *a, **k: queue)
+    fn = _named("run_batch_auto_annotate")  # table default would be 14400
 
     enqueue_with_defaults(queue, fn, "p", job_timeout=99)
 
