@@ -1,8 +1,32 @@
 name: carve
+#
+# Memory containment (added 2026-06-17) — prevents a whole-host freeze.
+# -------------------------------------------------------------------------
+# Previously NO service had a host-RAM ceiling, so a memory spike (multiple
+# users running SAM, a big batch/export, a large image decode) consumed all
+# host RAM + swap and froze the entire machine (the OOM-killer fires too late;
+# swap-thrash locks up the desktop). The per-service ``mem_limit`` below turns
+# that into a CONTAINED, auto-restarting OOM-kill of a single container.
+#
+# Two non-obvious but critical details:
+#   * Limits are top-level ``mem_limit`` (NOT ``deploy.resources.limits``),
+#     because plain ``docker compose`` (non-swarm) silently IGNORES the
+#     ``deploy`` form. The ``deploy`` block on model/model-vlm-fo1 stays —
+#     it is only used for the GPU reservation, which compose DOES honor.
+#   * ``memswap_limit == mem_limit`` disables per-container swap, so a
+#     container that breaches its limit is OOM-killed PROMPTLY instead of
+#     borrowing host swap and thrashing. That is the actual anti-freeze lever.
+#
+# The values below are sized for a ~16 GB single-GPU host that also runs a
+# desktop (sum ≈ 12-13 GB, leaving headroom for the OS + page cache). On such
+# a host do NOT enable VLM-FO1 (keep VLM_FO1_AVAILABLE=0) — SAM + a second VLM
+# on one GPU/16 GB is over-subscribed. Raise these limits on larger hosts.
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: 1g
+    memswap_limit: 1g
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -18,7 +42,11 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    # --maxmemory self-bounds Redis BELOW the container limit and evicts
+    # under pressure (allkeys-lru) instead of growing into an OOM-kill.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "384mb", "--maxmemory-policy", "allkeys-lru"]
+    mem_limit: 512m
+    memswap_limit: 512m
     volumes:
       - redis_data:/data
     healthcheck:
@@ -31,6 +59,8 @@ services:
     image: minio/minio:RELEASE.2025-02-07T23-21-09Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
+    mem_limit: 768m
+    memswap_limit: 768m
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -60,6 +90,8 @@ services:
   api:
     build: ./apps/api
     restart: unless-stopped
+    mem_limit: 1536m
+    memswap_limit: 1536m
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -112,6 +144,8 @@ services:
     build: ./apps/api
     restart: unless-stopped
     command: ["rq", "worker", "default", "--url", "redis://redis:6379/0"]
+    mem_limit: 2g
+    memswap_limit: 2g
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -149,6 +183,14 @@ services:
     restart: unless-stopped
     profiles:
       - inference
+    # HOST-RAM ceiling (NOT VRAM). SAM weights/activations live in VRAM;
+    # this caps the model service's host-side footprint (CUDA context,
+    # pinned transfer buffers, decoded image arrays). 6 GB is generous for
+    # single-user SAM image work; if the container OOM-restarts under heavy
+    # concurrent load, the next step is capping the SAM input image to its
+    # working resolution + decoding after admission (see sam/router.py).
+    mem_limit: 6g
+    memswap_limit: 6g
     # v3.7.8 — pass through NVIDIA GPU(s) to the model container.
     # Without this the YOLO + SAM models fall back to CPU which is
     # ~30-40x slower (yolov8n at ~2.7s/asset CPU vs ~70ms/asset GPU).
@@ -169,6 +211,10 @@ services:
     # restrict PyTorch via `CUDA_VISIBLE_DEVICES` further down in
     # `environment:`. `torch.cuda.device_count()` honors that env
     # var, so SAM 3.1 multiplex still sees world_size=1.
+    #
+    # NOTE: ``deploy.resources`` below is honored by ``docker compose`` ONLY
+    # for the GPU device reservation. Memory limits MUST use the top-level
+    # ``mem_limit`` above (the deploy.limits form is ignored outside swarm).
     deploy:
       resources:
         reservations:
@@ -262,11 +308,17 @@ services:
   # so the upstream om-ai-lab/VLM-FO1 package can run unmodified. See
   # apps/model-vlm-fo1/ and carve_model.vlm_fo1.adapter for the split
   # rationale. Lazy-loads weights on first /filter request.
+  #
+  # WARNING (≤16 GB single-GPU hosts): leave VLM_FO1_AVAILABLE=0. Running
+  # this alongside SAM oversubscribes both VRAM and host RAM. The mem_limit
+  # caps the damage but the container will OOM-restart if it loads Qwen here.
   model-vlm-fo1:
     build: ./apps/model-vlm-fo1
     restart: unless-stopped
     profiles:
       - inference
+    mem_limit: 4g
+    memswap_limit: 4g
     deploy:
       resources:
         reservations:
@@ -306,6 +358,8 @@ services:
   web:
     build: ./apps/web
     restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 256m
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost/ > /dev/null"]
       interval: 10s
@@ -316,10 +370,14 @@ services:
   docs:
     build: ./apps/docs
     restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 256m
 
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 256m
     ports:
       - "80:80"
       - "443:443"
