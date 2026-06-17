@@ -19,9 +19,11 @@ class AssetKind(str, enum.Enum):
 
 class Asset(Base):
     __tablename__ = "assets"
-    __table_args__ = (
-        UniqueConstraint("task_id", "xxh3_128", name="uq_assets_task_hash"),
-    )
+    # Dedup is by (task_id, original_name) enforced in AssetService.upload_stream
+    # — NOT by content hash. Identical bytes under different filenames are
+    # allowed (multiple assets may share one content-addressed blob; deletion
+    # ref-counts the hash). The old UniqueConstraint("task_id", "xxh3_128") was
+    # dropped in alembic 0037.
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     task_id: Mapped[uuid.UUID] = mapped_column(
