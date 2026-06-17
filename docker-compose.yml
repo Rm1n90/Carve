@@ -253,6 +253,15 @@ services:
       SAM_ATTN_IMPL: ${SAM_ATTN_IMPL:-sdpa}
       SAM_COMPILE: ${SAM_COMPILE:-false}
       SAM_VIDEO_BACKEND: ${SAM_VIDEO_BACKEND:-multiplex}
+      # Client-side SAM decode (CVAT-style): when "1", /sam/encode also returns
+      # the ONNX vision-encoder embedding so the BROWSER decodes each click
+      # locally — no per-click server round-trip or re-encode thrash, far less
+      # server RAM/GPU under multi-user load. OFF by default; flip to 1 ONLY
+      # after provisioning the decoder + ORT WASM assets (apps/model/scripts/
+      # provision_sam_decoders.py) and rebuilding the web image. Safe to enable
+      # before assets exist — the client falls back to server /sam/decode when
+      # a decoder asset is missing (canDecodeLocally → false).
+      SAM_CLIENT_ENCODE: ${SAM_CLIENT_ENCODE:-0}
       # v3.21+ -- VLM-FO1 precision filter. OFF by default. Setting to 1
       # registers the filter at lifespan (lazy-load on first opted-in
       # request). When OFF, /sam/text-prompt behaves identically to
