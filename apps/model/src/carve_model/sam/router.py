@@ -185,8 +185,13 @@ def encode(payload: EncodeIn) -> EncodeOut:
         raise HTTPException(status_code=400, detail="bad_image_b64") from exc
 
     h = xxhash.xxh3_128(img_bytes).hexdigest()
-    img = np.array(Image.open(BytesIO(img_bytes)).convert("RGB"))
-    shape = [int(img.shape[0]), int(img.shape[1])]
+    # NOTE: the full-resolution decode (np.array(Image.open(...))) is performed
+    # INSIDE the admit() block below, not here. A decoded HxWx3 array is large
+    # (4K ≈ 36 MB, 8K ≈ 192 MB host RAM); doing it before admission meant every
+    # request queued on the single inference slot held a full array at once —
+    # the host-RAM pile-up that tipped a busy multi-user box into swap-thrash.
+    # Waiters now hold only the compressed ``img_bytes`` until they are admitted.
+    shape: list[int] = []
 
     # Route through the lifecycle manager — the canonical SAM entry
     # point. The manager hands us the active variant (or a test variant
@@ -201,6 +206,12 @@ def encode(payload: EncodeIn) -> EncodeOut:
     client_payload = None
     try:
         with admit(CostClass.SAM_IMAGE):
+            # Decode to a full-resolution array only now that we hold the GPU
+            # admission slot (see the note above). Kept identical to the prior
+            # behaviour otherwise — SAM still receives the native-resolution
+            # image, so embedding quality and coordinate mapping are unchanged.
+            img = np.array(Image.open(BytesIO(img_bytes)).convert("RGB"))
+            shape = [int(img.shape[0]), int(img.shape[1])]
             with manager.lease_or_load() as sam:
                 sam.set_image(img, image_hash=h)
                 embedding_bytes = sam.extract_embedding()
