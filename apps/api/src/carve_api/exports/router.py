@@ -92,10 +92,18 @@ def enqueue_export(
     )
     try:
         from rq import Queue
+
+        from carve_api.jobs.queue import enqueue_with_defaults
+
         client = _redis_client_or_none()
         if client is not None:
             q = Queue("default", connection=client)
-            q.enqueue(run_export_job, job_payload)
+            # Enqueue via the shared helper so the per-callable ``job_timeout``
+            # (run_export_job -> 2h, see jobs/queue._JOB_TIMEOUTS) is applied.
+            # A raw ``q.enqueue`` left RQ's 180s default, which SIGKILLed large
+            # segmentation exports mid-build and stranded the Export row at
+            # 'pending' (the hard kill skips the job's mark_failed handler).
+            enqueue_with_defaults(q, run_export_job, job_payload)
     except Exception:
         pass
 

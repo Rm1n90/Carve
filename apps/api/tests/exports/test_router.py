@@ -77,6 +77,51 @@ def test_create_export_returns_id_and_pending(db_session, monkeypatch) -> None:
     assert snap["download_url"] is None
 
 
+def test_export_enqueues_through_enqueue_with_defaults(db_session, monkeypatch) -> None:
+    """Regression: the export job MUST be enqueued via enqueue_with_defaults so
+    the per-callable job_timeout (run_export_job -> 2h) is applied. A raw
+    q.enqueue() leaves RQ's 180s default, which SIGKILLs large segmentation
+    exports mid-build and leaves the Export row stuck at 'pending' forever.
+    """
+    from carve_api.exports import router as router_mod
+    from carve_api.exports.job import run_export_job
+
+    client = _client(db_session)
+    token, pid, tid, car_id = _setup(client, monkeypatch)
+
+    # Force the enqueue branch to run (no real Redis in tests).
+    monkeypatch.setattr(router_mod, "_redis_client_or_none", lambda: object())
+
+    calls = {}
+
+    def _recording_enqueue(queue, fn, *args, **kwargs):
+        calls["fn"] = fn
+        calls["args"] = args
+        return None
+
+    # The router lazy-imports enqueue_with_defaults from carve_api.jobs.queue
+    # inside the handler, so patch it at the source module — the function-local
+    # ``from ... import`` then resolves to this recorder.
+    monkeypatch.setattr(
+        "carve_api.jobs.queue.enqueue_with_defaults", _recording_enqueue
+    )
+    # Neutralise the real Queue ctor (we only care that the defaults path is used).
+    monkeypatch.setattr("rq.Queue", lambda *a, **k: object())
+
+    r = client.post(
+        f"/tasks/{tid}/exports",
+        json={
+            "format": "yolo",
+            "class_remap": {car_id: {"export_id": 0, "name": "vehicle"}},
+            "splits": {"train": 1.0, "val": 0.0, "test": 0.0},
+            "include_images": True,
+        },
+        headers=_hdr(token),
+    )
+    assert r.status_code == 202, r.text
+    assert calls.get("fn") is run_export_job
+
+
 def test_export_unknown_id_returns_404(db_session, monkeypatch) -> None:
     client = _client(db_session)
     token, pid, tid, _ = _setup(client, monkeypatch)

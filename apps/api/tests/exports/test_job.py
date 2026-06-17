@@ -98,8 +98,14 @@ def test_yolo_export_writes_data_yaml_and_label(db_session) -> None:
         assert "vehicle" in yaml
         assert "nc: 1" in yaml
         label = zf.read(f"{root}/training_data/a.txt").decode()
-        # bbox at (50,50,100,80) on 640x480 → cx=0.156250 cy=0.187500 w=0.156250 h=0.166667
-        assert label.strip().startswith("0 0.156250 0.187500")
+        # Default yolo_mode is "segmentation": bbox (50,50,100,80) on 640x480 is
+        # promoted to a 4-vertex polygon, normalised clockwise from top-left:
+        #   (50,50)->(.078125,.104167)  (150,50)->(.234375,.104167)
+        #   (150,130)->(.234375,.270833) (50,130)->(.078125,.270833)
+        assert label.strip() == (
+            "0 0.078125 0.104167 0.234375 0.104167 "
+            "0.234375 0.270833 0.078125 0.270833"
+        )
 
 
 def test_coco_export_writes_coco_json(db_session) -> None:
@@ -120,7 +126,11 @@ def test_coco_export_writes_coco_json(db_session) -> None:
     assert result["status"] == "completed"
     _, body = storage.uploaded[0]
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
-        coco = json.loads(zf.read("coco.json"))
+        # Plan-20.4 — coco.json lives under the friendly root folder.
+        root = next(
+            n.split("/", 1)[0] for n in zf.namelist() if n.endswith("/coco.json")
+        )
+        coco = json.loads(zf.read(f"{root}/coco.json"))
     assert len(coco["images"]) == 1
     assert len(coco["annotations"]) == 1
     assert coco["categories"] == [{"id": 0, "name": "vehicle"}]
@@ -149,6 +159,61 @@ def test_export_with_include_images_includes_image_bytes(db_session) -> None:
         root = next(n.split("/", 1)[0] for n in names if n.endswith("/data.yaml"))
         assert f"{root}/training_data/a.png" in names
         assert zf.read(f"{root}/training_data/a.png") == b"PNG-IMAGE-BYTES"
+
+
+def test_yolo_tags_only_export_builds_imagefolder_layout(db_session) -> None:
+    """tags_only mode must arrange images as <root>/training_data/<class>/<img>
+    and emit classes.txt — the path rewritten by the streaming refactor."""
+    u = User(email=f"e-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u); db_session.flush()
+    p = Project(name="P", owner_id=u.id); db_session.add(p); db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t); db_session.flush()
+    a = Asset(
+        task_id=t.id, kind=AssetKind.image, xxh3_128=str(uuid.uuid4().hex)[:16],
+        mime="image/png", size_bytes=10, width=640, height=480, frames=1,
+        original_name="a.png",
+    )
+    db_session.add(a); db_session.flush()
+    f = Frame(asset_id=a.id, idx=0, pts_ms=0); db_session.add(f); db_session.flush()
+    car = Class(project_id=p.id, idx=0, name="car", color="#ff0000")
+    db_session.add(car); db_session.flush()
+    # An image-level tag (no geometry) — the only kind tags_only exports.
+    db_session.add(Annotation(
+        task_id=t.id, frame_id=f.id, class_id=car.id,
+        kind=AnnotationKind.tag, geometry={"kind": "tag"}, created_by=u.id,
+    ))
+    e = Export(
+        task_id=t.id, format="yolo",
+        class_remap={str(car.id): {"export_id": 0, "name": "vehicle"}},
+        created_by=u.id,
+    )
+    db_session.add(e); db_session.flush()
+
+    storage = _FakeStorage()
+    storage.objects[f"assets/{a.xxh3_128}/original.png"] = b"PNG-BYTES"
+    payload = ExportJobPayload(
+        export_id=str(e.id),
+        actor_id=str(u.id),
+        task_id=str(t.id),
+        fmt="yolo",
+        class_remap={str(car.id): {"export_id": 0, "name": "vehicle"}},
+        include_images=True,
+        splits={"train": 1.0, "val": 0.0, "test": 0.0},
+        yolo_mode="tags_only",
+    )
+    result = run_export_inline(session=db_session, storage=storage, payload=payload)
+    assert result["status"] == "completed"
+    _, body = storage.uploaded[0]
+    with zipfile.ZipFile(io.BytesIO(body)) as zf:
+        names = set(zf.namelist())
+        root = next(n.split("/", 1)[0] for n in names if n.endswith("/README.md"))
+        # ImageFolder: image filed under its class-name dir; no data.yaml.
+        assert f"{root}/training_data/vehicle/a.png" in names, names
+        assert zf.read(f"{root}/training_data/vehicle/a.png") == b"PNG-BYTES"
+        assert f"{root}/classes.txt" in names, names
+        assert "vehicle" in zf.read(f"{root}/classes.txt").decode()
+        assert not any(n.endswith("/data.yaml") for n in names), names
 
 
 def _make_jpeg(width: int, height: int) -> bytes:
@@ -370,3 +435,74 @@ def test_archive_build_exception_returns_static_code(db_session, monkeypatch) ->
     assert refreshed.error == "archive_build_failed"
     assert "internal-detail-with-secrets" not in (refreshed.error or "")
     assert "RuntimeError" not in (refreshed.error or "")
+
+
+# ---------------------------------------------------------------------------
+# _iter_asset_bytes — bounded, ordered streaming download. This is the core of
+# the OOM fix: it must yield bodies in input order, surface None on a fetch
+# miss, AND never keep more than ``window`` downloads in flight (so peak memory
+# is independent of asset count).
+# ---------------------------------------------------------------------------
+
+
+def test_iter_asset_bytes_yields_in_order_with_none_on_miss(monkeypatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from carve_api.exports import job as export_job
+
+    present = {f"k{i}" for i in range(10) if i != 4}  # k4 is a miss
+
+    def _fake_fetch(_storage, key):
+        return f"body-{key}".encode() if key in present else None
+
+    monkeypatch.setattr(export_job, "_fetch_asset_bytes", _fake_fetch)
+
+    items = list(range(10))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        out = list(
+            export_job._iter_asset_bytes(
+                pool, object(), items, lambda i: f"k{i}", window=4
+            )
+        )
+
+    # Order preserved 0..9, and the k4 miss surfaces as None.
+    assert [item for item, _ in out] == items
+    assert out[4] == (4, None)
+    assert out[0] == (0, b"body-k0")
+    assert out[9] == (9, b"body-k9")
+
+
+def test_iter_asset_bytes_bounds_inflight_to_window(monkeypatch) -> None:
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from carve_api.exports import job as export_job
+
+    lock = threading.Lock()
+    state = {"active": 0, "max": 0}
+
+    def _slow_fetch(_storage, key):
+        with lock:
+            state["active"] += 1
+            state["max"] = max(state["max"], state["active"])
+        time.sleep(0.01)
+        with lock:
+            state["active"] -= 1
+        return b"x"
+
+    monkeypatch.setattr(export_job, "_fetch_asset_bytes", _slow_fetch)
+
+    window = 4
+    items = list(range(40))
+    with ThreadPoolExecutor(max_workers=window) as pool:
+        consumed = list(
+            export_job._iter_asset_bytes(
+                pool, object(), items, lambda i: str(i), window=window
+            )
+        )
+
+    assert len(consumed) == 40
+    # Never more than ``window`` downloads materialised simultaneously,
+    # regardless of the 40-item input — the memory bound that prevents OOM.
+    assert state["max"] <= window, state["max"]

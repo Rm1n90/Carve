@@ -69,6 +69,14 @@ _JOB_TIMEOUTS: dict[str, int] = {
     "extract_frames_for_video": 30 * 60,
     "run_video_to_images": 60 * 60,
     "run_retrain_job": 24 * 3600,
+    # Export archive build (DB read → mask→polygon conversion → MinIO
+    # download → in-memory ZIP → upload). Single-shot, NOT chunked, so this
+    # caps the whole job. RQ's 180s default SIGKILLed large segmentation
+    # exports (e.g. 3600 images / 24K masks) mid-build; because the kill is
+    # a hard signal the job's ``except`` handler never ran, so ``mark_failed``
+    # was skipped and the Export row stayed 'pending' forever. 2h is ample
+    # headroom for the largest realistic single export.
+    "run_export_job": 2 * 3600,
 }
 
 # Per-callable priority lane. Keys are bare callable names (same
