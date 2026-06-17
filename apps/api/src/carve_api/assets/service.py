@@ -6,7 +6,6 @@ from typing import BinaryIO, Literal
 
 from PIL import Image
 from sqlalchemy import distinct, exists, func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation
@@ -50,6 +49,13 @@ class AssetDuplicate(AppError):
     http_status = 409; code = "asset_duplicate"
 
 
+class AssetNameExists(AppError):
+    # Dedup is by filename within a task (NOT content): a file whose name
+    # already exists in the task is skipped. Distinct code so the upload UI
+    # reports it as a benign "skipped" rather than a hard error.
+    http_status = 409; code = "asset_name_exists"
+
+
 class AssetArchiveInvalid(AppError):
     http_status = 400; code = "asset_archive_invalid"
 
@@ -90,6 +96,18 @@ class AssetService:
         if size > _max_upload_bytes():
             raise AssetTooLarge(f"upload exceeds {_max_upload_bytes()} bytes")
         kind = self._kind_for(mime, task.kind)
+        # Dedup is by filename within the task (NOT content). Skip early — before
+        # hashing or uploading bytes — if this task already has an asset with
+        # the same name. Identical content under a different name is allowed.
+        name_taken = self.session.execute(
+            select(Asset.id)
+            .where(Asset.task_id == task.id, Asset.original_name == original_name)
+            .limit(1)
+        ).first()
+        if name_taken is not None:
+            raise AssetNameExists(
+                "an asset with this filename already exists in this task"
+            )
         stream.seek(0)
         h = stream_xxh3_128(stream)
         width = height = None
@@ -100,17 +118,16 @@ class AssetService:
                 width, height = im.size
         else:
             frames = 0  # populated by the video metadata/extract worker
-        try:
-            asset = Asset(
-                task_id=task.id, kind=kind, xxh3_128=h, mime=mime,
-                size_bytes=size, width=width, height=height,
-                frames=frames, original_name=original_name,
-            )
-            self.session.add(asset)
-            self.session.flush()
-        except IntegrityError as exc:
-            self.session.rollback()
-            raise AssetDuplicate("identical asset already exists in this task") from exc
+        # No content-uniqueness constraint anymore (dropped in alembic 0037):
+        # identical bytes under different names are intentionally allowed, and
+        # the per-task name check above already rejected name collisions.
+        asset = Asset(
+            task_id=task.id, kind=kind, xxh3_128=h, mime=mime,
+            size_bytes=size, width=width, height=height,
+            frames=frames, original_name=original_name,
+        )
+        self.session.add(asset)
+        self.session.flush()
 
         ext = original_name.rsplit(".", 1)[-1] if "." in original_name else "bin"
         key = f"assets/{h}/original.{ext}"
@@ -310,10 +327,20 @@ class AssetService:
 
     def delete(self, *, asset: Asset) -> None:
         ext = asset.original_name.rsplit(".", 1)[-1] if "." in asset.original_name else "bin"
-        try:
-            self.storage.remove_object(f"assets/{asset.xxh3_128}/original.{ext}")
-        except Exception:
-            pass
+        # Storage is content-addressed (assets/<hash>/…) and identical content
+        # may now back several assets (same bytes, different names — even across
+        # tasks). Only remove the blob when no OTHER asset references this hash;
+        # otherwise we'd erase the image out from under the survivors.
+        others = self.session.execute(
+            select(func.count())
+            .select_from(Asset)
+            .where(Asset.xxh3_128 == asset.xxh3_128, Asset.id != asset.id)
+        ).scalar() or 0
+        if others == 0:
+            try:
+                self.storage.remove_object(f"assets/{asset.xxh3_128}/original.{ext}")
+            except Exception:
+                pass
         self.session.delete(asset)
         self.session.flush()
 
@@ -357,8 +384,8 @@ class AssetService:
                 data = zf.read(member)
                 try:
                     out.append(self.upload(task=task, original_name=member.filename, mime=mime, body=data))
-                except AssetDuplicate:
-                    continue  # silently skip duplicates inside an archive
+                except AssetNameExists:
+                    continue  # skip members whose filename already exists in the task
         return out
 
     @staticmethod

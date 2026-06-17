@@ -80,6 +80,9 @@ def test_list_assets_accepts_limit_5000(db_session, monkeypatch) -> None:
 
 
 def test_duplicate_asset_returns_409(db_session, monkeypatch) -> None:
+    """Dedup is by filename within a task: re-uploading the same name is
+    skipped (409 asset_name_exists). Different names always upload, even with
+    identical content — see test_cross_task_dedup."""
     from carve_api.assets import service as svc_mod
     monkeypatch.setattr(svc_mod, "MinioClient", _FakeStorage)
     client = _client(db_session)
@@ -92,10 +95,11 @@ def test_duplicate_asset_returns_409(db_session, monkeypatch) -> None:
     )
     r = client.post(
         f"/tasks/{tid}/assets",
-        files={"file": ("b.png", io.BytesIO(png), "image/png")},
+        files={"file": ("a.png", io.BytesIO(png), "image/png")},
         headers=_hdr(token),
     )
     assert r.status_code == 409
+    assert r.json()["error"] == "asset_name_exists"
 
 
 def test_get_asset_image_returns_frame_id(db_session, monkeypatch) -> None:

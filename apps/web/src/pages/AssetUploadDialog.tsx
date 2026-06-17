@@ -241,6 +241,7 @@ export function AssetUploadDialog({
     let cursor = 0;
     let count = 0;
     let succeeded = 0;
+    let skipped = 0;
     let sinceInvalidate = 0;
     const errors: UploadError[] = [];
 
@@ -377,7 +378,14 @@ export function AssetUploadDialog({
             const code =
               (err as { response?: { data?: { error?: string } } })?.response
                 ?.data?.error ?? "upload_failed";
-            errors.push({ name: file.name, error: code });
+            if (code === "asset_name_exists") {
+              // Dedup is by filename: a file whose name already exists in this
+              // task is skipped, not a failure. Count it for a friendly summary
+              // instead of surfacing a red per-file error.
+              skipped += 1;
+            } else {
+              errors.push({ name: file.name, error: code });
+            }
           }
         } finally {
           if (!aborted) count += 1;
@@ -452,15 +460,23 @@ export function AssetUploadDialog({
       );
       setTimeout(() => setPhase({ kind: "pick" }), 800);
     } else if (errors.length === 0) {
+      // Skips (same filename already in the task) aren't failures — report
+      // them as a benign summary alongside the upload count.
+      const uploadedN = skipped > 0 ? succeeded : total;
+      const noun = uploadedN === 1 ? "file" : "files";
+      const skipNote =
+        skipped > 0
+          ? ` Skipped ${skipped} ${skipped === 1 ? "file" : "files"} already in this task (same name).`
+          : "";
       showToast(
-        cfg.videos.length > 0
-          ? `Uploaded ${total} files; extracting frames in background.`
-          : `Uploaded ${total} files.`,
-        { variant: "success" },
+        (cfg.videos.length > 0
+          ? `Uploaded ${uploadedN} ${noun}; extracting frames in background.`
+          : `Uploaded ${uploadedN} ${noun}.`) + skipNote,
+        { variant: skipped > 0 ? "info" : "success" },
       );
       // Auto-close only on clean upload — otherwise leave the dialog in
       // its "uploading" phase so the user can read the per-file errors.
-      setTimeout(() => setPhase({ kind: "pick" }), 1000);
+      setTimeout(() => setPhase({ kind: "pick" }), skipped > 0 ? 1800 : 1000);
     }
   };
 
