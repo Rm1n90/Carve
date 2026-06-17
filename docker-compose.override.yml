@@ -31,7 +31,13 @@ services:
       SAM_MODEL: sam3.1
     volumes:
       - ./apps/model/src:/app/src
-    command: ["uvicorn", "carve_model.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
+    # --limit-concurrency caps simultaneous SAM/inference requests at the HTTP
+    # layer: beyond this, uvicorn replies 503 immediately instead of accepting
+    # the connection and buffering its (large, base64 image) body in host RAM.
+    # With 1 inference slot + the admission queue, this bounds how many decoded
+    # images can pile up while waiting, complementing the model mem_limit. The
+    # frontend should treat 503 as transient and retry.
+    command: ["uvicorn", "carve_model.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload", "--limit-concurrency", "16"]
   model-vlm-fo1:
     # v3.28 — bind-mount sidecar source so /caption endpoint additions
     # land without an image rebuild.
