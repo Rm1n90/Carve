@@ -123,9 +123,36 @@ def test_same_bytes_upload_to_two_tasks_both_succeed(_bootstrap) -> None:
     assert r1.json()["id"] != r2.json()["id"]
 
 
-def test_duplicate_same_task_still_409(_bootstrap) -> None:
-    """Sanity: per-task dedup must still trigger 409 on a second
-    upload of identical bytes to the SAME task."""
+def test_same_filename_same_task_is_skipped(_bootstrap) -> None:
+    """Dedup is now by FILENAME: re-uploading the same name to the same task
+    is skipped with the distinct asset_name_exists code (so the UI can report
+    a benign 'skipped', not a hard error)."""
+    client, token, pid = _bootstrap
+    tid = client.post(
+        f"/projects/{pid}/tasks",
+        json={"name": "T", "kind": "image"},
+        headers=_hdr(token),
+    ).json()["id"]
+
+    png = _tiny_png()
+    first = client.post(
+        f"/tasks/{tid}/assets",
+        files={"file": ("a.png", io.BytesIO(png), "image/png")},
+        headers=_hdr(token),
+    )
+    second = client.post(
+        f"/tasks/{tid}/assets",
+        files={"file": ("a.png", io.BytesIO(png), "image/png")},
+        headers=_hdr(token),
+    )
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert second.json()["error"] == "asset_name_exists"
+
+
+def test_same_content_different_name_same_task_allowed(_bootstrap) -> None:
+    """Identical bytes under a DIFFERENT filename in the same task now upload
+    fine — content dedup was removed; only the filename is deduped."""
     client, token, pid = _bootstrap
     tid = client.post(
         f"/projects/{pid}/tasks",
@@ -144,8 +171,9 @@ def test_duplicate_same_task_still_409(_bootstrap) -> None:
         files={"file": ("b.png", io.BytesIO(png), "image/png")},
         headers=_hdr(token),
     )
-    assert first.status_code == 201
-    assert second.status_code == 409
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert first.json()["id"] != second.json()["id"]
 
 
 def test_deleting_task_does_not_block_reupload_to_new_task(_bootstrap) -> None:
