@@ -261,6 +261,12 @@ interface EditorToolbarProps {
    */
   onClearFrame?: () => void;
   /**
+   * Opens the "clear annotations in a range" dialog. The caller owns
+   * the dialog's open state + the actual range pick / batch delete; the
+   * toolbar only surfaces the menu entry. Hidden when not wired in.
+   */
+  onClearRange?: () => void;
+  /**
    * Converts every polygon on the current frame/image to its enclosing
    * axis-aligned bounding box. Wired by the page; confirm + toast live
    * at the call-site so the toolbar stays pure UI.
@@ -2739,6 +2745,7 @@ export function EditorToolbar({
   onRedo,
   onClearFrame,
   onClearTask,
+  onClearRange,
   zoomPct,
   projectId,
   taskId,
@@ -3039,7 +3046,7 @@ export function EditorToolbar({
           choice; the original video is deleted after extraction so a
           re-extract isn't possible anyway. */}
 
-      {(onClearFrame || onClearTask) && (
+      {(onClearFrame || onClearTask || onClearRange) && (
         <DropdownMenu.Root>
           <Tooltip content="Clear annotations…">
             <DropdownMenu.Trigger asChild>
@@ -3076,6 +3083,20 @@ export function EditorToolbar({
                 >
                   <Eraser className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
                   <span className="flex-1">Clear annotations on this image</span>
+                </DropdownMenu.Item>
+              )}
+              {onClearRange && (
+                <DropdownMenu.Item
+                  data-testid="clear-frame-in-range"
+                  onSelect={() => onClearRange()}
+                  className={cn(
+                    "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none",
+                    "text-[color:var(--text-primary)]",
+                    "data-[highlighted]:bg-[var(--bg-hover)]",
+                  )}
+                >
+                  <Eraser className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                  <span className="flex-1">Clear annotations in a range…</span>
                 </DropdownMenu.Item>
               )}
               {onClearTask && (

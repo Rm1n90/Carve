@@ -66,6 +66,7 @@ import { useTrackBridge } from "@/state/trackBridge";
 import { useSamTrackBridge } from "@/state/samTrackBridge";
 import { trackApi } from "@/api/track";
 import { EditorToolbar } from "@/components/annotation/EditorToolbar";
+import { ClearRangeDialog } from "@/components/annotation/ClearRangeDialog";
 import { KeyboardCheatSheet } from "@/components/annotation/KeyboardCheatSheet";
 import { SelectionCountBadge } from "@/components/annotation/SelectionCountBadge";
 import { AssetThumbnailStrip } from "@/components/annotation/AssetThumbnailStrip";
@@ -1670,6 +1671,11 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     bulkConvertPolygonsOnFrameToBboxWithToast(fid);
   }, [confirm]);
 
+  // Range clear — opens the ClearRangeDialog. The dialog owns the
+  // From/To pick + the scoped batch delete; the page just holds its
+  // open state and feeds it the canonical asset order + dirty guard.
+  const [clearRangeOpen, setClearRangeOpen] = useState(false);
+
   // v3.31 — task-wide clear. Mirrors handleConvertPolygonsInTask:
   // refuse when there are unsaved local drafts (the user must save or
   // discard first so we don't half-delete a session) and show a hard
@@ -2096,6 +2102,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             onRedo={() => useAnnotations.getState().redo()}
             onClearFrame={handleClearFrame}
             onClearTask={handleClearAnnotationsInTask}
+            onClearRange={() => setClearRangeOpen(true)}
             onConvertPolygonsOnImage={handleConvertPolygonsOnImage}
             onConvertPolygonsInTask={handleConvertPolygonsInTask}
             polygonCountOnImage={polygonCountOnImage}
@@ -2111,6 +2118,21 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                 onSelect={applySavedView}
               />
             }
+          />
+
+          <ClearRangeDialog
+            open={clearRangeOpen}
+            onOpenChange={setClearRangeOpen}
+            taskId={taskId}
+            orderedAssetIds={taskAssets.map((a) => a.id)}
+            dirtyCount={dirtyCount}
+            onCleared={() => {
+              qc.invalidateQueries({ queryKey: ["annotations"] });
+              qc.invalidateQueries({ queryKey: ["task-annotations", taskId] });
+              qc.invalidateQueries({
+                queryKey: ["task-annotations-raw", taskId],
+              });
+            }}
           />
 
           <SamUnavailableBanner />
