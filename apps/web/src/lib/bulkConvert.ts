@@ -119,10 +119,14 @@ export function bulkConvertPolygonsOnFrameToBboxWithToast(
 export async function bulkClearTaskAnnotationsWithToast(
   taskId: string,
   rawAnnotations: ReadonlyArray<AnnotationRaw>,
+  /** Where the cleared annotations lived, used purely for toast
+   *  wording. Defaults to "the task" (the all-assets path); the range
+   *  path passes "the selected range". */
+  scopeNoun = "the task",
 ): Promise<BulkConvertResult> {
   const ids = rawAnnotations.map((a) => a.id);
   if (ids.length === 0) {
-    showToast("No annotations to clear in this task.", { variant: "info" });
+    showToast(`No annotations to clear in ${scopeNoun}.`, { variant: "info" });
     return { converted: 0, skipped: 0 };
   }
   try {
@@ -146,7 +150,7 @@ export async function bulkClearTaskAnnotationsWithToast(
     }
     if (toRemove.length > 0) state.removeMany(toRemove);
     showToast(
-      `Cleared ${ids.length} annotation${ids.length === 1 ? "" : "s"} across the task.`,
+      `Cleared ${ids.length} annotation${ids.length === 1 ? "" : "s"} across ${scopeNoun}.`,
       { variant: "success" },
     );
     return { converted: ids.length, skipped: 0 };
