@@ -9,6 +9,13 @@ export default defineConfig({
       "@": "/src",
     },
   },
+  // The SAM decoder worker pulls in onnxruntime-web, which uses dynamic
+  // imports. Code-splitting workers requires ES module output — the default
+  // "iife" format errors out with "UMD and IIFE output formats are not
+  // supported for code-splitting builds".
+  worker: {
+    format: "es",
+  },
   build: {
     // Route-level code-splitting: bucket heavy libraries into their own
     // chunks so the initial JS payload stays under 250 kB gzipped.

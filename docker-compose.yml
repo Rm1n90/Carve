@@ -17,16 +17,22 @@ name: carve
 #     container that breaches its limit is OOM-killed PROMPTLY instead of
 #     borrowing host swap and thrashing. That is the actual anti-freeze lever.
 #
-# The values below are sized for a ~16 GB single-GPU host that also runs a
-# desktop (sum ≈ 12-13 GB, leaving headroom for the OS + page cache). On such
-# a host do NOT enable VLM-FO1 (keep VLM_FO1_AVAILABLE=0) — SAM + a second VLM
-# on one GPU/16 GB is over-subscribed. Raise these limits on larger hosts.
+# The values below are sized for this host: 32 GB system RAM with a 12 GB
+# single-GPU, which also runs the desktop AND a co-located CVAT stack
+# (~5-6 GB live). Worst-case ceiling sum ≈ 28 GB, leaving headroom for CVAT +
+# the OS + page cache. NOTE the two memory budgets are independent:
+#   * System RAM = 32 GB  → the mem_limit ceilings below.
+#   * GPU VRAM   = 12 GB  → governs model co-residency, NOT these limits.
+# Because VRAM is only 12 GB, do NOT enable VLM-FO1 (keep VLM_FO1_AVAILABLE=0)
+# — SAM + a second VLM on a 12 GB GPU is over-subscribed. The VRAM admission
+# floors (carve_model.admission) are absolute per-job footprints and are
+# unaffected by total VRAM. Re-tune the ceilings below if the host RAM changes.
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
-    mem_limit: 1g
-    memswap_limit: 1g
+    mem_limit: 2g
+    memswap_limit: 2g
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -44,9 +50,9 @@ services:
     restart: unless-stopped
     # --maxmemory self-bounds Redis BELOW the container limit and evicts
     # under pressure (allkeys-lru) instead of growing into an OOM-kill.
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "384mb", "--maxmemory-policy", "allkeys-lru"]
-    mem_limit: 512m
-    memswap_limit: 512m
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "768mb", "--maxmemory-policy", "allkeys-lru"]
+    mem_limit: 1g
+    memswap_limit: 1g
     volumes:
       - redis_data:/data
     healthcheck:
@@ -59,8 +65,8 @@ services:
     image: minio/minio:RELEASE.2025-02-07T23-21-09Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
-    mem_limit: 768m
-    memswap_limit: 768m
+    mem_limit: 1536m
+    memswap_limit: 1536m
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -90,8 +96,8 @@ services:
   api:
     build: ./apps/api
     restart: unless-stopped
-    mem_limit: 1536m
-    memswap_limit: 1536m
+    mem_limit: 4g
+    memswap_limit: 4g
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -143,9 +149,13 @@ services:
   worker:
     build: ./apps/api
     restart: unless-stopped
-    command: ["rq", "worker", "default", "--url", "redis://redis:6379/0"]
-    mem_limit: 2g
-    memswap_limit: 2g
+    # Drains lanes in priority order: a user-blocking inference batch on
+    # ``high`` preempts the ``low`` thumbnail flood at the next per-job
+    # checkpoint (~0.4s), instead of waiting behind the whole upload
+    # backlog on a single shared queue. See apps/api jobs/queue.py.
+    command: ["rq", "worker", "high", "default", "low", "--url", "redis://redis:6379/0"]
+    mem_limit: 5g
+    memswap_limit: 5g
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -185,12 +195,12 @@ services:
       - inference
     # HOST-RAM ceiling (NOT VRAM). SAM weights/activations live in VRAM;
     # this caps the model service's host-side footprint (CUDA context,
-    # pinned transfer buffers, decoded image arrays). 6 GB is generous for
-    # single-user SAM image work; if the container OOM-restarts under heavy
-    # concurrent load, the next step is capping the SAM input image to its
-    # working resolution + decoding after admission (see sam/router.py).
-    mem_limit: 6g
-    memswap_limit: 6g
+    # pinned transfer buffers, decoded image arrays). 12 GB gives headroom for
+    # concurrent SAM image work on this 32 GB host; if the container OOM-restarts
+    # under heavy concurrent load, the next step is capping the SAM input image
+    # to its working resolution + decoding after admission (see sam/router.py).
+    mem_limit: 12g
+    memswap_limit: 12g
     # v3.7.8 — pass through NVIDIA GPU(s) to the model container.
     # Without this the YOLO + SAM models fall back to CPU which is
     # ~30-40x slower (yolov8n at ~2.7s/asset CPU vs ~70ms/asset GPU).
@@ -251,7 +261,10 @@ services:
       # See apps/docs/sam3p1.md for details.
       SAM_DTYPE: ${SAM_DTYPE:-bf16}
       SAM_ATTN_IMPL: ${SAM_ATTN_IMPL:-sdpa}
-      SAM_COMPILE: ${SAM_COMPILE:-false}
+      # Default ON: torch.compile on the SAM ViT encoder amortizes its
+      # one-time warmup over a long auto-annotate batch (~1.3-2x). Set
+      # SAM_COMPILE=false in .env to opt out (e.g. for fast cold starts).
+      SAM_COMPILE: ${SAM_COMPILE:-true}
       SAM_VIDEO_BACKEND: ${SAM_VIDEO_BACKEND:-multiplex}
       # Client-side SAM decode (CVAT-style): when "1", /sam/encode also returns
       # the ONNX vision-encoder embedding so the BROWSER decodes each click
@@ -295,8 +308,16 @@ services:
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-}
       MINIO_BUCKET: ${MINIO_BUCKET}
+      # Persist torch.compile / inductor on-disk cache. Without this the
+      # SAM ViT backbone re-compiles (~60-180s) on every container
+      # recreate. The volume mount below catches both ``~/.cache/torch``
+      # and (via the explicit env) the inductor subdir, so the second
+      # boot onward warmups in seconds (cache hit).
+      TORCHINDUCTOR_CACHE_DIR: /root/.cache/torch/inductor
     volumes:
       - hf_cache:/root/.cache/huggingface
+      # torch.compile / inductor cache persistence — see TORCHINDUCTOR_CACHE_DIR.
+      - torch_cache:/root/.cache/torch
       # v3.23 — YOLOE checkpoints. Bind-mount survives rebuilds and
       # avoids baking ~150 MB into the image. Read-only so the runtime
       # can't accidentally mutate the operator-supplied weights.
@@ -318,9 +339,10 @@ services:
   # apps/model-vlm-fo1/ and carve_model.vlm_fo1.adapter for the split
   # rationale. Lazy-loads weights on first /filter request.
   #
-  # WARNING (≤16 GB single-GPU hosts): leave VLM_FO1_AVAILABLE=0. Running
-  # this alongside SAM oversubscribes both VRAM and host RAM. The mem_limit
-  # caps the damage but the container will OOM-restart if it loads Qwen here.
+  # WARNING (≤16 GB single-GPU hosts — this host has a 12 GB GPU): leave
+  # VLM_FO1_AVAILABLE=0. Running this alongside SAM oversubscribes the 12 GB
+  # VRAM (and host RAM). The mem_limit caps the host-RAM damage but the
+  # container will OOM-restart if it loads Qwen here.
   model-vlm-fo1:
     build: ./apps/model-vlm-fo1
     restart: unless-stopped
@@ -370,11 +392,12 @@ services:
     mem_limit: 256m
     memswap_limit: 256m
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost/ > /dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ > /dev/null"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 10s
+
 
   docs:
     build: ./apps/docs
@@ -383,13 +406,19 @@ services:
     memswap_limit: 256m
 
   caddy:
-    image: caddy:2-alpine
+    build: ./infra/caddy
     restart: unless-stopped
     mem_limit: 256m
     memswap_limit: 256m
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      CARVE_DOMAIN: ${CARVE_DOMAIN}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION:-eu-west-1}
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -399,7 +428,6 @@ services:
         condition: service_healthy
       web:
         condition: service_healthy
-
 volumes:
   pg_data:
   redis_data:
@@ -408,3 +436,5 @@ volumes:
   caddy_config:
   hf_cache:
     name: carve-hf-cache
+  torch_cache:
+    name: carve-torch-cache

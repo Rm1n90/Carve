@@ -5,17 +5,17 @@
 {$CARVE_DOMAIN:localhost} {
   encode zstd gzip
 
+  tls {
+    dns route53
+  }
+
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     X-Content-Type-Options "nosniff"
     Referrer-Policy "strict-origin-when-cross-origin"
     Permissions-Policy "camera=(), microphone=(), geolocation=()"
-    # NOTE: img-src includes https: to allow presigned MinIO/S3 URLs served over
-    # HTTPS in production. In dev, MinIO runs on http://localhost:9000 — extend
-    # img-src (and connect-src for direct PUT uploads) with that origin if needed.
-    # If presigned MinIO URLs resolve to a non-Caddy host, add the host to
-    # connect-src (and img-src for GET) — e.g. http://localhost:9000 in dev.
-    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'"
+    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-src 'none';
+object-src 'none'; base-uri 'self'"
     -Server
   }
 
@@ -35,6 +35,13 @@
   handle @docs {
     uri strip_prefix /docs
     reverse_proxy docs:80
+  }
+
+  @minio path /carve-assets/*
+  handle @minio {
+    reverse_proxy minio:9000 {
+      header_up Host {host}
+    }
   }
 
   handle {
