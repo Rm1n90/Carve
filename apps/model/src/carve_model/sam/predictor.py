@@ -124,12 +124,24 @@ def autocast_ctx() -> Iterator[None]:
     if not use_bf16():
         yield
         return
+    # Fail open ONLY if building/entering autocast fails — never swallow
+    # exceptions raised by the wrapped body. The old `except Exception: yield`
+    # also caught body exceptions (e.g. a legitimate HTTPException(409) from
+    # /sam/decode when another user evicted the cached embedding) and yielded a
+    # SECOND time, which makes a @contextmanager raise
+    # RuntimeError("generator didn't stop after throw()") — masking the 409 as
+    # a 500 and breaking the multi-user re-encode path.
     try:
         import torch  # type: ignore[import-not-found]
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            yield
+        autocast = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        autocast.__enter__()
     except Exception:
         yield
+        return
+    try:
+        yield
+    finally:
+        autocast.__exit__(None, None, None)
 
 
 # --- torch.compile gate ----------------------------------------------------
