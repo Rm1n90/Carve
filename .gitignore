@@ -57,3 +57,6 @@ state/*.json
 # apps/model/scripts/provision_sam_decoders.py. Fetched at deploy, not tracked.
 apps/web/public/models/*.onnx
 apps/web/public/models/ort/
+
+# DB backup dumps (infra/backup) — never commit data dumps
+/backups/

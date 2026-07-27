@@ -428,6 +428,37 @@ services:
         condition: service_healthy
       web:
         condition: service_healthy
+
+  # Logical DB backups (added 2026-07-01 after a class delete irreversibly
+  # wiped ~37K annotations). Reuses the postgres:16-alpine image so pg_dump
+  # matches the server version; runs infra/backup/pg_backup.sh which dumps
+  # the Carve DB daily to ./backups with daily/weekly/monthly rotation.
+  # Captures annotation/geometry/class/task/project data only — image and
+  # video bytes live in MinIO and are intentionally NOT included.
+  db-backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      # Schedule/retention — override in .env if desired.
+      BACKUP_HOUR: ${BACKUP_HOUR:-02}
+      KEEP_DAILY: ${KEEP_DAILY:-14}
+      KEEP_WEEKLY: ${KEEP_WEEKLY:-8}
+      KEEP_MONTHLY: ${KEEP_MONTHLY:-12}
+    volumes:
+      - ./infra/backup/pg_backup.sh:/pg_backup.sh:ro
+      - ./backups:/backups
+    entrypoint: ["sh", "/pg_backup.sh"]
+
 volumes:
   pg_data:
   redis_data:

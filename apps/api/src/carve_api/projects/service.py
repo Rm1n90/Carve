@@ -2,10 +2,12 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from carve_api.audit import service as audit_service
+from carve_api.audit.actions import CLASS_DELETED
 from carve_api.auth.models import User, UserRole
 from carve_api.errors import AppError, InsufficientRole, NotProjectMember
 from carve_api.projects.models import Class, Project, ProjectMember, Task, TaskKind
@@ -574,6 +576,26 @@ class ClassNotFound(AppError):
     code = "class_not_found"
 
 
+class ClassInUse(AppError):
+    """Deleting a class that still has annotations is refused unless the
+    caller explicitly opts in with ``force=True``.
+
+    Post-incident guard (a mistaken class delete silently discarded ~37K
+    annotations): class deletion cascade-deletes every annotation that
+    referenced the class, and there is no soft-delete / undo. Rather than
+    let a single click destroy data, the service refuses by default and
+    carries the annotation ``count`` on the error so the API/UI can warn
+    the user proportionally before they confirm the irreversible delete.
+    """
+
+    http_status = 409
+    code = "class_has_annotations"
+
+    def __init__(self, message: str = "", *, count: int) -> None:
+        super().__init__(message)
+        self.count = count
+
+
 class ClassHierarchyError(AppError):
     """v3.31 -- invalid parent_class_id assignment.
 
@@ -740,20 +762,72 @@ class ClassService:
             raise ClassConflict("class idx or name already used in this project") from exc
         return c
 
-    def delete(self, *, project: Project, class_id: uuid.UUID) -> None:
+    def delete(
+        self,
+        *,
+        project: Project,
+        class_id: uuid.UUID,
+        force: bool = False,
+        actor_id: uuid.UUID | None = None,
+    ) -> int:
         # Plan-16 — cascade-delete annotations referencing this class.
         # The annotations.class_id FK is `RESTRICT`, so without this step
         # the class delete fails whenever any annotation still uses it.
         # User-visible behaviour: deleting a class also discards every
         # annotation that referenced it.
+        #
+        # Post-incident guard — this cascade is irreversible (no
+        # soft-delete, no export/audit copy of the geometry). We refuse to
+        # delete a class that still has annotations unless the caller
+        # passes ``force=True``, and we surface the count so the caller can
+        # warn the user before they destroy data. Returns the number of
+        # annotations deleted (0 when the class was empty).
         from carve_api.annotations.models import Annotation
 
         c = self.get(project=project, class_id=class_id)
+        # Capture identity for the audit row before the ORM object is
+        # deleted (attribute access on a deleted instance would raise).
+        class_name = c.name
+
+        annotation_count = int(
+            self.session.execute(
+                select(func.count())
+                .select_from(Annotation)
+                .where(Annotation.class_id == class_id)
+            ).scalar_one()
+        )
+        if annotation_count and not force:
+            raise ClassInUse(
+                f"class has {annotation_count} annotations",
+                count=annotation_count,
+            )
+
         self.session.execute(
             sa_delete(Annotation).where(Annotation.class_id == class_id)
         )
         self.session.delete(c)
         self.session.flush()
+
+        # Best-effort forensic breadcrumb. Before this guard, class
+        # deletion was not audited at all, so a mistaken destructive
+        # delete left no trace. Record who deleted what and how many
+        # annotations went with it. Never raises into the caller.
+        audit_service.record(
+            self.session,
+            actor_id=actor_id,
+            action=CLASS_DELETED,
+            target_type="class",
+            target_id=class_id,
+            project_id=project.id,
+            summary=(
+                f"{CLASS_DELETED} class={class_id} "
+                f"annotations_deleted={annotation_count}"
+            ),
+            metadata={
+                "class_name": class_name,
+                "annotation_count": annotation_count,
+            },
+        )
 
         # Plan-20.15 — re-densify the remaining classes' ``idx`` values
         # to a contiguous 0..N-1 sequence. Without this, deleting a
@@ -782,6 +856,8 @@ class ClassService:
         for new_idx, cls in enumerate(remaining):
             cls.idx = new_idx
         self.session.flush()
+
+        return annotation_count
 
     def import_from_project(
         self, *, source: Project, dest: Project

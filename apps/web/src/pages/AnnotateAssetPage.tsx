@@ -96,6 +96,7 @@ import {
 } from "@/lib/bulkConvert";
 import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
+import { deleteClassWithConfirm } from "@/lib/deleteClassWithConfirm";
 import { projectsApi } from "@/api/projects";
 import { tasksApi } from "@/api/tasks";
 import { useProjectSamReconcile } from "@/hooks/useProjectSamReconcile";
@@ -922,10 +923,33 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
       classesApi.update(projectId, cid, patch),
     onSuccess: () => invalidateClassesQueries(),
   });
-  const classRemove = useMutation({
-    mutationFn: (cid: string) => classesApi.delete(projectId, cid),
-    onSuccess: () => invalidateClassesQueries(),
-  });
+  // Class deletion runs through `deleteClassWithConfirm` (see the
+  // onDeleteClass handler): a guarded probe learns the true annotation
+  // count and escalates to a type-to-confirm dialog before the
+  // irreversible cascade delete. A bare mutation would silently swallow
+  // the 409 guard and never warn about annotation loss.
+  const handleDeleteClass = async (cid: string) => {
+    const cls = (classesQ.data ?? []).find((c) => c.id === cid);
+    try {
+      const res = await deleteClassWithConfirm({
+        projectId,
+        classId: cid,
+        className: cls?.name ?? "this class",
+        confirm,
+      });
+      if (res.deleted) {
+        invalidateClassesQueries();
+        if (res.annotationsDeleted > 0) {
+          showToast(
+            `Deleted "${cls?.name ?? "class"}" and ${res.annotationsDeleted.toLocaleString()} annotations`,
+            { variant: "success" },
+          );
+        }
+      }
+    } catch {
+      showToast("Failed to delete class.", { variant: "error" });
+    }
+  };
 
   const saveMutation = useMutation({
     mutationFn: (payload: BatchPayload) => annotationsApi.batch(taskId, payload),
@@ -2565,7 +2589,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
                       setRenameClass({ id: cls.id, name: cls.name });
                       setRenameDraft(cls.name);
                     }}
-                    onDeleteClass={(cid) => classRemove.mutate(cid)}
+                    onDeleteClass={(cid) => void handleDeleteClass(cid)}
                     digitToClassId={digitToClassId}
                   />
                 </Tabs.Content>

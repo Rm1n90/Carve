@@ -45,7 +45,17 @@ export const classesApi = {
     patch: Partial<ClassIn>,
   ): Promise<ClassRow> =>
     (await api.patch<ClassRow>(`/projects/${projectId}/classes/${classId}`, patch)).data,
-  delete: async (projectId: string, classId: string): Promise<void> => {
-    await api.delete(`/projects/${projectId}/classes/${classId}`);
+  // `force` opts into the irreversible cascade that also deletes every
+  // annotation using this class. Without it, the server refuses a
+  // non-empty class with 409 `class_has_annotations` and returns the
+  // annotation count so the caller can warn the user first.
+  delete: async (
+    projectId: string,
+    classId: string,
+    opts?: { force?: boolean },
+  ): Promise<void> => {
+    await api.delete(`/projects/${projectId}/classes/${classId}`, {
+      params: opts?.force ? { force: true } : undefined,
+    });
   },
 };

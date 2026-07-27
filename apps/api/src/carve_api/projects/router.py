@@ -51,6 +51,7 @@ from carve_api.projects.schemas import (
     TaskResumeStatus,
 )
 from carve_api.projects.service import (
+    ClassInUse,
     ClassService,
     ProjectService,
     TaskService,
@@ -617,13 +618,31 @@ def patch_class(
 def delete_class(
     project_id: uuid.UUID,
     class_id: uuid.UUID,
+    # Post-incident guard — deleting a class with annotations irreversibly
+    # cascade-deletes them. The service refuses unless ``force=true`` is
+    # passed explicitly, returning 409 + the annotation count so the UI can
+    # warn the user proportionally before they confirm.
+    force: bool = Query(default=False),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
     try:
         # Plan-13 Phase 7 Task 2 — class DELETE is a project mutation.
         project = require_project_role(db, user, project_id, _MUTATING_ROLES)
-        ClassService(db).delete(project=project, class_id=class_id)
+        ClassService(db).delete(
+            project=project,
+            class_id=class_id,
+            force=force,
+            actor_id=user.id,
+        )
+    except ClassInUse as exc:
+        # Surface the count in a structured body so the client can render
+        # "this will permanently delete N annotations" before retrying
+        # with ?force=true.
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail={"error": exc.code, "annotation_count": exc.count},
+        ) from exc
     except AppError as exc:
         raise _http(exc) from exc
     db.commit()

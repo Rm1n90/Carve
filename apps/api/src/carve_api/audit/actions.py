@@ -20,6 +20,7 @@ EXPORT_SUBMITTED: str = "export.submitted"
 EXPORT_COMPLETED: str = "export.completed"
 
 TASK_DELETED: str = "task.deleted"
+CLASS_DELETED: str = "class.deleted"
 
 PROJECT_MEMBER_ADDED: str = "project_member.added"
 PROJECT_MEMBER_REMOVED: str = "project_member.removed"

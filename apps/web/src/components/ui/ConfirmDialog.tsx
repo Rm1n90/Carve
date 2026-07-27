@@ -31,6 +31,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -48,6 +49,12 @@ export interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: ConfirmVariant;
+  // When set, renders a text input and keeps the confirm button disabled
+  // until the user types this exact string. Used for high-consequence,
+  // irreversible actions (e.g. deleting a class that would destroy tens
+  // of thousands of annotations) so they can't be triggered by a single
+  // reflexive click.
+  requireText?: string;
   onConfirm: () => void | Promise<void>;
 }
 
@@ -133,12 +140,21 @@ export function ConfirmDialog({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   variant = "default",
+  requireText,
   onConfirm,
 }: ConfirmDialogProps) {
   const [pending, setPending] = useState(false);
+  // Type-to-confirm scratch input. Reset every time the dialog (re)opens
+  // so a prior confirmation's text never carries over.
+  const [typed, setTyped] = useState("");
+  useEffect(() => {
+    if (open) setTyped("");
+  }, [open, requireText]);
+
+  const gated = requireText !== undefined && typed !== requireText;
 
   async function handleConfirm() {
-    if (pending) return;
+    if (pending || gated) return;
     try {
       setPending(true);
       await onConfirm();
@@ -175,6 +191,42 @@ export function ConfirmDialog({
               {description}
             </AlertDialogPrimitive.Description>
           )}
+          {requireText !== undefined && (
+            <div className="mt-4">
+              <label
+                htmlFor="confirm-dialog-require-text"
+                className="block text-[12.5px] text-[color:var(--text-tertiary)] mb-1.5"
+              >
+                Type{" "}
+                <span className="font-medium text-[color:var(--text-primary)]">
+                  {requireText}
+                </span>{" "}
+                to confirm
+              </label>
+              <input
+                id="confirm-dialog-require-text"
+                type="text"
+                value={typed}
+                autoFocus
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(e) => setTyped(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !gated && !pending) {
+                    e.preventDefault();
+                    void handleConfirm();
+                  }
+                }}
+                data-testid="confirm-dialog-require-input"
+                className={cn(
+                  "w-full h-9 px-3 rounded-[var(--radius-sm)]",
+                  "bg-[var(--bg-sunken)] border border-[var(--border-subtle)]",
+                  "text-[13px] text-[color:var(--text-primary)]",
+                  "outline-none focus:border-[var(--danger)]",
+                )}
+              />
+            </div>
+          )}
           <div className="mt-6 flex items-center justify-end gap-2">
             <AlertDialogPrimitive.Cancel asChild>
               <button
@@ -188,7 +240,7 @@ export function ConfirmDialog({
             <AlertDialogPrimitive.Action asChild>
               <button
                 type="button"
-                disabled={pending}
+                disabled={pending || gated}
                 onClick={(e) => {
                   // Prevent Radix from auto-closing before our async work
                   // resolves; we drive `open` ourselves via onConfirm.
@@ -227,9 +279,11 @@ interface ConfirmRequest {
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: ConfirmVariant;
+  // See ConfirmDialogProps.requireText — opt-in type-to-confirm gate.
+  requireText?: string;
 }
 
-type ConfirmFn = (request: ConfirmRequest) => Promise<boolean>;
+export type ConfirmFn = (request: ConfirmRequest) => Promise<boolean>;
 
 const ConfirmContext = createContext<ConfirmFn | null>(null);
 
@@ -299,6 +353,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
         confirmLabel={state.confirmLabel}
         cancelLabel={state.cancelLabel}
         variant={state.variant}
+        requireText={state.requireText}
         onConfirm={handleConfirm}
       />
     </ConfirmContext.Provider>

@@ -22,6 +22,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/Popover";
 import { cn } from "@/lib/cn";
+import { deleteClassWithConfirm } from "@/lib/deleteClassWithConfirm";
 import { showToast } from "@/lib/toast";
 import { PALETTE_HEX, nextUnusedColor } from "@/lib/swatch";
 
@@ -62,10 +63,10 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
       }
     },
   });
-  const remove = useMutation({
-    mutationFn: (cid: string) => classesApi.delete(projectId, cid),
-    onSuccess: () => invalidateClassDependents(),
-  });
+  // Deletion is handled by `deleteClassWithConfirm` (below) rather than a
+  // bare mutation: it runs a guarded probe to learn the true annotation
+  // count and escalates to a type-to-confirm dialog before the
+  // irreversible cascade. See onDelete in the class row.
   // Inline rename / recolor. Same 409 conflict detail surfaces here as
   // for create, so we reuse the toast message keyed on the attempted
   // name. Caller wraps mutateAsync so it can roll back the local draft.
@@ -318,7 +319,26 @@ export function ClassesEditor({ projectId }: { projectId: string }) {
                     variant: "danger",
                     confirmLabel: "Delete",
                   });
-                  if (ok) remove.mutate(c.id);
+                  if (!ok) return;
+                  try {
+                    const res = await deleteClassWithConfirm({
+                      projectId,
+                      classId: c.id,
+                      className: c.name,
+                      confirm,
+                    });
+                    if (res.deleted) {
+                      invalidateClassDependents();
+                      if (res.annotationsDeleted > 0) {
+                        showToast(
+                          `Deleted "${c.name}" and ${res.annotationsDeleted.toLocaleString()} annotations`,
+                          { variant: "success" },
+                        );
+                      }
+                    }
+                  } catch {
+                    showToast("Failed to delete class.", { variant: "error" });
+                  }
                 }}
               />
             ))}
