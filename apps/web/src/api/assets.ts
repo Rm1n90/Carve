@@ -57,6 +57,13 @@ export interface ListAssetsParams {
   status?: AssetStatusFilter;
 }
 
+/**
+ * Page size used by `listForTask` when walking a whole task. Kept well
+ * under the server's per-page ceiling so each round trip stays a
+ * modest JSON payload; the walk loops as many times as needed.
+ */
+const LIST_ALL_PAGE_SIZE = 2000;
+
 export const assetsApi = {
   /**
    * Paginated list with optional search + status filter. Default limit is
@@ -77,20 +84,35 @@ export const assetsApi = {
     ).data;
   },
   /**
-   * Compatibility helper: returns just the items array. Callers that need
-   * pagination metadata should use `listPage` directly, or for very large
-   * tasks consume `listPage` via `useInfiniteQuery` (see
+   * Compatibility helper: returns EVERY asset in the task. Callers that
+   * need pagination metadata should use `listPage` directly, or for
+   * incremental rendering consume `listPage` via `useInfiniteQuery` (see
    * `AssetThumbnailStrip` / `AssetGrid` for examples).
    *
-   * v3.7 Issue 3 follow-up: raised from 500 → 5000 to match the backend
-   * cap. Plan 09 Task 8 (v3.9) introduced an `useInfiniteQuery`-based
-   * thumbnail strip that no longer pulls every row at once; this helper
-   * stays for callers (AnnotateAssetPage prev/next nav, etc.) that still
-   * benefit from the eager list and where task sizes cap out well below
-   * 5000 assets in practice.
+   * History: 500 → 5000 (v3.7) matched the backend page cap, but it was
+   * still a *silent truncation* — a task with 9000 assets returned the
+   * first 5000 and every consumer (editor prev/next nav, auto-annotate,
+   * YOLOE, EditorToolbar) simply behaved as if the rest did not exist.
+   * Now the helper walks the offset cursor until it has `total` rows, so
+   * task size is bounded only by what the browser can hold, not by an
+   * arbitrary constant.
    */
-  listForTask: async (taskId: string): Promise<Asset[]> =>
-    (await assetsApi.listPage(taskId, { limit: 5000 })).items,
+  listForTask: async (taskId: string): Promise<Asset[]> => {
+    const items: Asset[] = [];
+    let offset = 0;
+    for (;;) {
+      const page = await assetsApi.listPage(taskId, {
+        limit: LIST_ALL_PAGE_SIZE,
+        offset,
+      });
+      items.push(...page.items);
+      // Defensive: an empty page ends the walk even if `total` is stale
+      // (e.g. assets deleted mid-scan), so this can never spin forever.
+      if (page.items.length === 0 || items.length >= page.total) break;
+      offset = items.length;
+    }
+    return items;
+  },
   /**
    * v3.8 Phase 4.1 -- list frames for a video asset. Track-mode commit
    * needs the {frame_idx -> frame_id} map so propagated masks land on

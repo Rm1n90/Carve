@@ -26,7 +26,13 @@ asset_router = APIRouter(prefix="/assets", tags=["assets"])
 # bump shipped in v3.7. The previous mismatch caused 422s and broke
 # thumbnail rendering, asset count, and keyboard navigation for tasks
 # with >500 assets.
-_MAX_PAGE_LIMIT = 5000
+#
+# This is a *per-page* bound, never a per-task one: ``offset`` paging is
+# unbounded, and the frontend ``assetsApi.listForTask`` now walks the
+# cursor until it has every row. Raised 5000 → 20000 so a client that
+# does want a task in one request (scripts, exports, a 9000-image task)
+# gets it instead of a 422.
+_MAX_PAGE_LIMIT = 20000
 
 # Plan-20.12 — SlowAPI removed application-wide. Per-minute caps and
 # the SINGLE_ASSET_UPLOAD_LIMIT constant are gone; uploads are
