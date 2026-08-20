@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
@@ -98,6 +100,15 @@ class Task(Base):
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # Outsourcing hardening — per-task grant that re-opens the
+    # GPU-backed model tools (My Model, Auto-Annotate, Smart Find,
+    # interactive SAM, tracking) to non-admin members. Default False:
+    # members get manual annotation only unless a workspace admin
+    # explicitly hands them this task. See ``carve_api.permissions`` and
+    # alembic 0038.
+    gpu_access_for_members: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
     )
 
 

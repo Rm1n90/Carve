@@ -485,6 +485,9 @@ export function LeftNav({
 }: LeftNavProps = {}) {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const user = useAuth((s) => s.user);
+  // Outsourcing hardening — admin-only dock surfaces (Models, System,
+  // Jobs). Cosmetic; the API and the routes enforce the same rule.
+  const isAdmin = user?.role === "admin";
   const nav = useNavigate();
   const confirm = useConfirm();
 
@@ -755,14 +758,23 @@ export function LeftNav({
           collapsed ? "flex-col items-center" : "items-center",
         )}
       >
-        <ModelsDockIcon active={isActive(path, "/models", false)} />
-        <DockIcon
-          label="System"
-          to="/system"
-          active={isActive(path, "/system", false)}
-          icon={<Activity className="h-4 w-4" />}
-          testId="leftnav-dock-system"
-        />
+        {/* Outsourcing hardening — the Models dock (YOLO weights + SAM
+            variant) and the System page (GPU/VRAM controls) are
+            workspace-admin surfaces. Members annotate; they do not
+            manage or inspect the GPU. The matching routes redirect too,
+            so a typed URL lands nowhere. */}
+        {isAdmin && (
+          <ModelsDockIcon active={isActive(path, "/models", false)} />
+        )}
+        {isAdmin && (
+          <DockIcon
+            label="System"
+            to="/system"
+            active={isActive(path, "/system", false)}
+            icon={<Activity className="h-4 w-4" />}
+            testId="leftnav-dock-system"
+          />
+        )}
         <DockIcon
           label="Settings"
           to="/settings/profile"
@@ -770,7 +782,7 @@ export function LeftNav({
           icon={<Settings className="h-4 w-4" />}
           testId="leftnav-dock-settings"
         />
-        {user?.role === "admin" && (
+        {isAdmin && (
           <DockIcon
             label="Jobs"
             to="/settings/jobs"

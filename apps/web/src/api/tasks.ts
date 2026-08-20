@@ -16,6 +16,13 @@ export interface Task {
   // Plan-21 — task completion. Both null means "in progress".
   completed_at?: string | null;
   completed_by?: string | null;
+  /**
+   * Outsourcing hardening — per-task grant that re-opens the GPU/model
+   * tools (My Model, Auto-Annotate, Smart Find, SAM, tracking) to
+   * non-admin members. Admins are never restricted, so the UI should
+   * read this through ``useCapabilities`` rather than directly.
+   */
+  gpu_access_for_members?: boolean;
 }
 
 export interface TaskIn {
@@ -32,6 +39,9 @@ export interface TaskPatch {
   // Plan-21 — completion toggle. ``true`` stamps completion fields,
   // ``false`` clears them. Omit to leave the completion state alone.
   completed?: boolean;
+  // Outsourcing hardening — admin-only. Sending this field as a
+  // non-admin returns 403 ``admin_only``.
+  gpu_access_for_members?: boolean;
 }
 
 /**

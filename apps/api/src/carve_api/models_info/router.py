@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User, UserRole
 from carve_api.config import get_settings
 from carve_api.deps import get_current_user, get_db
+from carve_api.permissions import require_gpu_admin
 from carve_api.inference.batch import (
     SAM_USING_BATCH_KINDS,
     count_active_jobs,
@@ -301,6 +302,11 @@ def sam_set_active(
     exited, RQ blip, etc.) is logged and ignored; the worker would
     then discover ``sam_not_ready`` on its next iteration.
     """
+
+    # Outsourcing hardening — the active SAM variant is a
+    # workspace-wide setting shared by every user and every running
+    # batch, so it has no per-task meaning. Admin only.
+    require_gpu_admin(user)
     if payload.variant not in _AVAILABLE_SAM_VARIANTS:
         raise HTTPException(
             status_code=422,

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.permissions import is_admin, require_data_movement
 from carve_api.projects.models import Class
 from carve_api.projects.service import (
     ProjectService,
@@ -69,7 +70,12 @@ async def upload_workspace_weight(
     v3.5 Phase F5 — the new default upload path. The weight is visible
     from every project in the workspace; the user can pin it as a
     project default via ``POST /weights/{wid}/default`` when desired.
+
+    Outsourcing hardening — this route previously had no role check at
+    all, so any authenticated user could push a .pt into the workspace.
+    Weight upload is admin-only.
     """
+    require_data_movement(user)
     if class_names is None or class_names == "":
         names: list = []
     else:
@@ -134,6 +140,9 @@ async def upload_weight(
         if not isinstance(names, list):
             raise _http(WeightInvalid("class_names must be a list"))
 
+    # Outsourcing hardening — weight upload is admin-only, checked
+    # before the body is read.
+    require_data_movement(user)
     body = await file.read()
     project = ProjectService(db).get(actor=user, project_id=project_id)
     # Plan-13 Phase 7 Task 2 — project-scoped weight upload requires
@@ -197,11 +206,15 @@ def _weight_can_modify(user: User, w: Weight, db: Session) -> bool:
     membership-aware role check: only project owners or admins can
     manage them. Members and viewers can RUN inference / retrain via
     the inference router but cannot upload/delete weights.
-    """
-    from carve_api.auth.models import UserRole
 
+    Outsourcing hardening — a non-admin can no longer manage weights
+    even when they own the project. Project ownership is an annotation-
+    workflow role; the model files are workspace IP.
+    """
+    if not is_admin(user):
+        return False
     if w.project_id is None:
-        return user.role == UserRole.admin
+        return True
     role = get_project_role(db, user.id, w.project_id)
     return role is not None and role in _ADMIN_ROLES
 
@@ -371,6 +384,9 @@ def set_weight_default(
     the weight must be visible from the target project (workspace-wide
     or scoped to that same project).
     """
+    # Outsourcing hardening — pinning a project default is model
+    # management; admin only.
+    require_data_movement(user)
     svc = WeightService(db)
     try:
         w = svc.get(weight_id=weight_id)
@@ -460,6 +476,9 @@ def add_weight_assignment(
     except AppError as exc:
         raise _http(exc) from exc
 
+    # Outsourcing hardening — weight/project assignment is model
+    # management; admin only.
+    require_data_movement(user)
     # Plan-13 Phase 7 Task 2 — owner/admin on the target project only.
     project = ProjectService(db).get(actor=user, project_id=payload.project_id)
     role = get_project_role(db, user.id, project.id)

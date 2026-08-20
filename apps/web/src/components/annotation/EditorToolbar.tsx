@@ -46,6 +46,7 @@ import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog
 import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import { AutoAnnotateDialog } from "@/components/annotation/AutoAnnotateDialog";
 import { YoloeDialog } from "@/components/annotation/YoloeDialog";
+import { useTaskGpuAccess } from "@/auth/capabilities";
 import { FrameExtractDialog } from "@/components/annotation/FrameExtractDialog";
 import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
@@ -68,6 +69,7 @@ import {
   type BatchPredictProgress,
 } from "@/api/phase2";
 import { projectsApi, type Project } from "@/api/projects";
+import type { Task } from "@/api/tasks";
 import { assetsApi } from "@/api/assets";
 import { useAuth } from "@/auth/store";
 import { ScopePicker } from "@/components/annotation/ScopePicker";
@@ -236,6 +238,13 @@ const TOOLS: ToolDef[] = [
 ];
 
 interface EditorToolbarProps {
+  /**
+   * Outsourcing hardening — the open task, used only to read its
+   * ``gpu_access_for_members`` grant. Optional so existing callers and
+   * tests keep compiling; ``null`` means "no grant known", which hides
+   * the AI controls for members and changes nothing for admins.
+   */
+  task?: Task | null;
   onSave: () => void;
   isSaving: boolean;
   hasError: boolean;
@@ -2757,6 +2766,7 @@ export function EditorToolbar({
   onConvertPolygonsOnImage,
   onConvertPolygonsInTask,
   polygonCountOnImage = 0,
+  task = null,
 }: EditorToolbarProps) {
   const active = useTool((s) => s.active);
   const setActive = useTool((s) => s.setActive);
@@ -2774,6 +2784,19 @@ export function EditorToolbar({
     staleTime: 60_000,
   });
   const me = useAuth((s) => s.user);
+  // Outsourcing hardening — every GPU-backed control in this toolbar
+  // (SAM tool + mode + auto-apply, My Model, Auto-Annotate, Smart Find)
+  // is hidden unless the actor is a workspace admin or an admin has
+  // granted this specific task. The API refuses the same calls, so a
+  // member who reaches them another way still gets a 403 — this only
+  // keeps dead controls off screen. The manual tools (bbox, polygon,
+  // mask brush, tag) are never touched: members are here to annotate.
+  //
+  // ``task`` arrives as a prop rather than being fetched here: the
+  // editor page already holds it, and a null/loading task resolves to
+  // "no access" for members, so the AI controls never flash in before
+  // the grant is known.
+  const gpuAllowed = useTaskGpuAccess(task);
   const canPersistSamDefault = Boolean(
     me
       && samPersistProjectQ.data
@@ -2936,7 +2959,7 @@ export function EditorToolbar({
 
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
-      {TOOLS.map((t) => (
+      {TOOLS.filter((t) => gpuAllowed || t.name !== "sam").map((t) => (
         <ToolButton
           key={t.name}
           active={active === t.name}
@@ -2950,12 +2973,16 @@ export function EditorToolbar({
 
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
-      <SamModelPicker
-        projectId={projectId}
-        canPersistProjectDefault={canPersistSamDefault}
-      />
-      <SamModePicker isVideo={isVideo} />
-      <AutoApplyToggle />
+      {gpuAllowed && (
+        <>
+          <SamModelPicker
+            projectId={projectId}
+            canPersistProjectDefault={canPersistSamDefault}
+          />
+          <SamModePicker isVideo={isVideo} />
+          <AutoApplyToggle />
+        </>
+      )}
       <MaskBrushSizeControl />
       <MaskBrushHardnessControl />
       <MaskBrushEraserToggle />
@@ -3011,35 +3038,43 @@ export function EditorToolbar({
         onRetry={onSave}
       />
 
-      <YoloPredictButton
-        ref={predictRef}
-        projectId={projectId}
-        taskId={taskId}
-        assetId={assetId}
-        classes={classesProp ?? []}
-        onAfter={onAfterYoloPredict}
-      />
+      {/* Outsourcing hardening — the My Model / Auto-Annotate / Smart
+          Find trio is the GPU surface members must not reach. All three
+          disappear together so the toolbar reads as a coherent
+          manual-annotation tool rather than a crippled AI one. */}
+      {gpuAllowed && (
+        <>
+          <YoloPredictButton
+            ref={predictRef}
+            projectId={projectId}
+            taskId={taskId}
+            assetId={assetId}
+            classes={classesProp ?? []}
+            onAfter={onAfterYoloPredict}
+          />
 
-      {/* v3.8 Phase 3.5 — Auto-annotate (SAM 3 text). Lives next to the
-          YOLO predict button so users have one consistent place for
-          "let the model help me". */}
-      <AutoAnnotateDialog
-        assetId={assetId ?? null}
-        taskId={taskId}
-        classes={classesProp ?? []}
-        onSuccess={onAfterYoloPredict}
-      />
+          {/* v3.8 Phase 3.5 — Auto-annotate (SAM 3 text). Lives next to
+              the YOLO predict button so users have one consistent place
+              for "let the model help me". */}
+          <AutoAnnotateDialog
+            assetId={assetId ?? null}
+            taskId={taskId}
+            classes={classesProp ?? []}
+            onSuccess={onAfterYoloPredict}
+          />
 
-      {/* v3.23 — YOLOE: Real-Time Seeing Anything. Three modes
-          (text / visual / prompt-free), supports both current asset
-          and all assets in task. The dialog is capability-gated and
-          renders nothing harmful when YOLOE isn't shipped. */}
-      <YoloeDialog
-        assetId={assetId ?? null}
-        taskId={taskId}
-        classes={classesProp ?? []}
-        onSuccess={onAfterYoloPredict}
-      />
+          {/* v3.23 — YOLOE: Real-Time Seeing Anything. Three modes
+              (text / visual / prompt-free), supports both current asset
+              and all assets in task. The dialog is capability-gated and
+              renders nothing harmful when YOLOE isn't shipped. */}
+          <YoloeDialog
+            assetId={assetId ?? null}
+            taskId={taskId}
+            classes={classesProp ?? []}
+            onSuccess={onAfterYoloPredict}
+          />
+        </>
+      )}
 
       {/* v3.8 Phase 4-video step F5 — Re-extract removed per request:
           the upload-time dialog is the single point of frame-strategy

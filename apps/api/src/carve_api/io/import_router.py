@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.permissions import data_movement_guard
 from carve_api.io.coco_in import parse_coco_bytes
 from carve_api.io.import_job import (
     ImportJobPayload,
@@ -56,7 +57,14 @@ def _http(err: AppError) -> HTTPException:
     return HTTPException(status_code=err.http_status, detail=err.code)
 
 
-router = APIRouter(prefix="/tasks", tags=["import"])
+# Outsourcing hardening — every route here is an annotation/dataset
+# ingest path (dry-run upload, confirm, progress). Guarded router-wide
+# so the multipart body is rejected before it is consumed.
+router = APIRouter(
+    prefix="/tasks",
+    tags=["import"],
+    dependencies=[Depends(data_movement_guard)],
+)
 
 
 _MAX_BYTES = 10 * 1024 * 1024 * 1024  # 10 GiB total upload

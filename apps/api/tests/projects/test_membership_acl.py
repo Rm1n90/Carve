@@ -246,20 +246,30 @@ def test_delete_task_role_matrix(db_session, world):
 
 
 def test_auto_annotate_role_matrix(db_session, world):
-    """POST /assets/{aid}/auto-annotate — task-routed mutation.
+    """POST /assets/{aid}/auto-annotate — task-routed GPU mutation.
 
-    Non-member gets 404 (TaskNotFound mask). Viewer gets 403. Members
-    pass the gate but the call subsequently fails with 404
+    Outsourcing hardening: auto-annotate is a GPU/model feature, so a
+    *workspace* admin is now the only role that gets through by default.
+    Every project role in this fixture (owner/admin/member/viewer) is a
+    workspace ``member``, so all four are refused with 403
+    ``gpu_forbidden`` even though owner/admin/member still hold a
+    mutating project role. Non-members keep their 404 mask, because the
+    GPU check runs *after* ``require_visible_task`` and so never leaks
+    the existence of a project the caller cannot see.
+
+    ws_admin passes the gate and the call then fails with 404
     weight_not_found because no weights are seeded; we treat any
     past-the-gate response as a pass and only assert the gate decision.
+    See ``test_permissions_gates`` for the per-task grant that re-opens
+    this endpoint to members.
     """
     client = _client(db_session)
     aid = world["asset"].id
     bad_weight = uuid.uuid4()
     expected_gate = {
-        "owner": "pass",
-        "admin": "pass",
-        "member": "pass",
+        "owner": 403,
+        "admin": 403,
+        "member": 403,
         "viewer": 403,
         "none": 404,
         "ws_admin": "pass",
@@ -282,15 +292,24 @@ def test_auto_annotate_role_matrix(db_session, world):
 
 
 def test_retrain_submit_role_matrix(db_session, world):
-    """POST /tasks/{tid}/retrain-yolo — task-routed mutation."""
+    """POST /tasks/{tid}/retrain-yolo — workspace-admin only.
+
+    Outsourcing hardening: retraining is the heaviest GPU workload and
+    mints a new model weight, so it is gated on the router itself and
+    stays admin-only even on a task carrying the per-task AI grant.
+    Because the guard is a router-level dependency it runs before the
+    task is resolved, so the non-member's usual 404 mask becomes a 403
+    — no information leaks either way, since every non-admin gets the
+    identical 403 whether or not the task exists.
+    """
     client = _client(db_session)
     tid = world["task"].id
     expected = {
-        "owner": 200,
-        "admin": 200,
-        "member": 200,
+        "owner": 403,
+        "admin": 403,
+        "member": 403,
         "viewer": 403,
-        "none": 404,
+        "none": 403,
         "ws_admin": 200,
     }
     for role, user in _users_by_role(world).items():
@@ -305,15 +324,23 @@ def test_retrain_submit_role_matrix(db_session, world):
 
 
 def test_export_submit_role_matrix(db_session, world):
-    """POST /tasks/{tid}/exports — task-routed mutation."""
+    """POST /tasks/{tid}/exports — workspace-admin only.
+
+    Outsourcing hardening: dataset export is the primary exfiltration
+    path, so the whole exports router is gated on
+    ``data_movement_guard``. As with retrain, the router-level guard
+    runs before task resolution, so non-members get 403 instead of the
+    404 mask — every non-admin sees the same 403 regardless of whether
+    the task exists, so nothing leaks.
+    """
     client = _client(db_session)
     tid = world["task"].id
     expected = {
-        "owner": 202,
-        "admin": 202,
-        "member": 202,
+        "owner": 403,
+        "admin": 403,
+        "member": 403,
         "viewer": 403,
-        "none": 404,
+        "none": 403,
         "ws_admin": 202,
     }
     body = {
@@ -367,23 +394,30 @@ def test_review_role_matrix(db_session, world):
 
 
 def test_import_submit_role_matrix(db_session, world, monkeypatch):
-    """POST /tasks/{tid}/imports — task-routed mutation."""
+    """POST /tasks/{tid}/imports — workspace-admin only.
+
+    Outsourcing hardening: the whole imports router is gated on
+    ``data_movement_guard`` so a member cannot push foreign annotations
+    into a task. As with export, the router-level guard runs before task
+    resolution, so non-members get 403 rather than the 404 mask — every
+    non-admin sees the same 403 either way, so nothing leaks.
+    """
     from carve_api.io import import_router as iroute
     monkeypatch.setattr(iroute, "MinioClient", _FakeStorage)
     client = _client(db_session)
     tid = world["task"].id
     expected = {
-        "owner": 202,
-        "admin": 202,
-        "member": 202,
+        "owner": 403,
+        "admin": 403,
+        "member": 403,
         "viewer": 403,
-        "none": 404,
+        "none": 403,
         "ws_admin": 202,
     }
     for role, user in _users_by_role(world).items():
         r = client.post(
             f"/tasks/{tid}/imports?format=coco",
-            files={"file": ("c.json", io.BytesIO(b"{}"), "application/json")},
+            files={"files": ("c.json", io.BytesIO(b"{}"), "application/json")},
             headers=_hdr(user),
         )
         assert r.status_code == expected[role], (

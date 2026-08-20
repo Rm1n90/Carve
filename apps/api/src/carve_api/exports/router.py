@@ -11,6 +11,7 @@ from carve_api.audit.actions import EXPORT_SUBMITTED
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.permissions import data_movement_guard
 from carve_api.projects.service import (
     _MUTATING_ROLES,
     require_project_role,
@@ -22,7 +23,14 @@ from carve_api.exports.service import ExportService
 from carve_api.storage.client import MinioClient
 
 
-router = APIRouter(prefix="/tasks", tags=["export"])
+# Outsourcing hardening — every route here is a dataset-export path
+# (enqueue, kind probe, progress + download URL). The guard is applied
+# router-wide so a future export route cannot silently ship ungated.
+router = APIRouter(
+    prefix="/tasks",
+    tags=["export"],
+    dependencies=[Depends(data_movement_guard)],
+)
 
 
 def _http(err: AppError) -> HTTPException:

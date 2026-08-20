@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from carve_api.deps import get_current_user
+from carve_api.permissions import gpu_admin_guard
 from carve_api.inference.model_client import _client, _wrap_unreachable
 
 log = logging.getLogger(__name__)
@@ -56,7 +57,10 @@ def status(_user=Depends(get_current_user)) -> dict:
 @router.post("/preference")
 def set_preference(
     payload: SetPreferenceIn,
-    _user=Depends(get_current_user),
+    # Outsourcing hardening — device preference is workspace-wide (it
+    # repoints the shared model service), so the per-task AI grant does
+    # not apply. Admin only.
+    _user=Depends(gpu_admin_guard),
 ) -> dict:
     """Update the user's preferred device for one model.
 
@@ -77,7 +81,7 @@ def set_preference(
 
 
 @router.post("/sam/reload")
-def sam_reload(_user=Depends(get_current_user)) -> dict:
+def sam_reload(_user=Depends(gpu_admin_guard)) -> dict:
     """Drop the loaded SAM so it reloads on the currently-preferred device."""
     with _wrap_unreachable("devices_sam_reload"), _client() as c:
         try:

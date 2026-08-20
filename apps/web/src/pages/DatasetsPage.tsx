@@ -323,7 +323,12 @@ export function DatasetsPage({ projectId }: DatasetsPageProps) {
     const me = membersQ.data?.find((m) => m.id === authUser.id);
     return me?.role ?? authUser.role;
   }, [authUser, membersQ.data]);
-  const canRollback = myRole === "admin";
+  // Outsourcing hardening — rollback bulk-restores a stored snapshot
+  // over live annotations, i.e. an import, so it is workspace-admin only.
+  // ``myRole`` can resolve to the *project* role "admin" for a workspace
+  // member, which the API no longer accepts — gate on the workspace role
+  // so we never render a button that 403s.
+  const canRollback = authUser?.role === "admin" && myRole === "admin";
 
   const [primaryId, setPrimaryId] = useState<string | null>(null);
   const [secondaryId, setSecondaryId] = useState<string | null>(null);

@@ -23,6 +23,7 @@ from carve_api.audit.actions import TASK_DELETED
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.permissions import require_admin, require_data_movement
 from carve_api.projects.keybindings import (
     compose_effective_bindings,
     delete_binding,
@@ -279,6 +280,11 @@ def patch_task(
         # explicitly when the client sends ``null``.
         sent = payload.model_dump(exclude_unset=True)
         clear_due_date = "due_date" in sent and sent["due_date"] is None
+        # Outsourcing hardening — the per-task AI grant is a security
+        # control, so only a workspace admin may flip it. Checked on
+        # presence (not truthiness) so a member cannot *revoke* it either.
+        if "gpu_access_for_members" in sent:
+            require_admin(user)
         task = TaskService(db).update(
             project=project,
             task_id=task_id,
@@ -288,6 +294,7 @@ def patch_task(
             archived=payload.archived,
             completed=payload.completed,
             completed_by=user.id,
+            gpu_access_for_members=payload.gpu_access_for_members,
         )
     except AppError as exc:
         raise _http(exc) from exc
@@ -440,6 +447,9 @@ def enqueue_video_extract_batch(
     db: Session = Depends(get_db),
 ) -> BatchEnqueueOut:
     """Enqueue one RQ job per video to extract frames into image assets."""
+    # Outsourcing hardening — frame extraction creates assets (an ingest
+    # path) and burns decode capacity; admin only.
+    require_data_movement(user)
     try:
         project = require_project_role(db, user, project_id, _MUTATING_ROLES)
         task = TaskService(db).get(project=project, task_id=task_id)
@@ -665,6 +675,9 @@ def import_classes(
     unique constraint never fails. Returns counts. ACL: caller must be
     able to read both projects (v1 ACL = all authenticated users).
     """
+    # Outsourcing hardening — bulk-copying classes out of another
+    # project is a cross-project copy vector; admin only.
+    require_data_movement(user)
     try:
         # Plan-13 Phase 7 Task 2 — caller must be a project member of
         # BOTH the source and destination (any role suffices for the
@@ -787,6 +800,8 @@ def duplicate_task(
     (a single custom name cannot be applied to multiple copies without
     conflict).
     """
+    # Outsourcing hardening — duplication is a copy vector; admin only.
+    require_data_movement(user)
     name_override = payload.name if payload is not None else None
     classes_override = payload.allowed_class_ids if payload is not None else None
     if name_override is not None:

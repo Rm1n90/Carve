@@ -43,6 +43,7 @@ from carve_api.datasets.schemas import (
 from carve_api.datasets.service import DatasetService
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.permissions import is_admin, require_data_movement
 from carve_api.projects.models import Class, Task
 from carve_api.projects.service import (
     _ADMIN_ROLES,
@@ -116,7 +117,10 @@ def get_dataset(
     if row is None or row.project_id != project_id:
         raise HTTPException(status_code=404, detail="dataset_version_not_found")
     download_url: str | None = None
-    if row.blob_key:
+    # Outsourcing hardening — the presigned bundle URL is a full dataset
+    # export. Non-admins keep the version metadata (so history and diffs
+    # still read) but never receive a download link.
+    if row.blob_key and is_admin(user):
         storage = _storage_or_none()
         if storage is not None:
             try:
@@ -266,6 +270,9 @@ def rollback_dataset(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> RollbackOut:
+    # Outsourcing hardening — rollback bulk-restores a stored snapshot
+    # over live annotations, i.e. an import. Admin only.
+    require_data_movement(user)
     try:
         require_project_role(db, user, project_id, _ADMIN_ROLES)
     except AppError as exc:

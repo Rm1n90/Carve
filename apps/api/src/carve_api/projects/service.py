@@ -363,6 +363,7 @@ class TaskService:
         archived: bool | None = None,
         completed: bool | None = None,
         completed_by: uuid.UUID | None = None,
+        gpu_access_for_members: bool | None = None,
     ) -> Task:
         """Patch a task. ``clear_due_date`` distinguishes "leave alone"
         from "explicitly set to NULL" so the router can translate a
@@ -371,6 +372,10 @@ class TaskService:
         Plan-21 — ``completed=True`` stamps ``completed_at`` plus
         ``completed_by`` (supplied by the router from the current user);
         ``False`` clears both. ``None`` leaves the completion state alone.
+
+        ``gpu_access_for_members`` flips the per-task AI grant. The
+        router restricts this field to workspace admins before calling
+        in — see ``carve_api.permissions``.
         """
         t = self.get(project=project, task_id=task_id, include_deleted=False)
         if name is not None:
@@ -389,6 +394,8 @@ class TaskService:
         elif completed is False:
             t.completed_at = None
             t.completed_by = None
+        if gpu_access_for_members is not None:
+            t.gpu_access_for_members = gpu_access_for_members
         self.session.flush()
         return t
 

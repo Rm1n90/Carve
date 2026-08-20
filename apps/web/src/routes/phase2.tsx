@@ -2,6 +2,7 @@
 import { Navigate, createRoute } from "@tanstack/react-router";
 import { rootRoute } from "./_root";
 import { RequireAuth } from "@/auth/RequireAuth";
+import { RequireAdmin } from "@/auth/RequireAdmin";
 import {
   SettingsApiKeysPage,
   SettingsMembersPage,
@@ -80,22 +81,26 @@ export const settingsShortcutsRoute = createRoute({
 export const settingsJobsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings/jobs",
+  // The /jobs API is already admin-only; guard the route so a member
+  // typing the URL gets redirected instead of an all-403 page.
   component: () => (
-    <RequireAuth>
+    <RequireAdmin>
       <JobsPage />
-    </RequireAuth>
+    </RequireAdmin>
   ),
 });
 
 // ---------------------------- Models family ----------------------------
+// Outsourcing hardening — weight management and the SAM variant switch
+// are workspace-admin surfaces, so both routes use RequireAdmin.
 
 export const modelsYoloRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/models/yolo",
   component: () => (
-    <RequireAuth>
+    <RequireAdmin>
       <ModelsYoloPage />
-    </RequireAuth>
+    </RequireAdmin>
   ),
 });
 
@@ -103,9 +108,9 @@ export const modelsSamRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/models/sam",
   component: () => (
-    <RequireAuth>
+    <RequireAdmin>
       <ModelsSamPage />
-    </RequireAuth>
+    </RequireAdmin>
   ),
 });
 
@@ -139,8 +144,8 @@ export const systemRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/system",
   component: () => (
-    <RequireAuth>
+    <RequireAdmin>
       <SystemPage />
-    </RequireAuth>
+    </RequireAdmin>
   ),
 });

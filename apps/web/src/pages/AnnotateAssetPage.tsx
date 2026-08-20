@@ -2108,6 +2108,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
 
         <div className="flex flex-1 min-w-0 flex-col">
           <EditorToolbar
+            // Outsourcing hardening — carries the per-task AI grant so the
+            // toolbar can hide the GPU controls for restricted members.
+            task={currentTask}
             projectId={projectId}
             taskId={taskId}
             assetId={assetId}

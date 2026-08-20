@@ -119,6 +119,10 @@ class TaskPatch(BaseModel):
     # + ``completed_by``; ``False`` clears both. ``None`` (default) means
     # "leave the completion state alone".
     completed: bool | None = None
+    # Outsourcing hardening — per-task grant re-opening the GPU/model
+    # tools to non-admin members. Admin-only to set; a non-admin sending
+    # this field gets 403 from the router (see carve_api.permissions).
+    gpu_access_for_members: bool | None = None
 
 
 class TaskOut(BaseModel):
@@ -132,6 +136,10 @@ class TaskOut(BaseModel):
     # Plan-21 — task completion fields. Both null means in-progress.
     completed_at: datetime | None = None
     completed_by: UUID | None = None
+    # Outsourcing hardening — the web app reads this to decide whether to
+    # render the AI toolbar (My Model / Auto-Annotate / Smart Find / SAM)
+    # for a non-admin. Admins always see it regardless of the flag.
+    gpu_access_for_members: bool = False
 
     @classmethod
     def from_orm_task(cls, t) -> "TaskOut":
@@ -145,6 +153,9 @@ class TaskOut(BaseModel):
             archived_at=getattr(t, "archived_at", None),
             completed_at=getattr(t, "completed_at", None),
             completed_by=getattr(t, "completed_by", None),
+            gpu_access_for_members=bool(
+                getattr(t, "gpu_access_for_members", False)
+            ),
         )
 
 

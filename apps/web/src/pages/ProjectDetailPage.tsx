@@ -22,6 +22,7 @@ import {
   FileArchive,
   Image as ImageIcon,
   ListChecks,
+  Lock,
   MoreVertical,
   Play,
   Plus,
@@ -51,6 +52,7 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { ClassesEditor } from "./ClassesEditor";
 import { NewTaskDialog } from "./NewTaskDialog";
 import { DatasetsPage } from "./DatasetsPage";
+import { useCapabilities } from "@/auth/capabilities";
 import { AssetUploadDialog } from "./AssetUploadDialog";
 import { ExportDialog } from "./ExportDialog";
 import { ImportDialog } from "./ImportDialog";
@@ -656,6 +658,7 @@ function TaskRowMenu({
   onRetrain,
   onArchive,
   onDelete,
+  onToggleGpuAccess,
 }: {
   task: Task;
   pending: boolean;
@@ -670,8 +673,12 @@ function TaskRowMenu({
   onArchive?: (archive: boolean) => void;
   // v3.8 -- Delete the task. Caller handles the confirm + mutation.
   onDelete?: () => void;
+  // Outsourcing hardening -- admin-only per-task grant that re-opens the
+  // AI/GPU tools to members. Undefined for non-admins, which hides the row.
+  onToggleGpuAccess?: (next: boolean) => void;
 }) {
   const isArchived = task.archived_at != null;
+  const { canDuplicate } = useCapabilities();
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
@@ -705,18 +712,22 @@ function TaskRowMenu({
             "shadow-[var(--shadow-card)]",
           )}
         >
-          <DropdownMenu.Item
-            data-testid={`project-detail-task-duplicate-${task.id}`}
-            onSelect={() => onDuplicate()}
-            className={cn(
-              "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
-              "cursor-pointer outline-none text-[color:var(--text-primary)]",
-              "data-[highlighted]:bg-[var(--bg-hover)]",
-            )}
-          >
-            <Copy className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
-            <span className="flex-1">Duplicate</span>
-          </DropdownMenu.Item>
+          {/* Outsourcing hardening — duplicating a task is a copy vector,
+              so it is admin-only. The API refuses it for members too. */}
+          {canDuplicate && (
+            <DropdownMenu.Item
+              data-testid={`project-detail-task-duplicate-${task.id}`}
+              onSelect={() => onDuplicate()}
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
+                "cursor-pointer outline-none text-[color:var(--text-primary)]",
+                "data-[highlighted]:bg-[var(--bg-hover)]",
+              )}
+            >
+              <Copy className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+              <span className="flex-1">Duplicate</span>
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Item
             data-testid={`project-detail-task-edit-classes-${task.id}`}
             onSelect={() => onEditClasses()}
@@ -757,6 +768,34 @@ function TaskRowMenu({
             >
               <RefreshCw className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
               <span className="flex-1">Retrain YOLO on this task</span>
+            </DropdownMenu.Item>
+          )}
+          {/* Outsourcing hardening — the admin's per-task escape hatch.
+              Off by default: members annotate manually and cannot reach
+              My Model / Auto-Annotate / Smart Find / SAM. Turning it on
+              hands the GPU tools to this one task only. */}
+          {onToggleGpuAccess && (
+            <DropdownMenu.Item
+              data-testid={`project-detail-task-gpu-access-${task.id}`}
+              onSelect={() =>
+                onToggleGpuAccess(!task.gpu_access_for_members)
+              }
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px]",
+                "cursor-pointer outline-none text-[color:var(--text-primary)]",
+                "data-[highlighted]:bg-[var(--bg-hover)]",
+              )}
+            >
+              {task.gpu_access_for_members ? (
+                <Sparkles className="h-3.5 w-3.5 text-[color:var(--accent)]" />
+              ) : (
+                <Lock className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+              )}
+              <span className="flex-1">
+                {task.gpu_access_for_members
+                  ? "Disable AI tools for members"
+                  : "Enable AI tools for members"}
+              </span>
             </DropdownMenu.Item>
           )}
           {onArchive && (
@@ -1406,6 +1445,10 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   });
   const qc = useQueryClient();
   const confirm = useConfirm();
+  // Outsourcing hardening — drives which task actions are rendered at
+  // all. Server-side gates in ``carve_api.permissions`` are the real
+  // boundary; this only keeps members from seeing buttons that 403.
+  const caps = useCapabilities();
   // v3.1 Bug 2 — Duplicate opens a name dialog; ×3 was removed because
   // users only want a single, named copy.
   // v3.2 Issue 4 — the dialog also includes a class checkbox grid so
@@ -1741,6 +1784,28 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
     },
     onError: () => {
       showToast("Failed to update task.", { variant: "error" });
+    },
+  });
+
+  // Outsourcing hardening — admin-only per-task AI grant. Flipping it on
+  // re-opens My Model / Auto-Annotate / Smart Find / SAM for members on
+  // this task alone; every other task stays locked down.
+  const setTaskGpuAccess = useMutation({
+    mutationFn: ({ taskId, enabled }: { taskId: string; enabled: boolean }) =>
+      tasksApi.update(projectId, taskId, { gpu_access_for_members: enabled }),
+    onSuccess: (_t, vars) => {
+      qc.invalidateQueries({ queryKey: ["tasks", projectId] });
+      showToast(
+        vars.enabled
+          ? "AI tools enabled for members on this task."
+          : "AI tools disabled for members on this task.",
+        { variant: "success" },
+      );
+    },
+    onError: () => {
+      showToast("Failed to update AI access for this task.", {
+        variant: "error",
+      });
     },
   });
 
@@ -2119,7 +2184,11 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                     markComplete.isPending &&
                     markComplete.variables?.taskId === t.id,
                 })}
-                renderActions={(t) => (
+                // Outsourcing hardening — Upload / Import / Export are the
+                // data-movement actions; members never see them, and the
+                // API refuses them regardless.
+                renderActions={(t) =>
+                  !caps.isAdmin ? null : (
                   <>
                     <button
                       type="button"
@@ -2170,7 +2239,8 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   </>
-                )}
+                  )
+                }
                 renderClassesChip={(t) => (
                   <TaskClassesChip
                     projectId={projectId}
@@ -2191,7 +2261,21 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
                     }}
                     onEditClasses={() => setClassesTarget(t)}
                     onEditDueDate={() => setDueDateTarget(t)}
-                    onRetrain={() => setRetrainTarget(t)}
+                    // Retrain is a GPU/model action — admin only.
+                    onRetrain={
+                      caps.canManageModels
+                        ? () => setRetrainTarget(t)
+                        : undefined
+                    }
+                    onToggleGpuAccess={
+                      caps.isAdmin
+                        ? (next) =>
+                            setTaskGpuAccess.mutate({
+                              taskId: t.id,
+                              enabled: next,
+                            })
+                        : undefined
+                    }
                     onArchive={(archive) =>
                       setTaskArchived.mutate({ taskId: t.id, archived: archive })
                     }

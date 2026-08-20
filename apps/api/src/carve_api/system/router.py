@@ -21,7 +21,7 @@ from pydantic import BaseModel
 import psutil
 
 from carve_api.auth.models import User
-from carve_api.deps import get_current_admin_user, get_current_user
+from carve_api.deps import get_current_admin_user
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -713,7 +713,12 @@ def _get_cached_system_info() -> SystemInfo:
 
 @router.get("/info", response_model=SystemInfo)
 def get_system_info(
-    _user: User = Depends(get_current_user),  # noqa: ARG001 — auth gate only
+    # Outsourcing hardening — this reports the host's GPU model, VRAM and
+    # loaded weights. An outsourced annotator has no use for it and it
+    # tells them exactly what hardware they are borrowing, so it follows
+    # the rest of the System page in being admin-only. The web app only
+    # calls it from that (admin-guarded) page.
+    _user: User = Depends(get_current_admin_user),  # noqa: ARG001 — admin gate
 ) -> SystemInfo:
     return _get_cached_system_info()
 

@@ -13,6 +13,7 @@ from carve_api.assets.service import AssetService
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.permissions import require_data_movement, require_gpu_task
 from carve_api.projects.service import ProjectService, TaskService, _can_modify, NotProjectOwner, require_visible_task
 from carve_api.storage.client import MinioClient
 
@@ -82,6 +83,10 @@ def upload_asset(
     # ``async def``) so FastAPI runs this in a worker thread — the hash pass
     # and the potentially minutes-long multipart upload never block the event
     # loop. ``file.file`` is the underlying seekable SpooledTemporaryFile.
+    # Outsourcing hardening — asset upload is an ingest vector; admin
+    # only. Checked before the spooled body is read so a rejected upload
+    # costs nothing.
+    require_data_movement(user)
     upload = file.file
     upload.seek(0, 2)  # SEEK_END
     size = upload.tell()
@@ -200,6 +205,8 @@ def upload_archive(
     # the central directory by seeking and decompresses one member at a time,
     # so a large archive is never held whole in memory. ``def`` keeps the work
     # off the event loop.
+    # Outsourcing hardening — see ``upload_asset``; admin only.
+    require_data_movement(user)
     upload = file.file
     upload.seek(0)
     try:
@@ -349,6 +356,9 @@ def reextract_frames(
 ) -> dict:
     from carve_api.assets.models import Asset, AssetKind
 
+    # Outsourcing hardening — re-extraction mints new image assets from
+    # the source video; admin only, same as upload.
+    require_data_movement(user)
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
@@ -529,7 +539,7 @@ def track_open(
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_visible_task(db, user, a.task_id)
+        require_gpu_task(db, user, a.task_id)
     except AppError as exc:
         raise _http(exc) from exc
     p = payload or TrackOpenIn()
@@ -556,7 +566,7 @@ def track_prompt(
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_visible_task(db, user, a.task_id)
+        require_gpu_task(db, user, a.task_id)
     except AppError as exc:
         raise _http(exc) from exc
     try:
@@ -579,7 +589,7 @@ def track_propagate_endpoint(
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_visible_task(db, user, a.task_id)
+        require_gpu_task(db, user, a.task_id)
     except AppError as exc:
         raise _http(exc) from exc
     p = payload or {}
@@ -613,7 +623,7 @@ def track_propagate_stream_endpoint(
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_visible_task(db, user, a.task_id)
+        require_gpu_task(db, user, a.task_id)
     except AppError as exc:
         raise _http(exc) from exc
     p = payload or {}

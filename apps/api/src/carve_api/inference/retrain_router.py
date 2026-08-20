@@ -23,6 +23,7 @@ from carve_api.auth.models import User
 from carve_api.config import get_settings
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.permissions import admin_guard
 from carve_api.jobs.retrain import (
     build_payload,
     progress_key,
@@ -36,7 +37,15 @@ from carve_api.projects.service import (
 )
 
 
-router = APIRouter(prefix="/tasks", tags=["retrain"])
+# Outsourcing hardening — retraining is the heaviest GPU workload in
+# the product and its output is a new model weight, so it stays
+# admin-only even on a task that has the per-task AI grant: the grant
+# hands out inference, not training.
+router = APIRouter(
+    prefix="/tasks",
+    tags=["retrain"],
+    dependencies=[Depends(admin_guard)],
+)
 
 
 def _http(err: AppError) -> HTTPException:
