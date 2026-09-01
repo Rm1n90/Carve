@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { rootRoute } from "./_root";
 import { RequireAuth } from "@/auth/RequireAuth";
+import { useCapabilities } from "@/auth/capabilities";
 import { AssetUploadDialog } from "@/pages/AssetUploadDialog";
 import { ImportDialog } from "@/pages/ImportDialog";
 import { ExportDialog } from "@/pages/ExportDialog";
@@ -74,8 +75,13 @@ function ToolbarAction({ icon, label, hint, variant = "default", testId }: Toolb
   );
 }
 
-function TaskDetail() {
+// Exported for tests: the route object hides the component behind
+// createRoute's options, and the member-visibility assertions in
+// tests/member-ui-surfaces.test.tsx need to render the screen itself.
+export function TaskDetail() {
   const { projectId, taskId } = useParams({ from: "/projects/$projectId/tasks/$taskId" });
+  // Outsourcing hardening — gates the Upload / Import / Export toolbar.
+  const caps = useCapabilities();
   const [tab, setTab] = useState<Tab>("assets");
   const [openDialog, setOpenDialog] = useState<"upload" | "import" | "export" | null>(null);
 
@@ -127,7 +133,15 @@ function TaskDetail() {
             )}
           </div>
 
+          {/* Outsourcing hardening — Upload / Import / Export are the
+              data-movement actions. Members annotate; they do not move
+              data in or out, so the whole action group is admin-only.
+              The API refuses all three regardless (see
+              carve_api.permissions), so this only stops us rendering
+              buttons that would 403. */}
           <div className="flex flex-wrap items-center gap-2.5">
+            {caps.isAdmin && (
+            <>
             <Dialog
               open={openDialog === "upload"}
               onOpenChange={(o) => setOpenDialog(o ? "upload" : null)}
@@ -186,6 +200,8 @@ function TaskDetail() {
                 <ExportDialog projectId={projectId} taskId={taskId} />
               </DialogContent>
             </Dialog>
+            </>
+            )}
           </div>
         </header>
 

@@ -2067,18 +2067,26 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
           >
             <BarChart3 className="h-3.5 w-3.5" /> Stats
           </Tabs.Trigger>
-          <Tabs.Trigger
-            value="datasets"
-            data-testid="project-tab-datasets"
-          >
-            <Database className="h-3.5 w-3.5" /> Datasets
-          </Tabs.Trigger>
-          <Tabs.Trigger
-            value="settings"
-            data-testid="project-tab-settings"
-          >
-            <Settings className="h-3.5 w-3.5" /> Settings
-          </Tabs.Trigger>
+          {/* Outsourcing hardening — Datasets is export/version history
+              and Settings mutates the project (rename, delete, SAM
+              default); both are refused for members by the API, so the
+              tabs are admin-only rather than dead ends. */}
+          {caps.isAdmin && (
+            <Tabs.Trigger
+              value="datasets"
+              data-testid="project-tab-datasets"
+            >
+              <Database className="h-3.5 w-3.5" /> Datasets
+            </Tabs.Trigger>
+          )}
+          {caps.isAdmin && (
+            <Tabs.Trigger
+              value="settings"
+              data-testid="project-tab-settings"
+            >
+              <Settings className="h-3.5 w-3.5" /> Settings
+            </Tabs.Trigger>
+          )}
         </Tabs.List>
 
         {/* ---- Overview tab ---- */}
@@ -2317,31 +2325,37 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
         </Tabs.Content>
 
         {/* ---- Datasets tab (Plan-13 Phase 7 Task 7) ---- */}
-        <Tabs.Content
-          value="datasets"
-          className="focus-visible:outline-none"
-          data-testid="project-tab-content-datasets"
-        >
-          <DatasetsPage projectId={projectId} />
-        </Tabs.Content>
+        {/* Guarded alongside its trigger: hiding only the tab strip would
+            still leave the panel mountable. */}
+        {caps.isAdmin && (
+          <Tabs.Content
+            value="datasets"
+            className="focus-visible:outline-none"
+            data-testid="project-tab-content-datasets"
+          >
+            <DatasetsPage projectId={projectId} />
+          </Tabs.Content>
+        )}
 
         {/* ---- Settings tab ---- */}
-        <Tabs.Content
-          value="settings"
-          className="focus-visible:outline-none"
-          data-testid="project-tab-content-settings"
-        >
-          {/* ``key={projectId}`` forces a remount when the user switches
-              project via the left rail; otherwise the form's internal
-              ``useState(initialName)`` keeps the previous project's
-              values because props are only read on the first render. */}
-          <ProjectSettingsForm
-            key={projectId}
-            projectId={projectId}
-            initialName={project.name}
-            initialDescription={project.description}
-          />
-        </Tabs.Content>
+        {caps.isAdmin && (
+          <Tabs.Content
+            value="settings"
+            className="focus-visible:outline-none"
+            data-testid="project-tab-content-settings"
+          >
+            {/* ``key={projectId}`` forces a remount when the user switches
+                project via the left rail; otherwise the form's internal
+                ``useState(initialName)`` keeps the previous project's
+                values because props are only read on the first render. */}
+            <ProjectSettingsForm
+              key={projectId}
+              projectId={projectId}
+              initialName={project.name}
+              initialDescription={project.description}
+            />
+          </Tabs.Content>
+        )}
       </Tabs>
 
       {/* v3.1 Bug 2 + v3.2 Issue 4 — Duplicate-task dialog: name input
