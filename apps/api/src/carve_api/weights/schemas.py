@@ -28,13 +28,25 @@ class WeightOut(BaseModel):
     metadata: dict | None = None
 
     @classmethod
-    def from_orm_weight(cls, w, *, is_default: bool = False) -> "WeightOut":
+    def from_orm_weight(
+        cls, w, *, is_default: bool = False, redact: bool = False
+    ) -> "WeightOut":
+        """Serialize a weight row.
+
+        ``redact=True`` blanks the fields that describe the *artifact*
+        rather than the choice: ``minio_key`` (its storage location) and
+        ``metadata`` (retrain hyperparameters + metrics). Non-admins get
+        the redacted form — they may need to pick a weight by name to run
+        a granted predict, but the model itself is workspace IP and its
+        training recipe is not theirs to read. Neither field is consumed
+        by the web app, so redaction is invisible in normal use.
+        """
         return cls(
             id=str(w.id),
             project_id=str(w.project_id) if w.project_id is not None else None,
             name=w.name,
             task_kind=w.task_kind,
-            minio_key=w.minio_key,
+            minio_key="" if redact else w.minio_key,
             size_bytes=w.size_bytes,
             class_names=list(w.class_names or []),
             created_by=str(w.created_by) if w.created_by else None,
@@ -43,7 +55,7 @@ class WeightOut(BaseModel):
             # The ORM attribute is ``metadata_`` (trailing underscore) to
             # avoid clashing with SQLAlchemy's reserved ``Base.metadata``;
             # we expose it as ``metadata`` on the response.
-            metadata=getattr(w, "metadata_", None),
+            metadata=None if redact else getattr(w, "metadata_", None),
         )
 
 

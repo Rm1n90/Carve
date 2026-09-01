@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.projects.service import ProjectService, require_visible_task
+from carve_api.projects.service import (
+    ProjectService,
+    _READ_ROLES,
+    require_project_role,
+    require_visible_task,
+)
 from carve_api.stats.heatmap import heatmap
 from carve_api.stats.service import StatsService
 
@@ -127,6 +132,11 @@ def reviewer_quality(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
+        # IDOR fix — project-scoped analytics leak per-project totals
+        # (asset/annotation counts, reviewer names, retrain history).
+        # ``ProjectService.get`` ignores ``actor``, so this needs an
+        # explicit membership check. Admins are implicit members.
+        require_project_role(db, user, project_id, _READ_ROLES)
         project = ProjectService(db).get(actor=user, project_id=project_id)
     except AppError as exc:
         raise _http(exc) from exc
@@ -144,6 +154,11 @@ def retrain_history(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
+        # IDOR fix — project-scoped analytics leak per-project totals
+        # (asset/annotation counts, reviewer names, retrain history).
+        # ``ProjectService.get`` ignores ``actor``, so this needs an
+        # explicit membership check. Admins are implicit members.
+        require_project_role(db, user, project_id, _READ_ROLES)
         project = ProjectService(db).get(actor=user, project_id=project_id)
     except AppError as exc:
         raise _http(exc) from exc
@@ -175,10 +190,16 @@ def project_summary(
 ) -> dict:
     """Project-level analytics rollup.
 
-    Mirrors the auth pattern used by `GET /projects/{project_id}` — unknown or
-    invisible projects collapse into a 404 (Plan 02 IDOR-mitigation policy).
+    Mirrors the auth pattern used by `GET /projects/{project_id}`: unknown
+    projects 404, and a project the caller is not a member of is refused
+    (Plan 02 IDOR-mitigation policy).
     """
     try:
+        # IDOR fix — project-scoped analytics leak per-project totals
+        # (asset/annotation counts, reviewer names, retrain history).
+        # ``ProjectService.get`` ignores ``actor``, so this needs an
+        # explicit membership check. Admins are implicit members.
+        require_project_role(db, user, project_id, _READ_ROLES)
         project = ProjectService(db).get(actor=user, project_id=project_id)
     except AppError as exc:
         raise _http(exc) from exc

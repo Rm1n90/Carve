@@ -4,19 +4,21 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.permissions import is_admin, require_data_movement
-from carve_api.projects.models import Class
+from carve_api.permissions import is_admin, require_data_movement, require_gpu_task
+from carve_api.projects.models import Class, ProjectMember
 from carve_api.projects.service import (
     ProjectService,
     TaskService,
     _ADMIN_ROLES,
+    _READ_ROLES,
     get_project_role,
+    require_project_role,
     require_visible_task,
 )
 from carve_api.weights.models import Weight, WeightTaskKind
@@ -33,19 +35,37 @@ project_weights_router = APIRouter(prefix="/projects", tags=["weights"])
 
 @router.get("/weights", response_model=list[WeightOut])
 def list_workspace_weights(
-    user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[WeightOut]:
-    """List every YOLO custom weight uploaded to this workspace.
+    """List YOLO custom weights uploaded to this workspace.
 
     v3.5 Phase F5 — workspace listing has no project context, so the
     ``is_default`` flag on each row is always ``false``. Per-project
     default mappings are surfaced by the project-scoped listing.
+
+    Outsourcing hardening — this used to return *every* weight in the
+    workspace to any authenticated user, exposing the full model
+    inventory (names, the class lists each model detects, storage keys
+    and retrain hyperparameters) across projects the caller has nothing
+    to do with. Non-admins now see only workspace-wide weights plus
+    those scoped to a project they actually belong to, with the artifact
+    fields redacted. Admins are unaffected.
     """
-    rows = list(
-        db.execute(select(Weight).order_by(Weight.created_at.desc())).scalars()
-    )
-    return [WeightOut.from_orm_weight(w) for w in rows]
+    stmt = select(Weight)
+    if not is_admin(user):
+        member_projects = select(ProjectMember.project_id).where(
+            ProjectMember.user_id == user.id
+        )
+        stmt = stmt.where(
+            or_(
+                Weight.project_id.is_(None),
+                Weight.project_id.in_(member_projects),
+            )
+        )
+    rows = list(db.execute(stmt.order_by(Weight.created_at.desc())).scalars())
+    redact = not is_admin(user)
+    return [WeightOut.from_orm_weight(w, redact=redact) for w in rows]
 
 
 @router.post(
@@ -183,6 +203,13 @@ def list_weights(
     The ``is_default`` flag on each row reflects the project's defaults
     in ``weight_project_defaults`` for the matching ``task_kind``.
     """
+    # IDOR fix — ``ProjectService.get`` ignores ``actor``, so without an
+    # explicit membership check any authenticated user could list the
+    # weights of any project by guessing its id.
+    try:
+        require_project_role(db, user, project_id, _READ_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
     project = ProjectService(db).get(actor=user, project_id=project_id)
     svc = WeightService(db)
     weights = svc.list_for_project(project=project)
@@ -192,7 +219,11 @@ def list_weights(
     out: list[WeightOut] = []
     for w in weights:
         is_default = defaults_by_kind.get(w.task_kind.value) == w.id
-        out.append(WeightOut.from_orm_weight(w, is_default=is_default))
+        out.append(
+            WeightOut.from_orm_weight(
+                w, is_default=is_default, redact=not is_admin(user)
+            )
+        )
     return out
 
 
@@ -329,9 +360,19 @@ def mapping_suggestions(
     if weight is None:
         raise HTTPException(status_code=404, detail="weight_not_found")
     try:
-        task = require_visible_task(db, user, task_id)
+        # Outsourcing hardening — this endpoint exists only to populate
+        # the My Model predict popover, so it follows the same GPU gate
+        # as predict itself: a member on an ungranted task has no reason
+        # to reach it.
+        task = require_gpu_task(db, user, task_id)
     except AppError as exc:
         raise _http(exc) from exc
+    # ...and the weight must actually be visible from THIS task's
+    # project. Without this a caller could pair a task they can see with
+    # any weight id and read back that weight's full class list — the
+    # very inventory the workspace listing is scoped to protect.
+    if weight.project_id is not None and weight.project_id != task.project_id:
+        raise HTTPException(status_code=404, detail="weight_not_found")
     project = ProjectService(db).get(actor=user, project_id=task.project_id)
     project_classes, _allowed = TaskService(db).get_effective_classes(
         project=project, task=task

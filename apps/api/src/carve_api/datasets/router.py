@@ -96,7 +96,12 @@ def list_datasets(
         before=before,
         limit=limit,
     )
-    return [DatasetVersionOut.from_orm_row(r) for r in rows]
+    # Outsourcing hardening — the storage key points at a full dataset
+    # export bundle, so non-admins get the version history without it.
+    # (The presigned download URL is withheld separately in
+    # ``get_dataset``.)
+    redact = not is_admin(user)
+    return [DatasetVersionOut.from_orm_row(r, redact=redact) for r in rows]
 
 
 @router.get(
@@ -129,7 +134,7 @@ def get_dataset(
                 )
             except Exception:  # noqa: BLE001
                 download_url = None
-    base = DatasetVersionOut.from_orm_row(row)
+    base = DatasetVersionOut.from_orm_row(row, redact=not is_admin(user))
     return DatasetVersionDetailOut(**base.model_dump(), download_url=download_url)
 
 

@@ -130,6 +130,12 @@ def get_project(
     db: Session = Depends(get_db),
 ) -> ProjectOut:
     try:
+        # IDOR fix — a read must prove project membership. Without
+        # this, any authenticated user could read another project by
+        # guessing its id: ``ProjectService.get`` deliberately does
+        # not consult ``actor``. Workspace admins are implicit
+        # members, so this is a no-op for them.
+        require_project_role(db, user, project_id, _READ_ROLES)
         p, owner_email = ProjectService(db).get_with_owner_email(
             actor=user, project_id=project_id
         )
@@ -242,6 +248,12 @@ def list_tasks(
     db: Session = Depends(get_db),
 ) -> list[TaskOut]:
     try:
+        # IDOR fix — a read must prove project membership. Without
+        # this, any authenticated user could read another project by
+        # guessing its id: ``ProjectService.get`` deliberately does
+        # not consult ``actor``. Workspace admins are implicit
+        # members, so this is a no-op for them.
+        require_project_role(db, user, project_id, _READ_ROLES)
         project = ProjectService(db).get(actor=user, project_id=project_id)
     except AppError as exc:
         raise _http(exc) from exc
@@ -322,8 +334,11 @@ def task_completion_status(
     task. ``percent`` is a 0..1 float (0 when ``total_assets`` is 0).
     """
     try:
-        # Read access is enough — gate on ProjectService.get which
-        # honours membership for non-admin users.
+        # IDOR fix — the comment here used to claim ``ProjectService.get``
+        # honoured membership. It does not: it ignores ``actor`` entirely,
+        # so this read was open to any authenticated user who guessed the
+        # project id. Gate on the membership check explicitly.
+        require_project_role(db, user, project_id, _READ_ROLES)
         project = ProjectService(db).get(actor=user, project_id=project_id)
         task = TaskService(db).get(project=project, task_id=task_id)
     except AppError as exc:
@@ -573,6 +588,12 @@ def list_classes(
     db: Session = Depends(get_db),
 ) -> list[ClassOut]:
     try:
+        # IDOR fix — a read must prove project membership. Without
+        # this, any authenticated user could read another project by
+        # guessing its id: ``ProjectService.get`` deliberately does
+        # not consult ``actor``. Workspace admins are implicit
+        # members, so this is a no-op for them.
+        require_project_role(db, user, project_id, _READ_ROLES)
         project = ProjectService(db).get(actor=user, project_id=project_id)
     except AppError as exc:
         raise _http(exc) from exc
@@ -713,6 +734,12 @@ def get_task_classes(
     can distinguish "all" (``null``) from "explicit subset".
     """
     try:
+        # IDOR fix — a read must prove project membership. Without
+        # this, any authenticated user could read another project by
+        # guessing its id: ``ProjectService.get`` deliberately does
+        # not consult ``actor``. Workspace admins are implicit
+        # members, so this is a no-op for them.
+        require_project_role(db, user, project_id, _READ_ROLES)
         project = ProjectService(db).get(actor=user, project_id=project_id)
         task_svc = TaskService(db)
         task = task_svc.get(project=project, task_id=task_id)

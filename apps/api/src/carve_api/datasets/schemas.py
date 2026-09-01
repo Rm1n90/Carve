@@ -31,7 +31,7 @@ class DatasetVersionOut(BaseModel):
     blob_key: str | None = None
 
     @classmethod
-    def from_orm_row(cls, row: Any) -> "DatasetVersionOut":
+    def from_orm_row(cls, row: Any, *, redact: bool = False) -> "DatasetVersionOut":
         return cls(
             id=row.id,
             project_id=row.project_id,
@@ -43,7 +43,9 @@ class DatasetVersionOut(BaseModel):
             label=row.label,
             frozen=bool(row.frozen),
             summary=row.metadata_summary,
-            blob_key=row.blob_key,
+            # ``redact`` blanks the storage key for non-admins: the
+            # bundle it points at is a full dataset export.
+            blob_key=None if redact else row.blob_key,
         )
 
 
