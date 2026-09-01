@@ -65,6 +65,7 @@ import {
 } from "lucide-react";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { useAuth } from "@/auth/store";
+import { hasAdminAuthority } from "@/auth/capabilities";
 import { logout } from "@/auth/api";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
@@ -487,7 +488,7 @@ export function LeftNav({
   const user = useAuth((s) => s.user);
   // Outsourcing hardening — admin-only dock surfaces (Models, System,
   // Jobs). Cosmetic; the API and the routes enforce the same rule.
-  const isAdmin = user?.role === "admin";
+  const isAdmin = hasAdminAuthority(user?.role);
   const nav = useNavigate();
   const confirm = useConfirm();
 

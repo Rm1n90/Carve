@@ -46,7 +46,7 @@ import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog
 import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import { AutoAnnotateDialog } from "@/components/annotation/AutoAnnotateDialog";
 import { YoloeDialog } from "@/components/annotation/YoloeDialog";
-import { useTaskGpuAccess } from "@/auth/capabilities";
+import { hasAdminAuthority, useTaskGpuAccess } from "@/auth/capabilities";
 import { FrameExtractDialog } from "@/components/annotation/FrameExtractDialog";
 import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
@@ -2801,7 +2801,7 @@ export function EditorToolbar({
     me
       && samPersistProjectQ.data
       && (
-        me.role === "admin"
+        hasAdminAuthority(me.role)
         || samPersistProjectQ.data.owner_id === me.id
       ),
   );

@@ -30,7 +30,7 @@ import {
 import { Select } from "@/components/ui/Select";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/auth/store";
-import { useCapabilities } from "@/auth/capabilities";
+import { hasAdminAuthority, useCapabilities } from "@/auth/capabilities";
 import { changePassword as authChangePassword } from "@/auth/api";
 import { apiKeysApi, type ApiKey, type ApiKeyCreated } from "@/api/api_keys";
 import {
@@ -80,7 +80,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
       </header>
       <div className="grid grid-cols-[200px_1fr] gap-8 items-start">
         <nav aria-label="Settings sections" className="grid gap-0.5">
-          {TABS.filter((t) => !t.adminOnly || role === "admin").map((t) => {
+          {TABS.filter((t) => !t.adminOnly || hasAdminAuthority(role)).map((t) => {
             const active = path === t.to;
             return (
               <Link
@@ -124,7 +124,10 @@ export function SettingsProfilePage() {
             Role
           </label>
           <div className="mt-1.5">
-            <Badge variant={user?.role === "admin" ? "accent" : "neutral"} size="md">
+            <Badge
+              variant={hasAdminAuthority(user?.role) ? "accent" : "neutral"}
+              size="md"
+            >
               {user?.role ?? "—"}
             </Badge>
           </div>
@@ -1373,7 +1376,7 @@ const WORKSPACE_DESCRIPTION_MAX = 2000;
 
 export function SettingsWorkspacePage() {
   const role = useAuth((s) => s.user?.role);
-  const isAdmin = role === "admin";
+  const isAdmin = hasAdminAuthority(role);
   const qc = useQueryClient();
 
   const wsQ = useQuery({

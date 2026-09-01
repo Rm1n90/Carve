@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import { Navigate } from "@tanstack/react-router";
 import { useAuth } from "./store";
+import { hasAdminAuthority } from "./capabilities";
 
 /**
  * Outsourcing hardening — route guard for workspace-admin-only pages
@@ -17,6 +18,6 @@ export function RequireAdmin({ children }: { children: ReactNode }) {
   const token = useAuth((s) => s.accessToken);
   const role = useAuth((s) => s.user?.role ?? null);
   if (!token) return <Navigate to="/login" replace />;
-  if (role !== "admin") return <Navigate to="/projects" replace />;
+  if (!hasAdminAuthority(role)) return <Navigate to="/projects" replace />;
   return <>{children}</>;
 }

@@ -23,6 +23,7 @@ import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
 import { showToast } from "@/lib/toast";
 import { formatRelative } from "@/lib/relativeTime";
+import { hasAdminAuthority } from "@/auth/capabilities";
 
 const KIND_LABEL: Record<string, string> = {
   retrain: "retrain",
@@ -319,7 +320,7 @@ export function DatasetsPage({ projectId }: DatasetsPageProps) {
   });
   const myRole: Role | null = useMemo(() => {
     if (!authUser) return null;
-    if (authUser.role === "admin") return "admin";
+    if (hasAdminAuthority(authUser.role)) return "admin";
     const me = membersQ.data?.find((m) => m.id === authUser.id);
     return me?.role ?? authUser.role;
   }, [authUser, membersQ.data]);
@@ -328,7 +329,7 @@ export function DatasetsPage({ projectId }: DatasetsPageProps) {
   // ``myRole`` can resolve to the *project* role "admin" for a workspace
   // member, which the API no longer accepts — gate on the workspace role
   // so we never render a button that 403s.
-  const canRollback = authUser?.role === "admin" && myRole === "admin";
+  const canRollback = hasAdminAuthority(authUser?.role) && myRole === "admin";
 
   const [primaryId, setPrimaryId] = useState<string | null>(null);
   const [secondaryId, setSecondaryId] = useState<string | null>(null);

@@ -35,6 +35,7 @@ import { useAuth } from "@/auth/store";
 import { showToast } from "@/lib/toast";
 import { UploadWeightDialog } from "@/pages/UploadWeightDialog";
 import { WeightAssignmentCell } from "@/components/weights/WeightAssignmentCell";
+import { hasAdminAuthority } from "@/auth/capabilities";
 
 // =========================== /models/yolo ===========================
 
@@ -241,7 +242,7 @@ export function ModelsYoloPage() {
   // intrinsics only. The cell owns its own assignmentsQ /
   // add/removeAssignment mutations against ["weights", id, "assignments"].
 
-  const canDelete = me?.role === "admin";
+  const canDelete = hasAdminAuthority(me?.role);
 
   async function handleDeleteWeight(w: Weight) {
     const ok = await confirm({
@@ -779,7 +780,7 @@ export function TrashPage() {
                         size="sm"
                         variant="danger"
                         leftIcon={<Trash2 className="h-3.5 w-3.5" />}
-                        disabled={me?.role !== "admin"}
+                        disabled={!hasAdminAuthority(me?.role)}
                         onClick={async () => {
                           const ok = await confirm({
                             title: `Permanently delete ${item.kind}?`,

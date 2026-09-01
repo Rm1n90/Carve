@@ -22,6 +22,23 @@
  * have produced.
  */
 import { useAuth } from "./store";
+import type { Role } from "./store";
+
+/**
+ * Whether a role carries workspace-admin authority.
+ *
+ * TRUE for ``superadmin`` as well as ``admin``. This is the single
+ * definition — never compare a role to the literal ``"admin"``, because
+ * a bare equality silently excludes the tier ABOVE admin and leaves the
+ * highest role with fewer powers than the one below it. (That exact bug
+ * hid the Models, System and Jobs pages from superadmins.)
+ *
+ * Use this in non-hook contexts (route guards, callbacks); components
+ * should prefer {@link useCapabilities}.
+ */
+export function hasAdminAuthority(role: Role | null | undefined): boolean {
+  return role === "admin" || role === "superadmin";
+}
 
 export interface Capabilities {
   /**
@@ -55,7 +72,7 @@ export interface Capabilities {
 export function useCapabilities(): Capabilities {
   const role = useAuth((s) => s.user?.role ?? null);
   const isSuperAdmin = role === "superadmin";
-  const isAdmin = isSuperAdmin || role === "admin";
+  const isAdmin = hasAdminAuthority(role);
   return {
     isAdmin,
     isSuperAdmin,
@@ -78,6 +95,6 @@ export function useTaskGpuAccess(
   task: { gpu_access_for_members?: boolean } | null | undefined,
 ): boolean {
   const role = useAuth((s) => s.user?.role ?? null);
-  if (role === "admin" || role === "superadmin") return true;
+  if (hasAdminAuthority(role)) return true;
   return task?.gpu_access_for_members === true;
 }
