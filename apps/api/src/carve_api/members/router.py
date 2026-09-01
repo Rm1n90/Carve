@@ -25,11 +25,7 @@ from carve_api.auth.schemas import (
     UserOut,
 )
 from carve_api.auth.service import AuthService, EmailTaken
-from carve_api.deps import (
-    get_current_admin_user,
-    get_current_user,
-    get_db,
-)
+from carve_api.deps import get_current_admin_user, get_db
 from carve_api.permissions import can_manage_user, require_superadmin
 
 router = APIRouter(prefix="/auth/members", tags=["members"])
@@ -47,12 +43,16 @@ class MemberProjectOut(BaseModel):
     role: str
 
 
+# Outsourcing hardening — the roster and the per-user project map tell a
+# member the whole team and the whole project structure. Both are
+# admin-only; the only UI that reads them (Settings -> Members, and the
+# Datasets tab) is admin-only too.
 @router.get(
     "/projects-by-user",
     response_model=dict[str, list[MemberProjectOut]],
 )
 def list_member_projects(
-    _user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
+    _user: User = Depends(get_current_admin_user),  # noqa: ARG001 — admin gate
     db: Session = Depends(get_db),
 ) -> dict[str, list[MemberProjectOut]]:
     """Return per-user project memberships keyed by user id (string).
@@ -84,12 +84,17 @@ def list_member_projects(
 
 @router.get("", response_model=list[UserOut])
 def list_members(
-    user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
+    user: User = Depends(get_current_admin_user),  # noqa: ARG001 — admin gate
     db: Session = Depends(get_db),
 ) -> list[UserOut]:
-    """List every workspace member. v1 simplification: a single workspace
-    so all authenticated users may read the directory; role changes still
-    require admin (see ``patch_member_role``).
+    """List every workspace member. Admin-only.
+
+    Outsourcing hardening — this used to be readable by any authenticated
+    user ("v1 simplification: a single workspace"). That handed an
+    outsourced annotator the entire team roster: every colleague's email
+    address, and with ``projects-by-user`` the whole project structure
+    too. Neither is any of their business, and the only screens that read
+    it (Settings → Members, the Datasets tab) are already admin-only.
 
     Bug 14: soft-deleted users are excluded — once an admin removes them
     they vanish from the directory.

@@ -45,8 +45,15 @@ class SetPreferenceIn(BaseModel):
 
 
 @router.get("/status")
-def status(_user=Depends(get_current_user)) -> dict:
-    """Forward the model service's full device snapshot."""
+def status(_user=Depends(gpu_admin_guard)) -> dict:
+    """Forward the model service's full device snapshot.
+
+    Outsourcing hardening — this enumerates the host's GPUs and their
+    VRAM. An outsourced annotator has no use for it and it tells them
+    exactly what hardware they are borrowing, so it follows
+    ``/system/info`` in being admin-only. The editor's Compute tab (its
+    only caller) is hidden for non-admins.
+    """
     with _wrap_unreachable("devices_status"), _client() as c:
         r = c.get("/devices/status")
         if r.status_code >= 400:

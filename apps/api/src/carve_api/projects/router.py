@@ -84,6 +84,16 @@ def create_project(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ProjectOut:
+    """Create a project. Admin-only.
+
+    Outsourcing hardening — any authenticated user could previously
+    create projects. A member's own project was useless to them (they
+    cannot upload assets or export from it, both being admin-only), so
+    this was clutter rather than a leak, but "members annotate, admins
+    manage the workspace" is the intended shape and an outsourced
+    annotator has no reason to be creating projects at all.
+    """
+    require_admin(user)
     p = ProjectService(db).create(
         actor=user, name=payload.name, description=payload.description
     )

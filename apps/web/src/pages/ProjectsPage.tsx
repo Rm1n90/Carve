@@ -34,6 +34,7 @@ import { Input } from "@/components/ui/Input";
 import { useAuth } from "@/auth/store";
 import { useProjectPrefs } from "@/state/projectPrefs";
 import { cn } from "@/lib/cn";
+import { useCapabilities } from "@/auth/capabilities";
 
 const VIRTUALISE_THRESHOLD = 40;
 const ROW_HEIGHT_CARDS = 84;
@@ -67,6 +68,8 @@ function compareProjects(sort: ProjectSort, a: Project, b: Project): number {
 }
 
 export function ProjectsPage() {
+  // Outsourcing hardening — gates project creation.
+  const caps = useCapabilities();
   const qc = useQueryClient();
   const projectsQ = useQuery({
     queryKey: ["projects"],
@@ -314,14 +317,19 @@ export function ProjectsPage() {
               )}
             </div>
           </div>
-          <Button
-            variant={showForm ? "secondary" : "primary"}
-            size="md"
-            leftIcon={<Plus className="h-4 w-4" />}
-            onClick={() => setShowForm((s) => !s)}
-          >
-            {showForm ? "Cancel" : "New project"}
-          </Button>
+          {/* Outsourcing hardening — creating projects is workspace
+              management, so it is admin-only on the API. Hidden rather
+              than left to 403. */}
+          {caps.isAdmin && (
+            <Button
+              variant={showForm ? "secondary" : "primary"}
+              size="md"
+              leftIcon={<Plus className="h-4 w-4" />}
+              onClick={() => setShowForm((s) => !s)}
+            >
+              {showForm ? "Cancel" : "New project"}
+            </Button>
+          )}
         </div>
       </header>
 
@@ -336,7 +344,7 @@ export function ProjectsPage() {
       <WorkspaceDeadlines projects={projects} />
 
       {/* ---- Inline create form ---- */}
-      {showForm && (
+      {caps.isAdmin && showForm && (
         <form
           onSubmit={onSubmit}
           className={cn(

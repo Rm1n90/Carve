@@ -24,6 +24,7 @@ import {
   type PlayerSpeed,
 } from "@/state/editorSettings";
 import { cn } from "@/lib/cn";
+import { useCapabilities } from "@/auth/capabilities";
 
 const DEFERRED_TOOLTIP = "Not yet implemented in Carve.";
 
@@ -262,6 +263,9 @@ function DeferredCheckbox({
 export function EditorSettingsDialog({ open, onOpenChange }: Props) {
   const s = useEditorSettings();
   const [activeTab, setActiveTab] = useState<"player" | "workspace" | "compute">("player");
+  // Outsourcing hardening — gates the Compute tab (GPU inventory + device
+  // switching). Non-admins never see it.
+  const { canManageModels } = useCapabilities();
 
   if (!open) return null;
 
@@ -288,7 +292,13 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
               [
                 { value: "player", label: "Player" },
                 { value: "workspace", label: "Workspace" },
-                { value: "compute", label: "Compute" },
+                // Outsourcing hardening — the Compute tab probes the host's
+                // GPU inventory and switches the device for the whole
+                // workspace. Both are admin-only on the API, so the tab is
+                // hidden rather than left as a dead end.
+                ...(canManageModels
+                  ? ([{ value: "compute", label: "Compute" }] as const)
+                  : []),
               ] as const
             ).map((t) => (
               <Tabs.Trigger
@@ -560,14 +570,16 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
           {/* v3.25 — compute device picker (CUDA + MPS + CPU) with
               smart guardrails. Lazy-mounted via the activeTab guard so
               the device probe only runs when the user opens this tab. */}
-          <Tabs.Content
-            value="compute"
-            forceMount
-            hidden={activeTab !== "compute"}
-            className="grid gap-4"
-          >
-            <DevicePanel />
-          </Tabs.Content>
+          {canManageModels && (
+            <Tabs.Content
+              value="compute"
+              forceMount
+              hidden={activeTab !== "compute"}
+              className="grid gap-4"
+            >
+              <DevicePanel />
+            </Tabs.Content>
+          )}
         </Tabs>
 
         <div className="mt-6 flex justify-between items-center pt-3 border-t border-[var(--border-subtle)]">

@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from carve_api.auth.models import User
-from carve_api.deps import get_current_user, get_db
+from carve_api.deps import get_current_admin_user, get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.permissions import is_admin, require_data_movement, require_gpu_task
 from carve_api.projects.models import Class, ProjectMember
@@ -464,15 +464,19 @@ def set_weight_default(
 )
 def list_weight_assignments(
     weight_id: uuid.UUID,
-    user: User = Depends(get_current_user),  # noqa: ARG001 — auth required
+    user: User = Depends(get_current_admin_user),  # noqa: ARG001 — admin gate
     db: Session = Depends(get_db),
 ) -> list[WeightAssignmentOut]:
-    """List every project the weight is assigned to.
+    """List every project the weight is assigned to. Admin-only.
 
     v3.7 Phase 3 Issue 4 — read-only view of ``weight_assignments``
-    rows joined to ``projects.name`` for UI convenience. Auth required;
-    no further gating because membership is not sensitive (the weight
-    is already visible workspace-wide via the listing endpoints).
+    rows joined to ``projects.name`` for UI convenience.
+
+    The original rationale for leaving this open was that "the weight is
+    already visible workspace-wide via the listing endpoints". That is no
+    longer true: the workspace weight listing is now scoped to the
+    caller's own projects, so this route was the last one handing a
+    member the names of projects they have nothing to do with.
     """
     svc = WeightService(db)
     try:
