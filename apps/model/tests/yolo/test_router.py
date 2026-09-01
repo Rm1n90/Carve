@@ -31,7 +31,9 @@ class _FakeResults:
 
 
 class _FakeModel:
-    def predict(self, _img, conf=0.25, iou=0.7, half=True, verbose=False):
+    # ``**kwargs`` so the fake keeps up with predict_image's evolving call
+    # signature — ``device`` was added in v3.25 and broke this stub.
+    def predict(self, _img, conf=0.25, iou=0.7, half=True, verbose=False, **_kwargs):
         return [_FakeResults()]
 
 

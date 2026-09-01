@@ -45,6 +45,33 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 RUN pip3 install --no-cache-dir --break-system-packages --no-deps \
         "git+https://github.com/openai/CLIP.git"
 
+# YOLOv5 compatibility.
+#
+# Classic YOLOv5 checkpoints (from the ultralytics/yolov5 repo, as opposed
+# to the anchor-free "v5u" weights the ultralytics package ships) pickle
+# their layer classes from that repo's TOP-LEVEL ``models`` and ``utils``
+# packages. Unpickling therefore needs those modules importable, which the
+# ultralytics package alone cannot provide — it only remaps its own legacy
+# module paths. Without this, such a weight fails to load with
+# ``ModuleNotFoundError: No module named 'models'``, which surfaced as a
+# weight uploading fine but reporting "0 classes" and failing every predict.
+#
+# Pinned to the v7.0 tag rather than tracking master so a checkpoint that
+# loads today keeps loading. Installed to /opt/yolov5 and deliberately NOT
+# added to PYTHONPATH: ``utils`` is far too generic a name to put on the
+# global path, so carve_model.yolo.yolov5_compat inserts it only for the
+# duration of a load. Same AGPL-3.0 licence as the ultralytics package
+# already vendored here.
+#
+# The repo's models/common.py imports pandas and IPython at module level,
+# and utils/plots.py imports seaborn, so unpickling pulls all three in even
+# though none of their features are used. They are the only pieces of
+# yolov5's requirements.txt this image does not already satisfy — torch,
+# torchvision, opencv, matplotlib, scipy, tqdm, PyYAML, psutil, requests
+# and thop all come from the ultralytics install above.
+RUN git clone --depth 1 --branch v7.0 https://github.com/ultralytics/yolov5.git /opt/yolov5 && rm -rf /opt/yolov5/.git && pip3 install --no-cache-dir --break-system-packages "pandas>=2.0,<3" "seaborn>=0.13" "ipython>=8,<10"
+ENV CARVE_YOLOV5_DIR=/opt/yolov5
+
 # NOTE: VLM-FO1 was extracted into a separate sidecar service
 # (apps/model-vlm-fo1) when it became clear the upstream package
 # requires transformers==4.50.1, incompatible with this image's

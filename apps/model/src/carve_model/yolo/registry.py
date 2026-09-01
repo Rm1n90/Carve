@@ -68,7 +68,20 @@ class WeightRegistry:
 
 
 def _default_loader(weights_path: Path) -> Any:
-    """Default loader for production. Imports ultralytics lazily."""
+    """Default loader for production. Imports ultralytics lazily.
+
+    Classic YOLOv5 checkpoints (from the ultralytics/yolov5 repo) cannot
+    be unpickled by ultralytics — their layer classes live in that repo's
+    top-level ``models``/``utils`` packages — so they are routed to a
+    compatibility loader that returns an object with the same predict
+    API. Everything else, including the anchor-free "v5u" weights the
+    ultralytics package ships, takes the normal path.
+    """
+    from carve_model.yolo import yolov5_compat
+
+    if yolov5_compat.is_yolov5_checkpoint(weights_path):
+        return yolov5_compat.load_model(weights_path)
+
     from ultralytics import YOLO  # type: ignore[import-not-found]
     return YOLO(str(weights_path))
 

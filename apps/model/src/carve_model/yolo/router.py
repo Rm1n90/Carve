@@ -222,8 +222,16 @@ def _inspect_pt_file(path: Path) -> InspectOut:
     # raises UnpicklingError. We trust our own MinIO-uploaded files (api
     # validates extension + size before forwarding); attacker-supplied files
     # would have to defeat the api's auth and rate-limit first.
+    # Classic YOLOv5 checkpoints need their repo's modules importable or
+    # the unpickle dies with ModuleNotFoundError: 'models'. That failure
+    # is why such a weight uploaded fine but showed "0 classes".
+    from carve_model.yolo import yolov5_compat
+
     try:
-        ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
+        if yolov5_compat.is_yolov5_checkpoint(path):
+            ckpt = yolov5_compat.torch_load_v5(path)
+        else:
+            ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
     except Exception as exc:  # noqa: BLE001 — translate any pickle/zip failure to 422
         raise ValueError(f"failed_to_load: {exc.__class__.__name__}: {exc}") from exc
 
