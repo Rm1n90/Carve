@@ -153,3 +153,69 @@ def test_inspect_does_not_touch_registry(monkeypatch) -> None:
     )
     assert r.status_code == 200
     assert len(REGISTRY) == before
+
+
+# ---------------------------------------------------------------------------
+# Interrupted-training checkpoints (EMA-only)
+# ---------------------------------------------------------------------------
+
+
+class _Named:
+    """Stands in for a DetectionModel carrying a class table."""
+
+    def __init__(self, names, task=None):
+        self.names = names
+        if task is not None:
+            self.task = task
+
+
+def test_resolve_model_prefers_ema_over_model():
+    """A run stopped before it finished writes ``model=None`` and keeps the
+    live weights under ``ema``. Reading ``model`` alone is why every
+    partially-trained weight reported "0 classes"."""
+    from carve_model.yolo.router import _resolve_model
+
+    ema = _Named({0: "a"})
+    assert _resolve_model({"model": None, "ema": ema}) is ema
+
+
+def test_resolve_model_falls_back_to_model_when_no_ema():
+    from carve_model.yolo.router import _resolve_model
+
+    m = _Named({0: "a"})
+    assert _resolve_model({"model": m, "ema": None}) is m
+    assert _resolve_model({"model": m}) is m
+
+
+def test_resolve_model_passes_through_bare_module():
+    """Some checkpoints are the model object itself, not a dict."""
+    from carve_model.yolo.router import _resolve_model
+
+    m = _Named({0: "a"})
+    assert _resolve_model(m) is m
+
+
+def test_inspect_reads_names_from_an_ema_only_checkpoint(monkeypatch, tmp_path):
+    """End-to-end through _inspect_pt_file: the exact shape produced by
+    interrupting training must yield its class table, not an empty list."""
+    from carve_model.yolo import router as router_mod
+
+    ckpt = {
+        "model": None,
+        "ema": _Named({0: "DHL", 1: "Cupra", 2: "Hankook"}, task="detect"),
+        "epoch": 128,
+    }
+    # ``torch`` is imported inside the function, so stub the module itself.
+    import sys
+    import types
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.load = lambda *a, **k: ckpt  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    # No need to stub the v5 detector: it reads the file as a zip, and this
+    # placeholder is not one, so it correctly declines to claim it.
+    p = tmp_path / "last.pt"
+    p.write_bytes(b"x")
+    out = router_mod._inspect_pt_file(p)
+    assert out.class_names == ["DHL", "Cupra", "Hankook"]
+    assert out.task_kind == "detect"

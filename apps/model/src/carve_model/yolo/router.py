@@ -206,6 +206,24 @@ def _infer_task_kind(ckpt: Any, model_obj: Any) -> str | None:
 
 
 # Indirection so tests can monkeypatch the heavy parse without importing torch.
+def _resolve_model(ckpt: Any) -> Any:
+    """Pick the model object out of a checkpoint, preferring the EMA.
+
+    A training run interrupted before it finishes writes a checkpoint
+    whose ``model`` entry is ``None`` — the live weights and the class
+    table live under ``ema`` instead. Ultralytics' own loader already
+    resolves ``ema or model``, so such a weight *predicts* fine; only
+    inspection looked at ``model`` alone and therefore reported "0
+    classes" for every partially-trained weight.
+
+    Preferring EMA also matches what inference actually uses, so the
+    class table we persist describes the weights that will run.
+    """
+    if not isinstance(ckpt, dict):
+        return ckpt
+    return ckpt.get("ema") or ckpt.get("model")
+
+
 def _inspect_pt_file(path: Path) -> InspectOut:
     """Open a YOLO ``.pt`` checkpoint and pull ``model.names`` + task hint.
 
@@ -235,16 +253,10 @@ def _inspect_pt_file(path: Path) -> InspectOut:
     except Exception as exc:  # noqa: BLE001 — translate any pickle/zip failure to 422
         raise ValueError(f"failed_to_load: {exc.__class__.__name__}: {exc}") from exc
 
-    model_obj: Any = None
-    names: Any = None
-    if isinstance(ckpt, dict):
-        model_obj = ckpt.get("model")
-        names = getattr(model_obj, "names", None)
-        if names is None:
-            names = ckpt.get("names")
-    else:
-        model_obj = ckpt
-        names = getattr(ckpt, "names", None)
+    model_obj = _resolve_model(ckpt)
+    names: Any = getattr(model_obj, "names", None)
+    if names is None and isinstance(ckpt, dict):
+        names = ckpt.get("names")
 
     class_names = _normalise_names(names)
     task_kind = _infer_task_kind(ckpt, model_obj)

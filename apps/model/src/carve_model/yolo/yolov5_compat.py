@@ -321,7 +321,10 @@ def extract_names(ckpt: Any) -> dict[int, str]:
     v5 stores ``names`` as a list (index-ordered) on older checkpoints and
     a dict on newer ones; both appear in the wild.
     """
-    model = ckpt.get("model") if isinstance(ckpt, dict) else ckpt
+    # Prefer the EMA for the same reason ``load_model`` does: an
+    # interrupted run leaves ``model`` empty and the real weights (and
+    # names) under ``ema``.
+    model = (ckpt.get("ema") or ckpt.get("model")) if isinstance(ckpt, dict) else ckpt
     names = getattr(model, "names", None)
     if names is None and isinstance(ckpt, dict):
         names = ckpt.get("names")
