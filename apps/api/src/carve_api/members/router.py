@@ -402,7 +402,12 @@ def delete_member(
     # remove members and viewers.
     _require_can_manage(actor, target)
     _guard_last_superadmin(db, target, leaving=True)
-    if target.role == UserRole.admin:
+    # ``in ADMIN_LEVEL_ROLES`` rather than ``== UserRole.admin``: this is a
+    # guard trigger, not a permission check, and the superadmin case is
+    # already covered by ``_guard_last_superadmin`` above — but leaving a
+    # bare equality here invites the next reader to copy the one pattern
+    # that silently excludes the top tier.
+    if target.role in ADMIN_LEVEL_ROLES:
         active_admins = (
             db.execute(
                 select(User).where(
