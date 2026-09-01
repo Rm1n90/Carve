@@ -47,7 +47,20 @@ export function AppShell({ children }: { children: ReactNode }) {
         <TopBar crumbs={crumbs.length > 0 ? crumbs : undefined} />
         <div className="flex flex-1 min-h-0">
           <LeftNav />
-          <main className="flex-1 min-w-0 overflow-y-auto bg-[var(--bg-app)]">
+          {/* ``relative`` is load-bearing, not cosmetic. Radix Select
+              renders a hidden native <select> at position:absolute for
+              form/a11y support. With a static scroll container its
+              containing block resolves to the document, so it escapes
+              this element's overflow clipping entirely and its layout
+              position still counts toward document height. On a page
+              with many Selects (Settings → Members renders one per
+              project) that inflated <html> to ~6000px: the whole app
+              scrolled inside the viewport and the sidebar disappeared
+              into empty space. Making this a containing block keeps
+              those descendants inside the scroller, where they belong.
+              Fixes the class of bug once for every page, rather than
+              per-scroller. */}
+          <main className="relative flex-1 min-w-0 overflow-y-auto bg-[var(--bg-app)]">
             <div className="px-6 py-6">{children}</div>
           </main>
         </div>
