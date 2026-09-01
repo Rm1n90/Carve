@@ -88,6 +88,46 @@ def test_letterbox_preserves_aspect_and_pads_to_stride():
     assert dh > 0 and dw == 0  # wide image pads top/bottom only
 
 
+def test_letterbox_always_uses_inter_linear():
+    """The resize filter is part of the model's input distribution.
+
+    YOLOv5 letterboxes with INTER_LINEAR unconditionally. Using
+    INTER_AREA for downscaling — the textbook choice, and what this code
+    did at first — feeds the model a differently resampled image and
+    moves confidences a long way: one real frame scored 0.164 instead of
+    0.451, flipping detections either side of the threshold while the
+    boxes barely moved. Silent quality loss, so it gets a test.
+    """
+    import cv2
+
+    seen = {}
+    real = cv2.resize
+
+    def spy(img, size, interpolation=None):
+        seen["interp"] = interpolation
+        return real(img, size, interpolation=interpolation)
+
+    cv2.resize = spy
+    try:
+        v5._letterbox(np.zeros((1795, 1440, 3), dtype=np.uint8), size=640, stride=32)
+    finally:
+        cv2.resize = real
+    assert seen["interp"] == cv2.INTER_LINEAR
+
+
+def test_letterbox_matches_yolov5_geometry_for_portrait_images():
+    """Portrait frames are where the padding maths is easiest to get wrong
+    — the mismatching images in the original bug were all 1795x1440."""
+    out, ratio, (dw, dh) = v5._letterbox(
+        np.zeros((1795, 1440, 3), dtype=np.uint8), size=640, stride=32
+    )
+    # yolov5: r = 640/1795; unpadded 513x640; pad width to a stride multiple
+    assert ratio == pytest.approx(640 / 1795)
+    assert out.shape[0] == 640          # long side hits the target exactly
+    assert out.shape[1] % 32 == 0
+    assert dh == 0 and dw == 15         # centred, left pad floor()'d
+
+
 def test_letterbox_is_reversible_for_box_coordinates():
     """The padding/scale it reports must map a box back to source pixels —
     this is what turns detections into the right place on the image."""

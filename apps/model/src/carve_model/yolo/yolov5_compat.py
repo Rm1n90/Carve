@@ -260,8 +260,16 @@ def _letterbox(
     if (nh, nw) != (h, w):
         import cv2  # noqa: PLC0415
 
-        interp = cv2.INTER_LINEAR if r > 1 else cv2.INTER_AREA
-        img = cv2.resize(img, (nw, nh), interpolation=interp)
+        # INTER_LINEAR unconditionally, matching yolov5's own letterbox
+        # (utils/augmentations.py). INTER_AREA is the textbook choice for
+        # downscaling and was used here at first, but the model was
+        # TRAINED on INTER_LINEAR-resized crops: feeding it a differently
+        # resampled image shifts the input distribution enough to move
+        # confidences substantially — one real frame scored 0.164 with
+        # INTER_AREA against 0.451 with INTER_LINEAR, which flipped
+        # detections either side of the threshold. Boxes barely move, so
+        # this fails quietly rather than obviously. Match the trainer.
+        img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
 
     # Pad to the next stride multiple on each side, centred.
     ph = (int(np.ceil(nh / stride)) * stride) - nh
