@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from redis import Redis
 
@@ -25,6 +25,7 @@ from carve_api.config import get_settings
 from carve_api.deps import get_current_admin_user
 from carve_api.jobs.queue import (
     clear_failed_jobs,
+    count_jobs,
     iter_jobs,
     try_cancel_rq_job,
     try_reprioritize_rq_job,
@@ -69,6 +70,13 @@ class JobRow(BaseModel):
 
 class JobsList(BaseModel):
     jobs: list[JobRow]
+    # Totals across every lane, independent of how many rows are
+    # returned. The UI shows "showing N of M" so a deep queue reads as
+    # bounded rather than endless.
+    total_queued: int = 0
+    total_running: int = 0
+    total_failed: int = 0
+    truncated: bool = False
 
 
 def _enrich(client, jid: str) -> dict:
@@ -95,12 +103,30 @@ def _enrich(client, jid: str) -> dict:
 
 
 @router.get("", response_model=JobsList)
-def list_jobs(user: User = Depends(get_current_admin_user)) -> JobsList:  # noqa: ARG001
+def list_jobs(
+    limit: int = Query(default=100, ge=1, le=500),
+    user: User = Depends(get_current_admin_user),  # noqa: ARG001
+) -> JobsList:
+    """List jobs for the admin Jobs page.
+
+    Bounded: a batch of 114 video extractions previously returned all
+    114 rows and fetched each one from Redis on every poll, so the page
+    grew without limit and the request got slower the busier the queue
+    was. Totals still reflect the whole queue.
+    """
     client = _redis_or_503()
-    rows = iter_jobs(client)
+    rows = iter_jobs(client, queued_limit=limit)
     for r in rows:
         r.update(_enrich(client, r["id"]))
-    return JobsList(jobs=[JobRow(**r) for r in rows])
+    totals = count_jobs(client)
+    return JobsList(
+        jobs=[JobRow(**r) for r in rows],
+        total_queued=totals["queued"],
+        total_running=totals["running"],
+        total_failed=totals["failed"],
+        truncated=(totals["queued"] + totals["running"] + totals["failed"])
+        > len(rows),
+    )
 
 
 @router.post("/{job_id}/cancel")

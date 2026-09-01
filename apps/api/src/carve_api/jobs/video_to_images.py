@@ -117,6 +117,32 @@ def _content_hash(payload: bytes) -> str:
     return xxhash.xxh3_128_hexdigest(payload)
 
 
+def _enqueue_thumbnail(content_hash: str, asset_id: str) -> None:
+    """Best-effort thumbnail enqueue for a freshly extracted frame.
+
+    Mirrors ``assets.router._enqueue_post_upload``. Never raises: the
+    frame itself is already written and committed, so a queueing problem
+    must not fail the extraction.
+    """
+    try:
+        from carve_api.jobs.queue import enqueue_with_defaults, get_queue
+        from carve_api.jobs.thumbs import generate_image_thumbnail
+
+        enqueue_with_defaults(
+            get_queue(),
+            generate_image_thumbnail,
+            content_hash,
+            "jpg",
+            asset_id=asset_id,
+        )
+    except Exception:  # noqa: BLE001
+        log.warning(
+            "video_to_images: could not enqueue thumbnail for asset %s",
+            asset_id,
+            exc_info=True,
+        )
+
+
 def _image_dimensions(jpeg: bytes) -> tuple[int | None, int | None]:
     """Return ``(width, height)`` of a JPEG frame, or ``(None, None)`` if it
     cannot be decoded.
@@ -362,6 +388,19 @@ def run_video_to_images(payload: VideoToImagesPayload) -> dict[str, Any]:
                         length=len(jpeg),
                         content_type="image/jpeg",
                     )
+                    # Extracted frames need a thumbnail exactly like
+                    # uploaded ones do — the asset grid and the editor's
+                    # filmstrip render from ``thumbnail_minio_key`` and
+                    # show a placeholder without it. The normal upload
+                    # path does this in ``_enqueue_post_upload``; this
+                    # job never did, so every frame produced by a video
+                    # extraction came out thumbnail-less.
+                    #
+                    # Enqueued AFTER put_object so the worker cannot race
+                    # ahead of the blob and fail with NoSuchKey, and
+                    # best-effort so a Redis blip costs a thumbnail
+                    # rather than the whole extraction.
+                    _enqueue_thumbnail(h, str(new_asset.id))
 
             summary["frames_extracted"] = i + 1
 

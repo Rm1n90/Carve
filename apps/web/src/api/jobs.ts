@@ -18,6 +18,13 @@ export interface JobRow {
 
 export interface JobsList {
   jobs: JobRow[];
+  /** Totals across the whole queue, independent of how many rows the
+   *  API returned — the listing is capped so a deep queue stays fast. */
+  total_queued?: number;
+  total_running?: number;
+  total_failed?: number;
+  /** True when the queue holds more jobs than were returned. */
+  truncated?: boolean;
 }
 
 export const jobsApi = {

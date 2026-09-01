@@ -345,12 +345,50 @@ def clear_failed_jobs(client) -> int:
     return cleared
 
 
-def iter_jobs(client, failed_limit: int = 50) -> list[dict]:
+def count_jobs(client) -> dict[str, int]:
+    """Cheap per-state totals across all lanes.
+
+    Uses Redis-side cardinality only — no per-job fetch — so it stays
+    O(lanes) no matter how deep the queue is. Lets the Jobs page say
+    "showing 100 of 113" without paying to materialise the other 13.
+    """
+    from rq.queue import Queue as _Q  # type: ignore
+    from rq.registry import (  # type: ignore
+        FailedJobRegistry,
+        StartedJobRegistry,
+    )
+
+    totals = {"queued": 0, "running": 0, "failed": 0}
+    for lane in _LANES:
+        try:
+            totals["queued"] += _Q(lane, connection=client).count
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            totals["running"] += len(StartedJobRegistry(lane, connection=client))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            totals["failed"] += len(FailedJobRegistry(lane, connection=client))
+        except Exception:  # noqa: BLE001
+            pass
+    return totals
+
+
+def iter_jobs(
+    client, failed_limit: int = 50, queued_limit: int = 100
+) -> list[dict]:
     """Enumerate jobs across the priority lanes for the admin Jobs page.
 
     Returns plain dicts (queued → running → failed) with the fields the
     UI needs. Best-effort per job: a job whose hash vanished mid-read is
     skipped rather than failing the whole listing.
+
+    ``queued_limit`` bounds the queued slice PER LANE. Without it a deep
+    queue was fetched in full on every poll — a batch of 114 video
+    extractions meant 114 Redis round-trips per refresh and 114 rows
+    rendered, so the page grew without limit. The head of the queue is
+    what matters (it runs next); use :func:`count_jobs` for the totals.
     """
     from rq.job import Job  # type: ignore
     from rq.queue import Queue as _Q  # type: ignore
@@ -383,7 +421,9 @@ def iter_jobs(client, failed_limit: int = 50) -> list[dict]:
     rows: list[dict] = []
     for lane in _LANES:
         try:
-            for job in _Q(lane, connection=client).jobs:
+            # Slice at the Redis level so a deep queue costs one range
+            # read plus ``queued_limit`` fetches, not one per job.
+            for job in _Q(lane, connection=client).get_jobs(0, queued_limit - 1):
                 r = _row(job, "queued", lane)
                 if r:
                     rows.append(r)

@@ -961,3 +961,26 @@ textarea {
   font: inherit;
   color: var(--text-primary);
 }
+
+/* ---------------------------------------------------------------------------
+ * Radix Select: keep its hidden native <select> out of the layout.
+ *
+ * Radix renders a visually-hidden native <select> alongside each Select
+ * for form participation and accessibility. It is 1x1, clipped and
+ * aria-hidden, but it is also `position: absolute` with no offsets — so
+ * it lands at its static flow position. Absolutely-positioned elements
+ * are only clipped by an ancestor that is itself a containing block, so
+ * on a page with many Selects these accumulate far down the layout and
+ * inflate the nearest containing block's scroll height.
+ *
+ * Settings -> Members renders one Select per project; with 39 projects
+ * that added ~5200px of empty scrollable space and the whole app
+ * scrolled away inside the viewport.
+ *
+ * Pinning them to the origin costs nothing (they are invisible and
+ * untabbable) and fixes every Select in the app at once.
+ * ------------------------------------------------------------------------- */
+select[aria-hidden="true"] {
+  top: 0 !important;
+  left: 0 !important;
+}

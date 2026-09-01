@@ -135,12 +135,28 @@ export function JobsPage() {
     });
   }, [query.data]);
 
+  // Prefer the server's whole-queue totals over counting the rows we
+  // were given: the listing is capped, so counting rows would
+  // under-report a deep queue (and the "Clear failed (N)" button would
+  // lie about how many it clears). Falls back to row counts for an
+  // older API that doesn't send totals.
   const counts = useMemo(() => {
+    const d = query.data;
+    if (d && typeof d.total_queued === "number") {
+      return {
+        running: d.total_running ?? 0,
+        queued: d.total_queued,
+        failed: d.total_failed ?? 0,
+      };
+    }
     const c = { running: 0, queued: 0, failed: 0 };
     for (const j of jobs)
       if (j.state in c) c[j.state as keyof typeof c] += 1;
     return c;
-  }, [jobs]);
+  }, [jobs, query.data]);
+
+  const totalJobs = counts.running + counts.queued + counts.failed;
+  const truncated = query.data?.truncated === true;
 
   return (
     <SettingsLayout>
@@ -251,7 +267,20 @@ export function JobsPage() {
         </Card>
       ) : (
         <Card variant="surface" radius="lg" className="overflow-hidden">
-          <div className="divide-y divide-[color:var(--border-subtle)]">
+          {truncated && (
+            <p
+              data-testid="jobs-truncated-note"
+              className="px-4 py-2 text-[12px] text-[color:var(--text-tertiary)] border-b border-[color:var(--border-subtle)]"
+            >
+              Showing the first {jobs.length} of {totalJobs} jobs — the queue
+              drains from the top.
+            </p>
+          )}
+          {/* Bounded scroll area. A batch of 100+ video extractions used
+              to render every row, so the page grew without limit and the
+              header scrolled out of reach. The list now scrolls inside
+              the card and the API caps how many rows it returns. */}
+          <div className="max-h-[clamp(320px,62vh,680px)] overflow-y-auto divide-y divide-[color:var(--border-subtle)]">
             {jobs.map((j) => (
               <JobRowView
                 key={j.id}
