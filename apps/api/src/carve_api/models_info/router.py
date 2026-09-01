@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from carve_api.auth.models import User, UserRole
+from carve_api.auth.models import ADMIN_LEVEL_ROLES, User, UserRole
 from carve_api.config import get_settings
 from carve_api.deps import get_current_user, get_db
 from carve_api.permissions import require_gpu_admin
@@ -321,7 +321,7 @@ def sam_set_active(
     # doesn't lock the SAM picker indefinitely.
     redis_client = _redis_client_or_none()
     active_jobs = count_active_jobs(redis_client, kinds=SAM_USING_BATCH_KINDS)
-    is_admin = user.role == UserRole.admin
+    is_admin = user.role in ADMIN_LEVEL_ROLES
     if active_jobs and not (is_admin and force):
         raise HTTPException(
             status_code=409,

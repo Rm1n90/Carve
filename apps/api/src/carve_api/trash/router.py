@@ -8,8 +8,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from carve_api.auth.models import User, UserRole
-from carve_api.deps import get_current_user, get_db, require_role
+from carve_api.auth.models import ADMIN_LEVEL_ROLES, User
+from carve_api.permissions import superadmin_guard
+from carve_api.deps import get_current_user, get_db
 from carve_api.projects.models import Project, Task
 
 router = APIRouter(prefix="/trash", tags=["trash"])
@@ -28,7 +29,7 @@ class TrashList(BaseModel):
 
 
 def _project_visible(actor: User, p: Project) -> bool:
-    return actor.role == UserRole.admin or p.owner_id == actor.id
+    return actor.role in ADMIN_LEVEL_ROLES or p.owner_id == actor.id
 
 
 @router.get("", response_model=TrashList)
@@ -113,7 +114,11 @@ def restore_item(
 def hard_delete_item(
     kind: Literal["project", "task"],
     item_id: uuid.UUID,
-    actor: User = Depends(require_role(UserRole.admin)),  # noqa: ARG001
+    # Superadmin-only (alembic 0039). Permanent delete cascades to every
+    # asset and annotation and cannot be undone — a workspace previously
+    # lost ~37K annotations this way, so the blast radius is narrowed to
+    # the single top-tier account.
+    actor: User = Depends(superadmin_guard),  # noqa: ARG001
     db: Session = Depends(get_db),
 ) -> None:
     """Permanent delete. Admin-only — this drops the row entirely along with

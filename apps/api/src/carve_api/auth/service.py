@@ -1,4 +1,6 @@
 # Armin Mehri — mehri.armin@gmail.com
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,6 +17,24 @@ class EmailTaken(AppError):
 class InvalidCredentials(AppError):
     http_status = 401
     code = "invalid_credentials"
+
+
+class AccountBlocked(AppError):
+    """Raised when a blocked account presents correct credentials.
+
+    Distinct from :class:`InvalidCredentials` so the user is told *why*
+    they cannot get in — being stonewalled with "wrong password" when
+    the password is right is a support ticket waiting to happen. Only
+    ever raised after the password has been verified, so it cannot be
+    used to enumerate accounts.
+    """
+
+    http_status = 403
+    code = "account_blocked"
+
+    def __init__(self, reason: str | None = None) -> None:
+        super().__init__(self.code)
+        self.reason = reason
 
 
 class CurrentPasswordWrong(Exception):
@@ -45,10 +65,14 @@ class AuthService:
             ).scalar_one_or_none()
             is None
         )
+        # The bootstrap user owns the workspace, so they get the top
+        # tier — otherwise a fresh install would have no superadmin and
+        # no way to mint one. Existing deployments are handled by the
+        # promote step in alembic 0039.
         user = User(
             email=email,
             password_hash=hash_password(password),
-            role=UserRole.admin if is_first else UserRole.member,
+            role=UserRole.superadmin if is_first else UserRole.member,
         )
         self.session.add(user)
         self.session.flush()
@@ -62,7 +86,33 @@ class AuthService:
         ).scalar_one_or_none()
         if user is None or not verify_password(password, user.password_hash):
             raise InvalidCredentials("email or password is wrong")
+        # Credentials are verified BEFORE the block is reported, so this
+        # never becomes an oracle for "does this email exist?" — a wrong
+        # password on a blocked account still returns the generic error.
+        if user.blocked_at is not None:
+            raise AccountBlocked(user.blocked_reason)
         return user
+
+    def force_set_password(self, user: User, *, new_password: str) -> None:
+        """Set a password without the current-password challenge.
+
+        Superadmin-only path (the self-serve route is
+        :meth:`change_password`). Every existing session is invalidated
+        at the same instant: a password reset that leaves the old token
+        working is not a reset.
+        """
+        user.password_hash = hash_password(new_password)
+        self.revoke_sessions(user)
+
+    def revoke_sessions(self, user: User) -> None:
+        """Invalidate every access/refresh token issued so far.
+
+        One second into the future, not ``now()``: tokens carry ``iat``
+        truncated to whole seconds, so a token minted during the same
+        second as the cutoff would otherwise compare equal and survive.
+        """
+        user.sessions_valid_from = datetime.now(timezone.utc) + timedelta(seconds=1)
+        self.session.flush()
 
     def email_exists(self, email: str) -> bool:
         """True if an ACTIVE user with this email exists. Used by the new

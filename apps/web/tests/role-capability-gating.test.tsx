@@ -207,6 +207,7 @@ describe("capability helpers", () => {
     const { result } = renderHook(() => useCapabilities());
     expect(result.current).toEqual({
       isAdmin: false,
+      isSuperAdmin: false,
       canExport: false,
       canUpload: false,
       canDuplicate: false,
@@ -220,6 +221,23 @@ describe("capability helpers", () => {
     const { result } = renderHook(() => useCapabilities());
     expect(result.current).toEqual({
       isAdmin: true,
+      // A plain admin is not the top tier.
+      isSuperAdmin: false,
+      canExport: true,
+      canUpload: true,
+      canDuplicate: true,
+      canManageModels: true,
+    });
+  });
+
+  it("treats a superadmin as an admin and marks the top tier", async () => {
+    // The tier above admin must never resolve to fewer capabilities.
+    const { useCapabilities } = await import("@/auth/capabilities");
+    signInAs("superadmin");
+    const { result } = renderHook(() => useCapabilities());
+    expect(result.current).toEqual({
+      isAdmin: true,
+      isSuperAdmin: true,
       canExport: true,
       canUpload: true,
       canDuplicate: true,

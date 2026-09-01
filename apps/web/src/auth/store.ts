@@ -1,7 +1,13 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { create } from "zustand";
 
-export type Role = "admin" | "member" | "viewer";
+/**
+ * Workspace roles, highest first. ``superadmin`` sits above ``admin``:
+ * it is the only role that may manage admin accounts, reset another
+ * user's password, block/unblock, force-logout, purge the trash or
+ * suspend a project.
+ */
+export type Role = "superadmin" | "admin" | "member" | "viewer";
 
 export interface User {
   id: string;

@@ -1,5 +1,6 @@
 # Armin Mehri — mehri.armin@gmail.com
 import secrets
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
@@ -12,7 +13,7 @@ from carve_api.auth.jwt import (
     create_refresh_token,
     decode_token,
 )
-from carve_api.auth.models import User, UserRole
+from carve_api.auth.models import ADMIN_LEVEL_ROLES, User, UserRole
 from carve_api.auth.passwords import hash_password
 from carve_api.auth.schemas import (
     ChangePasswordIn,
@@ -23,6 +24,7 @@ from carve_api.auth.schemas import (
     UserOut,
 )
 from carve_api.auth.service import (
+    AccountBlocked,
     AuthService,
     CurrentPasswordWrong,
     EmailTaken,
@@ -84,7 +86,10 @@ def register(
             raise HTTPException(
                 status_code=401, detail="bootstrapped_admin_only"
             ) from exc
-        if claims.get("role") != "admin":
+        # Compare against the admin-level set, not the literal "admin":
+        # a superadmin's token carries role="superadmin", and the tier
+        # above admin must never be refused something admin can do.
+        if claims.get("role") not in {r.value for r in ADMIN_LEVEL_ROLES}:
             raise HTTPException(status_code=403, detail="bootstrapped_admin_only")
     try:
         user = AuthService(db).register(email=payload.email, password=payload.password)
@@ -98,6 +103,20 @@ def register(
 def login(request: Request, payload: LoginIn, db: Session = Depends(get_db)) -> TokenPair:
     try:
         user = AuthService(db).authenticate(email=payload.email, password=payload.password)
+    except AccountBlocked as exc:
+        # Structured so the login screen can explain the block (and show
+        # the reason) instead of implying the password was wrong.
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail={
+                "error": exc.code,
+                "message": (
+                    "This account has been blocked. Contact your workspace "
+                    "administrator."
+                ),
+                "reason": exc.reason,
+            },
+        ) from exc
     except InvalidCredentials as exc:
         raise _to_http(exc) from exc
     return _tokens_for(user)
@@ -110,8 +129,18 @@ def refresh(payload: RefreshIn, db: Session = Depends(get_db)) -> TokenPair:
     except InvalidToken as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     user = db.get(User, claims["sub"])
-    if user is None:
+    if user is None or user.deleted_at is not None:
         raise HTTPException(status_code=401, detail="user not found")
+    # Without these two checks the refresh endpoint would be a bypass:
+    # a blocked or force-logged-out user could keep minting fresh access
+    # tokens from a refresh token issued before the change.
+    if user.blocked_at is not None:
+        raise HTTPException(status_code=403, detail="account_blocked")
+    cutoff = user.sessions_valid_from
+    if cutoff is not None:
+        iat = claims.get("iat")
+        if iat is None or datetime.fromtimestamp(int(iat), tz=timezone.utc) < cutoff:
+            raise HTTPException(status_code=401, detail="session_revoked")
     return _tokens_for(user)
 
 

@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation
 from carve_api.assets.models import Asset, AssetKind, Frame
-from carve_api.auth.models import User, UserRole
+from carve_api.auth.models import ADMIN_LEVEL_ROLES, User, UserRole
 from carve_api.projects.models import Project, ProjectMember, Task
 
 
@@ -81,7 +81,7 @@ def search_assets(
         )
     )
 
-    if actor.role != UserRole.admin:
+    if actor.role not in ADMIN_LEVEL_ROLES:
         stmt = stmt.join(
             ProjectMember,
             and_(

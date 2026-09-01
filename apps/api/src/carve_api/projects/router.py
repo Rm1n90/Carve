@@ -1,5 +1,6 @@
 # Armin Mehri — mehri.armin@gmail.com
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -19,11 +20,19 @@ from carve_api.assets.video_extract_service import (
     get_batch_status as ve_get_batch_status,
 )
 from carve_api.audit import service as audit_service
-from carve_api.audit.actions import TASK_DELETED
+from carve_api.audit.actions import (
+    PROJECT_SUSPENDED,
+    PROJECT_UNSUSPENDED,
+    TASK_DELETED,
+)
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.permissions import require_admin, require_data_movement
+from carve_api.permissions import (
+    require_admin,
+    require_data_movement,
+    require_superadmin,
+)
 from carve_api.projects.keybindings import (
     compose_effective_bindings,
     delete_binding,
@@ -801,6 +810,72 @@ def set_task_classes(
         classes=[ClassOut.from_orm_class(c) for c in classes],
         allowed_class_ids=allowed,
     )
+
+
+@router.post("/{project_id}/suspend", response_model=ProjectOut)
+def suspend_project(
+    project_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ProjectOut:
+    """Freeze a project. Superadmin-only.
+
+    Suspension makes the project read-only for everyone below superadmin:
+    annotations, tasks, classes and assets can all still be *read*, but
+    nothing can be changed. Intended for a delivered outsourced job whose
+    contents must not drift afterwards.
+    """
+    require_superadmin(user)
+    try:
+        p, owner_email = ProjectService(db).get_with_owner_email(
+            actor=user, project_id=project_id
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    if p.suspended_at is None:
+        p.suspended_at = datetime.now(timezone.utc)
+        p.suspended_by = user.id
+        audit_service.record(
+            db,
+            actor_id=user.id,
+            action=PROJECT_SUSPENDED,
+            target_type="project",
+            target_id=p.id,
+            project_id=p.id,
+            summary=f"suspended project {p.name}",
+        )
+    db.commit()
+    return ProjectOut.from_orm_project(p, owner_email=owner_email)
+
+
+@router.post("/{project_id}/unsuspend", response_model=ProjectOut)
+def unsuspend_project(
+    project_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ProjectOut:
+    """Lift a suspension. Superadmin-only."""
+    require_superadmin(user)
+    try:
+        p, owner_email = ProjectService(db).get_with_owner_email(
+            actor=user, project_id=project_id
+        )
+    except AppError as exc:
+        raise _http(exc) from exc
+    if p.suspended_at is not None:
+        p.suspended_at = None
+        p.suspended_by = None
+        audit_service.record(
+            db,
+            actor_id=user.id,
+            action=PROJECT_UNSUSPENDED,
+            target_type="project",
+            target_id=p.id,
+            project_id=p.id,
+            summary=f"lifted suspension on project {p.name}",
+        )
+    db.commit()
+    return ProjectOut.from_orm_project(p, owner_email=owner_email)
 
 
 @router.post(

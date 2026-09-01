@@ -55,6 +55,18 @@ class Project(Base):
     default_sam_variant: Mapped[str | None] = mapped_column(
         String, nullable=True, default=None
     )
+    # Superadmin freeze (alembic 0039). Non-null means every write to
+    # this project is refused for anyone below superadmin; reads are
+    # unaffected. See ``projects.service.raise_if_suspended``.
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    suspended_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        default=None,
+    )
 
 
 class Task(Base):

@@ -16,12 +16,12 @@ from carve_api.annotations.schemas import (
     BatchOut,
 )
 from carve_api.annotations.service import AnnotationService
-from carve_api.auth.models import User
+from carve_api.auth.models import ADMIN_LEVEL_ROLES, User
 from carve_api.deps import get_current_user, get_db, get_origin_session
 from carve_api.errors import AppError
 from carve_api.projects.models import Task as TaskModel
 from carve_api.projects.models import TaskKind
-from carve_api.projects.service import require_visible_task
+from carve_api.projects.service import ProjectSuspended, require_visible_task
 from carve_api.realtime.events import (
     emit_ops_batch,
     emit_ops_delete,
@@ -65,7 +65,7 @@ async def create_annotation(
     origin_session: uuid.UUID | None = Depends(get_origin_session),
 ) -> AnnotationOut:
     try:
-        task = require_visible_task(db, user, task_id)
+        task = require_visible_task(db, user, task_id, for_write=True)
     except AppError as exc:
         raise _http(exc) from exc
     _require_frame_id_for_image_task(task, payload.frame_id)
@@ -163,7 +163,7 @@ async def bulk_tag_assets(
     from carve_api.assets.service import AssetService
 
     try:
-        task = require_visible_task(db, user, task_id)
+        task = require_visible_task(db, user, task_id, for_write=True)
     except AppError as exc:
         raise _http(exc) from exc
 
@@ -254,7 +254,7 @@ async def batch(
     origin_session: uuid.UUID | None = Depends(get_origin_session),
 ) -> BatchOut:
     try:
-        task = require_visible_task(db, user, task_id)
+        task = require_visible_task(db, user, task_id, for_write=True)
     except AppError as exc:
         raise _http(exc) from exc
     # v2.5.1 — every create entry on an image task must carry a frame_id,
@@ -337,17 +337,27 @@ async def batch(
     )
 
 
-def _resolve_annotation_for_user(db: Session, user: User, annotation_id: uuid.UUID):
+def _resolve_annotation_for_user(
+    db: Session, user: User, annotation_id: uuid.UUID, *, for_write: bool = False
+):
     """Look up the annotation only after confirming task visibility.
     Returns (annotation, task) or raises 404 for both not-found and not-visible
     so existence isn't leaked to unauthorized callers (IDOR mitigation).
+
+    ``for_write`` additionally refuses the call when the project is
+    suspended. That refusal is deliberately NOT flattened into the 404
+    mask below: the caller can see the annotation perfectly well, so
+    telling them "not found" would be a lie. They get 409
+    ``project_suspended`` instead.
     """
     from carve_api.annotations.models import Annotation
     a = db.get(Annotation, annotation_id)
     if a is None:
         raise HTTPException(status_code=404, detail="annotation_not_found")
     try:
-        task = require_visible_task(db, user, a.task_id)
+        task = require_visible_task(db, user, a.task_id, for_write=for_write)
+    except ProjectSuspended as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
     except AppError as exc:
         raise HTTPException(status_code=404, detail="annotation_not_found") from exc
     return a, task
@@ -361,7 +371,7 @@ async def patch_annotation(
     db: Session = Depends(get_db),
     origin_session: uuid.UUID | None = Depends(get_origin_session),
 ) -> AnnotationOut:
-    _a, task = _resolve_annotation_for_user(db, user, annotation_id)
+    _a, task = _resolve_annotation_for_user(db, user, annotation_id, for_write=True)
     try:
         a = AnnotationService(db).update(
             task=task, annotation_id=annotation_id,
@@ -390,7 +400,7 @@ async def delete_annotation(
     db: Session = Depends(get_db),
     origin_session: uuid.UUID | None = Depends(get_origin_session),
 ) -> None:
-    _a, task = _resolve_annotation_for_user(db, user, annotation_id)
+    _a, task = _resolve_annotation_for_user(db, user, annotation_id, for_write=True)
     try:
         AnnotationService(db).delete(task=task, annotation_id=annotation_id)
     except AppError as exc:
@@ -425,7 +435,7 @@ def cleanup_orphaned_image_annotations(
     """
     from carve_api.auth.models import UserRole
 
-    if user.role != UserRole.admin:
+    if user.role not in ADMIN_LEVEL_ROLES:
         raise HTTPException(status_code=403, detail="admin_only")
     image_task_ids = db.execute(
         select(TaskModel.id).where(TaskModel.kind == TaskKind.image)

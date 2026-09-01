@@ -104,20 +104,30 @@ def test_member_cannot_change_role(db_session) -> None:
     assert r.status_code == 403
 
 
-def test_cannot_demote_last_admin(db_session) -> None:
+def test_cannot_demote_self(db_session) -> None:
+    """The bootstrap account cannot demote itself out of the top tier.
+
+    Previously this returned 409 ``last_admin_cannot_be_demoted``. With
+    the superadmin tier the refusal comes earlier and is broader: nobody
+    may act on their own account through the admin surface at all, so
+    self-demotion is a 400 before the last-superadmin check is even
+    reached. ``_guard_last_superadmin`` remains as defence in depth.
+    """
     client = _client(db_session)
     admin = _bootstrap_admin(client)
 
     me = client.get(
         "/auth/me", headers={"Authorization": f"Bearer {admin}"}
     ).json()
+    assert me["role"] == "superadmin"
 
     r = client.patch(
         f"/auth/members/{me['id']}/role",
         json={"role": "member"},
         headers={"Authorization": f"Bearer {admin}"},
     )
-    assert r.status_code == 409
+    assert r.status_code == 400
+    assert r.json()["error"] == "cannot_target_self"
 
 
 # ------------------------- soft-delete projects -------------------------

@@ -24,8 +24,19 @@
 import { useAuth } from "./store";
 
 export interface Capabilities {
-  /** Workspace admin — unrestricted. */
+  /**
+   * Carries workspace-admin authority. TRUE for superadmins too — the
+   * tier above admin must never render as having fewer powers. Always
+   * branch on this rather than comparing the role to "admin".
+   */
   isAdmin: boolean;
+  /**
+   * The top tier only. Gates the account controls admins deliberately
+   * do not get: managing admin accounts, resetting someone else's
+   * password, blocking, force-logout, purging the trash, suspending a
+   * project.
+   */
+  isSuperAdmin: boolean;
   /** Export a dataset in any format. */
   canExport: boolean;
   /** Upload assets or weights, import annotations, extract video frames. */
@@ -43,9 +54,11 @@ export interface Capabilities {
  */
 export function useCapabilities(): Capabilities {
   const role = useAuth((s) => s.user?.role ?? null);
-  const isAdmin = role === "admin";
+  const isSuperAdmin = role === "superadmin";
+  const isAdmin = isSuperAdmin || role === "admin";
   return {
     isAdmin,
+    isSuperAdmin,
     canExport: isAdmin,
     canUpload: isAdmin,
     canDuplicate: isAdmin,
@@ -65,6 +78,6 @@ export function useTaskGpuAccess(
   task: { gpu_access_for_members?: boolean } | null | undefined,
 ): boolean {
   const role = useAuth((s) => s.user?.role ?? null);
-  if (role === "admin") return true;
+  if (role === "admin" || role === "superadmin") return true;
   return task?.gpu_access_for_members === true;
 }

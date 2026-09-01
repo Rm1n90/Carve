@@ -40,6 +40,7 @@ import { statsApi, type ProjectStats } from "@/api/stats";
 import { weightsApi } from "@/api/phase2";
 import { RetrainDialog } from "@/components/annotation/RetrainDialog";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
   Dialog,
@@ -565,6 +566,83 @@ function ProjectTaskProgressList({
 // ---------------------------------------------------------------------------
 // Settings tab — basic edit form for project name/description.
 // ---------------------------------------------------------------------------
+/**
+ * Superadmin freeze for a whole project.
+ *
+ * Intended for a delivered outsourced job: suspending makes the project
+ * read-only for everyone below superadmin, so the annotations you signed
+ * off on cannot drift afterwards. Reversible, and never a dead end — a
+ * superadmin can still correct the contents while it is frozen.
+ */
+function ProjectSuspensionControl({
+  projectId,
+  suspended,
+}: {
+  projectId: string;
+  suspended: boolean;
+}) {
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const m = useMutation({
+    mutationFn: (next: boolean) =>
+      next ? projectsApi.suspend(projectId) : projectsApi.unsuspend(projectId),
+    onSuccess: (_p, next) => {
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      showToast(next ? "Project suspended." : "Suspension lifted.", {
+        variant: "success",
+      });
+    },
+    onError: () =>
+      showToast("Failed to change the project's suspension.", {
+        variant: "error",
+      }),
+  });
+  return (
+    <section
+      data-testid="project-suspension-control"
+      className="mt-6 rounded-[var(--radius-md)] border border-[var(--border-subtle)] p-4 grid gap-2"
+    >
+      <h3 className="text-[13.5px] font-semibold tracking-tight">
+        {suspended ? "Project is suspended" : "Suspend project"}
+      </h3>
+      <p className="text-[12.5px] text-[color:var(--text-secondary)] max-w-[62ch]">
+        {suspended
+          ? "Everyone below superadmin has read-only access. Lift the suspension to let the team edit again."
+          : "Freezes the project: everything stays readable, but nobody below superadmin can change an annotation, task or class. Use it to lock a finished job so the delivered data cannot drift."}
+      </p>
+      <div>
+        <Button
+          variant={suspended ? "secondary" : "danger"}
+          size="md"
+          disabled={m.isPending}
+          data-testid="project-suspension-toggle"
+          onClick={async () => {
+            if (suspended) {
+              m.mutate(false);
+              return;
+            }
+            const ok = await confirm({
+              title: "Suspend this project?",
+              description:
+                "Everyone below superadmin loses the ability to change anything in it until you lift the suspension.",
+              confirmLabel: "Suspend",
+              variant: "danger",
+            });
+            if (ok) m.mutate(true);
+          }}
+        >
+          {m.isPending
+            ? "Working…"
+            : suspended
+              ? "Lift suspension"
+              : "Suspend project"}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function ProjectSettingsForm({
   projectId,
   initialName,
@@ -2050,6 +2128,29 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
         </div>
       </section>
 
+      {/* Suspension banner — shown to everyone, because a member who
+          cannot save needs to know why. Superadmins get the lift control
+          in the Settings tab. */}
+      {project.suspended && (
+        <div
+          data-testid="project-suspended-banner"
+          className={cn(
+            "mb-4 flex items-start gap-2.5 rounded-[var(--radius-md)] px-4 py-3",
+            "border border-[var(--warning-border,var(--border-subtle))]",
+            "bg-[var(--warning-bg,var(--bg-subtle))]",
+          )}
+        >
+          <Lock className="h-4 w-4 shrink-0 mt-0.5 text-[color:var(--warning,var(--text-secondary))]" />
+          <div className="min-w-0">
+            <p className="text-[13.5px] font-medium">This project is suspended</p>
+            <p className="text-[12.5px] text-[color:var(--text-secondary)] mt-0.5">
+              Everything is readable, but no annotations, tasks or classes can
+              be changed until a superadmin lifts the suspension.
+            </p>
+          </div>
+        </div>
+      )}
+
       <Tabs defaultValue="overview" data-testid="project-detail-tabs" variant="underline">
         <Tabs.List
           aria-label="Project sections"
@@ -2354,6 +2455,12 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
               initialName={project.name}
               initialDescription={project.description}
             />
+            {caps.isSuperAdmin && (
+              <ProjectSuspensionControl
+                projectId={projectId}
+                suspended={project.suspended === true}
+              />
+            )}
           </Tabs.Content>
         )}
       </Tabs>

@@ -1,12 +1,13 @@
 # Armin Mehri — mehri.armin@gmail.com
 import uuid
 from collections.abc import Iterator
+from datetime import datetime, timezone
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from carve_api.auth.jwt import InvalidToken, decode_token
-from carve_api.auth.models import User, UserRole
+from carve_api.auth.models import ADMIN_LEVEL_ROLES, User, UserRole
 from carve_api.db import db_session
 
 
@@ -42,6 +43,9 @@ def get_current_user(
                 detail="invalid api key",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        # A blocked account loses its personal access tokens too —
+        # otherwise blocking would only stop the browser session.
+        _reject_if_blocked(user)
         return user
     try:
         claims = decode_token(token, expected_type="access")
@@ -55,7 +59,53 @@ def get_current_user(
     # Bug 14: soft-deleted users must not be able to use an existing JWT.
     if user is None or user.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="user not found")
+    _reject_if_blocked(user)
+    _reject_if_session_revoked(user, claims)
     return user
+
+
+def _reject_if_blocked(user: User) -> None:
+    """Refuse a blocked account.
+
+    Checked on every authenticated request rather than only at login, so
+    a superadmin blocking someone takes effect on that person's very next
+    request instead of whenever their token happens to expire.
+    """
+    if user.blocked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "account_blocked",
+                "message": (
+                    "This account has been blocked. Contact your workspace "
+                    "administrator."
+                ),
+                "reason": user.blocked_reason,
+            },
+        )
+
+
+def _reject_if_session_revoked(user: User, claims: dict) -> None:
+    """Enforce "force logout" for tokens issued before the cutoff.
+
+    JWTs are stateless, so revocation is a timestamp comparison rather
+    than a deny-list: ``sessions_valid_from`` is bumped when a superadmin
+    resets the password or explicitly revokes sessions, and every token
+    minted earlier is refused from that moment on.
+
+    A token with no ``iat`` (only possible for one hand-minted in a
+    test) is treated as pre-cutoff, i.e. refused — failing closed.
+    """
+    cutoff = user.sessions_valid_from
+    if cutoff is None:
+        return
+    iat = claims.get("iat")
+    if iat is None or datetime.fromtimestamp(int(iat), tz=timezone.utc) < cutoff:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="session_revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def require_role(*roles: UserRole):
@@ -70,7 +120,7 @@ def require_role(*roles: UserRole):
 def get_current_admin_user(user: User = Depends(get_current_user)) -> User:
     """Convenience wrapper around ``require_role(UserRole.admin)`` for the
     new admin-only member CRUD endpoints (Bug 14)."""
-    if user.role != UserRole.admin:
+    if user.role not in ADMIN_LEVEL_ROLES:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
     return user
 

@@ -136,13 +136,15 @@ def create_app() -> FastAPI:
 
     from fastapi import APIRouter, Depends
 
-    from carve_api.auth.models import UserRole
+    from carve_api.auth.models import ADMIN_LEVEL_ROLES
     from carve_api.deps import require_role
 
     admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
     @admin_router.get("/ping")
-    def admin_ping(_=Depends(require_role(UserRole.admin))) -> dict[str, str]:
+    # ``*ADMIN_LEVEL_ROLES`` rather than ``UserRole.admin``: a bare
+    # equality here would lock superadmins out of an admin endpoint.
+    def admin_ping(_=Depends(require_role(*ADMIN_LEVEL_ROLES))) -> dict[str, str]:
         return {"pong": "admin"}
 
     app.include_router(admin_router)

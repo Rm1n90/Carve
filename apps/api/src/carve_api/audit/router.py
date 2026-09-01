@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from carve_api.audit.models import AuditEvent
 from carve_api.audit.schemas import AuditEventOut, AuditPage
 from carve_api.auth.models import User
+from carve_api.permissions import require_superadmin
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.projects.service import _READ_ROLES, require_project_role
@@ -68,6 +69,62 @@ def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID] | None:
     except ValueError:
         return None
     return ts, rid
+
+
+@router.get("/audit", response_model=AuditPage)
+def list_workspace_audit(
+    limit: int = Query(50, ge=1, le=200),
+    cursor: str | None = None,
+    action: str | None = None,
+    actor: uuid.UUID | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AuditPage:
+    """Workspace-wide audit log. Superadmin-only.
+
+    The project-scoped endpoint below is readable by any project member
+    and only ever shows events tagged with that project. Account
+    controls — role changes, blocks, password resets, session
+    revocations — are workspace events with no project, so they would
+    otherwise be invisible to everyone. This view is where they surface,
+    and it is restricted to the one role that can perform them.
+    """
+    require_superadmin(user)
+
+    stmt = select(AuditEvent)
+    if action is not None:
+        stmt = stmt.where(AuditEvent.action == action)
+    if actor is not None:
+        stmt = stmt.where(AuditEvent.actor_id == actor)
+    if cursor is not None:
+        decoded = _decode_cursor(cursor)
+        if decoded is None:
+            raise HTTPException(status_code=422, detail="invalid_cursor")
+        last_ts, last_id = decoded
+        stmt = stmt.where(
+            or_(
+                AuditEvent.occurred_at < last_ts,
+                and_(
+                    AuditEvent.occurred_at == last_ts,
+                    AuditEvent.id < last_id,
+                ),
+            )
+        )
+    stmt = stmt.order_by(
+        AuditEvent.occurred_at.desc(), AuditEvent.id.desc()
+    ).limit(limit + 1)
+    rows = list(db.execute(stmt).scalars())
+
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = _encode_cursor(last.occurred_at, last.id)
+
+    return AuditPage(
+        items=[AuditEventOut.from_orm_event(r) for r in rows],
+        next_cursor=next_cursor,
+    )
 
 
 @router.get(

@@ -5,7 +5,15 @@ from carve_api.auth.models import User, UserRole
 
 
 def test_user_role_enum_values() -> None:
-    assert {r.value for r in UserRole} == {"admin", "member", "viewer"}
+    # ``superadmin`` (alembic 0039) sits above admin: the only role that
+    # may manage admin accounts, reset passwords, block, revoke sessions,
+    # purge the trash or suspend a project.
+    assert {r.value for r in UserRole} == {
+        "superadmin",
+        "admin",
+        "member",
+        "viewer",
+    }
 
 
 @pytest.mark.usefixtures("db_session")

@@ -36,7 +36,7 @@ def test_bootstrap_status_initially_false(db_session) -> None:
     assert r.json() == {"users_exist": False}
 
 
-def test_register_allows_first_user_without_auth_and_creates_admin(db_session) -> None:
+def test_register_allows_first_user_without_auth_and_creates_superadmin(db_session) -> None:
     # Arrange: clean users table
     db_session.query(User).delete()
     db_session.flush()
@@ -52,7 +52,10 @@ def test_register_allows_first_user_without_auth_and_creates_admin(db_session) -
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["email"] == "first@example.com"
-    assert body["role"] == "admin"
+    # The bootstrap user owns the workspace, so they get the top tier —
+    # otherwise a fresh install would have no superadmin and no way to
+    # mint one (alembic 0039 handles pre-existing deployments).
+    assert body["role"] == "superadmin"
 
 
 def test_bootstrap_status_true_after_first_user(db_session) -> None:

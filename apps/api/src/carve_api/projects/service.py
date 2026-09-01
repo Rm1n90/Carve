@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from carve_api.audit import service as audit_service
 from carve_api.audit.actions import CLASS_DELETED
-from carve_api.auth.models import User, UserRole
+from carve_api.auth.models import ADMIN_LEVEL_ROLES, User, UserRole
 from carve_api.errors import AppError, InsufficientRole, NotProjectMember
 from carve_api.projects.models import Class, Project, ProjectMember, Task, TaskKind
 
@@ -80,7 +80,7 @@ class ProjectService:
         # non-admin users see only projects with a matching ``project_members``
         # row (any role suffices for read).
         stmt = select(Project)
-        if actor.role != UserRole.admin:
+        if actor.role not in ADMIN_LEVEL_ROLES:
             stmt = stmt.join(
                 ProjectMember, ProjectMember.project_id == Project.id
             ).where(ProjectMember.user_id == actor.id)
@@ -105,7 +105,7 @@ class ProjectService:
         stmt = select(Project, User.email).outerjoin(
             User, User.id == Project.owner_id
         )
-        if actor.role != UserRole.admin:
+        if actor.role not in ADMIN_LEVEL_ROLES:
             stmt = stmt.join(
                 ProjectMember, ProjectMember.project_id == Project.id
             ).where(ProjectMember.user_id == actor.id)
@@ -212,7 +212,20 @@ class ProjectService:
 
 
 def _can_modify(actor: User, p: Project) -> bool:
-    return actor.role == UserRole.admin or p.owner_id == actor.id
+    return actor.role in ADMIN_LEVEL_ROLES or p.owner_id == actor.id
+
+
+class ProjectSuspended(AppError):
+    """Raised when a write is attempted against a suspended project.
+
+    Suspension freezes a project's contents so a delivered outsourced
+    job cannot be altered after the fact. Reads stay open — the point is
+    to preserve the data, not to hide it — and a superadmin can still
+    write, so the freeze is never a dead end.
+    """
+
+    http_status = 409
+    code = "project_suspended"
 
 
 class TaskNotFound(AppError):
@@ -221,7 +234,7 @@ class TaskNotFound(AppError):
 
 
 def require_visible_task(
-    db: Session, user: User, task_id: uuid.UUID
+    db: Session, user: User, task_id: uuid.UUID, *, for_write: bool = False
 ) -> "Task":
     """Resolve a task only if visible to ``user``.
 
@@ -248,7 +261,27 @@ def require_visible_task(
         # IDOR-safe: non-members must not be able to distinguish "task
         # exists in another project" from "task does not exist".
         raise TaskNotFound("task not found")
+    if for_write:
+        raise_if_suspended(user, project)
     return task
+
+
+def raise_if_suspended(user: User, project: "Project") -> None:
+    """Refuse writes to a suspended project.
+
+    Called from the two write choke points — ``require_visible_task``
+    (annotation/asset writes, which never touch ``require_project_role``)
+    and ``require_project_role`` itself for non-read role sets. A
+    superadmin is exempt: someone has to be able to correct a mistake in
+    a frozen project, and they are the one who froze it.
+    """
+    from carve_api.permissions import is_superadmin
+
+    if getattr(project, "suspended_at", None) is None:
+        return
+    if is_superadmin(user):
+        return
+    raise ProjectSuspended("project is suspended")
 
 
 def get_project_role(
@@ -261,7 +294,7 @@ def get_project_role(
     workspace admin operations) keep working without backfilling rows.
     """
     user = db.get(User, user_id)
-    if user is not None and user.role == UserRole.admin:
+    if user is not None and user.role in ADMIN_LEVEL_ROLES:
         return "owner"
     return db.execute(
         select(ProjectMember.role).where(
@@ -295,6 +328,11 @@ def require_project_role(
         raise NotProjectMember("not a project member")
     if role not in allowed:
         raise InsufficientRole("insufficient role for this action")
+    # Any role set other than the read set denotes a mutation, so a
+    # suspended project rejects it. Adding a new mutating route picks
+    # this up automatically.
+    if allowed != _READ_ROLES:
+        raise_if_suspended(user, project)
     return project
 
 

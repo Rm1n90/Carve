@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from carve_api.auth.models import User, UserRole
+from carve_api.auth.models import ADMIN_LEVEL_ROLES, User, UserRole
 from carve_api.deps import get_current_user
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -46,6 +46,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # Error codes returned as ``{"error": <code>, "message": ...}``. The web
 # app matches on the code to render a role-appropriate explanation
 # instead of a bare "Forbidden".
+SUPERADMIN_ONLY = "superadmin_only"
 DATA_MOVEMENT_FORBIDDEN = "data_movement_forbidden"
 GPU_FORBIDDEN = "gpu_forbidden"
 ADMIN_ONLY = "admin_only"
@@ -59,11 +60,31 @@ _GPU_MESSAGE = (
     "enable them for a specific task from that task's settings."
 )
 _ADMIN_MESSAGE = "This action is restricted to workspace admins."
+_SUPERADMIN_MESSAGE = (
+    "This action is restricted to the workspace superadmin."
+)
 
 
 def is_admin(user: User) -> bool:
-    """True for workspace admins — the only unrestricted role."""
-    return user.role == UserRole.admin
+    """True for anyone carrying workspace-admin authority.
+
+    Superadmins are included: the tier above admin must never hold fewer
+    permissions than the tier below it. Always test admin-ness through
+    this helper (or ``ADMIN_LEVEL_ROLES``) rather than comparing against
+    ``UserRole.admin``.
+    """
+    return user.role in ADMIN_LEVEL_ROLES
+
+
+def is_superadmin(user: User) -> bool:
+    """True only for the superadmin tier.
+
+    Gates the account-control powers admins deliberately do not get:
+    managing admin accounts, resetting someone else's password,
+    blocking, revoking sessions, purging the trash, suspending a
+    project.
+    """
+    return user.role == UserRole.superadmin
 
 
 def _forbid(code: str, message: str) -> HTTPException:
@@ -124,7 +145,9 @@ def require_gpu_task(
     """
     from carve_api.projects.service import require_visible_task
 
-    task = require_visible_task(db, user, task_id)
+    # Every GPU route writes annotations, so it is a write for the
+    # purposes of project suspension.
+    task = require_visible_task(db, user, task_id, for_write=True)
     if not task_gpu_allowed(user, task):
         raise _forbid(GPU_FORBIDDEN, _GPU_MESSAGE)
     return task
@@ -163,17 +186,54 @@ def admin_guard(user: User = Depends(get_current_user)) -> User:
     return require_admin(user)
 
 
+def require_superadmin(user: User) -> User:
+    """Gate a superadmin-only action."""
+    if not is_superadmin(user):
+        raise _forbid(SUPERADMIN_ONLY, _SUPERADMIN_MESSAGE)
+    return user
+
+
+def superadmin_guard(user: User = Depends(get_current_user)) -> User:
+    """``Depends`` form of :func:`require_superadmin`."""
+    return require_superadmin(user)
+
+
+def can_manage_user(actor: User, target: User) -> bool:
+    """Whether ``actor`` may edit, block, delete or re-role ``target``.
+
+    Two rules, both aimed at the escalation path a flat admin role left
+    open:
+
+    * Only a superadmin may touch an admin-level account (including
+      another superadmin). Admins manage members and viewers only, so no
+      admin can mint a peer or remove one.
+    * Nobody may act on themselves through the admin surface. Self-serve
+      password change has its own endpoint; self-blocking or
+      self-demotion is always a mistake.
+    """
+    if actor.id == target.id:
+        return False
+    if target.role in ADMIN_LEVEL_ROLES:
+        return is_superadmin(actor)
+    return is_admin(actor)
+
+
 __all__ = [
     "ADMIN_ONLY",
+    "SUPERADMIN_ONLY",
     "DATA_MOVEMENT_FORBIDDEN",
     "GPU_FORBIDDEN",
     "admin_guard",
+    "can_manage_user",
     "data_movement_guard",
     "gpu_admin_guard",
     "is_admin",
+    "is_superadmin",
     "require_admin",
     "require_data_movement",
     "require_gpu_admin",
     "require_gpu_task",
+    "require_superadmin",
+    "superadmin_guard",
     "task_gpu_allowed",
 ]

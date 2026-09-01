@@ -83,6 +83,10 @@ class ProjectOut(BaseModel):
     # preference; use the workspace default". The editor uses this to
     # pre-flight a SAM switch when the loaded variant differs.
     default_sam_variant: str | None = None
+    # Superadmin freeze (alembic 0039). When set, everyone below
+    # superadmin gets read-only access to the whole project.
+    suspended: bool = False
+    suspended_at: datetime | None = None
 
     @classmethod
     def from_orm_project(cls, p, owner_email: str | None = None) -> "ProjectOut":
@@ -92,6 +96,8 @@ class ProjectOut(BaseModel):
             description=p.description,
             owner_id=str(p.owner_id),
             owner_email=owner_email,
+            suspended=getattr(p, "suspended_at", None) is not None,
+            suspended_at=getattr(p, "suspended_at", None),
             created_at=p.created_at,
             default_sam_variant=getattr(p, "default_sam_variant", None),
         )

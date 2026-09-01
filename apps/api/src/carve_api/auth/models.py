@@ -3,7 +3,16 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, String, false, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    String,
+    Text,
+    false,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,9 +20,23 @@ from carve_api.db import Base
 
 
 class UserRole(str, enum.Enum):
+    # Tier above ``admin``: the only role that may manage admin accounts,
+    # reset another user's password, block/unblock, revoke sessions,
+    # purge the trash or suspend a project. See ``carve_api.permissions``.
+    superadmin = "superadmin"
     admin = "admin"
     member = "member"
     viewer = "viewer"
+
+
+#: Roles carrying full workspace-admin authority.
+#:
+#: Every "is this user an admin?" test MUST go through this set rather
+#: than comparing against ``UserRole.admin`` directly — a bare equality
+#: check silently excludes superadmins, which would leave the highest
+#: role with *fewer* permissions than the one below it. Also usable in
+#: SQLAlchemy filters via ``User.role.in_(ADMIN_LEVEL_ROLES)``.
+ADMIN_LEVEL_ROLES: tuple["UserRole", ...] = (UserRole.superadmin, UserRole.admin)
 
 
 class User(Base):
@@ -43,6 +66,26 @@ class User(Base):
     # unique constraint and break multiple NULL rows on some dialects.
     sso_subject: Mapped[str | None] = mapped_column(
         String(255), nullable=True, default=None
+    )
+    # --- superadmin account controls (alembic 0039) --------------------
+    # A blocked account cannot log in, and any request it makes with an
+    # already-issued token fails immediately because ``get_current_user``
+    # re-reads this row on every request.
+    blocked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None, index=True
+    )
+    blocked_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True, default=None,
+    )
+    blocked_reason: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
+    # "Force logout". JWTs are stateless, so revocation is expressed as a
+    # cutoff: a token whose ``iat`` predates this instant is refused.
+    # Stamped when a superadmin resets the password or revokes sessions.
+    sessions_valid_from: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
     )
     # v3.20 -- per-user keyboard shortcut overrides. Sparse map of
     # ``action_id -> chord``; absent keys mean "use the default chord".

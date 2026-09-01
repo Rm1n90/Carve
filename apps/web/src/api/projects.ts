@@ -12,6 +12,14 @@ export interface Project {
   owner_email: string | null;
   created_at: string;
   /**
+   * Superadmin freeze. When true the project is read-only for everyone
+   * below superadmin: reads work, every write returns 409
+   * ``project_suspended``. Optional on the wire so older API responses
+   * (pre-0039) still parse.
+   */
+  suspended?: boolean;
+  suspended_at?: string | null;
+  /**
    * v3.32 — per-project preferred SAM variant. ``null`` means "no
    * preference; use the workspace default". Optional on the wire to
    * tolerate responses from older API versions (pre-0035 migration)
@@ -55,6 +63,12 @@ export const projectsApi = {
     patch: ProjectPatch | Partial<ProjectIn>,
   ): Promise<Project> =>
     (await api.patch<Project>(`/projects/${id}`, patch)).data,
+  /** Freeze a project (superadmin only). Everyone below superadmin gets
+   *  read-only access until it is unsuspended. */
+  suspend: async (id: string): Promise<Project> =>
+    (await api.post<Project>(`/projects/${id}/suspend`)).data,
+  unsuspend: async (id: string): Promise<Project> =>
+    (await api.post<Project>(`/projects/${id}/unsuspend`)).data,
   delete: async (id: string): Promise<void> => {
     await api.delete(`/projects/${id}`);
   },

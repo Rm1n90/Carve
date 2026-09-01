@@ -1,7 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { api } from "./client";
 
-export type Role = "admin" | "member" | "viewer";
+export type Role = "superadmin" | "admin" | "member" | "viewer";
 
 /** Roles allowed in the v3.0 admin-invite dialog. ``viewer`` is intentionally
  * excluded — the existing role-edit dropdown still surfaces it for legacy
@@ -12,6 +12,11 @@ export interface Member {
   id: string;
   email: string;
   role: Role;
+  /** Blocked accounts cannot log in and their live sessions stop working
+   * on the next request. Reversible — see ``unblock``. */
+  blocked?: boolean;
+  blocked_at?: string | null;
+  blocked_reason?: string | null;
 }
 
 export interface MemberProject {
@@ -42,5 +47,29 @@ export const membersApi = {
   /** Bug 14 — admin soft-deletes a member. */
   delete: async (userId: string): Promise<void> => {
     await api.delete(`/auth/members/${userId}`);
+  },
+
+  // --- superadmin account controls -------------------------------------
+  // All four return 403 ``superadmin_only`` for anyone below the top tier.
+
+  /** Set another user's password without knowing the current one. Also
+   * revokes every session that user currently holds, so an already-open
+   * tab cannot keep working. Carve does not notify them — tell them. */
+  setPassword: async (userId: string, newPassword: string): Promise<void> => {
+    await api.post(`/auth/members/${userId}/password`, {
+      new_password: newPassword,
+    });
+  },
+  /** Block an account. Reversible, and takes effect on the target's very
+   * next request. Prefer this over deletion for "they should not be here
+   * right now" — annotations stay attributed either way. */
+  block: async (userId: string, reason?: string): Promise<Member> =>
+    (await api.post<Member>(`/auth/members/${userId}/block`, { reason })).data,
+  unblock: async (userId: string): Promise<Member> =>
+    (await api.post<Member>(`/auth/members/${userId}/unblock`)).data,
+  /** Force-logout: invalidate every token the user holds. The account
+   * stays active, so they can simply log in again. */
+  revokeSessions: async (userId: string): Promise<void> => {
+    await api.post(`/auth/members/${userId}/revoke-sessions`);
   },
 };

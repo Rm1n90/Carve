@@ -25,7 +25,9 @@ def test_register_returns_user(db_session) -> None:
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["email"] == "u1@example.com"
-    assert body["role"] in {"admin", "member"}
+    # The bootstrap user now gets the top tier so a fresh workspace
+    # always has exactly one superadmin.
+    assert body["role"] in {"superadmin", "admin", "member"}
 
 
 def test_register_short_password() -> None:

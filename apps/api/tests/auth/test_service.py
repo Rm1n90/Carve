@@ -11,7 +11,9 @@ def test_register_creates_member(db_session) -> None:
     svc = AuthService(db_session)
     u1 = svc.register(email="boss@x.com", password="hunter22")
     u2 = svc.register(email="staff@x.com", password="hunter22")
-    assert u1.role == UserRole.admin
+    # First user bootstraps the workspace and becomes superadmin;
+    # everyone after them is a plain member.
+    assert u1.role == UserRole.superadmin
     assert u2.role == UserRole.member
     assert verify_password("hunter22", u2.password_hash)
 

@@ -4,9 +4,12 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Ban,
   Copy,
   KeyRound,
+  LogOut,
   MoreVertical,
+  ShieldCheck,
   Trash2,
   UserCog,
   UserPlus,
@@ -27,6 +30,7 @@ import {
 import { Select } from "@/components/ui/Select";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/auth/store";
+import { useCapabilities } from "@/auth/capabilities";
 import { changePassword as authChangePassword } from "@/auth/api";
 import { apiKeysApi, type ApiKey, type ApiKeyCreated } from "@/api/api_keys";
 import {
@@ -434,6 +438,9 @@ function ApiKeyRow({ k, onRevoke }: { k: ApiKey; onRevoke: () => void }) {
 
 // ------------------------------ Members ------------------------------
 
+// ``superadmin`` is deliberately absent: the tier is granted by editing
+// the DB or promoting through the API, not casually from a dropdown, and
+// only a superadmin could pick it anyway.
 const ROLES: Role[] = ["admin", "member", "viewer"];
 // v3.0 Bug 14 — the new "Invite member" dialog only exposes admin and
 // member. ``viewer`` remains in the role-edit dropdown for legacy data.
@@ -506,13 +513,51 @@ export function SettingsMembersPage() {
     },
   });
 
+  // --- superadmin account controls ---
+  const blockM = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
+      membersApi.block(id, reason),
+    onSuccess: (m) => {
+      qc.invalidateQueries({ queryKey: ["members"] });
+      showToast(`Blocked ${m.email}`, { variant: "success" });
+    },
+    onError: () => showToast("Failed to block account", { variant: "error" }),
+  });
+  const unblockM = useMutation({
+    mutationFn: (id: string) => membersApi.unblock(id),
+    onSuccess: (m) => {
+      qc.invalidateQueries({ queryKey: ["members"] });
+      showToast(`Unblocked ${m.email}`, { variant: "success" });
+    },
+    onError: () => showToast("Failed to unblock account", { variant: "error" }),
+  });
+  const revokeM = useMutation({
+    mutationFn: (id: string) => membersApi.revokeSessions(id),
+    onSuccess: () =>
+      showToast("Signed out of every device", { variant: "success" }),
+    onError: () => showToast("Failed to revoke sessions", { variant: "error" }),
+  });
+  const passwordM = useMutation({
+    mutationFn: ({ id, password }: { id: string; password: string }) =>
+      membersApi.setPassword(id, password),
+    onSuccess: () =>
+      showToast("Password set. Tell them their new password — Carve does not.", {
+        variant: "success",
+      }),
+    onError: () => showToast("Failed to set password", { variant: "error" }),
+  });
+
   const [inviting, setInviting] = useState(false);
+  const [passwordTarget, setPasswordTarget] = useState<Member | null>(null);
 
   const members = membersQ.data ?? [];
-  const isAdmin = me?.role === "admin";
+  const caps = useCapabilities();
+  const isAdmin = caps.isAdmin;
   // Track the active admin count locally so we can hide the delete option
   // on the last admin (defence-in-depth — server still enforces this).
-  const adminCount = members.filter((m) => m.role === "admin").length;
+  const adminCount = members.filter(
+    (m) => m.role === "admin" || m.role === "superadmin",
+  ).length;
 
   return (
     <SettingsLayout>
@@ -550,16 +595,52 @@ export function SettingsMembersPage() {
           >
             {members.map((m) => {
               const isMe = m.id === me?.id;
-              const isLastAdmin = m.role === "admin" && adminCount <= 1;
+              const isLastAdmin =
+                (m.role === "admin" || m.role === "superadmin") &&
+                adminCount <= 1;
+              // Mirrors the server rule in ``permissions.can_manage_user``:
+              // admin-level accounts are superadmin-only, and nobody acts
+              // on themselves through this surface.
+              const targetIsAdminLevel =
+                m.role === "admin" || m.role === "superadmin";
+              const canManage =
+                !isMe &&
+                (targetIsAdminLevel ? caps.isSuperAdmin : isAdmin);
               return (
                 <MemberRow
                   key={m.id}
                   m={m}
                   isMe={isMe}
                   isAdmin={isAdmin}
-                  canDelete={isAdmin && !isMe && !isLastAdmin}
+                  isSuperAdmin={caps.isSuperAdmin}
+                  canDelete={canManage && !isLastAdmin}
+                  canManage={canManage}
                   projects={memberProjectsQ.data?.[m.id] ?? []}
                   onChangeRole={(role) => setRoleM.mutate({ id: m.id, role })}
+                  onSetPassword={() => setPasswordTarget(m)}
+                  onRevokeSessions={async () => {
+                    const ok = await confirm({
+                      title: `Sign ${m.email} out everywhere?`,
+                      description:
+                        "Their current sessions stop working immediately. The account stays active, so they can log in again.",
+                      confirmLabel: "Sign out",
+                    });
+                    if (ok) revokeM.mutate(m.id);
+                  }}
+                  onToggleBlock={async () => {
+                    if (m.blocked) {
+                      unblockM.mutate(m.id);
+                      return;
+                    }
+                    const ok = await confirm({
+                      title: `Block ${m.email}?`,
+                      description:
+                        "They lose access immediately and cannot log in. Their annotations are kept and you can unblock them at any time.",
+                      confirmLabel: "Block",
+                      variant: "danger",
+                    });
+                    if (ok) blockM.mutate({ id: m.id });
+                  }}
                   onDelete={async () => {
                     const ok = await confirm({
                       title: `Delete ${m.email}?`,
@@ -588,8 +669,125 @@ export function SettingsMembersPage() {
         }
       />
 
+      <SetPasswordDialog
+        target={passwordTarget}
+        onOpenChange={(o) => !o && setPasswordTarget(null)}
+        pending={passwordM.isPending}
+        onSubmit={(password) => {
+          if (!passwordTarget) return;
+          passwordM.mutate(
+            { id: passwordTarget.id, password },
+            { onSuccess: () => setPasswordTarget(null) },
+          );
+        }}
+      />
+
       <ProjectMembersSection />
     </SettingsLayout>
+  );
+}
+
+/**
+ * Superadmin password reset.
+ *
+ * Deliberately has no "current password" field — the point is to restore
+ * access to an account nobody can get into. Carve does not email the new
+ * password anywhere, so the copy says so explicitly: the superadmin has
+ * to pass it on themselves.
+ */
+function SetPasswordDialog({
+  target,
+  onOpenChange,
+  pending,
+  onSubmit,
+}: {
+  target: Member | null;
+  onOpenChange: (open: boolean) => void;
+  pending: boolean;
+  onSubmit: (password: string) => void;
+}) {
+  const [pw, setPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  useEffect(() => {
+    if (target) {
+      setPw("");
+      setConfirmPw("");
+    }
+  }, [target]);
+  const tooShort = pw.length > 0 && pw.length < 8;
+  const mismatch = confirmPw.length > 0 && pw !== confirmPw;
+  const valid = pw.length >= 8 && pw === confirmPw;
+  return (
+    <Dialog open={target !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(92vw,460px)]">
+        <DialogHeader>
+          <DialogTitle>Set password</DialogTitle>
+        </DialogHeader>
+        <form
+          className="grid gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (valid) onSubmit(pw);
+          }}
+        >
+          <p className="text-[13px] text-[color:var(--text-secondary)]">
+            Set a new password for{" "}
+            <span className="font-medium text-[color:var(--text-primary)]">
+              {target?.email}
+            </span>
+            . They will be signed out of every device, and Carve will not
+            tell them the new password — pass it on yourself.
+          </p>
+          <Input
+            type="password"
+            autoComplete="new-password"
+            placeholder="New password (min 8 characters)"
+            aria-label="New password"
+            data-testid="set-password-input"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+          />
+          <Input
+            type="password"
+            autoComplete="new-password"
+            placeholder="Confirm new password"
+            aria-label="Confirm new password"
+            data-testid="set-password-confirm"
+            value={confirmPw}
+            onChange={(e) => setConfirmPw(e.target.value)}
+          />
+          {tooShort && (
+            <p className="text-[12px] text-[color:var(--danger)]">
+              Use at least 8 characters.
+            </p>
+          )}
+          {mismatch && (
+            <p className="text-[12px] text-[color:var(--danger)]">
+              The two passwords do not match.
+            </p>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="md"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              size="md"
+              disabled={!valid || pending}
+              data-testid="set-password-submit"
+            >
+              {pending ? "Setting…" : "Set password"}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -965,17 +1163,31 @@ function MemberRow({
   m,
   isMe,
   isAdmin,
+  isSuperAdmin,
   canDelete,
+  canManage,
   onChangeRole,
   onDelete,
+  onSetPassword,
+  onRevokeSessions,
+  onToggleBlock,
   projects = [],
 }: {
   m: Member;
   isMe: boolean;
   isAdmin: boolean;
+  /** Only a superadmin sees the account controls (password, block,
+   *  force-logout); the API refuses them for anyone else. */
+  isSuperAdmin: boolean;
   canDelete: boolean;
+  /** Whether the viewer may act on THIS row at all — admin-level targets
+   *  are superadmin-only, and nobody may target themselves. */
+  canManage: boolean;
   onChangeRole: (r: Role) => void;
   onDelete: () => void;
+  onSetPassword: () => void;
+  onRevokeSessions: () => void;
+  onToggleBlock: () => void;
   projects?: import("@/api/members").MemberProject[];
 }) {
   const initial = m.email[0]?.toUpperCase() ?? "?";
@@ -990,6 +1202,15 @@ function MemberRow({
           {isMe && (
             <span className="ml-2 text-[11px] text-[color:var(--text-tertiary)]">
               (you)
+            </span>
+          )}
+          {m.blocked && (
+            <span
+              data-testid={`member-blocked-${m.id}`}
+              title={m.blocked_reason ?? "Blocked"}
+              className="ml-2 inline-flex items-center gap-1 rounded-full bg-[var(--danger-bg)] px-2 py-0.5 text-[10.5px] font-medium text-[color:var(--danger)] align-middle"
+            >
+              <Ban className="h-2.5 w-2.5" /> Blocked
             </span>
           )}
         </p>
@@ -1020,7 +1241,7 @@ function MemberRow({
           </span>
         )}
       </div>
-      {isAdmin && !isMe ? (
+      {canManage ? (
         <Select
           value={m.role}
           onValueChange={(v) => onChangeRole(v as Role)}
@@ -1037,11 +1258,24 @@ function MemberRow({
           </Select.Content>
         </Select>
       ) : (
-        <Badge variant={m.role === "admin" ? "accent" : "neutral"}>
-          <UserCog className="h-3 w-3" /> {m.role}
+        <Badge
+          variant={
+            m.role === "superadmin"
+              ? "danger"
+              : m.role === "admin"
+                ? "accent"
+                : "neutral"
+          }
+        >
+          {m.role === "superadmin" ? (
+            <ShieldCheck className="h-3 w-3" />
+          ) : (
+            <UserCog className="h-3 w-3" />
+          )}{" "}
+          {m.role}
         </Badge>
       )}
-      {canDelete && (
+      {(canDelete || (isSuperAdmin && canManage)) && (
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>
             <button
@@ -1064,6 +1298,50 @@ function MemberRow({
                 "shadow-[var(--shadow-card)]",
               )}
             >
+              {isSuperAdmin && canManage && (
+                <>
+                  <DropdownMenu.Item
+                    data-testid={`member-menu-password-${m.id}`}
+                    onSelect={() => onSetPassword()}
+                    className={cn(
+                      "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] outline-none",
+                      "data-[highlighted]:bg-[var(--bg-hover)] cursor-pointer",
+                    )}
+                  >
+                    <KeyRound className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                    Set password…
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    data-testid={`member-menu-revoke-${m.id}`}
+                    onSelect={() => onRevokeSessions()}
+                    className={cn(
+                      "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] outline-none",
+                      "data-[highlighted]:bg-[var(--bg-hover)] cursor-pointer",
+                    )}
+                  >
+                    <LogOut className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                    Sign out everywhere
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    data-testid={`member-menu-block-${m.id}`}
+                    onSelect={() => onToggleBlock()}
+                    className={cn(
+                      "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] outline-none",
+                      "data-[highlighted]:bg-[var(--bg-hover)] cursor-pointer",
+                      m.blocked ? "" : "text-[color:var(--danger)]",
+                    )}
+                  >
+                    {m.blocked ? (
+                      <ShieldCheck className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                    ) : (
+                      <Ban className="h-3.5 w-3.5" />
+                    )}
+                    {m.blocked ? "Unblock account" : "Block account"}
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
+                </>
+              )}
+              {canDelete && (
               <DropdownMenu.Item
                 data-testid={`member-menu-delete-${m.id}`}
                 onSelect={() => onDelete()}
@@ -1076,6 +1354,7 @@ function MemberRow({
                 <Trash2 className="h-3.5 w-3.5" />
                 <span>Delete member</span>
               </DropdownMenu.Item>
+              )}
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
