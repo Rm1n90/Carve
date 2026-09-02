@@ -166,6 +166,17 @@ class Yolov5Model:
         self._device = "cpu"
         self._half = False
         self.task = "detect"
+        # One instance is shared by every request for this weight (the
+        # registry is an LRU cache) and the model service runs predicts in
+        # a threadpool. ``predict`` mutates shared state — it moves the
+        # module between devices and flips its dtype — so without this the
+        # calls race: one thread converts to float while another is mid
+        # forward pass in half, which surfaces as "Expected weight to have
+        # type Float but got Half" and, when the device move is what gets
+        # interleaved, a segfault. A batch auto-annotate fires exactly this
+        # pattern. Inference on a single model does not parallelise usefully
+        # anyway (the GPU serialises it), so the lock costs no throughput.
+        self._lock = threading.Lock()
 
     # -- device / precision ------------------------------------------------
 
@@ -205,24 +216,37 @@ class Yolov5Model:
         """
         import torch  # noqa: PLC0415
 
-        if device and device != self._device:
-            self.to(device)
-        self._apply_precision(half)
-
         rgb = np.ascontiguousarray(img[:, :, ::-1])
         h0, w0 = rgb.shape[:2]
         letterboxed, ratio, (dw, dh) = _letterbox(rgb, stride=self.stride)
 
-        x = torch.from_numpy(letterboxed.transpose(2, 0, 1)).float()
-        x = x.unsqueeze(0).to(self._device)
-        x = x.half() if self._half else x.float()
-        x /= 255.0
+        # Everything that touches shared module state — the device move,
+        # the dtype flip and the forward pass itself — happens under one
+        # lock, so a concurrent call cannot observe the module halfway
+        # through a conversion.
+        with self._lock:
+            if device and device != self._device:
+                self.to(device)
+            self._apply_precision(half)
 
-        with torch.no_grad():
-            out = self.model(x)
-        pred = out[0] if isinstance(out, (list, tuple)) else out
+            x = torch.from_numpy(letterboxed.transpose(2, 0, 1)).float()
+            x = x.unsqueeze(0).to(self._device)
+            # Take the dtype from the module rather than from ``_half``:
+            # the flag is our own bookkeeping, while this is the ground
+            # truth the conv layers will actually check.
+            try:
+                param_dtype = next(self.model.parameters()).dtype
+            except StopIteration:  # pragma: no cover — models have params
+                param_dtype = torch.float32
+            x = x.to(param_dtype)
+            x /= 255.0
 
-        det = _nms(pred.float(), conf_thres=conf, iou_thres=iou)
+            with torch.no_grad():
+                out = self.model(x)
+            pred = out[0] if isinstance(out, (list, tuple)) else out
+            pred = pred.detach().float()
+
+        det = _nms(pred, conf_thres=conf, iou_thres=iou)
         if det.numel():
             # Undo letterbox padding + scale back to the source image.
             det[:, [0, 2]] -= dw

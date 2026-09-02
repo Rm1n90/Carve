@@ -192,6 +192,11 @@ class _StubModule:
     def modules(self):
         return []
 
+    def parameters(self):
+        import torch
+
+        return iter([torch.zeros(1, dtype=torch.float32)])
+
 
 def test_adapter_matches_the_ultralytics_result_shape():
     """``predict_image`` is duck-typed against ultralytics — the adapter has
@@ -231,6 +236,70 @@ def test_adapter_converts_bgr_input_to_rgb():
 
     r, g, b = captured["first_pixel"]
     assert b > r, "blue-dominant BGR input must reach the model as blue in RGB"
+
+
+def test_concurrent_predicts_do_not_corrupt_shared_state():
+    """One adapter instance serves every request for a weight (the registry
+    is an LRU cache) and predicts run in a threadpool. ``predict`` mutates
+    shared module state — device and dtype — so unsynchronised calls raced:
+    one thread converted the module to float while another was mid forward
+    pass in half. That surfaced as "Expected weight to have type Float but
+    got Half", and when the device move interleaved instead, a segfault. A
+    batch auto-annotate produces exactly this pattern.
+    """
+    torch = pytest.importorskip("torch")
+    import threading
+
+    calls = []
+
+    class _Recorder(_StubModule):
+        def __call__(self, x):
+            # Fail loudly if the input dtype disagrees with the module's.
+            calls.append(x.dtype)
+            return (torch.zeros((1, 0, 7)),)
+
+    m = v5.Yolov5Model(_Recorder(torch.zeros((1, 0, 7))), {0: "a"}, stride=32)
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    errors = []
+
+    def worker():
+        try:
+            m.predict(img, conf=0.25, iou=0.45, half=False, device="cpu")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"concurrent predicts raised: {errors[:3]}"
+    assert len(calls) == 8
+
+
+def test_input_dtype_follows_the_module_not_the_flag():
+    """The dtype handed to the model is read off its own parameters rather
+    than our ``_half`` bookkeeping, so drifted state cannot produce a
+    dtype mismatch."""
+    torch = pytest.importorskip("torch")
+
+    seen = {}
+
+    class _Recorder(_StubModule):
+        def __call__(self, x):
+            seen["dtype"] = x.dtype
+            return (torch.zeros((1, 0, 7)),)
+
+    stub = _Recorder(torch.zeros((1, 0, 7)))
+    # a real parameter in half, while the flag wrongly claims float
+    stub.parameters = lambda: iter([torch.zeros(1, dtype=torch.float16)])
+    m = v5.Yolov5Model(stub, {0: "a"}, stride=32)
+    m._half = False  # deliberately inconsistent bookkeeping
+
+    m.predict(np.zeros((64, 64, 3), dtype=np.uint8),
+              conf=0.25, iou=0.45, half=False, device="cpu")
+    assert seen["dtype"] == torch.float16
 
 
 def test_half_precision_is_ignored_off_cuda():
