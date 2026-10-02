@@ -347,8 +347,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
 
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0);
   const [zoomPct, setZoomPct] = useState(100);
-  // When the user enables Settings → Player → "Reset zoom on frame change",
-  // navigating between frames fits the canvas back to 100%. Without this
+  // When the user enables Settings → Player → "Reset zoom when changing
+  // image / frame", navigating between frames fits the canvas again (the
+  // canvas applies the same setting when the asset itself changes). Without this
   // a zoomed-in view would silently follow the user across frames, which
   // is rarely what they want. (Settings.resetZoomOnFrameChange wiring.)
   // v2.9 P2 E5 — subscribe to the setting so toggling it takes effect

@@ -888,11 +888,10 @@ export function AnnotationCanvas({
     let cancelled = false;
     onImageStatusChange?.("loading");
 
-    // Reset auto-fit so each new asset arrives centred + fit-to-host. The
-    // user complaint: navigating between assets used to inherit the
-    // previous asset's zoom level (because wheel/+/− zooms set
-    // autoFitRef to false, and only an explicit Fit click flipped it
-    // back). v2.9 P0-2: previously this flag was set synchronously
+    // With "Reset zoom when changing image / frame" on, re-arm auto-fit
+    // so each new asset arrives centred + fit-to-host; with it off
+    // (default) the user's zoom level carries over to the next asset.
+    // v2.9 P0-2: previously this flag was set synchronously
     // BEFORE the await Assets.load — but a host-resize between flag-set
     // and texture-load could trigger fit-to-host using the *previous*
     // imageSize. We now flip the flag AFTER setImageSize in the success
@@ -1001,9 +1000,18 @@ export function AnnotationCanvas({
         // A presigned MinIO URL re-sign (assetQ refetch on window focus)
         // produces a new imageUrl string for the SAME asset; flipping
         // autoFit there would silently throw away the user's zoom on
-        // every tab-back. Different asset → still refits correctly.
+        // every tab-back.
+        //
+        // A different asset only refits when the user opted into
+        // Settings → Player → "Reset zoom when changing image / frame".
+        // Otherwise a zoom the user picked (120%, 60%, …) carries over
+        // to the next image — the resize effect keeps the scale and
+        // recentres. An untouched fit view has autoFit still `true`, so
+        // it keeps fitting each new image either way.
         if (assetId !== prevAssetIdRef.current) {
-          autoFitRef.current = true;
+          if (useEditorSettings.getState().resetZoomOnFrameChange) {
+            autoFitRef.current = true;
+          }
           prevAssetIdRef.current = assetId;
         }
         onImageStatusChange?.("loaded");

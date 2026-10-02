@@ -343,7 +343,7 @@ export function EditorSettingsDialog({ open, onOpenChange }: Props) {
             <Checkbox
               checked={s.resetZoomOnFrameChange}
               onChange={(v) => s.set("resetZoomOnFrameChange", v)}
-              label="Reset zoom on frame change"
+              label="Reset zoom when changing image / frame"
               testId="setting-resetZoomOnFrameChange"
             />
 

@@ -1,6 +1,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render as rtlRender } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 /**
  * v3.2 Issue 1 — the canvas must NOT refit when an asset's presigned URL
@@ -112,7 +113,19 @@ vi.mock("@/canvas/ShapeRenderer", () => ({
 
 import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
+import { useEditorSettings } from "@/state/editorSettings";
 import { AnnotationCanvas } from "@/components/annotation/AnnotationCanvas";
+
+// The canvas reads the shortcuts query, so it needs a QueryClient.
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+function Wrapper({ children }: { children: React.ReactNode }) {
+  return (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+}
+const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: Wrapper });
 
 async function flushAsync(): Promise<void> {
   await act(async () => {
@@ -134,6 +147,7 @@ describe("AnnotationCanvas — no refit on URL re-sign (v3.2 Issue 1)", () => {
     useTool.getState().setActive("cursor");
     useTool.getState().setActiveClassId(null);
     useAnnotations.getState().reset([]);
+    useEditorSettings.getState().reset();
 
     // Two assets at clearly different sizes so the fit-frames are
     // distinguishable. Asset A always returns 1000x500, asset B 200x200.
@@ -225,7 +239,8 @@ describe("AnnotationCanvas — no refit on URL re-sign (v3.2 Issue 1)", () => {
     expect(lastFrame.value.scale).toBe(userZoomScale);
   });
 
-  it("re-rendering with a different assetId DOES refit (correct refit on real asset change)", async () => {
+  it("re-rendering with a different assetId DOES refit when reset-zoom is on (correct refit on real asset change)", async () => {
+    useEditorSettings.getState().set("resetZoomOnFrameChange", true);
     // Arrange — start on asset A under URL #1.
     const { container, rerender } = render(
       <AnnotationCanvas

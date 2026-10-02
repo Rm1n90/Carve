@@ -1,24 +1,24 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render as rtlRender } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 /**
- * v2.8 Wave 2 fix — when the user navigates to a new asset (a different
- * `imageUrl`), the canvas must reset `autoFitRef` so the next host /
- * image-size pass refits the new image. Previous behaviour: a user-set
- * zoom (via wheel / +/−) on asset A persisted into asset B because
- * the texture-swap effect did not reset the auto-fit guard.
+ * Zoom behaviour when the user navigates to a new asset (a different
+ * `assetId`). Governed by Settings → Player → "Reset zoom when changing
+ * image / frame" (`resetZoomOnFrameChange`):
+ *  - off (default): a zoom the user picked on asset A (wheel, +/−,
+ *    exact %) carries over to asset B, recentred.
+ *  - on: the texture-swap effect re-arms `autoFitRef` so B arrives
+ *    fit-to-host (the original v2.8 wave 2 behaviour).
  *
  * The test mirrors the structure of `canvas-reload-perf.test.tsx`:
  *  - mocks `pixi.js` with fakes that record every `position.set` /
  *    `scale.set` call against the layer Containers (used as a proxy for
  *    `applyFrame` invocations).
  *  - mounts the AnnotationCanvas with imageUrl A and a 1000x500 texture.
- *  - simulates a user wheel-zoom (so autoFitRef flips to false).
+ *  - simulates a user zoom (so autoFitRef flips to false).
  *  - re-renders with imageUrl B and a different-sized texture.
- *  - asserts the LAST applyFrame for asset B equals the fit-to-host
- *    frame for B's dimensions, proving the swap-effect re-armed
- *    auto-fit. Without the fix, the post-wheel scale from A persists.
  */
 
 // Most-recent (scale, offset) the canvas applied to the imageLayer.
@@ -132,7 +132,19 @@ vi.mock("@/canvas/ShapeRenderer", () => ({
 
 import { useTool } from "@/state/tool";
 import { useAnnotations } from "@/state/annotations";
+import { useEditorSettings } from "@/state/editorSettings";
 import { AnnotationCanvas } from "@/components/annotation/AnnotationCanvas";
+
+// The canvas reads the shortcuts query, so it needs a QueryClient.
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+function Wrapper({ children }: { children: React.ReactNode }) {
+  return (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+}
+const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: Wrapper });
 
 async function flushAsync(): Promise<void> {
   await act(async () => {
@@ -154,6 +166,7 @@ describe("AnnotationCanvas — autoFit on asset change (v2.8 wave 2)", () => {
     useTool.getState().setActive("cursor");
     useTool.getState().setActiveClassId(null);
     useAnnotations.getState().reset([]);
+    useEditorSettings.getState().reset();
 
     // Texture lookup keyed on URL — A is 1000x500, B is 200x200, so
     // the fit-frames are clearly distinguishable.
@@ -201,6 +214,7 @@ describe("AnnotationCanvas — autoFit on asset change (v2.8 wave 2)", () => {
   });
 
   it("after a user wheel-zoom on asset A, switching to asset B still applies a frame for B (autoFit re-armed)", async () => {
+    useEditorSettings.getState().set("resetZoomOnFrameChange", true);
     // Render asset A and let init + texture-load resolve.
     const { container, rerender } = render(
       <AnnotationCanvas
@@ -283,6 +297,98 @@ describe("AnnotationCanvas — autoFit on asset change (v2.8 wave 2)", () => {
     // host-size signals are limited) but kept here as documentation of
     // the intended diff: with the fix, a fresh frame is applied for B.
     void frameAfterA;
+  });
+
+  describe("with a measurable 800x600 host", () => {
+    // jsdom has no layout, so the canvas never learns a host size and
+    // the fit / keep-zoom branch never runs. Report a real size from
+    // getBoundingClientRect so the frames below are the genuine ones.
+    let rectSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      rectSpy = vi
+        .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockReturnValue({
+          width: 800,
+          height: 600,
+          left: 0,
+          top: 0,
+          right: 800,
+          bottom: 600,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        } as DOMRect);
+    });
+    afterEach(() => {
+      rectSpy.mockRestore();
+    });
+
+    async function zoomTo120ThenSwitchToB(): Promise<void> {
+      const { rerender } = render(
+        <AnnotationCanvas
+          imageUrl="https://fake/A.png"
+          frameId={null}
+          assetId="a-1"
+        />,
+      );
+      await flushAsync();
+      // A (1000x500) fit-to-host in 800x600 with 16px padding.
+      expect(lastFrame.value.scale).toBeCloseTo(0.768, 5);
+
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent("carve:zoom-to", { detail: { pct: 120 } }),
+        );
+      });
+      expect(lastFrame.value.scale).toBeCloseTo(1.2, 5);
+
+      rerender(
+        <AnnotationCanvas
+          imageUrl="https://fake/B.png"
+          frameId={null}
+          assetId="a-2"
+        />,
+      );
+      await flushAsync();
+    }
+
+    it("keeps the user's zoom on the next asset by default, recentred", async () => {
+      await zoomTo120ThenSwitchToB();
+      expect(lastFrame.value.scale).toBeCloseTo(1.2, 5);
+      // B is 200x200 → 240x240 drawn, centred in 800x600.
+      expect(lastFrame.value.offset.x).toBeCloseTo(280, 5);
+      expect(lastFrame.value.offset.y).toBeCloseTo(180, 5);
+    });
+
+    it("refits the next asset when 'Reset zoom when changing image / frame' is on", async () => {
+      useEditorSettings.getState().set("resetZoomOnFrameChange", true);
+      await zoomTo120ThenSwitchToB();
+      // B (200x200) fits without upscaling → 1:1, centred.
+      expect(lastFrame.value.scale).toBeCloseTo(1, 5);
+      expect(lastFrame.value.offset.x).toBeCloseTo(300, 5);
+      expect(lastFrame.value.offset.y).toBeCloseTo(200, 5);
+    });
+
+    it("an untouched fit view keeps fitting each new asset", async () => {
+      const { rerender } = render(
+        <AnnotationCanvas
+          imageUrl="https://fake/A.png"
+          frameId={null}
+          assetId="a-1"
+        />,
+      );
+      await flushAsync();
+      expect(lastFrame.value.scale).toBeCloseTo(0.768, 5);
+      rerender(
+        <AnnotationCanvas
+          imageUrl="https://fake/B.png"
+          frameId={null}
+          assetId="a-2"
+        />,
+      );
+      await flushAsync();
+      expect(lastFrame.value.scale).toBeCloseTo(1, 5);
+    });
   });
 
   it("v2.9 P0-2 — error path surfaces 'error' status (catch branch ran, restoring autoFitRef)", async () => {
