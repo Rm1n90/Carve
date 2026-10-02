@@ -80,7 +80,9 @@ export function LogoAiFilter({ taskId, assetId, onApplied }: LogoAiFilterProps) 
   const confirm = useConfirm();
   const [open, setOpen] = useState(false);
   const [minConfidence, setMinConfidence] = useState(0.7);
-  const [minVisible, setMinVisible] = useState(50);
+  // 60 is what "more than half in view" takes in practice; see the
+  // dialog's DEFAULT_MIN_VISIBLE.
+  const [minVisible, setMinVisible] = useState(60);
   // Boxes scored 0.90 and up are almost always right; the wrong ones
   // are nearly all under it.
   const [reviewUnder, setReviewUnder] = useState(0.9);

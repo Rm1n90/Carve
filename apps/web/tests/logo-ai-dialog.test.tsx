@@ -257,7 +257,7 @@ describe("LogoAiDialog", () => {
       detail: "standard",
       tiling: "off",
       // Logos less than half in view are left out unless asked otherwise.
-      min_visible: 50,
+      min_visible: 60,
       overwrite: false,
       flex: false,
       // The second look at every box is on unless switched off, with

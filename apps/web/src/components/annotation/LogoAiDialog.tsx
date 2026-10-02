@@ -112,7 +112,14 @@ const EFFORT_LABEL: Record<string, string> = {
 
 // Training sets usually want logos that are mostly in view; a fragment
 // teaches a detector little.
-const DEFAULT_MIN_VISIBLE = 50;
+// "More than half of the logo in view" is what most tasks want, and 60
+// is the setting that gives it. The model's estimate is good to about
+// ±13 points and runs high around the middle: on 50 hand-labelled
+// partial logos, a cut at 50 removed 3 of the 8 that were really under
+// half, a cut at 60 removed 7 of 8, and neither lost a logo that was
+// clearly more than 60% in view. No model or effort setting tested
+// estimated it better, in detection or in the second pass.
+const DEFAULT_MIN_VISIBLE = 60;
 
 function newRow(classId = "", prompt = ""): Row {
   return {
@@ -1049,7 +1056,8 @@ export function LogoAiDialog({
                     data-testid="logo-ai-min-visible"
                   />
                   <span className="text-[10.5px] text-[color:var(--text-tertiary)]">
-                    The model estimates how much of each logo is in view
+                    For "more than half in view", use 60: the estimate runs about ten points
+                    high around the middle. The model estimates how much of each logo is in view
                     (cut by the frame, covered, or wrapped out of sight);
                     boxes under this are dropped. Each box keeps its
                     scores, so you can run with loose values and tighten

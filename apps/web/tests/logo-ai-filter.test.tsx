@@ -129,7 +129,7 @@ describe("LogoAiFilter", () => {
 
     fireEvent.click(screen.getByTestId("logo-ai-filter-open"));
     await screen.findByTestId("logo-ai-filter");
-    expect(useFilter.getState().scorePreview).toEqual({ minConfidence: 0.7, minVisible: 50 });
+    expect(useFilter.getState().scorePreview).toEqual({ minConfidence: 0.7, minVisible: 60 });
 
     fireEvent.change(screen.getByTestId("logo-ai-filter-confidence"), {
       target: { value: "0.8" },
