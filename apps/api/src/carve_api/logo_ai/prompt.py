@@ -11,6 +11,12 @@ The prompt is split where it changes:
 * **Per-request suffix** — the image to annotate and one line giving
   its size.
 
+The prefix itself has two parts. The **instructions** (what counts as a
+logo, what does not, how to box and score) are a text a task may
+replace with its own, because that differs between tasks. The **format**
+(coordinate system, output rows, class numbers) follows them and is
+fixed: it is what the answer is parsed by.
+
 The rubric is deliberately thorough. It is the only instruction the
 model gets about what a usable training box is, and because it is
 cached its length is nearly free after the first request. Keep it above
@@ -26,7 +32,7 @@ from dataclasses import dataclass
 
 from carve_api.logo_ai.catalog import COORDS_GRID999, COORDS_PIXEL
 
-_RUBRIC = """\
+DEFAULT_INSTRUCTIONS = """\
 You are annotating images for a logo-detection training set. Your boxes are \
 used directly as ground-truth labels for training an object detector, so \
 three things matter, in this order. First, every box is on a real logo: a \
@@ -132,7 +138,6 @@ are separate instances.
 - For a rotated or skewed logo the box stays axis-aligned and encloses the \
 whole mark.
 - For a partly hidden or cut-off logo, box only the portion that is visible.
-{coords}
 
 ## Visibility
 For every box, estimate what percentage of the whole mark is in view, judged \
@@ -152,7 +157,16 @@ Give each box a confidence from 0 to 100 that it is a real logo of that class \
 emblem.
 - 70 to 90: read or recognised, with some blur, occlusion, or small size.
 - 50 to 70: read or recognised only with effort.
-Anything you could not put at 50 or more does not pass the test: leave it out.
+Anything you could not put at 50 or more does not pass the test: leave it out."""
+
+# What follows the instructions in every prompt. It is not editable: the
+# coordinate system, the row layout and the class numbers are what the
+# answer is parsed by, and a prompt that described them differently from
+# the schema would produce boxes in the wrong place or rows that are
+# misread.
+_FORMAT = """\
+## Coordinates
+{coords}
 
 ## Output
 Return every instance you find, in any order, one row of integers per \
@@ -167,14 +181,14 @@ dataset.
 
 _COORDS_TEXT = {
     COORDS_PIXEL: (
-        "- Coordinates are integer pixels in the image exactly as provided, "
+        "Coordinates are integer pixels in the image exactly as provided, "
         "with the origin (0, 0) at the top-left corner, x increasing to the "
         "right and y increasing downward. `x1, y1` is the box's top-left "
         "corner and `x2, y2` its bottom-right corner, so x1 < x2 and y1 < y2. "
         "Each request states the image's width and height; stay within them."
     ),
     COORDS_GRID999: (
-        "- Coordinates are integers on a 0 to 999 grid laid over the image as "
+        "Coordinates are integers on a 0 to 999 grid laid over the image as "
         "provided: x = 0 is the left edge and x = 999 the right edge, y = 0 "
         "the top edge and y = 999 the bottom edge, independently per axis "
         "whatever the aspect ratio. `x1, y1` is the box's top-left corner and "
@@ -225,7 +239,12 @@ def row_length(n_classes: int) -> int:
     return len(_ROW_FIELDS) + (1 if n_classes > 1 else 0)
 
 
-def build_system_text(classes: list[TargetClass], coords: str) -> str:
+def build_system_text(
+    classes: list[TargetClass], coords: str, instructions: str | None = None
+) -> str:
+    """The detection prompt: the instructions (a task's own, or the
+    default), then the fixed description of coordinates, output rows and
+    target classes."""
     lines = []
     for i, c in enumerate(classes, start=1):
         desc = " ".join((c.description or "").split())
@@ -233,10 +252,26 @@ def build_system_text(classes: list[TargetClass], coords: str) -> str:
             lines.append(f"{i}. {c.name}: {desc}")
         else:
             lines.append(f"{i}. {c.name}")
-    return _RUBRIC.format(
+    # Only the fixed part is a template: a person's text may well
+    # contain braces.
+    body = (instructions or "").strip() or DEFAULT_INSTRUCTIONS
+    return (
+        body
+        + "\n\n"
+        + _FORMAT.format(
+            coords=_COORDS_TEXT[coords],
+            row=_ROW_TEXT[len(classes) > 1],
+            classes="\n".join(lines),
+        )
+    )
+
+
+def format_preview(coords: str, *, multi_class: bool = False) -> str:
+    """The fixed part as shown next to the editor, classes left open."""
+    return _FORMAT.format(
         coords=_COORDS_TEXT[coords],
-        row=_ROW_TEXT[len(classes) > 1],
-        classes="\n".join(lines),
+        row=_ROW_TEXT[multi_class],
+        classes="(the classes chosen for the run, numbered, with their descriptions)",
     )
 
 
@@ -293,7 +328,7 @@ def build_schema(n_classes: int, coords: str, *, numeric_bounds: bool) -> dict:
 # prefix OpenAI will cache, and a cached prefix is re-read at a tenth of
 # the input price on every image of a run. Trimming it below that makes
 # every check request pay for the whole prompt again.
-_CHECK = """\
+DEFAULT_CHECK_INSTRUCTIONS = """\
 You are checking candidate boxes for a logo-detection training set. The image \
 is a sheet of numbered tiles. Each tile is an enlarged crop from one photo, and \
 the green rectangle in it marks one candidate; what is around the rectangle is \
@@ -370,8 +405,9 @@ training label, and its score is stored with it so that a stricter cut can be \
 applied later. So a wrong high score puts a stripe or a blur into the \
 training set, and a wrong low score throws away a real logo; both are \
 errors. Give each tile the score you would stand by if someone opened that \
-one crop next to your number.
+one crop next to your number."""
 
+_CHECK_FORMAT = """\
 Return one row per tile: `[tile number, score]`.
 
 ## Target classes
@@ -380,13 +416,22 @@ Return one row per tile: `[tile number, score]`.
 CHECK_SCHEMA_NAME = "logo_checks"
 
 
-def build_check_text(classes: list[TargetClass]) -> str:
+def build_check_text(classes: list[TargetClass], instructions: str | None = None) -> str:
+    """The second pass's prompt: its instructions (a task's own, or the
+    default), then the fixed answer format and the target classes."""
     lines = []
     for i, c in enumerate(classes, start=1):
         desc = " ".join((c.description or "").split())
         named = desc and desc.lower() != c.name.lower()
         lines.append(f"{i}. {c.name}: {desc}" if named else f"{i}. {c.name}")
-    return _CHECK.format(classes="\n".join(lines))
+    body = (instructions or "").strip() or DEFAULT_CHECK_INSTRUCTIONS
+    return body + "\n\n" + _CHECK_FORMAT.format(classes="\n".join(lines))
+
+
+def check_format_preview() -> str:
+    return _CHECK_FORMAT.format(
+        classes="(the classes chosen for the run, numbered, with their descriptions)"
+    )
 
 
 def build_check_request_text(n_tiles: int) -> str:

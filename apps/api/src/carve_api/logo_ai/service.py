@@ -104,6 +104,13 @@ class RunOptions:
     # provider's default (see the catalog).
     check_model: str | None = None
     check_effort: str | None = None
+    # The task's own instructions at the moment the run was started
+    # (``None`` = the default text). Kept with the run so that editing
+    # the task's prompt changes the next run, not one that is half done:
+    # a run whose prompt changed midway would stop hitting its cache and
+    # label its second half by other rules than its first.
+    instructions: str | None = None
+    check_instructions: str | None = None
     asset_ids: list[str] | None = None
 
     def to_dict(self) -> dict:
@@ -203,7 +210,7 @@ def build_context(
         effort=catalog.resolve_effort(model, options.effort),
         classes=classes,
         references=references,
-        system_text=build_system_text(classes, coords),
+        system_text=build_system_text(classes, coords, options.instructions),
         schema=build_schema(len(classes), coords, numeric_bounds=provider.id == catalog.OPENAI),
         flex=bool(options.flex and provider.supports_flex),
         coords=coords,
@@ -436,7 +443,7 @@ def check_detections(
         return
     checker = client.checker()
     check_model = ctx.check_model or ctx.model
-    system_text = build_check_text(ctx.classes)
+    system_text = build_check_text(ctx.classes, options.check_instructions)
     schema = build_check_schema(numeric_bounds=ctx.provider.id == catalog.OPENAI)
     kept: list[Detection] = []
     for start in range(0, len(candidates), CHECK_MAX_TILES):

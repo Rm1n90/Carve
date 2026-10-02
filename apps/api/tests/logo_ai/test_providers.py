@@ -950,3 +950,23 @@ def test_the_check_prompt_is_long_enough_to_be_cached() -> None:
     # the whole prompt at the full input price.
     shortest = build_check_text([TargetClass("c1", "Logo", "")])
     assert len(shortest) / 3.96 > 1024 * 1.1
+
+
+def test_the_default_prompts_are_instructions_plus_a_fixed_format() -> None:
+    from carve_api.logo_ai import prompt as prompt_mod
+
+    text = build_system_text(_CLASSES, catalog.COORDS_GRID999)
+    assert text.startswith(prompt_mod.DEFAULT_INSTRUCTIONS)
+    tail = text[len(prompt_mod.DEFAULT_INSTRUCTIONS):]
+    assert tail.index("## Coordinates") < tail.index("## Output") < tail.index("## Target classes")
+    assert "0 to 999 grid" in tail and "1. Acme: red circle wordmark" in tail
+
+    # A task's own text replaces the instructions and nothing else, and
+    # is not treated as a template.
+    own = build_system_text(_CLASSES, catalog.COORDS_PIXEL, "Only {curly} sponsor logos.")
+    assert own.startswith("Only {curly} sponsor logos.\n\n## Coordinates")
+    assert "integer pixels" in own and "What counts as a logo" not in own
+
+    check = prompt_mod.build_check_text(_CLASSES, "Score strictly.")
+    assert check.startswith("Score strictly.\n\nReturn one row per tile")
+    assert check.endswith("1. Acme: red circle wordmark")

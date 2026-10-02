@@ -153,3 +153,30 @@ class LogoAiBatchPart(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class LogoAiTaskPrompt(Base):
+    """A task's own instructions for Logo AI, where it has any.
+
+    What counts as a logo differs between tasks: a set of sportswear
+    photos and a set of storefronts want different rules. The text here
+    replaces the default instructions in the prompt; the description of
+    coordinates, output rows and classes is added after it and is not
+    part of what can be edited. ``NULL`` in either column means the
+    default text.
+    """
+
+    __tablename__ = "logo_ai_task_prompts"
+
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    # The detection instructions, and those of the second pass.
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    check_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

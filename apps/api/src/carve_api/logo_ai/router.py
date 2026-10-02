@@ -34,6 +34,7 @@ from carve_api.config import get_settings
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.logo_ai import catalog, providers
+from carve_api.logo_ai import prompt as prompt_mod
 from carve_api.logo_ai.detections import persist_detections
 from carve_api.logo_ai.models import (
     DELIVERY_BATCH,
@@ -52,6 +53,7 @@ from carve_api.logo_ai.models import (
     TERMINAL_STATUSES,
     LogoAiBatchPart,
     LogoAiJob,
+    LogoAiTaskPrompt,
 )
 from carve_api.logo_ai.providers.base import (
     LogoAiNotConfigured,
@@ -323,7 +325,7 @@ def detect_asset(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    options = payload.options()
+    options = _with_task_prompt(db, asset.task_id, payload.options())
     try:
         task = require_logo_ai_task(db, user, asset.task_id)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
@@ -479,7 +481,7 @@ def estimate_run(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> EstimateOut:
-    options = payload.options()
+    options = _with_task_prompt(db, task_id, payload.options())
     try:
         task = require_logo_ai_task(db, user, task_id)
         figures = estimate(db, task, options, _assets_in_scope(db, task, options))
@@ -602,7 +604,7 @@ def create_job(
 
     is_batch = payload.delivery == DELIVERY_BATCH
     # Flex is a realtime pricing tier; a batch is already at that price.
-    options = payload.options()
+    options = _with_task_prompt(db, task_id, payload.options())
     if is_batch:
         options.flex = False
         # The second pass needs the boxes first, and a batch only hands
@@ -812,6 +814,131 @@ def cancel_job(
         except Exception:  # noqa: BLE001 — the poller thread will pick it up
             log.warning("logo_ai: could not queue cancel poll", exc_info=True)
     return _job_out(job)
+
+
+# ---------------------------------------------------------------------------
+# The task's own instructions
+# ---------------------------------------------------------------------------
+
+# Far more than a thorough rubric needs; the point is a bound.
+_PROMPT_MAX_CHARS = 40_000
+# A prompt prefix shorter than this is not cached by OpenAI (1,024
+# tokens, at about four characters per token), so every request of a
+# run pays for it in full.
+_PROMPT_CACHE_MIN_CHARS = 4_400
+
+
+def _with_task_prompt(db: Session, task_id: uuid.UUID, options: RunOptions) -> RunOptions:
+    """Give a run the task's own instructions, if it has any."""
+    row = db.get(LogoAiTaskPrompt, task_id)
+    if row is not None:
+        options.instructions = row.instructions
+        options.check_instructions = row.check_instructions
+    return options
+
+
+class TaskPromptOut(BaseModel):
+    # The text in force: the task's own, or the default.
+    instructions: str
+    check_instructions: str
+    # Whether each is the task's own.
+    custom: bool
+    check_custom: bool
+    default_instructions: str
+    default_check_instructions: str
+    # What is added after the instructions on every request, shown for
+    # reference; it cannot be edited.
+    format_preview: str
+    check_format_preview: str
+    max_chars: int
+    cache_min_chars: int
+    updated_at: datetime | None
+
+
+class TaskPromptIn(BaseModel):
+    # ``None`` or blank: go back to the default text.
+    instructions: str | None = Field(default=None, max_length=_PROMPT_MAX_CHARS)
+    check_instructions: str | None = Field(default=None, max_length=_PROMPT_MAX_CHARS)
+
+
+def _prompt_out(row: LogoAiTaskPrompt | None, coords: str) -> TaskPromptOut:
+    own = row.instructions if row else None
+    own_check = row.check_instructions if row else None
+    return TaskPromptOut(
+        instructions=own or prompt_mod.DEFAULT_INSTRUCTIONS,
+        check_instructions=own_check or prompt_mod.DEFAULT_CHECK_INSTRUCTIONS,
+        custom=bool(own),
+        check_custom=bool(own_check),
+        default_instructions=prompt_mod.DEFAULT_INSTRUCTIONS,
+        default_check_instructions=prompt_mod.DEFAULT_CHECK_INSTRUCTIONS,
+        format_preview=prompt_mod.format_preview(coords),
+        check_format_preview=prompt_mod.check_format_preview(),
+        max_chars=_PROMPT_MAX_CHARS,
+        cache_min_chars=_PROMPT_CACHE_MIN_CHARS,
+        updated_at=row.updated_at if row else None,
+    )
+
+
+def _coords_for(provider: str | None, model: str | None) -> str:
+    """The coordinate system of the model the dialog has selected, for
+    the preview; the default provider's if it is not given or unknown."""
+    try:
+        spec = catalog.get_provider(provider or catalog.OPENAI)
+        chosen = catalog.get_model(spec.id, model or spec.default_model)
+    except ValueError:
+        spec = catalog.get_provider(catalog.OPENAI)
+        chosen = catalog.get_model(spec.id, spec.default_model)
+    return chosen.coords or spec.coords
+
+
+def _own_text(text: str | None, default: str) -> str | None:
+    """What to store: nothing for a blank text or one equal to the
+    default, so that a later change of the default reaches the task."""
+    cleaned = (text or "").strip()
+    return None if not cleaned or cleaned == default.strip() else cleaned
+
+
+@task_router.get("/{task_id}/logo-ai/prompt", response_model=TaskPromptOut)
+def get_prompt(
+    task_id: uuid.UUID,
+    provider: str | None = None,
+    model: str | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TaskPromptOut:
+    try:
+        require_logo_ai_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return _prompt_out(db.get(LogoAiTaskPrompt, task_id), _coords_for(provider, model))
+
+
+@task_router.put("/{task_id}/logo-ai/prompt", response_model=TaskPromptOut)
+def put_prompt(
+    task_id: uuid.UUID,
+    payload: TaskPromptIn,
+    provider: str | None = None,
+    model: str | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TaskPromptOut:
+    try:
+        task = require_logo_ai_task(db, user, task_id)
+        require_project_role(db, user, task.project_id, _MUTATING_ROLES)
+    except AppError as exc:
+        raise _http(exc) from exc
+    own = _own_text(payload.instructions, prompt_mod.DEFAULT_INSTRUCTIONS)
+    own_check = _own_text(payload.check_instructions, prompt_mod.DEFAULT_CHECK_INSTRUCTIONS)
+    row = db.get(LogoAiTaskPrompt, task_id)
+    if row is None:
+        row = LogoAiTaskPrompt(task_id=task_id)
+        db.add(row)
+    row.instructions = own
+    row.check_instructions = own_check
+    row.updated_by = user.id
+    row.updated_at = datetime.now(UTC)
+    db.commit()
+    return _prompt_out(row, _coords_for(provider, model))
 
 
 # ---------------------------------------------------------------------------

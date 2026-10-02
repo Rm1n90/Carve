@@ -58,6 +58,7 @@ import {
   type VisualPick,
 } from "@/components/annotation/VisualReferencePicker";
 import { LogoAiFilter } from "@/components/annotation/LogoAiFilter";
+import { LogoAiPrompt } from "@/components/annotation/LogoAiPrompt";
 import { LogoAiRuns, formatUsd } from "@/components/annotation/LogoAiRuns";
 import { cn } from "@/lib/cn";
 import {
@@ -85,7 +86,7 @@ interface Row {
   prompt: string;
 }
 
-type Tab = "new" | "runs";
+type Tab = "new" | "runs" | "prompt";
 
 const DETAIL_COPY: Record<LogoAiDetail, { label: string; sub: string }> = {
   low: { label: "Low", sub: "~0.6 MP · cheapest" },
@@ -681,7 +682,7 @@ export function LogoAiDialog({
             are set on the containers here and inherited. */}
         <div
           data-testid="logo-ai-dialog"
-          className="grid grid-cols-2 gap-1 p-1 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] text-[12px] font-medium"
+          className="grid grid-cols-3 gap-1 p-1 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] text-[12px] font-medium"
         >
           {(
             [
@@ -690,6 +691,7 @@ export function LogoAiDialog({
                 id: "runs" as const,
                 label: `Runs${activeJobs.length > 0 ? ` · ${activeJobs.length} active` : ""}`,
               },
+              { id: "prompt" as const, label: "Prompt" },
             ]
           ).map((t) => (
             <button
@@ -709,7 +711,14 @@ export function LogoAiDialog({
           ))}
         </div>
 
-        {tab === "runs" ? (
+        {tab === "prompt" && taskId ? (
+          <LogoAiPrompt
+            taskId={taskId}
+            providerId={provider?.id}
+            modelId={model?.id}
+            onClose={() => setOpen(false)}
+          />
+        ) : tab === "runs" ? (
           <>
             <div className="text-[12px]">
             <LogoAiRuns

@@ -542,3 +542,72 @@ def test_batch_is_refused_for_a_model_the_batch_api_does_not_take(db_session, pr
     openai = next(p for p in cfg["providers"] if p["id"] == "openai")
     by_id = {m["id"]: m["supports_batch"] for m in openai["models"]}
     assert by_id["gpt-6.1-sol"] is False and by_id["gpt-6-sol"] is True
+
+
+# --- the task's own instructions ----------------------------------------------
+
+
+def test_a_task_can_carry_its_own_instructions(db_session, provider, queue, redis) -> None:
+    from carve_api.logo_ai import prompt as prompt_mod
+
+    s = seed(db_session, n_assets=1)
+    client = _client(db_session, s)
+    url = f"/tasks/{s.task.id}/logo-ai/prompt"
+
+    start = client.get(url, params={"provider": "openai", "model": "gpt-6.1-sol"}).json()
+    assert start["custom"] is False and start["check_custom"] is False
+    assert start["instructions"] == prompt_mod.DEFAULT_INSTRUCTIONS
+    # The fixed part is shown for the model in use, and is not part of the text.
+    assert "0 to 999 grid" in start["format_preview"] and "## Target classes" in start["format_preview"]
+    assert "## Target classes" not in start["instructions"]
+    pixel = client.get(url, params={"provider": "openai", "model": "gpt-6-sol"}).json()
+    assert "integer pixels" in pixel["format_preview"]
+
+    mine = "Box only the sponsor logos on the cars. {Not} the tyres."
+    saved = client.put(url, json={"instructions": mine}).json()
+    assert saved["custom"] is True and saved["instructions"] == mine
+    assert saved["check_custom"] is False and saved["updated_at"] is not None
+
+    # The next run is made with it: the text, then the fixed format.
+    provider.script = [ok()]
+    r = client.post(f"/assets/{s.assets[0].id}/logo-ai/detect", json=s.params())
+    assert r.status_code == 200, r.text
+    assert provider.ctx.system_text.startswith(mine)
+    assert "## Coordinates" in provider.ctx.system_text and "1. Acme" in provider.ctx.system_text
+    assert "What counts as a logo" not in provider.ctx.system_text
+
+    # A blank text, or the default pasted back, means the default again.
+    for text in ("   ", prompt_mod.DEFAULT_INSTRUCTIONS + "\n"):
+        back = client.put(url, json={"instructions": text}).json()
+        assert back["custom"] is False and back["instructions"] == prompt_mod.DEFAULT_INSTRUCTIONS
+
+
+def test_a_run_keeps_the_instructions_it_was_started_with(db_session, provider, queue, redis) -> None:
+    s = seed(db_session)
+    client = _client(db_session, s)
+    url = f"/tasks/{s.task.id}/logo-ai/prompt"
+    client.put(url, json={"instructions": "First rules.", "check_instructions": "First check."})
+    job_id = client.post(f"/tasks/{s.task.id}/logo-ai/jobs", json=s.params(double_check=True)).json()["id"]
+    # Edited while the run is still queued.
+    client.put(url, json={"instructions": "Second rules.", "check_instructions": "Second check."})
+
+    provider.script = [ok(), ProviderResult(text=json.dumps({"scores": [[1, 90]]}))]
+    jobs_mod.run_logo_ai_realtime(job_id)
+
+    assert provider.ctx.system_text.startswith("First rules.")
+    check = next(r for r in provider.sent if r.get("check"))
+    assert check["system"].startswith("First check.") and "## Target classes" in check["system"]
+    db_session.expire_all()
+    assert db_session.get(LogoAiJob, uuid.UUID(job_id)).params["instructions"] == "First rules."
+
+
+def test_only_those_who_may_run_logo_ai_may_edit_its_prompt(db_session, provider) -> None:
+    s = _member(db_session, task_grant=False)
+    client = _client(db_session, s)
+    url = f"/tasks/{s.task.id}/logo-ai/prompt"
+    assert client.get(url).status_code == 403
+    assert client.put(url, json={"instructions": "x"}).status_code == 403
+    too_long = _client(db_session, seed(db_session))
+    s2 = seed(db_session)
+    r = _client(db_session, s2).put(f"/tasks/{s2.task.id}/logo-ai/prompt", json={"instructions": "x" * 40_001})
+    assert r.status_code == 422 and too_long is not None

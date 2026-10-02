@@ -215,6 +215,24 @@ export interface LogoAiFilterResult {
   applied: boolean;
 }
 
+/** A task's Logo AI instructions: the texts in force, whether they are
+ *  the task's own, the defaults, and the fixed part added after them. */
+export interface LogoAiTaskPrompt {
+  instructions: string;
+  check_instructions: string;
+  custom: boolean;
+  check_custom: boolean;
+  default_instructions: string;
+  default_check_instructions: string;
+  /** Added after the instructions on every request; not editable. */
+  format_preview: string;
+  check_format_preview: string;
+  max_chars: number;
+  /** Shorter than this, the provider does not cache the prompt. */
+  cache_min_chars: number;
+  updated_at: string | null;
+}
+
 const TERMINAL: ReadonlySet<LogoAiJobStatus> = new Set([
   "completed",
   "completed_with_errors",
@@ -281,6 +299,20 @@ export const logoAiApi = {
         force ? { params: { force: true } } : undefined,
       )
     ).data,
+
+  getPrompt: async (
+    taskId: string,
+    params: { provider?: string; model?: string } = {},
+  ): Promise<LogoAiTaskPrompt> =>
+    (await api.get<LogoAiTaskPrompt>(`/tasks/${taskId}/logo-ai/prompt`, { params })).data,
+
+  /** A blank text, or the default pasted back, means the default. */
+  savePrompt: async (
+    taskId: string,
+    body: { instructions: string | null; check_instructions: string | null },
+    params: { provider?: string; model?: string } = {},
+  ): Promise<LogoAiTaskPrompt> =>
+    (await api.put<LogoAiTaskPrompt>(`/tasks/${taskId}/logo-ai/prompt`, body, { params })).data,
 
   /** Count what a score filter would remove. Changes nothing. */
   filterPreview: async (

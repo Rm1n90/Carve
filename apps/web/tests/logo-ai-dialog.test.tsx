@@ -38,6 +38,8 @@ vi.mock("@/api/logoAi", async () => {
       cancelJob: vi.fn(),
       filterPreview: vi.fn(),
       filterApply: vi.fn(),
+      getPrompt: vi.fn(),
+      savePrompt: vi.fn(),
     },
   };
 });
@@ -455,6 +457,58 @@ describe("LogoAiDialog", () => {
     fireEvent.click(await screen.findByTestId("logo-ai-tab-runs"));
     const row = await screen.findByTestId("logo-ai-run-job-1");
     expect(row.textContent).toContain("271 boxes · 14 rejected on the second look");
+  });
+
+  it("shows the task's instructions and saves an edited text", async () => {
+    const prompt = {
+      instructions: "Default detection text.",
+      check_instructions: "Default check text.",
+      custom: false,
+      check_custom: false,
+      default_instructions: "Default detection text.",
+      default_check_instructions: "Default check text.",
+      format_preview: "## Coordinates\n...\n## Target classes",
+      check_format_preview: "Return one row per tile",
+      max_chars: 40000,
+      cache_min_chars: 10,
+      updated_at: null,
+    };
+    (api as unknown as Record<string, ReturnType<typeof vi.fn>>).getPrompt.mockResolvedValue(prompt);
+    (api as unknown as Record<string, ReturnType<typeof vi.fn>>).savePrompt.mockImplementation(
+      async (_t: string, body: { instructions: string; check_instructions: string }) => ({
+        ...prompt, instructions: body.instructions, custom: true,
+      }),
+    );
+    renderDialog();
+    await openDialog();
+    fireEvent.click(screen.getByTestId("logo-ai-tab-prompt"));
+
+    const text = (await screen.findByTestId("logo-ai-prompt-instructions")) as HTMLTextAreaElement;
+    await waitFor(() => expect(text.value).toBe("Default detection text."));
+    expect(screen.getByTestId("logo-ai-prompt-instructions-state").textContent).toBe("Default");
+    // The fixed part is shown, not editable.
+    expect(screen.getByTestId("logo-ai-prompt").textContent).toContain("## Target classes");
+    const save = screen.getByTestId("logo-ai-prompt-save") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);  // nothing changed yet
+
+    fireEvent.change(text, { target: { value: "Only sponsor logos on the cars." } });
+    expect(screen.getByTestId("logo-ai-prompt-instructions-state").textContent).toBe(
+      "Custom for this task",
+    );
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(
+        (api as unknown as Record<string, ReturnType<typeof vi.fn>>).savePrompt,
+      ).toHaveBeenCalledWith(
+        "t1",
+        { instructions: "Only sponsor logos on the cars.", check_instructions: "Default check text." },
+        { provider: "anthropic", model: "claude-opus-5-5" },
+      ),
+    );
+
+    // Back to the default with one click.
+    fireEvent.click(screen.getByTestId("logo-ai-prompt-instructions-reset"));
+    expect(text.value).toBe("Default detection text.");
   });
 
   it("says what a waiting run is waiting for", async () => {
