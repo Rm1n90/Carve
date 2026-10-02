@@ -40,6 +40,24 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(alias="MODEL_TIMEOUT_SECONDS", default=120.0)
     sam_model: str = Field(alias="SAM_MODEL", default="sam2.1-tiny")
 
+    # Logo AI — logo detection through hosted vision LLMs. A provider is
+    # offered in the editor only when its key is set; with neither set
+    # the feature is off. Images are sent to the chosen provider.
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    # Requests in flight at once during a realtime run. Raise it if the
+    # provider account's rate limits allow.
+    logo_ai_concurrency: int = Field(default=4, alias="LOGO_AI_CONCURRENCY")
+    # Requests per batch handed to the provider. A provider account has
+    # a cap on what may wait in its batch queue; parts that do not fit
+    # are sent later by themselves, but one part must fit on its own.
+    # Lower this if a single part is larger than the account's cap.
+    logo_ai_batch_part_requests: int = Field(default=300, alias="LOGO_AI_BATCH_PART_REQUESTS")
+    # Logo AI spends money per image, so it is admin-only by default.
+    # When true, members may also use it on tasks that grant them the
+    # AI tools (``tasks.gpu_access_for_members``).
+    logo_ai_allow_members: bool = Field(default=False, alias="LOGO_AI_ALLOW_MEMBERS")
+
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
     api_env: str = Field(default="development", alias="API_ENV")
 

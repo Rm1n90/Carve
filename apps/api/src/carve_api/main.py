@@ -134,6 +134,20 @@ def create_app() -> FastAPI:
     from carve_api.realtime.router import router as realtime_router
     app.include_router(realtime_router)
 
+    # Logo AI — logo detection through hosted vision LLMs (Anthropic /
+    # OpenAI), realtime or via the providers' batch APIs.
+    from carve_api.logo_ai.poller import start_poller
+    from carve_api.logo_ai.router import (
+        asset_router as logo_ai_asset_router,
+        config_router as logo_ai_config_router,
+        task_router as logo_ai_task_router,
+    )
+    app.include_router(logo_ai_config_router)
+    app.include_router(logo_ai_asset_router)
+    app.include_router(logo_ai_task_router)
+    # Collects finished provider batches whether or not anyone is watching.
+    app.add_event_handler("startup", start_poller)
+
     from fastapi import APIRouter, Depends
 
     from carve_api.auth.models import ADMIN_LEVEL_ROLES

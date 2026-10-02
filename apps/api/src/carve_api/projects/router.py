@@ -28,6 +28,7 @@ from carve_api.audit.actions import (
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.logo_ai.guards import LogoAiRunActive, require_no_active_run
 from carve_api.permissions import (
     require_admin,
     require_data_movement,
@@ -75,6 +76,12 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 def _http(err: AppError) -> HTTPException:
+    if isinstance(err, LogoAiRunActive):
+        # This one needs saying in words: the way out is not obvious.
+        return HTTPException(
+            status_code=err.http_status,
+            detail={"error": err.code, "message": err.message},
+        )
     return HTTPException(status_code=err.http_status, detail=err.code)
 
 
@@ -221,6 +228,7 @@ def delete_project(
     try:
         # Plan-13 Phase 7 Task 2 — only owner/admin/member may delete a project.
         require_project_role(db, user, project_id, _MUTATING_ROLES)
+        require_no_active_run(db, project_id=project_id)
         ProjectService(db).delete(
             actor=user, project_id=project_id, skip_owner_check=True
         )
@@ -554,6 +562,7 @@ def delete_task(
     try:
         # Plan-13 Phase 7 Task 2 — gate task deletion on membership.
         project = require_project_role(db, user, project_id, _MUTATING_ROLES)
+        require_no_active_run(db, task_id=task_id)
         TaskService(db).delete(actor=user, project=project, task_id=task_id)
     except AppError as exc:
         raise _http(exc) from exc

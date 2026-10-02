@@ -77,6 +77,11 @@ _JOB_TIMEOUTS: dict[str, int] = {
     # was skipped and the Export row stayed 'pending' forever. 2h is ample
     # headroom for the largest realistic single export.
     "run_export_job": 2 * 3600,
+    # Logo AI (hosted vision LLMs). All three are chunked and resume
+    # from the ``logo_ai_jobs`` row, so these are per-chunk watchdogs.
+    "run_logo_ai_realtime": 4 * 3600,
+    "run_logo_ai_batch_submit": 2 * 3600,
+    "poll_logo_ai_batch": 3600,
 }
 
 # Per-callable priority lane. Keys are bare callable names (same
@@ -91,6 +96,7 @@ _JOB_QUEUES: dict[str, str] = {
     "run_batch_auto_annotate": _QUEUE_HIGH,
     "run_auto_visual_batch": _QUEUE_HIGH,
     "run_yoloe_batch": _QUEUE_HIGH,
+    "run_logo_ai_realtime": _QUEUE_HIGH,
     # Background fan-out — one per uploaded asset, floods on bulk upload.
     "generate_image_thumbnail": _QUEUE_LOW,
     "probe_video_metadata": _QUEUE_LOW,
@@ -234,9 +240,40 @@ def enqueue_batch_continuation(
     )
 
 
+def rq_connection() -> Redis:
+    """Public alias of :func:`_rq_connection` for other packages."""
+    return _rq_connection()
+
+
+def enqueue_resumable(
+    fn: Callable[..., Any],
+    arg: Any,
+    *,
+    rq_job_id: str,
+    connection: Redis | None = None,
+    retry: bool = True,
+    **kwargs: Any,
+) -> Job:
+    """Enqueue ``fn(arg)`` under an explicit RQ id.
+
+    For jobs that keep their own resume state (a DB row) rather than
+    the ``aa:job:`` progress hash: if the work-horse is killed the job
+    is requeued and ``fn`` picks up from whatever it last committed.
+
+    The retry is immediate (no ``interval``). RQ parks an interval retry
+    in its scheduled registry, which only a worker started with
+    ``--with-scheduler`` ever drains.
+    """
+    q = Queue(_QUEUE_DEFAULT, connection=connection or _rq_connection())
+    if retry:
+        kwargs.setdefault("retry", Retry(max=3))
+    return enqueue_with_defaults(q, fn, arg, job_id=rq_job_id, **kwargs)
+
+
 # Priority lanes the worker drains, highest first. Single source of
 # truth for both enumeration order and the reprioritize destination.
 _LANES = (_QUEUE_HIGH, _QUEUE_DEFAULT, _QUEUE_LOW)
+LANES = _LANES
 
 
 def try_cancel_rq_job(client, rq_job_id: str) -> None:

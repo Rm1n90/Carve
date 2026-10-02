@@ -49,6 +49,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 SUPERADMIN_ONLY = "superadmin_only"
 DATA_MOVEMENT_FORBIDDEN = "data_movement_forbidden"
 GPU_FORBIDDEN = "gpu_forbidden"
+LOGO_AI_FORBIDDEN = "logo_ai_forbidden"
 ADMIN_ONLY = "admin_only"
 
 _DATA_MOVEMENT_MESSAGE = (
@@ -150,6 +151,37 @@ def require_gpu_task(
     task = require_visible_task(db, user, task_id, for_write=True)
     if not task_gpu_allowed(user, task):
         raise _forbid(GPU_FORBIDDEN, _GPU_MESSAGE)
+    return task
+
+
+def task_logo_ai_allowed(user: User, task: Task) -> bool:
+    """Whether ``user`` may run Logo AI (hosted vision LLMs) on ``task``.
+
+    Unlike the GPU tools this one bills the workspace per image, so the
+    per-task AI grant alone is not enough for a member: the deployment
+    must also opt in with ``LOGO_AI_ALLOW_MEMBERS``.
+    """
+    if is_admin(user):
+        return True
+    from carve_api.config import get_settings
+
+    return bool(
+        get_settings().logo_ai_allow_members
+        and getattr(task, "gpu_access_for_members", False)
+    )
+
+
+def require_logo_ai_task(db: Session, user: User, task_id: uuid.UUID) -> Task:
+    """Resolve a task for a Logo AI route. Same visibility semantics as
+    :func:`require_gpu_task` (a non-member gets 404, never 403)."""
+    from carve_api.projects.service import require_visible_task
+
+    task = require_visible_task(db, user, task_id, for_write=True)
+    if not task_logo_ai_allowed(user, task):
+        raise _forbid(
+            LOGO_AI_FORBIDDEN,
+            "Logo AI uses a paid API and is restricted to workspace admins.",
+        )
     return task
 
 

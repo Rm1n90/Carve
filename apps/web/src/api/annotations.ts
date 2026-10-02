@@ -31,6 +31,9 @@ interface AnnotationOut {
   reviewed_by_id?: string | null;
   reviewed_at?: string | null;
   prev_geometry?: Record<string, unknown> | null;
+  /** Model scores; null for anything a person drew or has edited. */
+  confidence?: number | null;
+  visible?: number | null;
 }
 
 export interface BatchReviewOut {
@@ -105,6 +108,8 @@ export function toDraft(server: AnnotationOut): AnnotationDraft {
     reviewedById: server.reviewed_by_id ?? null,
     reviewedAt: server.reviewed_at ?? null,
     prevGeometry: server.prev_geometry ?? null,
+    confidence: server.confidence ?? null,
+    visible: server.visible ?? null,
   };
 }
 
@@ -124,6 +129,9 @@ export interface AnnotationRaw {
    * ``proposed`` for the "needs work" check.
    */
   status?: ReviewStatus;
+  /** Model scores; null for anything a person drew or has edited. */
+  confidence?: number | null;
+  visible?: number | null;
 }
 
 export const annotationsApi = {
@@ -147,6 +155,8 @@ export const annotationsApi = {
       geometry: a.geometry,
       created_at: a.created_at,
       status: a.status,
+      confidence: a.confidence ?? null,
+      visible: a.visible ?? null,
     }));
   },
   batch: async (taskId: string, payload: BatchPayload): Promise<BatchOut> =>

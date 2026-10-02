@@ -2,7 +2,11 @@
 import { Filter, Square, Pentagon, Brush, Tag, X, ChevronDown } from "lucide-react";
 import { useAnnotations } from "@/state/annotations";
 import { useFilter } from "@/state/annotationFilter";
-import { evaluateFilter, hasMeaningfulRules } from "@/lib/annotation-filter";
+import {
+  evaluateFilter,
+  hasMeaningfulRules,
+  passesScoreThresholds,
+} from "@/lib/annotation-filter";
 import {
   Popover,
   PopoverContent,
@@ -128,10 +132,13 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
   const remove = useAnnotations((s) => s.remove);
   const filter = useFilter((s) => s.filter);
   const clearFilter = useFilter((s) => s.clearFilter);
+  const scorePreview = useFilter((s) => s.scorePreview);
   const confirm = useConfirm();
 
   const allOnFrame = Object.values(byId)
     .filter((a) => a.frameId === frameId)
+    // Boxes the Logo AI score filter is previewing as removed.
+    .filter((a) => passesScoreThresholds(a, scorePreview))
     .sort((a, b) => a.tempId.localeCompare(b.tempId));
 
   const filterActive = hasMeaningfulRules(filter);

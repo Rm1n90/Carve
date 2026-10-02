@@ -153,6 +153,10 @@ class AnnotationOut(BaseModel):
     reviewed_by_id: str | None = None
     reviewed_at: datetime | None = None
     prev_geometry: dict | None = None
+    # Model scores (alembic 0041); null for anything a person drew or
+    # has since edited.
+    confidence: float | None = None
+    visible: int | None = None
 
     @classmethod
     def from_orm_annotation(cls, a, asset_id: str | None = None):
@@ -173,6 +177,8 @@ class AnnotationOut(BaseModel):
             ),
             reviewed_at=getattr(a, "reviewed_at", None),
             prev_geometry=getattr(a, "prev_geometry", None),
+            confidence=getattr(a, "confidence", None),
+            visible=getattr(a, "visible", None),
         )
 
 

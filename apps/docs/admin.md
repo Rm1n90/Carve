@@ -394,3 +394,33 @@ The API enforces the following default rate limits:
 | `POST /auth/register` | 5 requests / minute |
 | `POST /weights` (YOLO upload) | 30 requests / minute |
 | `POST /assets` (asset upload) | 100 requests / minute |
+
+## Logo AI
+
+Logo AI detects logos through a hosted vision LLM. It is off until a provider key is set in `.env`:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+```
+
+Set either or both; only configured providers are offered in the editor. Then rebuild and restart the services that use them:
+
+```bash
+docker compose up -d --build api worker web
+```
+
+The `api` container runs the database migration on start. Both `api` (single-image runs) and `worker` (runs over many assets, batch collection) need the keys.
+
+- **Who can use it:** workspace admins. It bills per image, so members are excluded by default; `LOGO_AI_ALLOW_MEMBERS=true` extends it to members on tasks that grant them the AI tools.
+- **Throughput:** `LOGO_AI_CONCURRENCY` (default 4) is the number of requests in flight during a realtime run. Raise it if your provider rate limits allow.
+- **Batch runs** are submitted to the provider and polled from the `api` container; results are written as soon as the provider finishes, whether or not anyone has the page open. Every run is tracked in Postgres, not in Redis or in memory.
+- **What a run survives.** A power cut, a frozen or restarted machine, a killed worker, a wiped Redis, a restarted database, the internet or the provider going away, the image store being down. In each case the run waits (the Runs tab says what for, and when it tries again) and goes on by itself from the last thing it finished; nothing needs to be started again by hand.
+  - A batch part is recorded before it is sent. After a crash the provider is asked whether it has that batch before anything is sent again, so a part is not paid for twice.
+  - A finished batch's raw results are copied to the asset bucket (`logo-ai/results/…`) before they are read, and boxes are written in one transaction per part, so results are neither lost nor written twice. The provider keeps results for about a month; a machine that was off for days still collects them when it comes back.
+  - Requests the provider did not get to inside its 24-hour window are not charged, and are sent again automatically (twice at most).
+  - If the provider account's batch queue is full, the parts that did not fit wait and are sent again as earlier ones finish; nothing is charged for them meanwhile. One part must fit the queue on its own: `LOGO_AI_BATCH_PART_REQUESTS` (default 300, about 3,000 prompt tokens per request) sets the part size.
+  - Realtime runs wait out an outage the same way. The few requests in flight at the moment of a crash are sent again, so those images can be billed twice; that is the only case.
+- **Stopping.** *Cancel* on a batch stops it at the provider and keeps the results it had produced. A run that stays in *Canceling* because the provider cannot be reached can be closed with **Force stop**, which gives up the results not collected yet. A task or project with a run in progress cannot be deleted until the run is canceled: its batches would go on being billed with nothing left to collect them.
+- **Do not change the provider API key to another account's while a batch run is open.** The provider then answers that the batches do not exist; the run waits 24 hours for the right key before it gives the affected parts up.
+- **Data:** the image (resized) and the class names and descriptions are sent to the selected provider. Reference examples are crops of images in the same task.

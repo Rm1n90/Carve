@@ -14,7 +14,16 @@
 import type { AnnotationDraft } from "@/state/annotations";
 import type { ClassRow } from "@/api/classes";
 
-export type FilterField = "label" | "kind" | "width" | "height" | "obj_id";
+export type FilterField =
+  | "label"
+  | "kind"
+  | "width"
+  | "height"
+  | "obj_id"
+  // Model scores on auto-annotated boxes: confidence 0..1, visible 0..100.
+  // A box a person drew or edited has neither and matches no rule on them.
+  | "confidence"
+  | "visible";
 export type FilterOp = "==" | "!=" | "<" | ">" | "<=" | ">=";
 
 export interface FilterRule {
@@ -42,6 +51,8 @@ export function isFilterGroup(
 const NUMERIC_FIELDS: ReadonlySet<FilterField> = new Set([
   "width",
   "height",
+  "confidence",
+  "visible",
 ]);
 
 /** Build a fresh empty rule (used by the dialog for "+ Add rule"). */
@@ -73,6 +84,11 @@ export function getFieldValue(
       return annotation.kind;
     case "obj_id":
       return annotation.serverId ?? annotation.tempId;
+    case "confidence":
+      return annotation.confidence ?? null;
+    case "visible":
+      // A scored box with no visibility figure is taken as fully in view.
+      return annotation.confidence == null ? null : (annotation.visible ?? 100);
     case "width":
     case "height": {
       const dims = computeBboxDims(annotation);
@@ -230,4 +246,35 @@ export function hasMeaningfulRules(group: FilterGroup | null): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Score thresholds previewed from the Logo AI filter. Separate from the
+ * rule tree above: it hides boxes on the canvas and in the Objects
+ * panel, but does not change which assets the arrow keys stop on (an
+ * image whose boxes would all go is one the user needs to see).
+ */
+export interface ScoreThresholds {
+  /** 0..1 */
+  minConfidence: number;
+  /** 0..100 */
+  minVisible: number;
+}
+
+/**
+ * Whether an annotation survives the thresholds. Mirrors the server's
+ * rule for what a score filter may remove: only boxes that still carry
+ * a model's scores and have not been accepted by a reviewer.
+ */
+export function passesScoreThresholds(
+  annotation: Pick<AnnotationDraft, "confidence" | "visible" | "status">,
+  thresholds: ScoreThresholds | null,
+): boolean {
+  if (!thresholds) return true;
+  if (annotation.confidence == null) return true;
+  if (annotation.status === "accepted") return true;
+  return (
+    annotation.confidence >= thresholds.minConfidence - 1e-9 &&
+    (annotation.visible ?? 100) >= thresholds.minVisible
+  );
 }

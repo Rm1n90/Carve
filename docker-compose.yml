@@ -118,6 +118,13 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-}
       MINIO_BUCKET: ${MINIO_BUCKET}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-http://model:8100}
+      # Logo AI (hosted vision LLMs). The api calls the provider for
+      # single-image runs; the worker does batches. Both need the keys.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LOGO_AI_CONCURRENCY: ${LOGO_AI_CONCURRENCY:-4}
+      LOGO_AI_BATCH_PART_REQUESTS: ${LOGO_AI_BATCH_PART_REQUESTS:-300}
+      LOGO_AI_ALLOW_MEMBERS: ${LOGO_AI_ALLOW_MEMBERS:-false}
       # /system/info path-rewrite root — see apps/api/src/carve_api/system/router.py
       HOST_ROOT: /host
       # /system/info GPU overlay — kept as a defensive fallback for hosts
@@ -171,6 +178,11 @@ services:
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-}
       MINIO_BUCKET: ${MINIO_BUCKET}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LOGO_AI_CONCURRENCY: ${LOGO_AI_CONCURRENCY:-4}
+      LOGO_AI_BATCH_PART_REQUESTS: ${LOGO_AI_BATCH_PART_REQUESTS:-300}
+      LOGO_AI_ALLOW_MEMBERS: ${LOGO_AI_ALLOW_MEMBERS:-false}
     depends_on:
       redis:
         condition: service_healthy

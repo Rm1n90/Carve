@@ -104,6 +104,12 @@ class AnnotationService:
             a.status = "proposed"
             a.reviewed_by_id = None
             a.reviewed_at = None
+        # A person reshaping or relabelling a model's box has taken it
+        # over: drop the model's scores so a later score filter (which
+        # only touches scored boxes) cannot delete their correction.
+        if geometry_changed or class_changed or patch.get("kind") is not None:
+            a.confidence = None
+            a.visible = None
 
         # Plan-17 — kind change support. The right-click "Convert"
         # submenu can flip a polygon annotation into a bbox (and vice

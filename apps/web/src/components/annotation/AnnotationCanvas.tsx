@@ -43,7 +43,11 @@ import { useFilter } from "@/state/annotationFilter";
 import { useSamTrackBridge, type SamTrackMarker } from "@/state/samTrackBridge";
 import { useReviewCompare } from "@/state/reviewCompare";
 import { isContextMenuOpenOrJustClosed } from "@/state/contextMenuState";
-import { evaluateFilter, hasMeaningfulRules } from "@/lib/annotation-filter";
+import {
+  evaluateFilter,
+  hasMeaningfulRules,
+  passesScoreThresholds,
+} from "@/lib/annotation-filter";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1564,6 +1568,8 @@ export function AnnotationCanvas({
       // `hiddenAnnotationIds` list, just driven by the filter store.
       const filterTree = useFilter.getState().filter;
       const filterApplies = hasMeaningfulRules(filterTree);
+      // Score thresholds previewed by the Logo AI filter (null = none).
+      const scorePreview = useFilter.getState().scorePreview;
       // Build a synthetic ClassRow lookup from the canvas's classNameMap
       // so the evaluator's `label` field can resolve class names. The
       // evaluator only reads `.name`, so we don't need the real ClassRow
@@ -1590,7 +1596,8 @@ export function AnnotationCanvas({
           continue;
         }
         const filteredOut =
-          filterApplies && !evaluateFilter(draft, classLookup, filterTree);
+          (filterApplies && !evaluateFilter(draft, classLookup, filterTree)) ||
+          !passesScoreThresholds(draft, scorePreview);
         const hidden =
           state.hiddenAnnotationIds.includes(id) ||
           state.hiddenClassIds.includes(draft.classId) ||

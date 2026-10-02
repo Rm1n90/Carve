@@ -1840,8 +1840,15 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
       qc.invalidateQueries({ queryKey: ["project-stats", projectId] });
       showToast("Task deleted.", { variant: "success" });
     },
-    onError: () => {
-      showToast("Failed to delete task.", { variant: "error" });
+    onError: (err) => {
+      // The server says why when the reason is one the user can act on
+      // (a Logo AI run still in progress on the task).
+      const message = (err as { response?: { data?: { message?: string } } })?.response
+        ?.data?.message;
+      showToast(message ?? "Failed to delete task.", {
+        variant: "error",
+        duration: message ? 9000 : undefined,
+      });
     },
   });
 

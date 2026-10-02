@@ -35,6 +35,8 @@ const FIELD_OPTIONS: { value: FilterField; label: string }[] = [
   { value: "width", label: "Width" },
   { value: "height", label: "Height" },
   { value: "obj_id", label: "ObjectID" },
+  { value: "confidence", label: "Confidence (0-1)" },
+  { value: "visible", label: "Visible %" },
 ];
 
 const OP_OPTIONS: { value: FilterOp; label: string }[] = [
@@ -46,7 +48,12 @@ const OP_OPTIONS: { value: FilterOp; label: string }[] = [
   { value: ">=", label: ">=" },
 ];
 
-const NUMERIC_FIELDS: ReadonlySet<FilterField> = new Set(["width", "height"]);
+const NUMERIC_FIELDS: ReadonlySet<FilterField> = new Set([
+  "width",
+  "height",
+  "confidence",
+  "visible",
+]);
 
 /**
  * v3.24.13 — annotation kinds known to the filter evaluator. Mirrors

@@ -34,6 +34,7 @@ import { Input } from "@/components/ui/Input";
 import { useAuth } from "@/auth/store";
 import { useProjectPrefs } from "@/state/projectPrefs";
 import { cn } from "@/lib/cn";
+import { showToast } from "@/lib/toast";
 import { useCapabilities } from "@/auth/capabilities";
 
 const VIRTUALISE_THRESHOLD = 40;
@@ -89,6 +90,16 @@ export function ProjectsPage() {
   const deleteM = useMutation({
     mutationFn: projectsApi.delete,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+    onError: (err) => {
+      // The server says why when the reason is one the user can act on
+      // (a Logo AI run still in progress in the project).
+      const message = (err as { response?: { data?: { message?: string } } })?.response
+        ?.data?.message;
+      showToast(message ?? "Failed to delete project.", {
+        variant: "error",
+        duration: message ? 9000 : undefined,
+      });
+    },
   });
 
   const [showForm, setShowForm] = useState(false);

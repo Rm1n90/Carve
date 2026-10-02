@@ -71,6 +71,8 @@ export function computeMatchingAssetIds(
       reviewedById: null,
       reviewedAt: null,
       prevGeometry: null,
+      confidence: raw.confidence ?? null,
+      visible: raw.visible ?? null,
     };
     if (evaluateFilter(draft, classes, filter)) {
       matches.add(raw.asset_id);

@@ -49,6 +49,14 @@ export interface AnnotationDraft {
    * resets to the class color.
    */
   colorOverride?: string | null;
+  /**
+   * Scores from the model that proposed this annotation: its confidence
+   * (0..1) and the percentage of the object it judged to be in view.
+   * Null/absent for anything a person drew — and cleared, here and on
+   * the server, once a person reshapes or relabels a scored box.
+   */
+  confidence?: number | null;
+  visible?: number | null;
 }
 
 export interface ReviewStatePatch {
@@ -476,8 +484,16 @@ export const useAnnotations = create<State>((set, get) => ({
       // Plan-09 Phase 5 Task 13 — coalesce contiguous edits to the same
       // annotation within UNDO_GROUP_WINDOW_MS into one history entry.
       const history = pushPastGrouped(s, "update", id, now);
+      // Reshaping or relabelling a model's box makes it the person's:
+      // the server drops its scores on save, so drop them here too and
+      // a score filter stops applying to it straight away.
+      const takenOver =
+        patch.geometry !== undefined ||
+        patch.classId !== undefined ||
+        patch.kind !== undefined;
+      const scores = takenOver ? { confidence: null, visible: null } : {};
       return {
-        byId: { ...s.byId, [id]: { ...cur, ...patch, dirty: true } },
+        byId: { ...s.byId, [id]: { ...cur, ...patch, ...scores, dirty: true } },
         history,
         lastEditMeta: { opName: "update", targetId: id, timestamp: now },
       };

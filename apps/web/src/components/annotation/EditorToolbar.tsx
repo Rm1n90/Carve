@@ -46,6 +46,7 @@ import { FilterBuilderDialog } from "@/components/annotation/FilterBuilderDialog
 import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import { AutoAnnotateDialog } from "@/components/annotation/AutoAnnotateDialog";
 import { YoloeDialog } from "@/components/annotation/YoloeDialog";
+import { LogoAiDialog } from "@/components/annotation/LogoAiDialog";
 import { hasAdminAuthority, useTaskGpuAccess } from "@/auth/capabilities";
 import { FrameExtractDialog } from "@/components/annotation/FrameExtractDialog";
 import { useFilter } from "@/state/annotationFilter";
@@ -3075,6 +3076,18 @@ export function EditorToolbar({
           />
         </>
       )}
+
+      {/* Logo AI — logo detection through a hosted vision LLM. Not a
+          GPU tool, so it sits outside the gate above: it bills per
+          image and has its own server-side permission (admins, or
+          members where the deployment opts in). The dialog asks the
+          server and renders nothing when it is not usable here. */}
+      <LogoAiDialog
+        assetId={assetId ?? null}
+        taskId={taskId}
+        classes={classesProp ?? []}
+        onSuccess={onAfterYoloPredict}
+      />
 
       {/* v3.8 Phase 4-video step F5 — Re-extract removed per request:
           the upload-time dialog is the single point of frame-strategy

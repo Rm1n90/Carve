@@ -3,7 +3,17 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, func
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -62,6 +72,14 @@ class Annotation(Base):
     # Snapshot of the geometry the last reviewer saw — used to detect
     # post-review edits and reset status back to ``proposed``.
     prev_geometry: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Scores from the model that proposed this annotation (alembic
+    # 0041): its confidence (0..1) and the percentage of the object it
+    # judged to be in view. NULL for anything drawn by a person, and
+    # cleared when a person changes the geometry or class — the box is
+    # theirs from then on, so a score filter must leave it alone.
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    visible: Mapped[int | None] = mapped_column(SmallInteger, nullable=True, default=None)
 
     __table_args__ = (
         Index("ix_annotations_task_id_status", "task_id", "status"),

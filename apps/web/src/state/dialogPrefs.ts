@@ -79,9 +79,36 @@ export interface SmartFindConfig {
   visual_common?: SmartFindModeCommonConfig;
 }
 
+/** Logo AI dialog. Reference picks are not persisted (same reason as
+ *  the visual-mode picks above). */
+export interface LogoAiPrefs {
+  provider: string;
+  model: string;
+  effort: string | null;
+  rows: Array<{ classId: string; prompt: string }>;
+  detail: string;
+  tiling: string;
+  minConfidence: number;
+  // Optional: entries saved before this field existed have none.
+  minVisible?: number;
+  overwrite: boolean;
+  skipAnnotated: boolean;
+  delivery: "realtime" | "batch";
+  flex: boolean;
+  // Optional: entries saved before this field existed have none.
+  doubleCheck?: boolean;
+  // Empty = the provider's default check model / effort.
+  checkModel?: string;
+  checkEffort?: string;
+  scope: "this" | "all" | "range";
+  rangeFrom?: number;
+  rangeTo?: number;
+}
+
 export interface DialogPrefsState {
   autoAnnotateByTask: Record<string, { text?: AutoAnnotateTextConfig }>;
   smartFindByTask: Record<string, SmartFindConfig>;
+  logoAiByTask: Record<string, LogoAiPrefs>;
 
   getAutoAnnotate: (
     taskId: string | undefined,
@@ -98,6 +125,10 @@ export interface DialogPrefsState {
     patch: Partial<SmartFindConfig>,
   ) => void;
   clearSmartFind: (taskId: string | undefined) => void;
+
+  getLogoAi: (taskId: string | undefined) => LogoAiPrefs | undefined;
+  saveLogoAi: (taskId: string | undefined, prefs: LogoAiPrefs) => void;
+  clearLogoAi: (taskId: string | undefined) => void;
 }
 
 export const useDialogPrefs = create<DialogPrefsState>()(
@@ -105,6 +136,7 @@ export const useDialogPrefs = create<DialogPrefsState>()(
     (set, get) => ({
       autoAnnotateByTask: {},
       smartFindByTask: {},
+      logoAiByTask: {},
 
       getAutoAnnotate: (taskId) => {
         if (!taskId) return undefined;
@@ -153,11 +185,50 @@ export const useDialogPrefs = create<DialogPrefsState>()(
           return { ...s, smartFindByTask: next };
         });
       },
+
+      getLogoAi: (taskId) => {
+        if (!taskId) return undefined;
+        // Entries saved before this section existed have no map at all.
+        return get().logoAiByTask?.[taskId];
+      },
+      saveLogoAi: (taskId, prefs) => {
+        if (!taskId) return;
+        set((s) => ({
+          ...s,
+          logoAiByTask: { ...(s.logoAiByTask ?? {}), [taskId]: prefs },
+        }));
+      },
+      clearLogoAi: (taskId) => {
+        if (!taskId) return;
+        set((s) => {
+          if (!s.logoAiByTask || !(taskId in s.logoAiByTask)) return s;
+          const next = { ...s.logoAiByTask };
+          delete next[taskId];
+          return { ...s, logoAiByTask: next };
+        });
+      },
     }),
     {
       name: "carve-dialog-prefs",
       storage: createJSONStorage(() => localStorage),
-      version: 1,
+      version: 2,
+      // v2 — Logo AI's default image detail became "standard" after
+      // measuring it against full size. A task's saved setup would keep
+      // sending (and paying for) the larger image forever, so move every
+      // saved Logo AI setup to the new default once. Everything else in
+      // the store is carried over untouched.
+      migrate: (persisted, version) => {
+        const state = (persisted ?? {}) as Partial<DialogPrefsState>;
+        if (version < 2 && state.logoAiByTask) {
+          state.logoAiByTask = Object.fromEntries(
+            Object.entries(state.logoAiByTask).map(([taskId, prefs]) => [
+              taskId,
+              { ...prefs, detail: "standard" },
+            ]),
+          );
+        }
+        return state as DialogPrefsState;
+      },
     },
   ),
 );
