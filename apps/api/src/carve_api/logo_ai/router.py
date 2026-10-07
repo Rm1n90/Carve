@@ -2,6 +2,8 @@
 """HTTP surface for Logo AI.
 
     GET  /inference/logo-ai/config             what is configured + allowed
+    GET  /inference/logo-ai/billing            spent, credit left, provider's report
+    PUT  /inference/logo-ai/billing/{provider}/credit   enter the credit balance
     POST /assets/{id}/logo-ai/detect           one image, synchronously
     POST /tasks/{id}/logo-ai/estimate          tokens + cost before running
     POST /tasks/{id}/logo-ai/jobs              start a realtime or batch run
@@ -33,7 +35,7 @@ from carve_api.auth.models import User
 from carve_api.config import get_settings
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.logo_ai import catalog, providers
+from carve_api.logo_ai import billing, catalog, providers
 from carve_api.logo_ai import prompt as prompt_mod
 from carve_api.logo_ai.detections import persist_detections
 from carve_api.logo_ai.models import (
@@ -75,7 +77,7 @@ from carve_api.logo_ai.service import (
     read_image_bytes,
     scoped_assets,
 )
-from carve_api.permissions import require_logo_ai_task, task_logo_ai_allowed
+from carve_api.permissions import is_admin, require_logo_ai_task, task_logo_ai_allowed
 from carve_api.projects.models import Task
 from carve_api.projects.service import (
     _MUTATING_ROLES,
@@ -196,6 +198,134 @@ def get_config(
         default_tiling=catalog.DEFAULT_TILING,
         max_references=MAX_REFERENCES,
     )
+
+
+# ---------------------------------------------------------------------------
+# Billing
+# ---------------------------------------------------------------------------
+
+
+class CreditOut(BaseModel):
+    """The balance an admin entered, and what has gone since."""
+
+    amount_usd: float
+    as_of: datetime
+    used_usd: float
+    left_usd: float
+    # Whose count ``used_usd`` is: "carve" (this app's runs) or
+    # "provider" (its cost report shows more: other use of the account).
+    source: str
+
+
+class ReportedOut(BaseModel):
+    """The provider's own cost report for the whole organization."""
+
+    today_usd: float
+    month_usd: float
+    spend_limit_usd: float | None
+    limit_enforcing: bool
+    fetched_at: datetime
+
+
+class ProviderBillingOut(BaseModel):
+    id: str
+    label: str
+    configured: bool
+    # What Logo AI runs in this app have cost, by its own books.
+    spent_month_usd: float
+    spent_total_usd: float
+    credit: CreditOut | None
+    # Set where the provider has a cost report: the variable that holds
+    # the admin key for it, and whether it is set.
+    admin_key_env: str | None
+    admin_key_set: bool
+    reported: ReportedOut | None
+    reported_error: str | None
+    billing_url: str
+
+
+class BillingOut(BaseModel):
+    providers: list[ProviderBillingOut]
+    # What Logo AI has cost on the task asked about.
+    task_usd: float
+    # Whether the caller may enter a credit balance.
+    can_edit: bool
+
+
+class CreditIn(BaseModel):
+    # The balance shown on the provider's billing page right now;
+    # ``null`` forgets it.
+    amount_usd: float | None = Field(default=None, ge=0, le=1_000_000)
+
+
+_BILLING_URLS = {
+    catalog.OPENAI: "https://platform.openai.com/settings/organization/billing/overview",
+    catalog.ANTHROPIC: "https://platform.claude.com/settings/billing",
+}
+
+
+def _billing_out(db: Session, user: User, task_id: uuid.UUID) -> BillingOut:
+    return BillingOut(
+        providers=[
+            ProviderBillingOut(
+                id=b.provider.id,
+                label=b.provider.label,
+                configured=providers.is_configured(b.provider.id),
+                spent_month_usd=b.spent_month_usd,
+                spent_total_usd=b.spent_total_usd,
+                credit=CreditOut(**vars(b.credit)) if b.credit else None,
+                admin_key_env=billing.ADMIN_KEY_ENV.get(b.provider.id),
+                admin_key_set=bool(billing.admin_key_for(b.provider.id)),
+                reported=ReportedOut(
+                    today_usd=b.report.today_usd,
+                    month_usd=b.report.month_usd,
+                    spend_limit_usd=b.report.spend_limit_usd,
+                    limit_enforcing=b.report.limit_enforcing,
+                    fetched_at=b.report.fetched_at,
+                )
+                if b.report
+                else None,
+                reported_error=b.report_error,
+                billing_url=_BILLING_URLS.get(b.provider.id, ""),
+            )
+            for b in billing.summary(db)
+        ],
+        task_usd=billing.task_spent(db, task_id),
+        can_edit=is_admin(user),
+    )
+
+
+@config_router.get("/billing", response_model=BillingOut)
+def get_billing(
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BillingOut:
+    try:
+        require_logo_ai_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return _billing_out(db, user, task_id)
+
+
+@config_router.put("/billing/{provider}/credit", response_model=BillingOut)
+def put_credit(
+    provider: str,
+    payload: CreditIn,
+    task_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BillingOut:
+    try:
+        require_logo_ai_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="admin_only")
+    if provider not in catalog.PROVIDERS:
+        raise HTTPException(status_code=404, detail="unknown_provider")
+    billing.set_credit(db, provider, payload.amount_usd, user.id)
+    return _billing_out(db, user, task_id)
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +566,7 @@ def _record_single(
         completed_at=datetime.now(UTC),
     )
     db.add(job)
+    billing.book(db, ctx.provider.id, job.cost_usd)
     db.commit()
     return job
 
@@ -515,6 +646,9 @@ class JobOut(BaseModel):
     annotations_created: int
     # Boxes the second pass dropped as not logos.
     rejected_boxes: int
+    # Realtime: images put aside (rate limit, outage) to be taken again
+    # at the end of the run.
+    deferred_assets: int
     total_requests: int
     finished_requests: int
     usage: dict[str, int]
@@ -531,6 +665,11 @@ class JobOut(BaseModel):
     submitted_at: datetime | None
     expires_at: datetime | None
     completed_at: datetime | None
+
+
+def _retaken(job: LogoAiJob) -> int:
+    """How many of the deferred assets the run has got back to."""
+    return max(0, job.cursor - job.total_assets) if job.delivery == DELIVERY_REALTIME else 0
 
 
 def _progress(job: LogoAiJob) -> float:
@@ -565,6 +704,7 @@ def _job_out(job: LogoAiJob) -> JobOut:
         skipped_assets=job.skipped_assets,
         annotations_created=job.annotations_created,
         rejected_boxes=job.rejected_boxes or 0,
+        deferred_assets=max(0, len(job.deferred or []) - _retaken(job)),
         total_requests=job.total_requests,
         finished_requests=job.finished_requests,
         usage={k: int(v) for k, v in (job.usage or {}).items()},

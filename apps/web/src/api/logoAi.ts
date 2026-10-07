@@ -47,6 +47,46 @@ export interface LogoAiProvider {
   models: LogoAiModel[];
 }
 
+/** A credit balance an admin entered, and what has gone since. */
+export interface LogoAiCredit {
+  amount_usd: number;
+  as_of: string;
+  used_usd: number;
+  left_usd: number;
+  /** Whose count ``used_usd`` is: this app's books, or the provider's
+   *  cost report when that shows more (other use of the account). */
+  source: "carve" | "provider";
+}
+
+export interface LogoAiProviderBilling {
+  id: LogoAiProviderId;
+  label: string;
+  configured: boolean;
+  /** What Logo AI runs in this app have cost, by its own books. */
+  spent_month_usd: number;
+  spent_total_usd: number;
+  credit: LogoAiCredit | null;
+  /** Set where the provider has a cost report an admin key can read. */
+  admin_key_env: string | null;
+  admin_key_set: boolean;
+  /** The provider's own figures for the whole organization. */
+  reported: {
+    today_usd: number;
+    month_usd: number;
+    spend_limit_usd: number | null;
+    limit_enforcing: boolean;
+    fetched_at: string;
+  } | null;
+  reported_error: string | null;
+  billing_url: string;
+}
+
+export interface LogoAiBilling {
+  providers: LogoAiProviderBilling[];
+  task_usd: number;
+  can_edit: boolean;
+}
+
 export interface LogoAiConfig {
   /** Whether the caller may use Logo AI on the task asked about. */
   allowed: boolean;
@@ -176,6 +216,8 @@ export interface LogoAiJob {
   annotations_created: number;
   /** Detected boxes the second pass scored as not a logo and dropped. */
   rejected_boxes: number;
+  /** Images put aside (rate limit, outage) to be taken again at the end. */
+  deferred_assets: number;
   total_requests: number;
   finished_requests: number;
   usage: LogoAiUsage;
@@ -297,6 +339,24 @@ export const logoAiApi = {
         `/tasks/${taskId}/logo-ai/jobs/${jobId}/cancel`,
         undefined,
         force ? { params: { force: true } } : undefined,
+      )
+    ).data,
+
+  getBilling: async (taskId: string): Promise<LogoAiBilling> =>
+    (await api.get<LogoAiBilling>("/inference/logo-ai/billing", { params: { task_id: taskId } }))
+      .data,
+
+  /** Record the provider's credit balance as of now; ``null`` forgets it. */
+  setCredit: async (
+    taskId: string,
+    provider: LogoAiProviderId,
+    amountUsd: number | null,
+  ): Promise<LogoAiBilling> =>
+    (
+      await api.put<LogoAiBilling>(
+        `/inference/logo-ai/billing/${provider}/credit`,
+        { amount_usd: amountUsd },
+        { params: { task_id: taskId } },
       )
     ).data,
 

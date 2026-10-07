@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # the feature is off. Images are sent to the chosen provider.
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    # Optional. An OpenAI *admin* key, used only to read the
+    # organization's cost report and spend limit for the Billing tab.
+    openai_admin_key: str = Field(default="", alias="OPENAI_ADMIN_KEY")
     # Requests in flight at once during a realtime run. Raise it if the
     # provider account's rate limits allow.
     logo_ai_concurrency: int = Field(default=4, alias="LOGO_AI_CONCURRENCY")

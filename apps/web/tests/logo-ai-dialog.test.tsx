@@ -40,6 +40,8 @@ vi.mock("@/api/logoAi", async () => {
       filterApply: vi.fn(),
       getPrompt: vi.fn(),
       savePrompt: vi.fn(),
+      getBilling: vi.fn(),
+      setCredit: vi.fn(),
     },
   };
 });
@@ -60,7 +62,12 @@ vi.mock("@/api/annotations", () => ({
 
 vi.mock("@/lib/toast", () => ({ showToast: vi.fn() }));
 
-import { logoAiApi, type LogoAiConfig, type LogoAiJob } from "@/api/logoAi";
+import {
+  logoAiApi,
+  type LogoAiBilling,
+  type LogoAiConfig,
+  type LogoAiJob,
+} from "@/api/logoAi";
 import { LogoAiDialog } from "@/components/annotation/LogoAiDialog";
 import { showToast } from "@/lib/toast";
 import { useDialogPrefs } from "@/state/dialogPrefs";
@@ -148,6 +155,7 @@ function job(overrides: Partial<LogoAiJob> = {}): LogoAiJob {
     skipped_assets: 0,
     annotations_created: 2,
     rejected_boxes: 0,
+    deferred_assets: 0,
     total_requests: 2,
     finished_requests: 1,
     usage: {},
@@ -189,11 +197,38 @@ async function openDialog() {
   await screen.findByTestId("logo-ai-dialog");
 }
 
+function billing(
+  credit: LogoAiBilling["providers"][number]["credit"] = null,
+  overrides: Partial<LogoAiBilling["providers"][number]> = {},
+): LogoAiBilling {
+  return {
+    task_usd: 1.5,
+    can_edit: true,
+    providers: [
+      {
+        id: "anthropic",
+        label: "Anthropic",
+        configured: true,
+        spent_month_usd: 2,
+        spent_total_usd: 3,
+        credit,
+        admin_key_env: null,
+        admin_key_set: false,
+        reported: null,
+        reported_error: null,
+        billing_url: "https://example.test/billing",
+        ...overrides,
+      },
+    ],
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   useDialogPrefs.setState({ logoAiByTask: {} });
   api.config.mockResolvedValue(config());
   api.listJobs.mockResolvedValue([]);
+  api.getBilling.mockResolvedValue(billing());
 });
 
 afterEach(() => {
@@ -509,6 +544,61 @@ describe("LogoAiDialog", () => {
     // Back to the default with one click.
     fireEvent.click(screen.getByTestId("logo-ai-prompt-instructions-reset"));
     expect(text.value).toBe("Default detection text.");
+  });
+
+  it("shows the credit left and takes a new balance on the Billing tab", async () => {
+    api.getBilling.mockResolvedValue(
+      billing({
+        amount_usd: 20, as_of: new Date().toISOString(),
+        used_usd: 7.5, left_usd: 12.5, source: "carve",
+      }),
+    );
+    api.setCredit.mockResolvedValue(
+      billing({
+        amount_usd: 50, as_of: new Date().toISOString(),
+        used_usd: 0, left_usd: 50, source: "carve",
+      }),
+    );
+    renderDialog();
+    await openDialog();
+    fireEvent.click(screen.getByTestId("logo-ai-tab-billing"));
+
+    const left = await screen.findByTestId("logo-ai-billing-anthropic-left");
+    expect(left.textContent).toBe("$12.50");
+    expect(api.getBilling).toHaveBeenCalledWith("t1");
+    expect(screen.getByTestId("logo-ai-billing").textContent).toContain("the run waits");
+
+    fireEvent.change(screen.getByTestId("logo-ai-billing-anthropic-amount"), {
+      target: { value: "50" },
+    });
+    fireEvent.click(screen.getByTestId("logo-ai-billing-anthropic-save"));
+    await waitFor(() => expect(api.setCredit).toHaveBeenCalledWith("t1", "anthropic", 50));
+    await waitFor(() =>
+      expect(screen.getByTestId("logo-ai-billing-anthropic-left").textContent).toBe("$50.00"),
+    );
+  });
+
+  it("warns when a run is estimated to cost more than the credit left", async () => {
+    api.getBilling.mockResolvedValue(
+      billing({
+        amount_usd: 1, as_of: new Date().toISOString(),
+        used_usd: 0.98, left_usd: 0.02, source: "carve",
+      }),
+    );
+    api.estimate.mockResolvedValue({
+      assets: 3, requests: 3, image_tokens: 9000, prefix_tokens: 1500,
+      prefix_cached: true, min_cache_tokens: 512, output_tokens: 3000,
+      based_on_requests: 12,
+      cost_realtime_usd: 0.1, cost_flex_usd: null, cost_batch_usd: 0.05,
+    });
+    renderDialog();
+    await openDialog();
+    fireEvent.click(
+      screen.getByTestId("logo-ai-scope-all").querySelector("input") as HTMLInputElement,
+    );
+    const line = await screen.findByTestId("logo-ai-credit-left", undefined, { timeout: 3000 });
+    expect(line.textContent).toContain("Credit left: about $0.020");
+    expect(line.textContent).toContain("less than this run is estimated to cost");
   });
 
   it("says what a waiting run is waiting for", async () => {

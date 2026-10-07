@@ -29,6 +29,38 @@ class ProviderFatal(AppError):
     code = "logo_ai_provider_error"
 
 
+# What a request comes back as when the account cannot pay for it: the
+# prepaid credit is used up, or a spend or usage limit is reached. The
+# request did not run and is not charged, and sending it again changes
+# nothing until credit is added or the limit raised.
+OUT_OF_CREDIT = "out_of_credit"
+# OpenAI's error codes for it (all HTTP 429).
+BILLING_CODES = frozenset(
+    {
+        "credit_balance_exhausted",
+        "organization_spend_limit_exceeded",
+        "project_spend_limit_exceeded",
+        "organization_usage_limit_exceeded",
+        "insufficient_quota",
+        "billing_hard_limit_reached",
+    }
+)
+
+
+def is_out_of_credit(exc: Exception) -> bool:
+    """Whether an SDK error says the account cannot pay: by its error
+    code where the provider gives one, by its wording where it does not
+    (Anthropic answers 400 "Your credit balance is too low ...")."""
+    code = getattr(exc, "code", None)
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error") if isinstance(body.get("error"), dict) else body
+        code = code or inner.get("code") or inner.get("type")
+    if code in BILLING_CODES:
+        return True
+    return "credit balance is too low" in api_error_message(exc).lower()
+
+
 def live_connection_transport():  # noqa: ANN201 — httpx2.HTTPTransport
     """An HTTP transport that notices a dead link within about a minute.
 

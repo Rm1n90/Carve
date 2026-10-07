@@ -411,7 +411,7 @@ def detect_image(
 
 # Errors of a check request that say nothing about the boxes: the image
 # is then retried as a whole rather than written unchecked.
-_CHECK_RETRY_ERRORS = ("rate_limited", "provider_unreachable", "provider_error_")
+_CHECK_RETRY_ERRORS = ("out_of_credit", "rate_limited", "provider_unreachable", "provider_error_")
 # A box the second pass scores under this is not a logo and is dropped.
 # The scale in the prompt puts "not a logo" at 0-39. Measured with the
 # default check model: about half the wrong boxes go, about 2% of the

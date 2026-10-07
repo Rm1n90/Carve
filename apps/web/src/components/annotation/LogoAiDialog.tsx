@@ -57,6 +57,7 @@ import {
   VisualReferencePicker,
   type VisualPick,
 } from "@/components/annotation/VisualReferencePicker";
+import { LogoAiBilling } from "@/components/annotation/LogoAiBilling";
 import { LogoAiFilter } from "@/components/annotation/LogoAiFilter";
 import { LogoAiPrompt } from "@/components/annotation/LogoAiPrompt";
 import { LogoAiRuns, formatUsd } from "@/components/annotation/LogoAiRuns";
@@ -86,7 +87,7 @@ interface Row {
   prompt: string;
 }
 
-type Tab = "new" | "runs" | "prompt";
+type Tab = "new" | "runs" | "prompt" | "billing";
 
 const DETAIL_COPY: Record<LogoAiDetail, { label: string; sub: string }> = {
   low: { label: "Low", sub: "~0.6 MP · cheapest" },
@@ -448,6 +449,26 @@ export function LogoAiDialog({
   });
   const estimate = estimateKey !== "" ? estimateQ.data : undefined;
 
+  // ---- billing ----------------------------------------------------------
+  const billingQ = useQuery({
+    queryKey: ["logo-ai", "billing", taskId ?? ""],
+    queryFn: () => logoAiApi.getBilling(taskId!),
+    enabled: open && !!taskId && available,
+    // A run in flight spends as it goes.
+    refetchInterval: open ? 15_000 : false,
+    staleTime: 10_000,
+    retry: false,
+  });
+  const creditLeft =
+    billingQ.data?.providers.find((p) => p.id === provider?.id)?.credit?.left_usd ?? null;
+  const estimatedCost = estimate
+    ? delivery === "batch"
+      ? estimate.cost_batch_usd
+      : flexActive && estimate.cost_flex_usd != null
+        ? estimate.cost_flex_usd
+        : estimate.cost_realtime_usd
+    : null;
+
   // ---- runs --------------------------------------------------------------
   const jobsQ = useQuery({
     queryKey: ["logo-ai", "jobs", taskId ?? ""],
@@ -689,7 +710,7 @@ export function LogoAiDialog({
             are set on the containers here and inherited. */}
         <div
           data-testid="logo-ai-dialog"
-          className="grid grid-cols-3 gap-1 p-1 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] text-[12px] font-medium"
+          className="grid grid-cols-4 gap-1 p-1 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] text-[12px] font-medium"
         >
           {(
             [
@@ -699,6 +720,7 @@ export function LogoAiDialog({
                 label: `Runs${activeJobs.length > 0 ? ` · ${activeJobs.length} active` : ""}`,
               },
               { id: "prompt" as const, label: "Prompt" },
+              { id: "billing" as const, label: "Billing" },
             ]
           ).map((t) => (
             <button
@@ -723,6 +745,13 @@ export function LogoAiDialog({
             taskId={taskId}
             providerId={provider?.id}
             modelId={model?.id}
+            onClose={() => setOpen(false)}
+          />
+        ) : tab === "billing" && taskId ? (
+          <LogoAiBilling
+            taskId={taskId}
+            billing={billingQ.data}
+            failed={billingQ.isError}
             onClose={() => setOpen(false)}
           />
         ) : tab === "runs" ? (
@@ -1234,13 +1263,7 @@ export function LogoAiDialog({
                       <div className="grid gap-0.5">
                         <div className="font-medium">
                           About{" "}
-                          {formatUsd(
-                            delivery === "batch"
-                              ? estimate.cost_batch_usd
-                              : flexActive && estimate.cost_flex_usd != null
-                                ? estimate.cost_flex_usd
-                                : estimate.cost_realtime_usd,
-                          )}{" "}
+                          {formatUsd(estimatedCost)}{" "}
                           for {estimate.assets} image{estimate.assets === 1 ? "" : "s"}
                           {estimate.requests !== estimate.assets
                             ? ` (${estimate.requests} requests)`
@@ -1262,6 +1285,21 @@ export function LogoAiDialog({
                             ? " The shared prompt is cached and re-read at the cache rate."
                             : ` The shared prompt is under this model's ${estimate.min_cache_tokens}-token caching minimum, so it is billed in full each time.`}
                         </div>
+                        {creditLeft != null && (
+                          <div
+                            data-testid="logo-ai-credit-left"
+                            className={
+                              estimatedCost != null && estimatedCost > creditLeft
+                                ? "text-[color:var(--warning)]"
+                                : "text-[color:var(--text-secondary)]"
+                            }
+                          >
+                            Credit left: about {formatUsd(Math.max(creditLeft, 0))}.
+                            {estimatedCost != null && estimatedCost > creditLeft
+                              ? " That is less than this run is estimated to cost: it will wait when the credit runs out and continue once more is added."
+                              : ""}
+                          </div>
+                        )}
                       </div>
                     ) : estimateQ.isError ? (
                       <span className="text-[color:var(--danger)]">

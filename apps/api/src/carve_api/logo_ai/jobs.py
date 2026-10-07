@@ -54,7 +54,7 @@ from carve_api.assets.models import Asset, Frame
 from carve_api.config import get_settings
 from carve_api.db import get_session_factory
 from carve_api.errors import AppError
-from carve_api.logo_ai import archive, providers
+from carve_api.logo_ai import archive, billing, providers
 from carve_api.logo_ai.detections import persist_detections
 from carve_api.logo_ai.imaging import View, load_image
 from carve_api.logo_ai.models import (
@@ -79,6 +79,7 @@ from carve_api.logo_ai.models import (
     LogoAiJob,
 )
 from carve_api.logo_ai.providers.base import (
+    OUT_OF_CREDIT,
     BatchGone,
     LogoAiNotConfigured,
     ProviderClient,
@@ -87,6 +88,7 @@ from carve_api.logo_ai.providers.base import (
     RunContext,
     Usage,
     api_error_message,
+    is_out_of_credit,
 )
 from carve_api.logo_ai.service import (
     AssetOutcome,
@@ -178,6 +180,7 @@ _READER_ERRORS = frozenset({"unreadable_result", "empty_answer", "no_result"})
 # Request errors that come and go and say nothing about the image.
 _PASSING_ERRORS = frozenset(
     {
+        OUT_OF_CREDIT,
         "rate_limited",
         "provider_unreachable",
         "storage_unreachable",
@@ -188,7 +191,11 @@ _PASSING_ERRORS = frozenset(
 # SDK errors (same names in both SDKs) that mean no answer came at all.
 _UNREACHABLE = frozenset({"APIConnectionError", "APITimeoutError"})
 _REASONS = {
-    "rate_limited": "the provider is rate limiting the account, or it is out of credit",
+    OUT_OF_CREDIT: (
+        "the provider account is out of credit, or at its spend limit. Add "
+        "credit (or raise the limit) at the provider"
+    ),
+    "rate_limited": "the provider is rate limiting the account",
     "provider_unreachable": "the provider cannot be reached",
     "storage_unreachable": "the image storage cannot be reached",
 }
@@ -229,6 +236,7 @@ def _add_usage(job: LogoAiJob, usage: Usage, cost_usd: float) -> None:
     total.add(usage)
     job.usage = total.to_dict()
     job.cost_usd = round((job.cost_usd or 0.0) + cost_usd, 6)
+    billing.book(object_session(job), job.provider, cost_usd)
 
 
 def _progressed(job: LogoAiJob) -> None:
@@ -400,6 +408,8 @@ def _detect_group(
         again = [i for i, o in enumerate(outcomes) if _passing(o.error)]
         if not again or len(again) == len(todo):
             break
+        if any(outcomes[i].error == OUT_OF_CREDIT for i in again):
+            break  # waiting a minute does not refill an account
         if n >= len(_ASSET_RETRY_WAITS) and not all(
             outcomes[i].error == "rate_limited" for i in again
         ):
@@ -412,6 +422,17 @@ def _detect_group(
             outcome.usage.add(outcomes[i].usage)
             outcomes[i] = outcome
     return outcomes
+
+
+def _deferred_assets(session: Session, job: LogoAiJob) -> list[Asset]:
+    ids = [uuid.UUID(i) for i in (job.deferred or [])]
+    if not ids:
+        return []
+    by_id = {
+        a.id: a for a in session.execute(select(Asset).where(Asset.id.in_(ids))).scalars()
+    }
+    # One that was deleted meanwhile is simply not there to take again.
+    return [by_id[i] for i in ids if i in by_id]
 
 
 def _record_outcome(
@@ -499,6 +520,11 @@ def _realtime(session: Session, job: LogoAiJob, job_id: str) -> dict:
         job.started_at = _now()
         job.total_assets = len(assets)
         session.commit()
+    # Assets whose request did not get through earlier come after the
+    # scope, in the order they were put aside. Appending keeps every
+    # position before them where it was, so the cursor stays valid.
+    scope_len = len(assets)
+    assets = assets + _deferred_assets(session, job)
 
     skip_frames = (
         annotated_frame_ids(session, job.task_id)
@@ -506,11 +532,14 @@ def _realtime(session: Session, job: LogoAiJob, job_id: str) -> dict:
         else set()
     )
     concurrency = max(1, get_settings().logo_ai_concurrency)
-    window_end = min(job.cursor + REALTIME_CHUNK_ASSETS, len(assets))
+    chunk_start = job.cursor
     consecutive_failures = 0
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        while job.cursor < window_end:
+        # ``assets`` can grow while this runs (images put aside), so the
+        # chunk's end is worked out each time round.
+        while job.cursor < min(chunk_start + REALTIME_CHUNK_ASSETS, len(assets)):
+            window_end = min(chunk_start + REALTIME_CHUNK_ASSETS, len(assets))
             if _stop_requested(session, job):
                 return _finish(session, job, canceled=True)
             # Until a request has succeeded, send one at a time: the
@@ -542,14 +571,21 @@ def _realtime(session: Session, job: LogoAiJob, job_id: str) -> dict:
                 session.rollback()
                 return _fail(session, job, exc.message)
 
-            if todo and all(_passing(o.error) for o in outcomes):
+            dry = next((o.error for o in outcomes if o.error == OUT_OF_CREDIT), None)
+            if todo and (dry or all(_passing(o.error) for o in outcomes)):
                 # Nothing got through: an outage, not these images. They
                 # are not marked failed and the cursor stays on them.
+                #
+                # The same when the account ran dry partway through the
+                # group. The images that did get an answer are on the
+                # bill and are booked, but the group is taken again as a
+                # whole once there is credit: at most a few images are
+                # paid for twice, once, and none is left marked failed.
                 session.rollback()
                 for outcome in outcomes:
-                    # A view that did answer before the rest failed was billed.
+                    # Whatever did answer before the rest failed was billed.
                     _add_usage(job, outcome.usage, outcome.cost_usd)
-                return _pause(session, job, _TryLater(outcomes[0].error or "").reason)
+                return _pause(session, job, _TryLater(dry or outcomes[0].error or "").reason)
 
             for (asset, frame), outcome in zip(todo, outcomes, strict=True):
                 if warming and (outcome.error or "").startswith("bad_request"):
@@ -557,6 +593,16 @@ def _realtime(session: Session, job: LogoAiJob, job_id: str) -> dict:
                     # this image; every other asset would fail too.
                     session.rollback()
                     return _fail(session, job, outcome.error)
+                if _passing(outcome.error) and job.cursor < scope_len:
+                    # Its neighbours got through and it did not: the
+                    # provider's doing (Flex capacity short, mostly),
+                    # not the image's. Taken again after the last asset
+                    # of the scope rather than marked failed. The views
+                    # that did answer were billed.
+                    _add_usage(job, outcome.usage, outcome.cost_usd)
+                    job.deferred = [*(job.deferred or []), str(asset.id)]
+                    assets.append(asset)
+                    continue
                 consecutive_failures = (
                     consecutive_failures + 1 if outcome.error else 0
                 )
@@ -842,6 +888,10 @@ def _create_batch(
                 part.id, attempt, exc_info=True,
             )
             status = getattr(exc, "status_code", None)
+            if is_out_of_credit(exc):
+                # Nothing to look for and nothing to gain by trying again
+                # now: the provider refused it for lack of credit.
+                raise _TryLater(OUT_OF_CREDIT) from exc
             error = "rate_limited" if status == 429 else "provider_unreachable"
             uploaded = getattr(exc, "uploaded_file_id", None)
             if uploaded and not part.provider_file_id:
@@ -1612,10 +1662,11 @@ def poll_logo_ai_batch(job_id: str) -> dict:
             if p.status == PART_PENDING and p.meta.get("wait") == "queue_full"
         ]
         job.notice = (
-            f"Waiting: the provider's batch queue is full. {len(queued)} part"
+            f"Waiting: the provider did not take {len(queued)} part"
             f"{'' if len(queued) == 1 else 's'} "
-            f"({sum(p.request_count for p in queued)} requests) will be sent by "
-            "themselves as earlier ones finish. Nothing is charged for them meanwhile."
+            f"({sum(p.request_count for p in queued)} requests): its batch queue is "
+            "full, or the account is out of credit. They are sent again by themselves; "
+            "nothing is charged for them meanwhile."
             if queued
             else None
         )

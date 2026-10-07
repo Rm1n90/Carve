@@ -11,6 +11,7 @@ from PIL import Image
 from sqlalchemy import select
 
 from carve_api.annotations.models import Annotation, AnnotationKind
+from carve_api.config import get_settings
 from carve_api.logo_ai import jobs as jobs_mod
 from carve_api.logo_ai.models import (
     DELIVERY_BATCH,
@@ -256,7 +257,90 @@ def test_realtime_waits_grow_longer(db_session, provider, queue) -> None:
         job = _reload(db_session, job)
         waits.append(round((job.resume_after - datetime.now(UTC)).total_seconds() / 30))
     assert waits == [1, 2, 4, 8, 16, 30, 30, 30]  # half minutes
-    assert "out of credit" in job.notice and job.failed_assets == 0
+    assert "rate limiting" in job.notice and job.failed_assets == 0
+
+
+def test_realtime_waits_for_credit_instead_of_failing_images(
+    db_session, provider, queue, monkeypatch
+) -> None:
+    slept: list[float] = []
+    monkeypatch.setattr(jobs_mod.time, "sleep", slept.append)
+    s = seed(db_session, n_assets=6)
+    # The credit runs out in the middle of a group: one image of it is
+    # answered, the next is refused.
+    dry = ProviderResult(error="out_of_credit")
+    provider.script = [ok(), ok(), dry, dry, dry]
+    job = s.job(db_session)
+
+    jobs_mod.run_logo_ai_realtime(str(job.id))
+
+    job = _reload(db_session, job)
+    # Waiting, with a notice that says what to do. No image is failed,
+    # and nothing was sent again while the account was empty.
+    assert job.status == STATUS_RUNNING and job.failed_assets == 0 and job.errors == []
+    assert job.cursor == 1 and job.done_assets == 1
+    assert "out of credit" in job.notice and "Add credit" in job.notice
+    assert slept == [] and len(provider.sent) <= 5
+    # What was answered before the refusal is on the bill, so it is booked.
+    assert job.usage["requests"] == 2
+    paid = job.cost_usd
+
+    # Credit added: the run goes on from the image it stopped at.
+    jobs_mod.run_logo_ai_realtime(str(job.id))
+    job = _reload(db_session, job)
+    assert job.status == STATUS_COMPLETED
+    assert (job.done_assets, job.failed_assets, job.annotations_created) == (6, 0, 6)
+    assert job.notice is None and job.cost_usd > paid
+    assert len(_annotations(db_session, s.task.id)) == 6
+
+
+def test_the_check_running_out_of_credit_holds_the_image_back(db_session, provider, queue) -> None:
+    s = seed(db_session, n_assets=2)
+    # Detection is paid for, then the check is refused: the boxes are
+    # not saved unchecked, the image waits.
+    provider.script = [ok(), ProviderResult(error="out_of_credit")]
+    job = s.job(db_session, double_check=True)
+
+    jobs_mod.run_logo_ai_realtime(str(job.id))
+
+    job = _reload(db_session, job)
+    assert job.status == STATUS_RUNNING and (job.cursor, job.failed_assets) == (0, 0)
+    assert "out of credit" in job.notice
+    assert _annotations(db_session, s.task.id) == []
+
+    jobs_mod.run_logo_ai_realtime(str(job.id))
+    job = _reload(db_session, job)
+    assert job.status == STATUS_COMPLETED and job.annotations_created == 2
+
+
+def test_a_batch_refused_for_lack_of_credit_waits(db_session, provider, queue, monkeypatch) -> None:
+    monkeypatch.setattr(jobs_mod.time, "sleep", lambda _s: None)
+    s = seed(db_session)
+    job = s.job(db_session, delivery=DELIVERY_BATCH)
+
+    class Refused(Exception):
+        status_code = 429
+        code = "credit_balance_exhausted"
+        body = {"message": "You have run out of credits", "code": "credit_balance_exhausted"}
+
+    real = provider.batch_create
+    calls: list[int] = []
+
+    def create(requests, *, tag):
+        calls.append(1)
+        raise Refused("429")
+
+    monkeypatch.setattr(provider, "batch_create", create)
+    jobs_mod.run_logo_ai_batch_submit(str(job.id))
+
+    job = _reload(db_session, job)
+    assert job.status not in TERMINAL_STATUSES and "out of credit" in job.notice
+    assert len(calls) == 1 and provider.batches == {}  # asked once, not hammered
+
+    monkeypatch.setattr(provider, "batch_create", real)
+    jobs_mod.run_logo_ai_batch_submit(str(job.id))
+    job = _reload(db_session, job)
+    assert job.status == STATUS_SUBMITTED and len(provider.batches) == 1
 
 
 def test_realtime_retries_a_request_that_failed_while_others_got_through(
@@ -274,6 +358,68 @@ def test_realtime_retries_a_request_that_failed_while_others_got_through(
     assert job.status == STATUS_COMPLETED
     assert (job.failed_assets, job.annotations_created) == (0, 3)
     assert len(provider.sent) == 4
+
+
+def test_an_image_the_provider_kept_refusing_is_taken_again_at_the_end(
+    db_session, provider, queue, monkeypatch
+) -> None:
+    monkeypatch.setattr(jobs_mod.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(jobs_mod, "_RATE_LIMIT_RETRY_WAITS", (0,))
+    monkeypatch.setattr(get_settings(), "logo_ai_concurrency", 2)
+    s = seed(db_session, n_assets=5)
+    # Image 0 warms the cache. Of the next pair, one has no Flex
+    # capacity, on the first try and on the retry.
+    busy = ProviderResult(error="rate_limited")
+    provider.script = [ok(), ok(), busy, busy, ok(), ok(), ok()]
+    job = s.job(db_session)
+
+    jobs_mod.run_logo_ai_realtime(str(job.id))
+
+    job = _reload(db_session, job)
+    # Not failed: put aside and done after the last image of the scope.
+    assert job.status == STATUS_COMPLETED
+    assert (job.total_assets, job.done_assets, job.failed_assets) == (5, 5, 0)
+    assert job.annotations_created == 5 and job.errors == []
+    assert len(job.deferred) == 1
+    assert job.deferred[0] in {str(s.assets[1].id), str(s.assets[2].id)}
+    assert len(_annotations(db_session, s.task.id)) == 5
+    # Five images, one retry, one taken again at the end.
+    assert len(provider.sent) == 7
+
+
+def test_a_deferred_image_that_fails_again_is_failed_for_real(
+    db_session, provider, queue, monkeypatch
+) -> None:
+    monkeypatch.setattr(jobs_mod.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(jobs_mod, "_RATE_LIMIT_RETRY_WAITS", (0,))
+    s = seed(db_session, n_assets=3)
+    busy = ProviderResult(error="rate_limited")
+    # Image 1 is refused in the main pass (and its retry), then again
+    # when taken alone at the end: nothing got through that time, so the
+    # run waits rather than fails it.
+    provider.script = [ok(), ok(), busy, busy, busy]
+    job = s.job(db_session)
+
+    jobs_mod.run_logo_ai_realtime(str(job.id))
+    job = _reload(db_session, job)
+    assert job.status == STATUS_RUNNING and job.failed_assets == 0
+    assert job.cursor == 3 and job.deferred == [str(s.assets[2].id)]
+    assert "rate limiting" in job.notice
+
+    # The provider is back: the image is done and the run completes.
+    jobs_mod.run_logo_ai_realtime(str(job.id))
+    job = _reload(db_session, job)
+    assert job.status == STATUS_COMPLETED and (job.done_assets, job.failed_assets) == (3, 0)
+
+    # A refusal of its own kind at the end is a real failure.
+    s2 = seed(db_session, n_assets=3)
+    provider.script = [ok(), ok(), busy, busy, ProviderResult(error="refusal")]
+    job2 = s2.job(db_session)
+    jobs_mod.run_logo_ai_realtime(str(job2.id))
+    job2 = _reload(db_session, job2)
+    assert job2.status == STATUS_COMPLETED_WITH_ERRORS
+    assert (job2.done_assets, job2.failed_assets) == (3, 1)
+    assert job2.errors == [f"{s2.assets[2].original_name}: refusal"]
 
 
 def test_one_image_that_cannot_be_saved_fails_alone(db_session, provider, queue, monkeypatch) -> None:
@@ -1107,7 +1253,8 @@ def test_a_part_the_queue_had_no_room_for_waits_and_is_sent_again(
     job = _reload(db_session, job)
     assert [p.status for p in _parts(db_session)] == [PART_SUBMITTED, PART_PENDING, PART_PENDING]
     assert job.status == STATUS_SUBMITTED and job.failed_assets == 0
-    assert "batch queue is full. 2 parts (2 requests)" in job.notice
+    assert "did not take 2 parts (2 requests)" in job.notice
+    assert "batch queue is full" in job.notice
     assert ("resend", "") not in queue  # not before their wait is over
 
     # Later: there is room for one. They are offered one at a time, from

@@ -202,6 +202,9 @@ function RunRow({
           {(job.rejected_boxes ?? 0) > 0
             ? ` · ${job.rejected_boxes} rejected on the second look`
             : ""}
+          {(job.deferred_assets ?? 0) > 0
+            ? ` · ${job.deferred_assets} to retry at the end`
+            : ""}
           {job.failed_assets > 0 ? ` · ${job.failed_assets} failed` : ""}
           {job.skipped_assets > 0 ? ` · ${job.skipped_assets} skipped` : ""}
         </span>

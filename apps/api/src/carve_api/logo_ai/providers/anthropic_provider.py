@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 from carve_api.logo_ai.prompt import REFERENCE_INTRO, reference_label
 from carve_api.logo_ai.providers.base import (
+    OUT_OF_CREDIT,
     BatchGone,
     BatchState,
     ProviderClient,
@@ -18,6 +19,7 @@ from carve_api.logo_ai.providers.base import (
     RunContext,
     Usage,
     api_error_message,
+    is_out_of_credit,
     live_connection_transport,
 )
 
@@ -156,6 +158,9 @@ class AnthropicClient(ProviderClient):
                 f"Anthropic model not available: {api_error_message(exc)}"
             ) from exc
         except sdk.BadRequestError as exc:
+            if is_out_of_credit(exc):
+                # Anthropic reports an empty balance as a bad request.
+                return ProviderResult(error=OUT_OF_CREDIT)
             return ProviderResult(error=f"bad_request: {api_error_message(exc)}"[:300])
         except sdk.RateLimitError:
             return ProviderResult(error="rate_limited")
@@ -189,6 +194,8 @@ class AnthropicClient(ProviderClient):
         except sdk.APIStatusError as exc:
             if exc.status_code >= 500 or exc.status_code in _RETRYABLE_STATUS:
                 raise
+            if is_out_of_credit(exc):
+                raise  # the same batch is fine once the account can pay
             raise ProviderFatal(
                 f"Anthropic rejected the batch: {api_error_message(exc)}"
             ) from exc

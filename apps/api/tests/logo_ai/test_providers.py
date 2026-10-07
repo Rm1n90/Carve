@@ -24,6 +24,7 @@ from carve_api.logo_ai.providers.base import (
     Reference,
     RunContext,
     Usage,
+    is_out_of_credit,
 )
 from carve_api.logo_ai.providers.openai_provider import OpenAIClient
 
@@ -349,6 +350,52 @@ def test_openai_flex_is_never_retried_at_the_standard_price() -> None:
     # not quietly bought at full price.
     assert result.error == "rate_limited"
     assert len(wire.requests) == 1 and wire.body(0)["service_tier"] == "flex"
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["credit_balance_exhausted", "organization_spend_limit_exceeded",
+     "project_spend_limit_exceeded", "organization_usage_limit_exceeded", "insufficient_quota"],
+)
+def test_openai_out_of_credit_is_not_mistaken_for_a_rate_limit(code) -> None:
+    empty = {"error": {"message": "You have run out of credits", "type": "billing", "code": code}}
+    wire = _Wire({("POST", "/v1/responses"): (429, empty)})
+    client = _openai(_ctx("openai", "gpt-6.1-sol", flex=True), wire)
+    result = client.send(client.build_request(_JPEG, "annotate", batch=False))
+    assert result.error == "out_of_credit"
+    assert not any(result.usage.to_dict().values())  # refused, not charged
+
+
+def test_openai_batch_refused_for_lack_of_credit_can_go_again() -> None:
+    empty = {"error": {"message": "out of credits", "type": "billing", "code": "credit_balance_exhausted"}}
+    wire = _Wire({("POST", "/v1/files"): (200, _FILE), ("POST", "/v1/batches"): (429, empty)})
+    client = _openai(_ctx("openai", "gpt-6-sol"), wire)
+    # Not a refusal of the batch itself: the caller waits and sends it again.
+    with pytest.raises(openai.RateLimitError) as excinfo:
+        client.batch_create([("0_0", client.build_request(_JPEG, "x", batch=True))], tag="p")
+    assert is_out_of_credit(excinfo.value)
+
+    # A batch that started and then failed for it is offered again too.
+    failed = _openai_batch("failed", errors={"object": "list", "data": [
+        {"code": "credit_balance_exhausted", "message": "out of credits"}]})
+    wire = _Wire({("GET", "/v1/batches/batch_1"): (200, failed)})
+    assert _openai(_ctx("openai", "gpt-6-sol"), wire).batch_state("batch_1").queue_full
+
+
+def test_anthropic_empty_balance_is_out_of_credit_not_a_bad_request() -> None:
+    low = {"type": "error", "error": {
+        "type": "invalid_request_error",
+        "message": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+    }}
+    wire = _Wire({("POST", "/v1/messages"): (400, low)})
+    client = _anthropic(_ctx("anthropic", "claude-opus-5-5"), wire)
+    assert client.send(client.build_request(_JPEG, "x", batch=False)).error == "out_of_credit"
+
+    wire = _Wire({("POST", "/v1/messages/batches"): (400, low)})
+    client = _anthropic(_ctx("anthropic", "claude-opus-5-5"), wire)
+    with pytest.raises(anthropic.BadRequestError) as excinfo:
+        client.batch_create([("0_0", client.build_request(_JPEG, "x", batch=True))], tag="p")
+    assert is_out_of_credit(excinfo.value)
 
 
 def test_a_request_is_priced_at_the_tier_it_was_served_at() -> None:
@@ -878,7 +925,6 @@ def test_clients_notice_a_dead_link_without_waiting_out_the_read_timeout() -> No
 
 
 def test_a_model_can_ask_for_its_own_coordinate_system() -> None:
-    from carve_api.logo_ai.service import RunOptions, build_context
 
     # GPT-6 Sol answers in pixels of the sent image, not on OpenAI's
     # usual 0..999 grid; the prompt, the schema and the read-back agree.

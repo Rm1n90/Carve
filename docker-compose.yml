@@ -122,6 +122,8 @@ services:
       # single-image runs; the worker does batches. Both need the keys.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Optional, api only: reads OpenAI's cost report for the Billing tab.
+      OPENAI_ADMIN_KEY: ${OPENAI_ADMIN_KEY:-}
       LOGO_AI_CONCURRENCY: ${LOGO_AI_CONCURRENCY:-4}
       LOGO_AI_BATCH_PART_REQUESTS: ${LOGO_AI_BATCH_PART_REQUESTS:-300}
       LOGO_AI_ALLOW_MEMBERS: ${LOGO_AI_ALLOW_MEMBERS:-false}
@@ -161,6 +163,11 @@ services:
     # checkpoint (~0.4s), instead of waiting behind the whole upload
     # backlog on a single shared queue. See apps/api jobs/queue.py.
     command: ["rq", "worker", "high", "default", "low", "--url", "redis://redis:6379/0"]
+    # Two workers: a Logo AI realtime run holds one for hours and sits
+    # in the high lane, so with a single worker exports, imports and
+    # thumbnails would wait behind it until the run ends.
+    deploy:
+      replicas: 2
     mem_limit: 5g
     memswap_limit: 5g
     environment:

@@ -106,6 +106,10 @@ class LogoAiJob(Base):
     # attempt is due. The supervisor restarts the run at that time.
     notice: Mapped[str | None] = mapped_column(Text, nullable=True)
     resume_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Realtime: assets whose request did not get through (rate limit,
+    # outage) while their neighbours' did. They are not failed; they are
+    # taken again after the last asset of the scope, in this order.
+    deferred: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
     # Waits in a row, and restarts by the supervisor in a row after the
     # run stopped without saying why. Both reset when the run advances.
     pauses: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
@@ -179,4 +183,31 @@ class LogoAiTaskPrompt(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LogoAiCredit(Base):
+    """A provider's credit balance, as an admin read it off the
+    provider's billing page, and what has been spent since.
+
+    Providers do not expose a prepaid balance to API clients, so this is
+    the only way to show what is left. ``spent_usd`` is added to in the
+    same transaction that books a cost on a run, so it does not shrink
+    when a task and its runs are deleted.
+    """
+
+    __tablename__ = "logo_ai_credit"
+
+    provider: Mapped[str] = mapped_column(String(24), primary_key=True)
+    amount_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    spent_usd: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    # What the provider's cost report showed for the day of ``as_of`` at
+    # that moment (spent before the balance was read). NULL without a
+    # report.
+    reported_day_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

@@ -16,6 +16,8 @@ from carve_api.logo_ai.prompt import (
     reference_label,
 )
 from carve_api.logo_ai.providers.base import (
+    BILLING_CODES,
+    OUT_OF_CREDIT,
     BatchGone,
     BatchState,
     ProviderClient,
@@ -24,6 +26,7 @@ from carve_api.logo_ai.providers.base import (
     RunContext,
     Usage,
     api_error_message,
+    is_out_of_credit,
     live_connection_transport,
 )
 
@@ -207,8 +210,13 @@ class OpenAIClient(ProviderClient):
             ) from exc
         except sdk.BadRequestError as exc:
             return ProviderResult(error=f"bad_request: {api_error_message(exc)}"[:300])
-        except sdk.RateLimitError:
-            return ProviderResult(error="rate_limited")
+        except sdk.RateLimitError as exc:
+            # Out of credit and "slow down" are both a 429. They are told
+            # apart because one clears by itself and the other needs the
+            # account topped up.
+            return ProviderResult(
+                error=OUT_OF_CREDIT if is_out_of_credit(exc) else "rate_limited"
+            )
         except sdk.APIStatusError as exc:
             return ProviderResult(error=f"provider_error_{exc.status_code}")
         except sdk.APIConnectionError:
@@ -220,6 +228,8 @@ class OpenAIClient(ProviderClient):
         sdk = self._sdk
         if isinstance(exc, sdk.AuthenticationError | sdk.PermissionDeniedError):
             return ProviderFatal(f"OpenAI rejected the API key: {api_error_message(exc)}")
+        if is_out_of_credit(exc):
+            return None  # the same batch is fine once the account can pay
         if isinstance(exc, sdk.APIStatusError) and not (
             exc.status_code >= 500 or exc.status_code in _RETRYABLE_STATUS
         ):
@@ -309,7 +319,10 @@ class OpenAIClient(ProviderClient):
             errors = batch.errors.data if batch.errors and batch.errors.data else []
             failed_reason = "; ".join(e.message or e.code or "" for e in errors)[:400]
             failed_reason = failed_reason or "batch failed validation"
-            queue_full = any(e.code == _QUEUE_FULL for e in errors)
+            # A batch turned away for lack of credit is in the same
+            # position as one the queue had no room for: nothing ran,
+            # and it can go again once the account can take it.
+            queue_full = any(e.code == _QUEUE_FULL or e.code in BILLING_CODES for e in errors)
             if queue_full:
                 failed_reason = (
                     "OpenAI's batch queue for this model is full; nothing was "
@@ -383,7 +396,9 @@ def _parse_batch_entry(entry: dict) -> ProviderResult:
         error = entry.get("error")
         if error:
             code = str(error.get("code") or "error")
-            return ProviderResult(error=code, retryable=code in _UNANSWERED)
+            return ProviderResult(
+                error=code, retryable=code in _UNANSWERED or code in BILLING_CODES
+            )
         response = entry.get("response") or {}
         body = response.get("body") or {}
         status = response.get("status_code")
@@ -392,8 +407,8 @@ def _parse_batch_entry(entry: dict) -> ProviderResult:
             detail = f"{err.get('code') or status}: {err.get('message', '')}"
             return ProviderResult(
                 error=detail[:300],
-                retryable=isinstance(status, int)
-                and (status >= 500 or status in _RETRYABLE_STATUS),
+                retryable=err.get("code") in BILLING_CODES
+                or (isinstance(status, int) and (status >= 500 or status in _RETRYABLE_STATUS)),
             )
         return _parse_body(body)
     except (AttributeError, TypeError, ValueError):
