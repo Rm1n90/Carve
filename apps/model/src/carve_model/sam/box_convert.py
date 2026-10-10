@@ -106,6 +106,10 @@ HOLE_MIN = 0.01
 GROUND_PROMPTS = (
     "road", "race track", "asphalt", "grass", "gravel", "sand", "dirt",
     "sports field", "court floor", "running track", "ice", "snow",
+    # The flat floor of a skate plaza, without its stairs, ledges and
+    # ramps (not labelled). "concrete" or "skatepark" alone would take
+    # those, and pavements beside a street circuit.
+    "skate park floor",
 )
 # Water is ground only where it is most of the ground box: a pool, a
 # regatta, a surf break. Beside a road or a pitch (a harbour along a
