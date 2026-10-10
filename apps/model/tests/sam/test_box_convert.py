@@ -124,7 +124,7 @@ def test_ground_takes_the_material_fills_logos_and_kerbs_and_cuts_out_objects() 
                      predict_box=seg.predict_box, text_masks=text, modes=["object", "ground"], zoom=False)
     g = out[1].mask
     assert out[1].polygon == [] and g is not None
-    assert asked == [bc.GROUND_PROMPTS + bc.GROUND_EXTRA_PROMPTS, bc.GROUND_BLOCKER_PROMPTS]
+    assert asked == [bc.GROUND_PROMPTS + bc.GROUND_EXTRA_PROMPTS, bc.WATER_PROMPTS, bc.GROUND_BLOCKER_PROMPTS]
     assert g[270, 130] == 1          # the painted logo is ground
     assert g[355, 50] == 1           # so is the kerb
     assert g[315, 270] == 0          # the car is cut out
@@ -348,3 +348,28 @@ def test_in_front_compares_the_bottoms_in_the_same_columns() -> None:
     assert not bc._in_front(ref, carrier)
     near = bc.Piece(100, 100, np.ones((60, 20), np.uint8))  # feet at 159, left side: in front
     assert bc._in_front(near, carrier)
+
+
+def test_water_is_ground_only_where_it_is_most_of_the_box() -> None:
+    h, w = 300, 400
+    road = np.zeros((h, w), np.uint8)
+    road[150:300, :] = 1                     # a street circuit...
+    harbour = np.zeros((h, w), np.uint8)
+    harbour[0:100, :] = 1                    # ...with a harbour beside it
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[0, 0, 400, 300]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, modes=["ground"], zoom=False,
+                     text_masks=lambda p: harbour if p == bc.WATER_PROMPTS
+                     else (road if p[0] == bc.GROUND_PROMPTS[0] else np.zeros((h, w), np.uint8)))
+    g = out[0].mask
+    assert g[200, 200] == 1 and g[50, 200] == 0
+
+    pool = np.zeros((h, w), np.uint8)
+    pool[20:280, 20:380] = 1                 # a pool: the water is the field of play
+    deck = np.zeros((h, w), np.uint8)
+    deck[0:20, :] = 1
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[0, 0, 400, 300]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, modes=["ground"], zoom=False,
+                     text_masks=lambda p: pool if p == bc.WATER_PROMPTS
+                     else (deck if p[0] == bc.GROUND_PROMPTS[0] else np.zeros((h, w), np.uint8)))
+    assert out[0].mask[150, 200] == 1

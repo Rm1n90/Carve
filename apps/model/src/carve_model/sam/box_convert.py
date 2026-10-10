@@ -21,7 +21,9 @@ Two kinds of box are not one object, and SAM given such a box cuts out
 the single most object-like thing in it (on a race track, one kerb):
 
 * **ground** (the playing surface): every ground-material pixel inside
-  the box, found with SAM 3.1 text prompts (road, grass, gravel, ...).
+  the box, found with SAM 3.1 text prompts (road, grass, gravel, ...;
+  water only where it is most of the box, so a harbour beside a street
+  circuit is not ground but a pool is).
   Holes and short gaps no other label claims are filled, so painted
   logos, lines and kerbs stay part of it, and everything else labelled
   on the image (cars, boards, people) is cut out.
@@ -103,8 +105,12 @@ HOLE_MIN = 0.01
 # Prompts whose union is the ground, across the sports in the data set.
 GROUND_PROMPTS = (
     "road", "race track", "asphalt", "grass", "gravel", "sand", "dirt",
-    "sports field", "court floor", "running track", "ice", "snow", "water",
+    "sports field", "court floor", "running track", "ice", "snow",
 )
+# Water is ground only where it is most of the ground box: a pool, a
+# regatta, a surf break. Beside a road or a pitch (a harbour along a
+# street circuit, a river) it is scenery.
+WATER_PROMPTS = ("water",)
 CROWD_PROMPTS = ("person", "crowd")
 # Ground also takes these (a kerb or logo running to the frame edge is
 # not a hole, so filling alone would miss it).
@@ -420,6 +426,16 @@ def ground_mask(
     return g & (1 - claimed)
 
 
+def _with_water(land: np.ndarray, water: np.ndarray, box: list[float]) -> np.ndarray:
+    """The ground material for one box: the land, plus the water when the
+    water is most of what the box holds."""
+    h, w = land.shape
+    inside = _box_mask(box, h, w).astype(bool)
+    land = (land > 0).astype(np.uint8)
+    wet = (water > 0).astype(np.uint8)
+    return land | wet if int(wet[inside].sum()) > int(land[inside].sum()) else land
+
+
 def crowd_mask(
     people: np.ndarray,
     boxes: list[float] | list[list[float]],
@@ -678,15 +694,16 @@ def convert(
             claimed |= m
         grounds = [i for i in regions if modes[i] == "ground"]
         if grounds:
-            material = blockers = None
+            material = water = blockers = None
             if text_masks is not None:
                 material = text_masks(GROUND_PROMPTS + GROUND_EXTRA_PROMPTS)
+                water = text_masks(WATER_PROMPTS)
                 blockers = text_masks(GROUND_BLOCKER_PROMPTS)
             for i in grounds:
-                if material is None:
+                if material is None or water is None:
                     m = _box_mask(boxes[i], h, w) & (1 - claimed)
                 else:
-                    m = ground_mask(material, boxes[i], claimed, blockers, through)
+                    m = ground_mask(_with_water(material, water, boxes[i]), boxes[i], claimed, blockers, through)
                 if m.any():
                     results[i] = BoxResult([], 1.0, False, mask=m)
     return results
