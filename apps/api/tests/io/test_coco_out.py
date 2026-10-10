@@ -66,7 +66,7 @@ def test_polygon_emits_flat_segmentation_and_bbox() -> None:
     a = coco["annotations"][0]
     assert a["segmentation"] == [[10.0, 10.0, 30.0, 10.0, 30.0, 50.0]]
     assert a["bbox"] == [10.0, 10.0, 20.0, 40.0]
-    assert a["area"] == 800.0
+    assert a["area"] == 400.0  # the triangle's own area, not its box's
 
 
 def test_mask_emits_rle_segmentation() -> None:
@@ -81,9 +81,11 @@ def test_mask_emits_rle_segmentation() -> None:
         remap=_remap(),
     )
     a = coco["annotations"][0]
-    assert a["segmentation"] == {"size": [4, 4], "counts": "0,2,2,2,10"}
-    assert a["bbox"] == [0.0, 0.0, 640.0, 480.0]
-    assert a["area"] == 640.0 * 480.0
+    # Uncompressed COCO RLE: counts as a list of ints, as pycocotools reads it.
+    assert a["segmentation"] == {"size": [4, 4], "counts": [0, 2, 2, 2, 10]}
+    # The mask's own box and pixel count, not the whole image.
+    assert a["bbox"] == [0.0, 0.0, 2.0, 2.0]
+    assert a["area"] == 4.0
 
 
 def test_tag_emits_full_image_bbox() -> None:

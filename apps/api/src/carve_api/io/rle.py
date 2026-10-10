@@ -22,8 +22,38 @@ from __future__ import annotations
 
 
 def _decode_runs(counts: str) -> list[int]:
-    """Parse the ``counts`` string into a list of integer runs."""
-    return [int(tok) for tok in counts.split() if tok]
+    """Parse the ``counts`` string into a list of integer runs. The
+    editor and SAM write the runs comma-separated; older data and COCO
+    imports use spaces. Both are accepted."""
+    return [int(tok) for tok in counts.replace(",", " ").split() if tok]
+
+
+def coco_counts_to_runs(counts: object) -> str:
+    """Any COCO RLE ``counts`` as Carve's comma-separated runs: a list of
+    ints (uncompressed), runs already as text, or COCO's compressed
+    string (pycocotools' ``rleFrString`` encoding)."""
+    if isinstance(counts, list):
+        return ",".join(str(int(v)) for v in counts)
+    text = str(counts)
+    if all(ch.isdigit() or ch in ", " for ch in text):
+        return text
+    runs: list[int] = []
+    p = 0
+    while p < len(text):
+        x = k = 0
+        more = True
+        while more:
+            c = ord(text[p]) - 48
+            x |= (c & 0x1F) << (5 * k)
+            more = bool(c & 0x20)
+            p += 1
+            k += 1
+            if not more and c & 0x10:
+                x |= -1 << (5 * k)
+        if len(runs) > 2:
+            x += runs[-2]
+        runs.append(x)
+    return ",".join(str(v) for v in runs)
 
 
 def rle_to_bbox(

@@ -346,7 +346,9 @@ def _backfill_missing_dimensions(session, storage, assets: list[Asset]) -> int:
 
 
 def _convert_for_yolo_mode(
-    annotations: list[Annotation], mode: str
+    annotations: list[Annotation],
+    mode: str,
+    image_size: tuple[int, int] | None = None,
 ) -> list[Any]:
     """Return a list of annotation views adapted to the chosen YOLO write mode.
 
@@ -354,12 +356,13 @@ def _convert_for_yolo_mode(
     resulting label file has uniform polygon-shaped lines.
       - bbox    → 4-vertex axis-aligned polygon (clockwise from top-left).
       - polygon → unchanged.
-      - mask    → one polygon per 4-connected component, extracted via
-                  Moore-neighbor boundary tracing. Components smaller than
-                  4 pixels or with <3 boundary points are dropped — they
-                  cannot form a valid YOLO-seg polygon. A single mask can
-                  expand into multiple polygons when the segmentation has
-                  disjoint blobs.
+      - mask    → ONE polygon per annotation (``io.mask_polygon``): every
+                  piece and hole of the mask joined by zero-width cuts, so
+                  a crowd, a ground with players cut out or a person split
+                  by ring ropes stays one instance with its holes open.
+                  Specks are dropped; outlines stay within the 1000 points
+                  Ultralytics keeps. ``image_size`` (w, h) rescales a mask
+                  stored at another size than the asset.
 
     Detection mode: every spatial annotation must be a bbox.
       - polygon → tight axis-aligned bbox.
@@ -373,7 +376,7 @@ def _convert_for_yolo_mode(
     from types import SimpleNamespace
 
     from carve_api.annotations.models import AnnotationKind
-    from carve_api.io.rle import rle_to_polygons
+    from carve_api.io.mask_polygon import rle_to_instance_polygons
 
     if mode == "tags_only":
         return list(annotations)
@@ -433,15 +436,16 @@ def _convert_for_yolo_mode(
                 size = g.get("size")
                 if not counts or not size:
                     continue
-                polygons = rle_to_polygons(counts, (int(size[0]), int(size[1])))
-                # One polygon line per connected component. Trainers
-                # interpret multi-polygon annotations of the same class
-                # as separate instances of that class.
-                for poly in polygons:
+                mh, mw = int(size[0]), int(size[1])
+                sx = image_size[0] / mw if image_size and mw else 1.0
+                sy = image_size[1] / mh if image_size and mh else 1.0
+                # One polygon (several only for a mask of hundreds of
+                # pieces that cannot fit the 1000 points trainers keep).
+                for poly in rle_to_instance_polygons(counts, (mh, mw)):
                     out.append(SimpleNamespace(
                         kind=AnnotationKind.polygon,
                         class_id=ann.class_id,
-                        geometry={"points": [[p[0], p[1]] for p in poly]},
+                        geometry={"points": [[x * sx, y * sy] for x, y in poly]},
                     ))
             else:
                 # polygon flows through unchanged.
@@ -561,7 +565,9 @@ def _yolo_archive(
             # image:label correspondence.
             for split_name, asset in items:
                 anns = annotations_by_asset_id.get(asset.id, [])
-                converted = _convert_for_yolo_mode(anns, yolo_mode)
+                converted = _convert_for_yolo_mode(
+                    anns, yolo_mode, (int(asset.width), int(asset.height)),
+                )
                 lines, _ = write_yolo_label(
                     converted, remap=class_remap,
                     image_w=int(asset.width), image_h=int(asset.height),

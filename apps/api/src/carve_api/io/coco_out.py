@@ -8,7 +8,7 @@ list with `{id, file_name, width, height}` dicts. Returns the full COCO json.
 from typing import Any
 
 from carve_api.annotations.models import Annotation, AnnotationKind
-from carve_api.io.rle import rle_count_pixels, rle_to_bbox
+from carve_api.io.rle import _decode_runs, rle_count_pixels, rle_to_bbox
 from carve_api.io.yolo_out import _normalise_remap
 
 
@@ -83,7 +83,7 @@ def build_coco(
                 flat = [c for p in pts for c in p]
                 bbox = _polygon_bbox(pts)
                 entry["bbox"] = bbox
-                entry["area"] = bbox[2] * bbox[3]
+                entry["area"] = _polygon_area(pts)
                 entry["segmentation"] = [flat]
             elif ann.kind == AnnotationKind.mask:
                 counts = str(g["counts"])
@@ -95,7 +95,9 @@ def build_coco(
                     # downstream.
                     next_id -= 1  # roll back the reserved id
                     continue
-                entry["segmentation"] = {"size": list(size), "counts": counts}
+                # Uncompressed COCO RLE: counts as a list of ints, which
+                # pycocotools and every COCO reader understand.
+                entry["segmentation"] = {"size": list(size), "counts": _decode_runs(counts)}
                 x, y, mw, mh = box
                 entry["bbox"] = [float(x), float(y), float(mw), float(mh)]
                 entry["area"] = float(rle_count_pixels(counts))
@@ -149,6 +151,16 @@ def extract_image_tags_for_coco(
             )
     out.sort(key=lambda e: e["image_id"])
     return out
+
+
+def _polygon_area(points: list[list[float]]) -> float:
+    """Shoelace area: COCO's ``area`` is the region's, not its box's."""
+    n = len(points)
+    s = sum(
+        points[i][0] * points[(i + 1) % n][1] - points[(i + 1) % n][0] * points[i][1]
+        for i in range(n)
+    )
+    return abs(s) / 2.0
 
 
 def _polygon_bbox(points: list[list[float]]) -> list[float]:

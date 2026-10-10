@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from carve_api.annotations.models import AnnotationKind
+from carve_api.io.rle import coco_counts_to_runs
 from carve_api.io.yolo_in import AnnotationDraft, ParsedArchive
 
 # Zip-bomb / oversized-archive mitigations. Limits apply to uncompressed size
@@ -57,7 +58,7 @@ def parse_coco_bytes(coco_bytes: bytes) -> ParsedArchive:
                 geometry={
                     "kind": "mask_rle",
                     "size": list(seg["size"]),
-                    "counts": str(seg["counts"]),
+                    "counts": coco_counts_to_runs(seg["counts"]),
                 },
             ))
             continue

@@ -21,6 +21,8 @@ dependencies = [
   "email-validator==2.2.0",
   "ffmpeg-python==0.2.0",
   "Pillow==11.1.0",
+  "numpy==2.2.1",
+  "opencv-python-headless==4.10.0.84",
   "psutil==6.1.1",
   "xxhash==3.5.0",
   "slowapi==0.1.9",
