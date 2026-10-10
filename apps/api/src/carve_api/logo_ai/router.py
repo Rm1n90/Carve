@@ -12,6 +12,8 @@
     POST /tasks/{id}/logo-ai/jobs/{job}/cancel
     POST /tasks/{id}/logo-ai/filter/preview    what a score filter would remove
     POST /tasks/{id}/logo-ai/filter/apply      remove it
+    GET  /tasks/{id}/logo-ai/prompt            instructions in force (task > project > default)
+    PUT  /tasks/{id}/logo-ai/prompt            save them for the project or for the task
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -55,6 +58,7 @@ from carve_api.logo_ai.models import (
     TERMINAL_STATUSES,
     LogoAiBatchPart,
     LogoAiJob,
+    LogoAiProjectPrompt,
     LogoAiTaskPrompt,
 )
 from carve_api.logo_ai.providers.base import (
@@ -86,6 +90,8 @@ from carve_api.projects.service import (
 )
 
 log = logging.getLogger(__name__)
+
+PROMPT_DESCRIPTION_MAX = 1000
 
 config_router = APIRouter(prefix="/inference/logo-ai", tags=["logo-ai"])
 asset_router = APIRouter(prefix="/assets", tags=["logo-ai"])
@@ -149,6 +155,9 @@ class ConfigOut(BaseModel):
     tilings: list[str]
     default_tiling: str
     max_references: int
+    # The description each class was last run with in the task's project
+    # (class id -> text). Empty when no task is given or it is not allowed.
+    class_descriptions: dict[str, str] = Field(default_factory=dict)
 
 
 @config_router.get("/config", response_model=ConfigOut)
@@ -158,12 +167,16 @@ def get_config(
     db: Session = Depends(get_db),
 ) -> ConfigOut:
     allowed = False
+    descriptions: dict[str, str] = {}
     if task_id is not None:
         try:
             task = require_visible_task(db, user, task_id)
             allowed = task_logo_ai_allowed(user, task)
         except AppError:
             allowed = False
+        if allowed:
+            project_row = db.get(LogoAiProjectPrompt, task.project_id)
+            descriptions = dict(project_row.class_descriptions or {}) if project_row else {}
     return ConfigOut(
         allowed=allowed,
         providers=[
@@ -197,6 +210,7 @@ def get_config(
         tilings=list(catalog.TILING_MAX_PER_SIDE),
         default_tiling=catalog.DEFAULT_TILING,
         max_references=MAX_REFERENCES,
+        class_descriptions=descriptions,
     )
 
 
@@ -337,7 +351,9 @@ class PromptIn(BaseModel):
     """One class to detect, with what the model should look for."""
 
     class_id: uuid.UUID
-    prompt: str = Field(default="", max_length=400)
+    # Room for a class definition with its boundaries to the classes
+    # next to it, not only a name.
+    prompt: str = Field(default="", max_length=PROMPT_DESCRIPTION_MAX)
 
 
 class ReferenceIn(BaseModel):
@@ -455,7 +471,7 @@ def detect_asset(
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
-    options = _with_task_prompt(db, asset.task_id, payload.options())
+    options = _with_prompts(db, asset.task_id, payload.options())
     try:
         task = require_logo_ai_task(db, user, asset.task_id)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
@@ -463,6 +479,8 @@ def detect_asset(
         client = providers.make_client(ctx)
     except AppError as exc:
         raise _http(exc) from exc
+    # Committed with the run's record.
+    _remember_descriptions(db, task.project_id, options)
 
     if payload.frame_id is not None:
         frame = db.get(Frame, payload.frame_id)
@@ -612,7 +630,7 @@ def estimate_run(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> EstimateOut:
-    options = _with_task_prompt(db, task_id, payload.options())
+    options = _with_prompts(db, task_id, payload.options())
     try:
         task = require_logo_ai_task(db, user, task_id)
         figures = estimate(db, task, options, _assets_in_scope(db, task, options))
@@ -744,7 +762,7 @@ def create_job(
 
     is_batch = payload.delivery == DELIVERY_BATCH
     # Flex is a realtime pricing tier; a batch is already at that price.
-    options = _with_task_prompt(db, task_id, payload.options())
+    options = _with_prompts(db, task_id, payload.options())
     if is_batch:
         options.flex = False
         # The second pass needs the boxes first, and a batch only hands
@@ -809,6 +827,7 @@ def create_job(
         errors=[],
     )
     db.add(job)
+    _remember_descriptions(db, task.project_id, options)
     db.commit()
 
     try:
@@ -968,22 +987,77 @@ _PROMPT_MAX_CHARS = 40_000
 _PROMPT_CACHE_MIN_CHARS = 4_400
 
 
-def _with_task_prompt(db: Session, task_id: uuid.UUID, options: RunOptions) -> RunOptions:
-    """Give a run the task's own instructions, if it has any."""
-    row = db.get(LogoAiTaskPrompt, task_id)
-    if row is not None:
-        options.instructions = row.instructions
-        options.check_instructions = row.check_instructions
+_Source = Literal["task", "project", "default"]
+
+
+def _project_prompt(db: Session, task_id: uuid.UUID) -> LogoAiProjectPrompt | None:
+    task = db.get(Task, task_id)
+    return db.get(LogoAiProjectPrompt, task.project_id) if task is not None else None
+
+
+def _resolved(
+    task_row: LogoAiTaskPrompt | None, project_row: LogoAiProjectPrompt | None
+) -> tuple[tuple[str | None, _Source], tuple[str | None, _Source]]:
+    """The instructions a task runs with, each with where it comes from:
+    the task's own text, else its project's, else the default (``None``)."""
+
+    def pick(field: str) -> tuple[str | None, _Source]:
+        own = getattr(task_row, field, None) if task_row else None
+        if own:
+            return own, "task"
+        shared = getattr(project_row, field, None) if project_row else None
+        if shared:
+            return shared, "project"
+        return None, "default"
+
+    return pick("instructions"), pick("check_instructions")
+
+
+def _with_prompts(db: Session, task_id: uuid.UUID, options: RunOptions) -> RunOptions:
+    """Give a run the instructions in force for its task."""
+    (text, _), (check, _) = _resolved(
+        db.get(LogoAiTaskPrompt, task_id), _project_prompt(db, task_id)
+    )
+    options.instructions = text
+    options.check_instructions = check
     return options
 
 
+def _remember_descriptions(db: Session, project_id: uuid.UUID, options: RunOptions) -> None:
+    """Keep the description each class was run with, on the project, so
+    the dialog can refill its rows anywhere. A blank one erases nothing.
+    No commit."""
+    given = {
+        str(p["class_id"]): " ".join(str(p.get("prompt") or "").split())
+        for p in options.prompts
+        if p.get("class_id")
+    }
+    given = {k: v for k, v in given.items() if v}
+    if not given:
+        return
+    row = db.get(LogoAiProjectPrompt, project_id)
+    if row is None:
+        row = LogoAiProjectPrompt(project_id=project_id, class_descriptions={})
+        db.add(row)
+    merged = {**(row.class_descriptions or {}), **given}
+    if merged != row.class_descriptions:
+        row.class_descriptions = merged  # reassigned: in-place JSONB edits are not tracked
+
+
 class TaskPromptOut(BaseModel):
-    # The text in force: the task's own, or the default.
+    # The text in force for the task: its own, its project's, or the default.
     instructions: str
     check_instructions: str
-    # Whether each is the task's own.
+    # Where each comes from.
+    source: _Source
+    check_source: _Source
+    # Whether each differs from the default (the task's or the project's own).
     custom: bool
     check_custom: bool
+    # What every task of the project gets unless it has its own text: the
+    # project's text, or the default.
+    project_instructions: str
+    project_check_instructions: str
     default_instructions: str
     default_check_instructions: str
     # What is added after the instructions on every request, shown for
@@ -996,26 +1070,38 @@ class TaskPromptOut(BaseModel):
 
 
 class TaskPromptIn(BaseModel):
-    # ``None`` or blank: go back to the default text.
+    # ``None`` or blank: no text of its own at that level (the project
+    # then uses the default; the task its project's text).
     instructions: str | None = Field(default=None, max_length=_PROMPT_MAX_CHARS)
     check_instructions: str | None = Field(default=None, max_length=_PROMPT_MAX_CHARS)
+    # "project": the text for every task of the project (and this task
+    # stops overriding it). "task": for this task only.
+    scope: Literal["project", "task"] = "project"
 
 
-def _prompt_out(row: LogoAiTaskPrompt | None, coords: str) -> TaskPromptOut:
-    own = row.instructions if row else None
-    own_check = row.check_instructions if row else None
+def _prompt_out(
+    row: LogoAiTaskPrompt | None, project_row: LogoAiProjectPrompt | None, coords: str
+) -> TaskPromptOut:
+    (text, source), (check, check_source) = _resolved(row, project_row)
+    (shared, _), (shared_check, _) = _resolved(None, project_row)
+    updated = [r.updated_at for r in (row, project_row) if r is not None and r.updated_at]
     return TaskPromptOut(
-        instructions=own or prompt_mod.DEFAULT_INSTRUCTIONS,
-        check_instructions=own_check or prompt_mod.DEFAULT_CHECK_INSTRUCTIONS,
-        custom=bool(own),
-        check_custom=bool(own_check),
+        instructions=text or prompt_mod.DEFAULT_INSTRUCTIONS,
+        check_instructions=check or prompt_mod.DEFAULT_CHECK_INSTRUCTIONS,
+        source=source,
+        check_source=check_source,
+        custom=bool(text) and text.strip() != prompt_mod.DEFAULT_INSTRUCTIONS.strip(),
+        check_custom=bool(check)
+        and check.strip() != prompt_mod.DEFAULT_CHECK_INSTRUCTIONS.strip(),
+        project_instructions=shared or prompt_mod.DEFAULT_INSTRUCTIONS,
+        project_check_instructions=shared_check or prompt_mod.DEFAULT_CHECK_INSTRUCTIONS,
         default_instructions=prompt_mod.DEFAULT_INSTRUCTIONS,
         default_check_instructions=prompt_mod.DEFAULT_CHECK_INSTRUCTIONS,
         format_preview=prompt_mod.format_preview(coords),
         check_format_preview=prompt_mod.check_format_preview(),
         max_chars=_PROMPT_MAX_CHARS,
         cache_min_chars=_PROMPT_CACHE_MIN_CHARS,
-        updated_at=row.updated_at if row else None,
+        updated_at=max(updated) if updated else None,
     )
 
 
@@ -1031,11 +1117,11 @@ def _coords_for(provider: str | None, model: str | None) -> str:
     return chosen.coords or spec.coords
 
 
-def _own_text(text: str | None, default: str) -> str | None:
-    """What to store: nothing for a blank text or one equal to the
-    default, so that a later change of the default reaches the task."""
+def _own_text(text: str | None, inherited: str) -> str | None:
+    """What a task stores: nothing for a blank text or one equal to what
+    it would get anyway, so it keeps following its project."""
     cleaned = (text or "").strip()
-    return None if not cleaned or cleaned == default.strip() else cleaned
+    return None if not cleaned or cleaned == inherited.strip() else cleaned
 
 
 @task_router.get("/{task_id}/logo-ai/prompt", response_model=TaskPromptOut)
@@ -1050,7 +1136,11 @@ def get_prompt(
         require_logo_ai_task(db, user, task_id)
     except AppError as exc:
         raise _http(exc) from exc
-    return _prompt_out(db.get(LogoAiTaskPrompt, task_id), _coords_for(provider, model))
+    return _prompt_out(
+        db.get(LogoAiTaskPrompt, task_id),
+        _project_prompt(db, task_id),
+        _coords_for(provider, model),
+    )
 
 
 @task_router.put("/{task_id}/logo-ai/prompt", response_model=TaskPromptOut)
@@ -1067,18 +1157,43 @@ def put_prompt(
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
-    own = _own_text(payload.instructions, prompt_mod.DEFAULT_INSTRUCTIONS)
-    own_check = _own_text(payload.check_instructions, prompt_mod.DEFAULT_CHECK_INSTRUCTIONS)
+    now = datetime.now(UTC)
     row = db.get(LogoAiTaskPrompt, task_id)
-    if row is None:
-        row = LogoAiTaskPrompt(task_id=task_id)
-        db.add(row)
-    row.instructions = own
-    row.check_instructions = own_check
-    row.updated_by = user.id
-    row.updated_at = datetime.now(UTC)
+    project_row = db.get(LogoAiProjectPrompt, task.project_id)
+    if payload.scope == "project":
+        if project_row is None:
+            project_row = LogoAiProjectPrompt(project_id=task.project_id, class_descriptions={})
+            db.add(project_row)
+        # Kept as given, even when it equals the default: a project that
+        # settled on its prompt is not moved by a later default.
+        project_row.instructions = (payload.instructions or "").strip() or None
+        project_row.check_instructions = (payload.check_instructions or "").strip() or None
+        project_row.updated_by = user.id
+        project_row.updated_at = now
+        if row is not None:
+            # This task now follows the project, as the person saving it sees.
+            db.delete(row)
+            row = None
+    else:
+        (shared, _), (shared_check, _) = _resolved(None, project_row)
+        own = _own_text(payload.instructions, shared or prompt_mod.DEFAULT_INSTRUCTIONS)
+        own_check = _own_text(
+            payload.check_instructions, shared_check or prompt_mod.DEFAULT_CHECK_INSTRUCTIONS
+        )
+        if own is None and own_check is None:
+            if row is not None:
+                db.delete(row)
+                row = None
+        else:
+            if row is None:
+                row = LogoAiTaskPrompt(task_id=task_id)
+                db.add(row)
+            row.instructions = own
+            row.check_instructions = own_check
+            row.updated_by = user.id
+            row.updated_at = now
     db.commit()
-    return _prompt_out(row, _coords_for(provider, model))
+    return _prompt_out(row, project_row, _coords_for(provider, model))
 
 
 # ---------------------------------------------------------------------------

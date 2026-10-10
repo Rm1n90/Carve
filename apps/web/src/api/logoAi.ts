@@ -96,6 +96,9 @@ export interface LogoAiConfig {
   tilings: LogoAiTiling[];
   default_tiling: LogoAiTiling;
   max_references: number;
+  /** The description each class was last run with in the task's
+   *  project (class id -> text). */
+  class_descriptions?: Record<string, string>;
 }
 
 export interface LogoAiPrompt {
@@ -259,11 +262,23 @@ export interface LogoAiFilterResult {
 
 /** A task's Logo AI instructions: the texts in force, whether they are
  *  the task's own, the defaults, and the fixed part added after them. */
+/** Where an instruction text in force comes from. */
+export type LogoAiPromptSource = "task" | "project" | "default";
+/** Where a saved text applies: every task of the project, or one task. */
+export type LogoAiPromptScope = "project" | "task";
+
 export interface LogoAiTaskPrompt {
+  /** The texts in force for the task: its own, its project's, or the default. */
   instructions: string;
   check_instructions: string;
+  source: LogoAiPromptSource;
+  check_source: LogoAiPromptSource;
+  /** Whether each differs from the default. */
   custom: boolean;
   check_custom: boolean;
+  /** What every task of the project gets unless it has its own text. */
+  project_instructions: string;
+  project_check_instructions: string;
   default_instructions: string;
   default_check_instructions: string;
   /** Added after the instructions on every request; not editable. */
@@ -366,10 +381,16 @@ export const logoAiApi = {
   ): Promise<LogoAiTaskPrompt> =>
     (await api.get<LogoAiTaskPrompt>(`/tasks/${taskId}/logo-ai/prompt`, { params })).data,
 
-  /** A blank text, or the default pasted back, means the default. */
+  /** ``scope`` "project": for every task of the project (the task stops
+   *  overriding it); "task": for this task only. A blank text means the
+   *  level above (the project's text, or the default). */
   savePrompt: async (
     taskId: string,
-    body: { instructions: string | null; check_instructions: string | null },
+    body: {
+      instructions: string | null;
+      check_instructions: string | null;
+      scope: LogoAiPromptScope;
+    },
     params: { provider?: string; model?: string } = {},
   ): Promise<LogoAiTaskPrompt> =>
     (await api.put<LogoAiTaskPrompt>(`/tasks/${taskId}/logo-ai/prompt`, body, { params })).data,

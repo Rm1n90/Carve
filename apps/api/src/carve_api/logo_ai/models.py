@@ -211,3 +211,37 @@ class LogoAiCredit(Base):
     updated_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+
+
+class LogoAiProjectPrompt(Base):
+    """A project's own Logo AI setup: its instructions, and the
+    description it last ran each class with.
+
+    Every task of the project uses these instructions unless the task
+    has its own (:class:`LogoAiTaskPrompt`); ``NULL`` means the default
+    text. A text stored here is kept as it is, even when it equals the
+    current default, so a later change of the default does not reach a
+    project that settled on its prompt.
+
+    ``class_descriptions`` maps a class id to the description it was
+    last run with in this project. The dialog keeps its rows in the
+    browser; this is what refills them on another browser or after the
+    browser's copy is lost.
+    """
+
+    __tablename__ = "logo_ai_project_prompts"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    check_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    class_descriptions: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

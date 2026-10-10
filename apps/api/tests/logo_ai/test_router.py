@@ -601,6 +601,109 @@ def test_a_run_keeps_the_instructions_it_was_started_with(db_session, provider, 
     assert db_session.get(LogoAiJob, uuid.UUID(job_id)).params["instructions"] == "First rules."
 
 
+def test_instructions_are_per_project_and_a_task_may_override_them(
+    db_session, provider, queue, redis
+) -> None:
+    from carve_api.logo_ai import prompt as prompt_mod
+    from carve_api.projects.models import Task, TaskKind
+
+    s = seed(db_session, n_assets=1)
+    other_task = Task(project_id=s.project.id, name="T2", kind=TaskKind.image)
+    db_session.add(other_task)
+    db_session.commit()
+    elsewhere = seed(db_session, n_assets=1)
+    client = _client(db_session, s)
+    url = f"/tasks/{s.task.id}/logo-ai/prompt"
+    url2 = f"/tasks/{other_task.id}/logo-ai/prompt"
+
+    # Saved for the project (the default scope): every task of it gets it.
+    saved = client.put(url, json={"instructions": "Project rules.", "check_instructions": "Project check."}).json()
+    assert (saved["source"], saved["check_source"]) == ("project", "project")
+    for u in (url, url2):
+        got = client.get(u).json()
+        assert got["instructions"] == "Project rules." and got["source"] == "project"
+        assert got["check_instructions"] == "Project check."
+    # Another project is not touched.
+    other = _client(db_session, elsewhere).get(f"/tasks/{elsewhere.task.id}/logo-ai/prompt").json()
+    assert other["source"] == "default" and other["instructions"] == prompt_mod.DEFAULT_INSTRUCTIONS
+
+    # One task overrides the detection text; the check stays the project's.
+    own = client.put(
+        url2,
+        json={"instructions": "Only T2.", "check_instructions": "Project check.", "scope": "task"},
+    ).json()
+    assert (own["source"], own["check_source"]) == ("task", "project")
+    assert own["project_instructions"] == "Project rules."
+    assert client.get(url).json()["instructions"] == "Project rules."
+
+    # Runs use what is in force for their task.
+    provider.script = [ok()]
+    client.post(f"/assets/{s.assets[0].id}/logo-ai/detect", json=s.params())
+    assert provider.ctx.system_text.startswith("Project rules.")
+    from carve_api.logo_ai.service import RunOptions
+
+    options = router_mod._with_prompts(db_session, other_task.id, RunOptions(**s.params()))
+    assert options.instructions == "Only T2." and options.check_instructions == "Project check."
+
+    # The project's text saved back for the task: the override goes.
+    back = client.put(
+        url2,
+        json={"instructions": "Project rules.", "check_instructions": "Project check.", "scope": "task"},
+    ).json()
+    assert back["source"] == "project"
+
+    # Saving for the project from a task that overrides it ends the override.
+    client.put(url2, json={"instructions": "Only T2.", "check_instructions": "", "scope": "task"})
+    client.put(url2, json={"instructions": "New shared.", "check_instructions": "Project check."})
+    for u in (url, url2):
+        assert client.get(u).json()["instructions"] == "New shared."
+
+    # A project keeps the default text when it is saved as its own; blank
+    # means the default.
+    pinned = client.put(url, json={"instructions": prompt_mod.DEFAULT_INSTRUCTIONS, "check_instructions": ""}).json()
+    assert pinned["source"] == "project" and pinned["custom"] is False
+    assert pinned["check_source"] == "default"
+
+
+def test_the_descriptions_a_run_used_are_kept_for_the_project(db_session, provider, queue, redis) -> None:
+    from carve_api.projects.models import Task, TaskKind
+
+    s = seed(db_session, n_assets=1)
+    other_task = Task(project_id=s.project.id, name="T2", kind=TaskKind.image)
+    db_session.add(other_task)
+    db_session.commit()
+    client = _client(db_session, s)
+    acme, globex = (str(c.id) for c in s.classes)
+    config = lambda t: client.get("/inference/logo-ai/config", params={"task_id": str(t)}).json()  # noqa: E731
+
+    assert config(s.task.id)["class_descriptions"] == {}
+    prompts = [{"class_id": acme, "prompt": "red  circle\nwordmark"}, {"class_id": globex, "prompt": "blue G"}]
+    client.post(f"/tasks/{s.task.id}/logo-ai/jobs", json=s.params(prompts=prompts))
+    # Shared by every task of the project, whitespace tidied.
+    assert config(other_task.id)["class_descriptions"] == {acme: "red circle wordmark", globex: "blue G"}
+
+    # A later run with a blank description does not erase the saved one.
+    db_session.query(LogoAiJob).delete()
+    db_session.commit()
+    provider.script = [ok()]
+    client.post(
+        f"/assets/{s.assets[0].id}/logo-ai/detect",
+        json=s.params(prompts=[{"class_id": acme, "prompt": "new words"}, {"class_id": globex, "prompt": ""}]),
+    )
+    assert config(s.task.id)["class_descriptions"] == {acme: "new words", globex: "blue G"}
+
+
+def test_a_class_description_may_be_a_full_definition(db_session, provider, queue, redis) -> None:
+    s = seed(db_session, n_assets=1)
+    client = _client(db_session, s)
+    cid = str(s.classes[0].id)
+    url = f"/tasks/{s.task.id}/logo-ai/estimate"
+    ok_body = s.params(prompts=[{"class_id": cid, "prompt": "x" * 1000}])
+    assert client.post(url, json=ok_body).status_code == 200
+    too_long = s.params(prompts=[{"class_id": cid, "prompt": "x" * 1001}])
+    assert client.post(url, json=too_long).status_code == 422
+
+
 def test_only_those_who_may_run_logo_ai_may_edit_its_prompt(db_session, provider) -> None:
     s = _member(db_session, task_grant=False)
     client = _client(db_session, s)

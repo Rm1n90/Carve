@@ -1,10 +1,12 @@
 // Armin Mehri — mehri.armin@gmail.com
 /**
- * Logo AI — the task's own instructions.
+ * Logo AI — the project's instructions, and a task's own where it needs
+ * them.
  *
- * What counts as a logo is not the same in every task, so the text the
- * model is given can be edited per task: one for detection, one for the
- * second pass. Only the instructions are editable. The description of
+ * What counts as a logo (or an object) differs between projects, so the
+ * text the model is given belongs to the project: every task in it uses
+ * it. A task can still have its own, which then takes precedence. There
+ * is one text for detection and one for the second pass. Only the instructions are editable. The description of
  * coordinates, output rows and classes is added after them on every
  * request and is shown here for reference: it is what the answer is
  * parsed by, and a prompt that described it differently would put boxes
@@ -17,7 +19,11 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 
-import { logoAiApi, type LogoAiTaskPrompt as Prompt } from "@/api/logoAi";
+import {
+  logoAiApi,
+  type LogoAiPromptScope as Scope,
+  type LogoAiTaskPrompt as Prompt,
+} from "@/api/logoAi";
 import { Button } from "@/components/ui/Button";
 import { showToast } from "@/lib/toast";
 
@@ -37,6 +43,7 @@ function Editor({
   value,
   onChange,
   isDefault,
+  stateLabel,
   onReset,
   fixed,
   minCacheChars,
@@ -48,6 +55,7 @@ function Editor({
   value: string;
   onChange: (v: string) => void;
   isDefault: boolean;
+  stateLabel: string;
   onReset: () => void;
   fixed: string;
   minCacheChars: number;
@@ -63,7 +71,7 @@ function Editor({
           data-testid={`${testId}-state`}
           className="px-1.5 py-px rounded-[var(--radius-sm)] text-[10px] font-medium uppercase tracking-[0.4px] bg-[var(--bg-subtle)] text-[color:var(--text-secondary)]"
         >
-          {isDefault ? "Default" : "Custom for this task"}
+          {stateLabel}
         </span>
         <Button
           variant="ghost"
@@ -120,32 +128,57 @@ export function LogoAiPrompt({ taskId, providerId, modelId, onClose }: LogoAiPro
 
   const [instructions, setInstructions] = useState("");
   const [checkInstructions, setCheckInstructions] = useState("");
+  // Where the texts are edited: the project's (every task), or this
+  // task's own. Opens on this task's own when it has one.
+  const [scope, setScope] = useState<Scope>("project");
   // Load the saved texts once per task; a refetch for another model
   // (which only changes the fixed part) must not undo what was typed.
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   useEffect(() => {
     if (!saved || loadedFor === taskId) return;
-    setInstructions(saved.instructions);
-    setCheckInstructions(saved.check_instructions);
+    const own = saved.source === "task" || saved.check_source === "task";
+    setScope(own ? "task" : "project");
+    setInstructions(own ? saved.instructions : saved.project_instructions);
+    setCheckInstructions(own ? saved.check_instructions : saved.project_check_instructions);
     setLoadedFor(taskId);
   }, [saved, taskId, loadedFor]);
+
+  // The texts saved at the level being edited.
+  const savedAt = (s: Prompt, level: Scope) =>
+    level === "project"
+      ? { instructions: s.project_instructions, check: s.project_check_instructions }
+      : { instructions: s.instructions, check: s.check_instructions };
+
+  function switchScope(next: Scope) {
+    if (!saved || next === scope) return;
+    // Show what is saved at that level: the project's text, or what this
+    // task runs with now (its own, or the project's to start from).
+    const texts = savedAt(saved, next);
+    setInstructions(texts.instructions);
+    setCheckInstructions(texts.check);
+    setScope(next);
+  }
 
   const save = useMutation({
     mutationFn: () =>
       logoAiApi.savePrompt(
         taskId,
-        { instructions, check_instructions: checkInstructions },
+        { instructions, check_instructions: checkInstructions, scope },
         params,
       ),
     onSuccess: (next: Prompt) => {
       qc.setQueryData(["logo-ai", "prompt", taskId, providerId ?? "", modelId ?? ""], next);
       qc.invalidateQueries({ queryKey: ["logo-ai", "prompt", taskId] });
-      setInstructions(next.instructions);
-      setCheckInstructions(next.check_instructions);
+      const own = next.source === "task" || next.check_source === "task";
+      setScope(own ? "task" : "project");
+      setInstructions(own ? next.instructions : next.project_instructions);
+      setCheckInstructions(own ? next.check_instructions : next.project_check_instructions);
       showToast(
-        next.custom || next.check_custom
-          ? "Saved. The next Logo AI run on this task uses these instructions."
-          : "Saved. This task uses the default instructions.",
+        scope === "project"
+          ? "Saved for every task in this project. The next run on any of them uses it."
+          : own
+            ? "Saved for this task only. Other tasks keep the project's instructions."
+            : "This task now uses the project's instructions again.",
         { variant: "success", duration: 5000 },
       );
     },
@@ -174,8 +207,19 @@ export function LogoAiPrompt({ taskId, providerId, modelId, onClose }: LogoAiPro
   }
 
   const same = (a: string, b: string) => a.trim() === b.trim();
+  const base = savedAt(saved, scope);
+  const savedOwn = saved.source === "task" || saved.check_source === "task";
   const dirty =
-    !same(instructions, saved.instructions) || !same(checkInstructions, saved.check_instructions);
+    !same(instructions, base.instructions) ||
+    !same(checkInstructions, base.check) ||
+    // Saving for the project from a task that has its own text drops it.
+    (scope === "project" && savedOwn);
+  const stateLabel = (value: string, defaultText: string) =>
+    same(value, defaultText)
+      ? "Default"
+      : scope === "project"
+        ? "Project · all tasks"
+        : "This task only";
 
   return (
     <>
@@ -184,16 +228,55 @@ export function LogoAiPrompt({ taskId, providerId, modelId, onClose }: LogoAiPro
         className="grid gap-4 max-h-[calc(88vh-300px)] min-h-[180px] overflow-y-auto pr-2 text-[12px]"
       >
         <span className="text-[11px] text-[color:var(--text-secondary)]">
-          These are the instructions the model works from on this task. Change them when the
-          task needs other rules than the default: what counts as a logo here, what never
-          does. A run keeps the text it was started with, so saving changes the next run.
+          These are the instructions the model works from. They belong to the project: every
+          task in it uses them, unless a task has its own. Change them when the project needs
+          other rules than the default: what to box here, and what never. A run keeps the text
+          it was started with, so saving changes the next run.
         </span>
+        <div
+          role="radiogroup"
+          className="grid grid-cols-2 gap-1 p-1 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] text-[12px] font-medium"
+        >
+          {(
+            [
+              { id: "project" as const, label: "Whole project", sub: "every task in this project" },
+              { id: "task" as const, label: "Only this task", sub: "overrides the project's text" },
+            ]
+          ).map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={scope === o.id}
+              onClick={() => switchScope(o.id)}
+              data-testid={`logo-ai-prompt-scope-${o.id}`}
+              className={
+                scope === o.id
+                  ? "grid py-1 rounded-[var(--radius-sm)] bg-[var(--bg-elev)] shadow-[0_0_0_1px_var(--accent)]"
+                  : "grid py-1 rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+              }
+            >
+              <span>{o.label}</span>
+              <span className="text-[10.5px] font-normal text-[color:var(--text-tertiary)]">{o.sub}</span>
+            </button>
+          ))}
+        </div>
+        {scope === "project" && savedOwn && (
+          <span
+            data-testid="logo-ai-prompt-override-note"
+            className="text-[11px] text-[color:var(--warning)]"
+          >
+            This task has its own instructions. Saving here sets the project's text and makes
+            this task use it too.
+          </span>
+        )}
         <Editor
           label="Detection instructions"
           hint="What to box and what to leave, how tight, and how to score visibility and confidence."
           value={instructions}
           onChange={setInstructions}
           isDefault={same(instructions, saved.default_instructions)}
+          stateLabel={stateLabel(instructions, saved.default_instructions)}
           onReset={() => setInstructions(saved.default_instructions)}
           fixed={saved.format_preview}
           minCacheChars={saved.cache_min_chars}
@@ -206,6 +289,7 @@ export function LogoAiPrompt({ taskId, providerId, modelId, onClose }: LogoAiPro
           value={checkInstructions}
           onChange={setCheckInstructions}
           isDefault={same(checkInstructions, saved.default_check_instructions)}
+          stateLabel={stateLabel(checkInstructions, saved.default_check_instructions)}
           onReset={() => setCheckInstructions(saved.default_check_instructions)}
           fixed={saved.check_format_preview}
           minCacheChars={saved.cache_min_chars}
@@ -223,7 +307,13 @@ export function LogoAiPrompt({ taskId, providerId, modelId, onClose }: LogoAiPro
           onClick={() => save.mutate()}
           data-testid="logo-ai-prompt-save"
         >
-          {save.isPending ? "Saving…" : dirty ? "Save for this task" : "Saved"}
+          {save.isPending
+            ? "Saving…"
+            : !dirty
+              ? "Saved"
+              : scope === "project"
+                ? "Save for the project"
+                : "Save for this task"}
         </Button>
       </div>
     </>

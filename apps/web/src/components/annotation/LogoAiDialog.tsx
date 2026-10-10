@@ -211,6 +211,10 @@ export function LogoAiDialog({
     staleTime: 60_000,
   });
   const config = configQ.data ?? null;
+  // A class's description for a new or blank row: the one it was last
+  // run with in this project, else the class's own text prompt.
+  const describe = (c: ClassRow): string =>
+    config?.class_descriptions?.[c.id] ?? c.text_prompt ?? "";
   const providers = useMemo(
     () => (config?.providers ?? []).filter((p) => p.configured),
     [config],
@@ -256,10 +260,56 @@ export function LogoAiDialog({
     if (!batchAllowed && delivery === "batch") setDelivery("realtime");
   }, [batchAllowed, delivery]);
 
-  // ---- per-task persistence ---------------------------------------------
+  // A row without a description takes its class's stored one. Rows
+  // saved before the class had a description (or picked while the class
+  // list was still loading) would otherwise stay blank, and "Add all"
+  // only adds classes that have no row yet.
   useEffect(() => {
-    if (!open) return;
+    if (!open || classes.length === 0) return;
+    const described = new Map(
+      classes
+        .map((c) => [c.id, describe(c)] as const)
+        .filter(([, text]) => text.trim()),
+    );
+    setRows((prev) =>
+      prev.some((r) => r.classId && !r.prompt.trim() && described.has(r.classId))
+        ? prev.map((r) =>
+            r.classId && !r.prompt.trim() && described.has(r.classId)
+              ? { ...r, prompt: described.get(r.classId) as string }
+              : r,
+          )
+        : prev,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, classes, rows, config]);
+
+  // Rows whose description is not the one the project has saved for the
+  // class (edited since, or saved in this browser before the project's
+  // text changed). Offered for replacement, never replaced silently: an
+  // edit not run yet would be lost.
+  const outdated = rows.filter((r) => {
+    const saved = r.classId ? config?.class_descriptions?.[r.classId] : undefined;
+    return !!saved && saved.trim() !== "" && r.prompt.trim() !== saved.trim();
+  });
+
+  // ---- per-task persistence ---------------------------------------------
+  // Nothing is saved until what was saved before has been put back:
+  // saving runs on every change, and a save made before the restore
+  // (or while the class list is still loading and the saved rows cannot
+  // be matched to classes yet) would overwrite the saved setup with the
+  // empty form.
+  const [restoredFor, setRestoredFor] = useState<string | null>(null);
+  const restoreKey = `${taskId ?? ""}`;
+  useEffect(() => {
+    if (!open) setRestoredFor(null);
+  }, [open]);
+  useEffect(() => {
+    if (!open || restoredFor === restoreKey) return;
     const stored = useDialogPrefs.getState().getLogoAi(taskId);
+    if (stored && classes.length === 0 && stored.rows.some((r) => r.classId)) {
+      return; // classes not loaded yet: wait for them, change nothing
+    }
+    setRestoredFor(restoreKey);
     if (!stored) {
       // First time on this task: the server's defaults, and one row per
       // class when there are only a few, so a small project is ready to
@@ -269,7 +319,7 @@ export function LogoAiDialog({
         setTiling(config.default_tiling);
       }
       if (classes.length > 0 && classes.length <= 8) {
-        setRows(classes.map((c) => newRow(c.id, c.text_prompt ?? "")));
+        setRows(classes.map((c) => newRow(c.id, describe(c))));
       }
       return;
     }
@@ -298,10 +348,10 @@ export function LogoAiDialog({
       to: typeof stored.rangeTo === "number" ? stored.rangeTo : "",
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, classes.length > 0]);
 
   useEffect(() => {
-    if (!open || !provider || !model) return;
+    if (!open || restoredFor !== restoreKey || !provider || !model) return;
     useDialogPrefs.getState().saveLogoAi(taskId, {
       provider: provider.id,
       model: model.id,
@@ -323,7 +373,7 @@ export function LogoAiDialog({
       ...(typeof scopeRange.to === "number" ? { rangeTo: scopeRange.to } : {}),
     });
   }, [
-    open, taskId, provider, model, effort, rows, detail, tiling, minConfidence,
+    open, restoredFor, restoreKey, taskId, provider, model, effort, rows, detail, tiling, minConfidence,
     minVisible, overwrite, skipAnnotated, delivery, flex, doubleCheck, checkModelId,
     checkEffort, scope, scopeRange,
   ]);
@@ -590,6 +640,8 @@ export function LogoAiDialog({
       };
     },
     onSuccess: (data) => {
+      // The descriptions just run with are now the project's.
+      qc.invalidateQueries({ queryKey: ["logo-ai", "config", taskId ?? ""] });
       if (data.kind === "job") {
         qc.invalidateQueries({ queryKey: ["logo-ai", "jobs", taskId ?? ""] });
         setTab("runs");
@@ -850,6 +902,33 @@ export function LogoAiDialog({
                     {validRows.length} class{validRows.length === 1 ? "" : "es"}
                   </span>
                 </div>
+                {outdated.length > 0 && (
+                  <div
+                    data-testid="logo-ai-outdated-descriptions"
+                    className="flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[11px]"
+                  >
+                    <span className="text-[color:var(--text-secondary)]">
+                      {outdated.length} description{outdated.length === 1 ? " differs" : "s differ"} from
+                      the project's saved one{outdated.length === 1 ? "" : "s"}:{" "}
+                      {outdated.map((r) => classes.find((c) => c.id === r.classId)?.name).join(", ")}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRows((prev) =>
+                          prev.map((r) => {
+                            const saved = r.classId ? config?.class_descriptions?.[r.classId] : undefined;
+                            return saved && saved.trim() ? { ...r, prompt: saved } : r;
+                          }),
+                        )
+                      }
+                      data-testid="logo-ai-use-project-descriptions"
+                      className="ml-auto shrink-0 h-6 px-2 rounded-[var(--radius-sm)] font-medium text-[color:var(--accent)] hover:bg-[var(--bg-hover)]"
+                    >
+                      Use the project's
+                    </button>
+                  </div>
+                )}
                 <div className="grid gap-1.5 max-h-[220px] overflow-y-auto pr-1">
                   {rows.map((row) => {
                     const cls = classes.find((c) => c.id === row.classId);
@@ -881,7 +960,8 @@ export function LogoAiDialog({
                         <input
                           value={row.prompt}
                           onChange={(e) => patchRow(row.rid, { prompt: e.target.value })}
-                          maxLength={400}
+                          maxLength={1000}
+                          title={row.prompt || undefined}
                           placeholder={
                             cls
                               ? `Optional: what the ${cls.name} logo looks like`
@@ -916,19 +996,19 @@ export function LogoAiDialog({
                     <Plus className="h-3.5 w-3.5" />
                     Add class
                   </button>
-                  {unusedClasses.length > 1 && unusedClasses.length <= 100 && (
+                  {unusedClasses.length >= 1 && unusedClasses.length <= 100 && (
                     <button
                       type="button"
                       onClick={() =>
                         setRows((prev) => [
                           ...prev.filter((r) => r.classId),
-                          ...unusedClasses.map((c) => newRow(c.id, c.text_prompt ?? "")),
+                          ...unusedClasses.map((c) => newRow(c.id, describe(c))),
                         ])
                       }
                       data-testid="logo-ai-add-all"
                       className="h-7 px-2 rounded-[var(--radius-sm)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-hover)]"
                     >
-                      Add all {unusedClasses.length} remaining
+                      {unusedClasses.length === 1 ? `Add ${unusedClasses[0].name}` : `Add all ${unusedClasses.length} remaining`}
                     </button>
                   )}
                 </div>

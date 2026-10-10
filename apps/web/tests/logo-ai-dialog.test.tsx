@@ -494,12 +494,16 @@ describe("LogoAiDialog", () => {
     expect(row.textContent).toContain("271 boxes · 14 rejected on the second look");
   });
 
-  it("shows the task's instructions and saves an edited text", async () => {
+  it("shows the project's instructions and saves an edited text for the project", async () => {
     const prompt = {
       instructions: "Default detection text.",
       check_instructions: "Default check text.",
+      source: "default" as const,
+      check_source: "default" as const,
       custom: false,
       check_custom: false,
+      project_instructions: "Default detection text.",
+      project_check_instructions: "Default check text.",
       default_instructions: "Default detection text.",
       default_check_instructions: "Default check text.",
       format_preview: "## Coordinates\n...\n## Target classes",
@@ -511,7 +515,8 @@ describe("LogoAiDialog", () => {
     (api as unknown as Record<string, ReturnType<typeof vi.fn>>).getPrompt.mockResolvedValue(prompt);
     (api as unknown as Record<string, ReturnType<typeof vi.fn>>).savePrompt.mockImplementation(
       async (_t: string, body: { instructions: string; check_instructions: string }) => ({
-        ...prompt, instructions: body.instructions, custom: true,
+        ...prompt, instructions: body.instructions, project_instructions: body.instructions,
+        source: "project", custom: true,
       }),
     );
     renderDialog();
@@ -528,15 +533,20 @@ describe("LogoAiDialog", () => {
 
     fireEvent.change(text, { target: { value: "Only sponsor logos on the cars." } });
     expect(screen.getByTestId("logo-ai-prompt-instructions-state").textContent).toBe(
-      "Custom for this task",
+      "Project · all tasks",
     );
+    expect(save.textContent).toBe("Save for the project");
     fireEvent.click(save);
     await waitFor(() =>
       expect(
         (api as unknown as Record<string, ReturnType<typeof vi.fn>>).savePrompt,
       ).toHaveBeenCalledWith(
         "t1",
-        { instructions: "Only sponsor logos on the cars.", check_instructions: "Default check text." },
+        {
+          instructions: "Only sponsor logos on the cars.",
+          check_instructions: "Default check text.",
+          scope: "project",
+        },
         { provider: "anthropic", model: "claude-opus-5-5" },
       ),
     );
@@ -544,6 +554,70 @@ describe("LogoAiDialog", () => {
     // Back to the default with one click.
     fireEvent.click(screen.getByTestId("logo-ai-prompt-instructions-reset"));
     expect(text.value).toBe("Default detection text.");
+  });
+
+  it("edits a task's own instructions apart from the project's", async () => {
+    const prompt = {
+      instructions: "Task rules.",
+      check_instructions: "Project check.",
+      source: "task" as const,
+      check_source: "project" as const,
+      custom: true,
+      check_custom: true,
+      project_instructions: "Project rules.",
+      project_check_instructions: "Project check.",
+      default_instructions: "Default detection text.",
+      default_check_instructions: "Default check text.",
+      format_preview: "## Target classes",
+      check_format_preview: "tiles",
+      max_chars: 40000,
+      cache_min_chars: 10,
+      updated_at: null,
+    };
+    const calls = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    calls.getPrompt.mockResolvedValue(prompt);
+    calls.savePrompt.mockResolvedValue({
+      ...prompt, instructions: "Project rules.", source: "project",
+    });
+    renderDialog();
+    await openDialog();
+    fireEvent.click(screen.getByTestId("logo-ai-tab-prompt"));
+
+    // Opens on this task's own text, because it has one.
+    const text = (await screen.findByTestId("logo-ai-prompt-instructions")) as HTMLTextAreaElement;
+    await waitFor(() => expect(text.value).toBe("Task rules."));
+    expect(screen.getByTestId("logo-ai-prompt-scope-task").getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("logo-ai-prompt-instructions-state").textContent).toBe("This task only");
+
+    // The project's text, and a warning that saving it ends the override.
+    fireEvent.click(screen.getByTestId("logo-ai-prompt-scope-project"));
+    expect(text.value).toBe("Project rules.");
+    expect(screen.getByTestId("logo-ai-prompt-override-note")).toBeTruthy();
+    const save = screen.getByTestId("logo-ai-prompt-save") as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(calls.savePrompt).toHaveBeenCalledWith(
+        "t1",
+        { instructions: "Project rules.", check_instructions: "Project check.", scope: "project" },
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("fills new rows from the descriptions the project last ran with", async () => {
+    api.config.mockResolvedValue(config({ class_descriptions: { c1: "project words" } }));
+    renderDialog();
+    await openDialog();
+    // A small project gets one row per class on its own.
+    await waitFor(() => {
+      const values = Array.from(
+        document.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>(
+          '[data-testid^="logo-ai-prompt-r-"]',
+        ),
+      ).map((el) => el.value);
+      expect(values).toContain("project words");
+    });
   });
 
   it("shows the credit left and takes a new balance on the Billing tab", async () => {
@@ -666,6 +740,135 @@ describe("LogoAiDialog", () => {
     expect(row.textContent).toContain("took 32s");
     expect(row.textContent).toContain("Tokens: 2.5k in + 1.4k cached · 1.1k out (585 reasoning)");
     expect(row.textContent).toContain("Cost $0.016");
+  });
+
+  it("fills a saved row's blank description from its class", async () => {
+    useDialogPrefs.setState({
+      logoAiByTask: {
+        t1: {
+          provider: "anthropic", model: "claude-opus-5-5", effort: "low",
+          rows: [{ classId: "c1", prompt: "" }, { classId: "c2", prompt: "my own words" }],
+          detail: "standard", tiling: "off", minConfidence: 0.5, minVisible: 0,
+          overwrite: false, skipAnnotated: false, delivery: "realtime", flex: false,
+          doubleCheck: false, scope: "this",
+        },
+      },
+    });
+    const described = [
+      { ...classes[0], text_prompt: "red circle wordmark" },
+      { ...classes[1], text_prompt: "should not replace a typed description" },
+    ];
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ConfirmProvider>
+          <LogoAiDialog assetId="a1" taskId="t1" classes={described} />
+        </ConfirmProvider>
+      </QueryClientProvider>,
+    );
+    await openDialog();
+    await waitFor(() => {
+      const values = Array.from(
+        document.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>(
+          '[data-testid^="logo-ai-prompt-r-"]',
+        ),
+      ).map((el) => el.value);
+      expect(values).toEqual(["red circle wordmark", "my own words"]);
+    });
+  });
+
+  it("keeps the saved rows when the dialog opens before the classes load", async () => {
+    const saved = {
+      provider: "anthropic", model: "claude-opus-5-5", effort: "low",
+      rows: [{ classId: "c1", prompt: "first" }, { classId: "c2", prompt: "second" }],
+      detail: "standard", tiling: "off", minConfidence: 0.5, minVisible: 0,
+      overwrite: false, skipAnnotated: false, delivery: "realtime" as const, flex: false,
+      doubleCheck: false, scope: "this" as const,
+    };
+    useDialogPrefs.setState({ logoAiByTask: { t1: saved } });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (cls: typeof classes) => (
+      <QueryClientProvider client={qc}>
+        <ConfirmProvider>
+          <LogoAiDialog assetId="a1" taskId="t1" classes={cls} />
+        </ConfirmProvider>
+      </QueryClientProvider>
+    );
+    // Opened right after a reload: the class list is still empty.
+    const { rerender } = render(tree([]));
+    await openDialog();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(useDialogPrefs.getState().logoAiByTask.t1.rows).toEqual(saved.rows);
+
+    // The classes arrive: the saved rows come back, and stay saved.
+    rerender(tree(classes));
+    await waitFor(() => {
+      const values = Array.from(
+        document.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>(
+          '[data-testid^="logo-ai-prompt-r-"]',
+        ),
+      ).map((el) => el.value);
+      expect(values).toEqual(["first", "second"]);
+    });
+    expect(useDialogPrefs.getState().logoAiByTask.t1.rows).toEqual(saved.rows);
+  });
+
+  it("offers the project's description for a row saved with an older one", async () => {
+    useDialogPrefs.setState({
+      logoAiByTask: {
+        t1: {
+          provider: "anthropic", model: "claude-opus-5-5", effort: "low",
+          rows: [{ classId: "c1", prompt: "old words" }, { classId: "c2", prompt: "same" }],
+          detail: "standard", tiling: "off", minConfidence: 0.5, minVisible: 0,
+          overwrite: false, skipAnnotated: false, delivery: "realtime", flex: false,
+          doubleCheck: false, scope: "this",
+        },
+      },
+    });
+    api.config.mockResolvedValue(config({ class_descriptions: { c1: "new words", c2: "same" } }));
+    renderDialog();
+    await openDialog();
+    const note = await screen.findByTestId("logo-ai-outdated-descriptions");
+    expect(note.textContent).toContain("1 description differs");
+    expect(note.textContent).toContain("Acme");
+    fireEvent.click(screen.getByTestId("logo-ai-use-project-descriptions"));
+    await waitFor(() => {
+      const values = Array.from(
+        document.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>(
+          '[data-testid^="logo-ai-prompt-r-"]',
+        ),
+      ).map((el) => el.value);
+      expect(values).toEqual(["new words", "same"]);
+    });
+    expect(screen.queryByTestId("logo-ai-outdated-descriptions")).toBeNull();
+  });
+
+  it("offers to add a class that is the only one without a row", async () => {
+    useDialogPrefs.setState({
+      logoAiByTask: {
+        t1: {
+          provider: "anthropic", model: "claude-opus-5-5", effort: "low",
+          rows: [{ classId: "c1", prompt: "a" }],
+          detail: "standard", tiling: "off", minConfidence: 0.5, minVisible: 0,
+          overwrite: false, skipAnnotated: false, delivery: "realtime", flex: false,
+          doubleCheck: false, scope: "this",
+        },
+      },
+    });
+    api.config.mockResolvedValue(config({ class_descriptions: { c2: "the new class" } }));
+    renderDialog();
+    await openDialog();
+    const add = await screen.findByTestId("logo-ai-add-all");
+    expect(add.textContent).toContain("Add Globex");
+    fireEvent.click(add);
+    await waitFor(() => {
+      const values = Array.from(
+        document.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>(
+          '[data-testid^="logo-ai-prompt-r-"]',
+        ),
+      ).map((el) => el.value);
+      expect(values).toEqual(["a", "the new class"]);
+    });
   });
 
   it("moves a saved setup to the standard image detail once", async () => {
