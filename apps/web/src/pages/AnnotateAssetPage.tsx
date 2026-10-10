@@ -93,7 +93,11 @@ import {
   bulkConvertPolygonsInTaskToBboxWithToast,
   bulkClearTaskAnnotationsWithToast,
   countPolygonsOnFrame,
+  countBoxesOnFrame,
+  bulkConvertBoxesOnFrameToPolygonsWithToast,
+  bulkConvertBoxesInTaskToPolygons,
 } from "@/lib/bulkConvert";
+import { useBackgroundJobs } from "@/state/backgroundJobs";
 import { assetsApi } from "@/api/assets";
 import { classesApi, type ClassIn } from "@/api/classes";
 import { deleteClassWithConfirm } from "@/lib/deleteClassWithConfirm";
@@ -1679,6 +1683,114 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     return n;
   });
 
+  // Class names by id: the class decides how SAM turns a box into a
+  // shape (ground and crowd become masks, overlays may stay boxes).
+  const classNameById = useMemo(
+    () => Object.fromEntries((classesQ.data ?? []).map((c) => [c.id, c.name])),
+    [classesQ.data],
+  );
+
+  const boxCountOnImage = useAnnotations((s) => {
+    let n = 0;
+    for (const a of Object.values(s.byId)) {
+      if (a.kind === "bbox" && a.frameId === frameId) n++;
+    }
+    return n;
+  });
+
+  // Box -> polygon with SAM: every box of the open image in one server
+  // call, applied locally so Cmd+Z can undo it and autosave persists it.
+  const handleConvertBoxesOnImage = useCallback(async () => {
+    const fid = frameIdRef.current;
+    const count = countBoxesOnFrame(fid);
+    if (count === 0) {
+      showToast("No boxes on this image.", { variant: "info" });
+      return;
+    }
+    const ok = await confirm({
+      title: `Convert ${count} box${count === 1 ? "" : "es"} to polygons with SAM?`,
+      description:
+        "SAM outlines the object inside each box; small objects are zoomed in on for detail. Boxes where SAM finds nothing stay boxes. Cmd+Z can undo.",
+      confirmLabel: "Convert",
+    });
+    if (!ok) return;
+    await bulkConvertBoxesOnFrameToPolygonsWithToast(assetId, fid, classNameById);
+  }, [confirm, assetId, classNameById]);
+
+  // Task-wide box -> polygon. Runs in the background, image by image,
+  // saving each image as it goes; Cancel stops between images.
+  const handleConvertBoxesInTask = useCallback(async () => {
+    if (dirtyCount > 0) {
+      showToast("Save your unsaved changes before converting all assets.", { variant: "error" });
+      return;
+    }
+    let boxes;
+    try {
+      const all = await annotationsApi.listForTaskRaw(taskId);
+      boxes = all.filter((a) => a.kind === "bbox");
+    } catch {
+      showToast("Failed to fetch annotations.", { variant: "error" });
+      return;
+    }
+    if (boxes.length === 0) {
+      showToast("No boxes to convert in this task.", { variant: "info" });
+      return;
+    }
+    const images = new Set(boxes.map((a) => `${a.asset_id}|${a.frame_id ?? ""}`)).size;
+    const ok = await confirm({
+      title: `Convert ${boxes.length} box${boxes.length === 1 ? "" : "es"} on ${images} image${images === 1 ? "" : "s"} to polygons?`,
+      description:
+        "SAM outlines the object inside every box in this task, one image at a time (a few seconds per busy image). Each image is saved as soon as it is done, and Cancel stops after the current one. This cannot be undone with Cmd+Z. Keep this tab open while it runs.",
+      variant: "danger",
+      confirmLabel: "Convert all",
+    });
+    if (!ok) return;
+    const jobId =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `b2p-${Date.now()}-${Math.random()}`;
+    const controller = new AbortController();
+    const jobs = useBackgroundJobs.getState();
+    jobs.add({
+      jobId,
+      taskId,
+      kind: "sam-refine-batch",
+      label: "Boxes → polygons (SAM)",
+      startedAt: Date.now(),
+      cancel: async () => controller.abort(),
+    });
+    const result = await bulkConvertBoxesInTaskToPolygons(taskId, boxes, {
+      signal: controller.signal,
+      classNameById,
+      onProgress: (p) =>
+        useBackgroundJobs.getState().setProgress(jobId, {
+          status: "running",
+          done: p.doneImages,
+          total: p.totalImages,
+          failed: p.failedImages,
+          message: `${p.converted} converted`,
+        }),
+    });
+    useBackgroundJobs.getState().setProgress(jobId, {
+      status: result.canceled
+        ? "canceled"
+        : result.failedImages > 0
+          ? "completed_with_errors"
+          : "completed",
+      done: result.doneImages,
+      total: result.totalImages,
+      failed: result.failedImages,
+      message: `${result.converted} converted`,
+    });
+    showToast(
+      `${result.canceled ? "Stopped. " : ""}Converted ${result.converted} box${result.converted === 1 ? "" : "es"} on ${result.doneImages} image${result.doneImages === 1 ? "" : "s"}${
+        result.skipped > 0 ? `; ${result.skipped} left as boxes` : ""
+      }${result.failedImages > 0 ? `; ${result.failedImages} image(s) failed and can be run again` : ""}.`,
+      { variant: result.failedImages > 0 ? "error" : "success", duration: 8000 },
+    );
+    qc.invalidateQueries({ queryKey: ["annotations", taskId] });
+  }, [confirm, dirtyCount, qc, taskId, classNameById]);
+
   const handleConvertPolygonsOnImage = useCallback(async () => {
     const fid = frameIdRef.current;
     const count = countPolygonsOnFrame(fid);
@@ -2134,6 +2246,9 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
             onConvertPolygonsOnImage={handleConvertPolygonsOnImage}
             onConvertPolygonsInTask={handleConvertPolygonsInTask}
             polygonCountOnImage={polygonCountOnImage}
+            onConvertBoxesOnImage={handleConvertBoxesOnImage}
+            onConvertBoxesInTask={handleConvertBoxesInTask}
+            boxCountOnImage={boxCountOnImage}
             onAfterYoloPredict={() => {
               qc.invalidateQueries({ queryKey: ["annotations", taskId] });
             }}

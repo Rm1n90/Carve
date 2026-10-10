@@ -8,7 +8,8 @@
 // Both supported directions (BBox→Polygon, Polygon→refined Polygon)
 // reduce to "given an axis-aligned box on this asset, give me back a
 // SAM polygon", which `samApi.boxPrompt` already provides.
-import { samApi } from "@/api/sam";
+import { samApi, type SamBoxMode } from "@/api/sam";
+import type { Geometry as GeometryT } from "@/state/annotations";
 import { modelsApi } from "@/api/phase2";
 import { bboxOfGeometry } from "@/lib/geometryConvert";
 import type { Bbox, Geometry } from "@/state/annotations";
@@ -85,23 +86,83 @@ export async function samBoxToPolygonPoints({
   // predictor is mounted yet. Independent of the editor's active
   // tool / SAM mode (point/box/track) — we never need the user to
   // click into the Smart tool first.
+  const [shape] = await samBoxesToShapes({ assetId, frameId, boxes: [box] });
+  return shape && shape !== MERGED && shape.kind === "polygon" ? shape.points : null;
+}
+
+// Flat printed carriers (spec v1, C.3 step 1): a hole is print split off
+// the surface, so it is filled. See-through carriers: their full outline,
+// cut only by what stands in front of them.
+const FLAT_CLASSES = new Set([
+  "board_static", "board_led", "backdrop", "banner_flag", "handheld_board",
+  "ground_mat", "video_screen", "podium_step", "official_table", "boat_hull", "sail",
+]);
+const SPECIAL_CLASSES: Record<string, SamBoxMode> = {
+  ground_surface: "ground",
+  crowd: "crowd",
+  graphic_overlay: "overlay",
+  glass_wall: "carrier",
+  goal_net_frame: "net",
+  ring_ropes_cage: "ropes",
+};
+
+/** The class decides how its box is turned into a shape (spec v1). */
+export function samModeForClass(className: string | null | undefined): SamBoxMode {
+  if (!className) return "object";
+  if (SPECIAL_CLASSES[className]) return SPECIAL_CLASSES[className];
+  if (FLAT_CLASSES.has(className)) return "flat";
+  return "object";
+}
+
+/** A crowd box SAM joined into a touching crowd box: remove it. */
+export const MERGED = "merged" as const;
+export type SamShape = GeometryT | typeof MERGED | null;
+
+/** Many boxes of one image to shapes: polygons for objects, pixel masks
+ *  for ground and crowd. Aligned with ``boxes``; ``null`` where SAM
+ *  found nothing, ``MERGED`` for a crowd box joined into another. */
+export async function samBoxesToShapes({
+  assetId,
+  frameId,
+  boxes,
+  modes,
+  zoom = true,
+  signal,
+}: {
+  assetId: string;
+  frameId?: string | null;
+  boxes: [number, number, number, number][];
+  modes?: SamBoxMode[];
+  zoom?: boolean;
+  signal?: AbortSignal;
+}): Promise<SamShape[]> {
+  if (boxes.length === 0) return [];
   await ensureSamReady();
-  // Encode caches the image embedding server-side and returns the
-  // image_hash that decode references. Idempotent by image hash so
-  // a recent encode is a near-free server hit.
-  const enc = await samApi.encode(assetId, frameId ?? null);
-  const result = await samApi.decode(
-    assetId,
-    enc.image_hash,
-    [],
-    [],
-    undefined,
-    box,
-  );
-  if (!result || !result.polygon || result.polygon.length < 3) {
-    return null;
+  const out: SamShape[] = [];
+  for (let i = 0; i < boxes.length; i += 2000) {
+    const res = await samApi.boxesToPolygons(
+      assetId,
+      {
+        frame_id: frameId ?? null,
+        boxes: boxes.slice(i, i + 2000),
+        zoom,
+        ...(modes ? { modes: modes.slice(i, i + 2000) } : {}),
+      },
+      signal,
+    );
+    for (const r of res.results) {
+      if (r?.merged_into != null) {
+        out.push(MERGED);
+      } else if (r?.mask) {
+        out.push({ kind: "mask_rle", size: r.mask.size, counts: r.mask.counts });
+      } else if (r && r.polygon.length >= 3) {
+        out.push({ kind: "polygon", points: r.polygon.map(([x, y]) => [x, y] as [number, number]) });
+      } else {
+        out.push(null);
+      }
+    }
   }
-  return result.polygon.map(([x, y]) => [x, y] as [number, number]);
+  return out;
 }
 
 /**

@@ -325,3 +325,37 @@ def test_sam_encode_translates_lifecycle_load_failed_to_sam_not_ready(
         assert "CUDA out of memory" in body["detail"]
     finally:
         model_client_mod.set_test_transport(None)
+
+
+def test_sam_boxes_to_polygons_sends_the_image_and_every_box(db_session, monkeypatch) -> None:
+    import base64
+    import json as _json
+
+    client = _client(db_session)
+    token, aid = _setup_asset(client, monkeypatch)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sam/boxes-to-polygons":
+            seen.update(_json.loads(request.content))
+            return httpx.Response(200, json={
+                "image_hash": "h", "encodes": 2, "ms": 40,
+                "results": [{"polygon": [[0, 0], [4, 0], [4, 4]], "score": 0.9, "zoomed": True}, None],
+            })
+        return httpx.Response(404)
+
+    model_client_mod.set_test_transport(httpx.MockTransport(handler))
+    try:
+        r = client.post(
+            f"/assets/{aid}/sam/boxes-to-polygons",
+            json={"boxes": [[0, 0, 5, 5], [1, 1, 3, 3]], "zoom": False},
+            headers=_hdr(token),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["results"][1] is None
+        assert seen["boxes"] == [[0, 0, 5, 5], [1, 1, 3, 3]] and seen["zoom"] is False
+        assert base64.b64decode(seen["image_b64"]) == _tiny_png()
+        bad = client.post(f"/assets/{aid}/sam/boxes-to-polygons", json={"boxes": []}, headers=_hdr(token))
+        assert bad.status_code == 422
+    finally:
+        model_client_mod.set_test_transport(None)

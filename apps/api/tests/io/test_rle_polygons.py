@@ -65,3 +65,12 @@ def test_rle_to_polygons_below_min_area_dropped() -> None:
     # Single foreground pixel — below the default min_area of 4.
     polys = rle_to_polygons("1 1 98", (10, 10))
     assert polys == []
+
+
+def test_comma_separated_runs_from_the_editor_and_sam_are_read_too() -> None:
+    from carve_api.io.rle import rle_to_bbox, rle_to_polygons
+
+    # 4x4 mask, top-left 2x2 block, column-major: 0 then 2 on, 2 off, 2 on, 10 off.
+    spaced = rle_to_bbox("0 2 2 2 10", (4, 4))
+    assert rle_to_bbox("0,2,2,2,10", (4, 4)) == spaced == (0, 0, 2, 2)
+    assert rle_to_polygons("0,2,2,2,10", (4, 4)) == rle_to_polygons("0 2 2 2 10", (4, 4))

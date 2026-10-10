@@ -98,7 +98,52 @@ export interface SamAutoVisualResult {
   per_class: Record<string, number>;
 }
 
+/** How a box becomes a shape: an object (holes and pieces kept), a flat
+ *  printed carrier (holes filled), see-through glass ("carrier"), a net
+ *  or goal ("net"), ring ropes or a cage ("ropes"), the playing surface
+ *  ("ground"), a crowd, or a broadcast graphic ("overlay"). */
+export type SamBoxMode =
+  | "object" | "flat" | "carrier" | "net" | "ropes" | "ground" | "crowd" | "overlay";
+
+export interface SamBoxesToPolygonsResult {
+  image_hash: string;
+  results: Array<{
+    polygon: [number, number][];
+    score: number;
+    zoomed: boolean;
+    mask?: { counts: string; size: [number, number] } | null;
+    /** A crowd box joined into the touching crowd box at this index. */
+    merged_into?: number | null;
+  } | null>;
+  encodes: number;
+  ms: number;
+}
+
 export const samApi = {
+  /** Box -> polygon for many boxes of one image in a single call. Small
+   *  boxes are zoomed (sharper masks); ``zoom: false`` is fastest.
+   *  ``results`` is aligned with ``boxes``; ``null`` where SAM found
+   *  nothing. */
+  boxesToPolygons: async (
+    assetId: string,
+    body: {
+      frame_id?: string | null;
+      boxes: [number, number, number, number][];
+      zoom?: boolean;
+      epsilon_factor?: number;
+      /** Per box; ground and crowd come back as pixel masks. */
+      modes?: SamBoxMode[];
+    },
+    signal?: AbortSignal,
+  ): Promise<SamBoxesToPolygonsResult> =>
+    (
+      await api.post<SamBoxesToPolygonsResult>(
+        `/assets/${assetId}/sam/boxes-to-polygons`,
+        body,
+        { signal, timeout: 180_000 },
+      )
+    ).data,
+
   encode: async (
     assetId: string,
     frameId?: string | null,

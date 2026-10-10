@@ -47,6 +47,7 @@ class _FakePredictor:
             "labels": lbls_arr.tolist() if lbls_arr.size else [],
             "box": list(box) if box is not None else None,
             "had_mask_input": mask_input is not None,
+            "multimask": multimask_output,
         })
         # Three candidate masks — the highest score should win
         masks = np.stack([
@@ -55,6 +56,9 @@ class _FakePredictor:
             self._mask,
         ])
         scores = np.array([0.1, 0.2, self._score])
+        if not multimask_output:
+            # Like SAM: a single mask when one is asked for.
+            return masks[2:3], scores[2:3], None
         return masks, scores, None
 
 
@@ -214,6 +218,60 @@ def test_decode_box_only_forwards_box_to_predictor() -> None:
     assert stub.predict_calls[0]["points"] == []
     assert stub.predict_calls[0]["labels"] == []
     assert stub.predict_calls[0]["box"] == [10.0, 20.0, 50.0, 80.0]
+    # A box is not ambiguous: one mask, not the best of three (which
+    # regularly picked the biggest candidate, spilling past the box).
+    assert stub.predict_calls[0]["multimask"] is False
+
+
+def test_decode_single_click_still_asks_for_three_candidates() -> None:
+    client, stub = _client_with_stub(np.array([[1, 1], [1, 0]], dtype=np.uint8), score=0.5)
+    enc = client.post("/sam/encode", json={"image_b64": _png_b64()}).json()
+    client.post("/sam/decode", json={"image_hash": enc["image_hash"], "points": [[5, 5]], "labels": [1]})
+    assert stub.predict_calls[0]["multimask"] is True
+
+
+def test_boxes_to_polygons_runs_every_box_in_one_call() -> None:
+    mask = np.zeros((24, 32), dtype=np.uint8)
+    mask[4:20, 6:26] = 1
+    client, stub = _client_with_stub(mask, score=0.8)
+    r = client.post("/sam/boxes-to-polygons", json={
+        "image_b64": _png_b64(),
+        "boxes": [[6, 4, 26, 20], [0, 0, 8, 8]],
+        "zoom": False,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["results"]) == 2 and body["encodes"] == 1
+    assert all(c["multimask"] is False for c in stub.predict_calls)
+    first = body["results"][0]
+    xs = [p[0] for p in first["polygon"]]; ys = [p[1] for p in first["polygon"]]
+    assert min(xs) >= 4 and max(xs) <= 28 and min(ys) >= 2 and max(ys) <= 22
+    # The image is left encoded under the hash /sam/encode gives it.
+    enc = client.post("/sam/encode", json={"image_b64": _png_b64()}).json()
+    assert enc["image_hash"] == body["image_hash"]
+
+
+def test_boxes_to_polygons_returns_ground_as_a_mask() -> None:
+    mask = np.zeros((24, 32), dtype=np.uint8)
+    mask[2:6, 2:6] = 1
+    client, _ = _client_with_stub(mask, score=0.8)
+    r = client.post("/sam/boxes-to-polygons", json={
+        "image_b64": _png_b64(), "boxes": [[2, 2, 6, 6], [0, 12, 32, 24]],
+        "modes": ["object", "ground"], "zoom": False,
+    })
+    assert r.status_code == 200, r.text
+    ground = r.json()["results"][1]
+    assert ground["polygon"] == [] and ground["mask"]["size"] == [24, 32]
+    runs = [int(v) for v in ground["mask"]["counts"].split(",")]
+    assert sum(runs) == 24 * 32
+    bad = client.post("/sam/boxes-to-polygons", json={"image_b64": _png_b64(), "boxes": [[0, 0, 4, 4]], "modes": ["ground", "crowd"]})
+    assert bad.status_code == 422
+
+
+def test_boxes_to_polygons_rejects_a_bad_box() -> None:
+    client, _ = _client_with_stub(np.ones((24, 32), dtype=np.uint8))
+    r = client.post("/sam/boxes-to-polygons", json={"image_b64": _png_b64(), "boxes": [[10, 10, 5, 20]]})
+    assert r.status_code == 422
 
 
 def test_decode_box_with_points_forwards_both() -> None:

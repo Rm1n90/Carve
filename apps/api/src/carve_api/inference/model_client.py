@@ -177,6 +177,28 @@ def sam_encode(image_b64: str) -> dict:
         return r.json()
 
 
+def sam_boxes_to_polygons(
+    image_b64: str,
+    boxes: list[list[float]],
+    *,
+    zoom: bool = True,
+    epsilon_factor: float | None = None,
+    modes: list[str] | None = None,
+) -> dict:
+    """POST /sam/boxes-to-polygons — every box of one image in one call:
+    ``{image_hash, results: [{polygon, score, zoomed} | None], encodes, ms}``."""
+    body: dict = {"image_b64": image_b64, "boxes": boxes, "zoom": zoom}
+    if epsilon_factor is not None:
+        body["epsilon_factor"] = epsilon_factor
+    if modes is not None:
+        body["modes"] = modes
+    with _wrap_unreachable("sam_boxes_to_polygons"), _client() as c:
+        r = c.post("/sam/boxes-to-polygons", json=body)
+        if r.status_code >= 400:
+            raise ModelServiceError(r.status_code, _safe_json(r))
+        return r.json()
+
+
 def sam_decode(
     image_hash: str,
     points: list[list[int]],

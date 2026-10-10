@@ -1,6 +1,7 @@
 # Armin Mehri — mehri.armin@gmail.com
 import logging
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -34,6 +35,7 @@ from carve_api.inference.auto_text import (
 )
 from carve_api.inference.sam import (
     sam_box_prompt_for_asset,
+    sam_boxes_to_polygons_for_asset,
     sam_decode_with_hash,
     sam_encode_for_asset,
     sam_text_prompt_for_asset,
@@ -1041,6 +1043,54 @@ def sam_encode_endpoint(
         raise _http(exc) from exc
     try:
         return sam_encode_for_asset(asset, frame_id=frame_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+
+
+class SamBoxesToPolygonsIn(BaseModel):
+    # The video frame the boxes are on; omitted for an image asset.
+    frame_id: uuid.UUID | None = None
+    # xyxy in image pixels.
+    boxes: list[list[float]] = Field(..., min_length=1, max_length=2000)
+    # Zoom into small boxes for sharper masks (a few more encodes).
+    zoom: bool = True
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
+    # Per box: "object", "flat" (printed carrier), "carrier" (see-through
+    # glass), "net", "ropes", "ground" (playing surface), "crowd" or
+    # "overlay". Some come back as pixel masks (holes and pieces kept);
+    # touching crowd boxes come back as one, the others with
+    # ``merged_into``.
+    modes: list[
+        Literal["object", "flat", "carrier", "net", "ropes", "ground", "crowd", "overlay"]
+    ] | None = None
+
+
+@router.post("/{asset_id}/sam/boxes-to-polygons")
+def sam_boxes_to_polygons_endpoint(
+    asset_id: uuid.UUID,
+    payload: SamBoxesToPolygonsIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Box -> polygon for many boxes of one image in a single call.
+    Returns polygons only; the caller saves them (so the editor can
+    undo, and a task-wide run saves through the batch endpoint)."""
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    try:
+        require_gpu_task(db, user, asset.task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        return sam_boxes_to_polygons_for_asset(
+            asset,
+            payload.boxes,
+            frame_id=payload.frame_id,
+            zoom=payload.zoom,
+            epsilon_factor=payload.epsilon_factor,
+            modes=payload.modes,
+        )
     except AppError as exc:
         raise _http(exc) from exc
 

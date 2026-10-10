@@ -295,6 +295,11 @@ interface EditorToolbarProps {
    * count (treated as 0 for the disabled check).
    */
   polygonCountOnImage?: number;
+  /** Box -> polygon with SAM on the open image / across the task. */
+  onConvertBoxesOnImage?: () => void;
+  onConvertBoxesInTask?: () => void;
+  /** Bounding boxes on the open image (drives the item's count badge). */
+  boxCountOnImage?: number;
   zoomPct?: number;
   /** Only present when an asset is open. */
   projectId?: string;
@@ -2767,6 +2772,9 @@ export function EditorToolbar({
   onConvertPolygonsOnImage,
   onConvertPolygonsInTask,
   polygonCountOnImage = 0,
+  onConvertBoxesOnImage,
+  onConvertBoxesInTask,
+  boxCountOnImage = 0,
   task = null,
 }: EditorToolbarProps) {
   const active = useTool((s) => s.active);
@@ -3166,9 +3174,9 @@ export function EditorToolbar({
         </DropdownMenu.Root>
       )}
 
-      {(onConvertPolygonsOnImage || onConvertPolygonsInTask) && (
+      {(onConvertPolygonsOnImage || onConvertPolygonsInTask || onConvertBoxesOnImage || onConvertBoxesInTask) && (
         <DropdownMenu.Root>
-          <Tooltip content="Convert polygons → bbox">
+          <Tooltip content="Convert boxes ↔ polygons">
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
@@ -3232,6 +3240,52 @@ export function EditorToolbar({
                 >
                   <BoxSelect className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
                   <span className="flex-1">Convert polygons in all assets…</span>
+                </DropdownMenu.Item>
+              )}
+              {(onConvertBoxesOnImage || onConvertBoxesInTask) && (
+                <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
+              )}
+              {onConvertBoxesOnImage && (
+                <DropdownMenu.Item
+                  data-testid="convert-boxes-on-image"
+                  disabled={boxCountOnImage === 0}
+                  onSelect={(e) => {
+                    if (boxCountOnImage === 0) {
+                      e.preventDefault();
+                      return;
+                    }
+                    onConvertBoxesOnImage();
+                  }}
+                  className={cn(
+                    "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] outline-none",
+                    "data-[highlighted]:bg-[var(--bg-hover)]",
+                    "data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed",
+                    boxCountOnImage > 0
+                      ? "cursor-pointer text-[color:var(--text-primary)]"
+                      : "text-[color:var(--text-tertiary)]",
+                  )}
+                >
+                  <Wand2 className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                  <span className="flex-1">Convert boxes to polygons (SAM) on this image</span>
+                  {boxCountOnImage > 0 && (
+                    <span className="font-mono text-[10.5px] tabular-nums text-[color:var(--text-tertiary)]">
+                      {boxCountOnImage}
+                    </span>
+                  )}
+                </DropdownMenu.Item>
+              )}
+              {onConvertBoxesInTask && (
+                <DropdownMenu.Item
+                  data-testid="convert-boxes-in-task"
+                  onSelect={() => onConvertBoxesInTask()}
+                  className={cn(
+                    "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] cursor-pointer outline-none",
+                    "text-[color:var(--text-primary)]",
+                    "data-[highlighted]:bg-[var(--bg-hover)]",
+                  )}
+                >
+                  <Wand2 className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                  <span className="flex-1">Convert boxes to polygons (SAM) in all assets…</span>
                 </DropdownMenu.Item>
               )}
             </DropdownMenu.Content>

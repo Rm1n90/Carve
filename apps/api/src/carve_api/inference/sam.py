@@ -26,6 +26,7 @@ from carve_api.inference.autoannotate import fetch_asset_bytes
 from carve_api.inference.model_client import (
     ModelServiceError,
     sam_box_prompt,
+    sam_boxes_to_polygons,
     sam_decode,
     sam_encode,
     sam_text_prompt,
@@ -202,6 +203,28 @@ def sam_encode_for_asset(
         return sam_encode(b64)
     except ModelServiceError as exc:
         raise _translate_model_error(exc, label="encode") from exc
+
+
+def sam_boxes_to_polygons_for_asset(
+    asset: Asset,
+    boxes: list[list[float]],
+    *,
+    frame_id: uuid.UUID | None = None,
+    zoom: bool = True,
+    epsilon_factor: float | None = None,
+    modes: list[str] | None = None,
+) -> dict:
+    """Every box of one image (or video frame) to a polygon, in one
+    model-service call. Results are aligned with ``boxes``."""
+    is_video = getattr(asset.kind, "value", asset.kind) == "video"
+    body = fetch_asset_bytes(asset, frame_id=frame_id if is_video else None)
+    b64 = base64.b64encode(body).decode("ascii")
+    try:
+        return sam_boxes_to_polygons(
+            b64, boxes, zoom=zoom, epsilon_factor=epsilon_factor, modes=modes
+        )
+    except ModelServiceError as exc:
+        raise _translate_model_error(exc, label="boxes_to_polygons") from exc
 
 
 def sam_decode_with_hash(

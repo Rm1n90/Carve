@@ -332,7 +332,11 @@ def decode(payload: DecodeIn) -> DecodeOut:
         or has_negative
         or (payload.box is not None and n_now > 0)
     )
-    multimask = not is_refinement
+    # Three candidates only for a single click, the one ambiguous prompt
+    # (part or whole?). A box says which object it means: SAM's single
+    # mask is the output trained for it, and keeping the best of three
+    # regularly returned the biggest (a wheel's mask taking the car).
+    multimask = not is_refinement and payload.box is None
 
     pts = (
         np.asarray(payload.points)
@@ -461,6 +465,166 @@ def decode(payload: DecodeIn) -> DecodeOut:
         size=size,
         score=best_score,
         polygon=polygon,
+    )
+
+
+class BoxesToPolygonsIn(BaseModel):
+    image_b64: str
+    # xyxy in image pixels, one per object.
+    boxes: list[list[float]] = Field(..., min_length=1, max_length=2000)
+    # Encode small boxes on a zoomed crop (sharper masks, a few more
+    # encodes). Off: everything on the full image, fastest.
+    zoom: bool = True
+    epsilon_factor: float | None = Field(default=None, gt=0.0, le=0.1)
+    # Per box: "object" (default), "flat" (a printed carrier), "carrier"
+    # (see-through glass), "net" (goals, nets, backboards), "ropes" (ring
+    # ropes, a fighting cage), "ground" (the playing surface), "crowd" or
+    # "overlay" (a broadcast graphic). See box_convert.
+    modes: list[Literal["object", "flat", "carrier", "net", "ropes", "ground", "crowd", "overlay"]] | None = None
+
+
+class MaskRleOut(BaseModel):
+    counts: str
+    size: list[int]
+
+
+class BoxPolygonOut(BaseModel):
+    polygon: list[list[float]]
+    score: float
+    zoomed: bool
+    # A pixel mask instead of a polygon: ground, crowd, see-through
+    # carriers, and shapes with real openings or several pieces.
+    mask: MaskRleOut | None = None
+    # A crowd box joined to the touching crowd box at this index, which
+    # carries the mask of both; the caller removes this one.
+    merged_into: int | None = None
+
+
+class BoxesToPolygonsOut(BaseModel):
+    image_hash: str
+    # Aligned with the request's boxes; ``None`` where SAM found nothing.
+    results: list[BoxPolygonOut | None]
+    encodes: int
+    ms: int
+
+
+def _rle(mask: np.ndarray) -> tuple[str, list[int]]:
+    """Same format as ``encode_mask_rle`` (column-major runs, starting
+    with a background run, comma-separated), vectorised: a full-frame
+    ground mask has millions of pixels."""
+    h, w = mask.shape
+    flat = (mask > 0).T.reshape(-1).astype(np.int8)
+    edges = np.flatnonzero(np.diff(flat)) + 1
+    runs = np.diff(np.concatenate(([0], edges, [flat.size])))
+    if flat.size and flat[0] == 1:
+        runs = np.concatenate(([0], runs))
+    return ",".join(map(str, runs.tolist())), [h, w]
+
+
+def _box_out(r: Any) -> BoxPolygonOut:
+    mask = None
+    if r.mask is not None:
+        counts, size = _rle(r.mask)
+        mask = MaskRleOut(counts=counts, size=size)
+    return BoxPolygonOut(
+        polygon=r.polygon, score=r.score, zoomed=r.zoomed, mask=mask, merged_into=r.merged_into
+    )
+
+
+def _text_union_fn(sam: Any):
+    """``prompts -> mask``: the union of SAM 3.1's masks for some text
+    prompts on the image currently set (the full image, at that point)."""
+    import torch
+
+    from carve_model.sam.sam3p1_adapter import _extract_text_detections
+
+    adapter = getattr(sam, "_adapter", None)
+    processor = getattr(adapter, "_processor", None)
+    if processor is None:
+        return None
+
+    def run(prompts: tuple[str, ...]) -> np.ndarray:
+        state = adapter._state
+        h, w = adapter._original_size
+        out = np.zeros((h, w), dtype=np.uint8)
+        before = getattr(processor, "confidence_threshold", 0.5)
+        processor.set_confidence_threshold(0.3)
+        try:
+            for prompt in prompts:
+                with torch.no_grad():
+                    processor.set_text_prompt(prompt=prompt, state=state)
+                for m, _score in _extract_text_detections(state):
+                    out |= (np.asarray(m) > 0).astype(np.uint8)
+        finally:
+            processor.set_confidence_threshold(before)
+        return out
+
+    return run
+
+
+@router.post("/boxes-to-polygons", response_model=BoxesToPolygonsOut)
+def boxes_to_polygons(payload: BoxesToPolygonsIn) -> BoxesToPolygonsOut:
+    """Turn every box of one image into a polygon in one call (see
+    :mod:`carve_model.sam.box_convert`). Leaves the full image encoded,
+    under the same hash ``/sam/encode`` gives it, so the editor's own
+    clicks on that image need no new encode."""
+    from carve_model.sam import box_convert
+    from carve_model.sam.lifecycle import manager, SamNotReadyError
+
+    for b in payload.boxes:
+        if len(b) != 4 or b[2] <= b[0] or b[3] <= b[1]:
+            raise HTTPException(status_code=422, detail="each box must be [x1, y1, x2, y2] with x2 > x1, y2 > y1")
+    if payload.modes is not None and len(payload.modes) != len(payload.boxes):
+        raise HTTPException(status_code=422, detail="modes must have one entry per box")
+    try:
+        img_bytes = base64.b64decode(payload.image_b64)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="bad_image_b64") from exc
+    h = xxhash.xxh3_128(img_bytes).hexdigest()
+    started = time.perf_counter()
+    encodes = 0
+    try:
+        with admit(CostClass.SAM_IMAGE), autocast_ctx():
+            img = np.array(Image.open(BytesIO(img_bytes)).convert("RGB"))
+            with manager.lease_or_load() as sam:
+                # Was the editor working on this image? Then leave it encoded.
+                had_image = sam.cached_image_hash() == h
+
+                def set_image(arr: np.ndarray) -> None:
+                    nonlocal encodes
+                    encodes += 1
+                    # The full image under its /sam/encode hash; crops under
+                    # one that no client holds.
+                    key = h if arr.shape[:2] == img.shape[:2] else f"crop:{h}:{encodes}"
+                    sam.set_image(arr, image_hash=key)
+
+                def predict_box(box: np.ndarray) -> tuple[np.ndarray, float]:
+                    masks, scores, _ = sam.predict_point(
+                        point_coords=None, point_labels=None, box=box, multimask_output=False,
+                    )
+                    return box_convert.single_mask(masks, scores)
+
+                text_masks = _text_union_fn(sam) if getattr(sam, "supports_text", False) else None
+
+                results = box_convert.convert(
+                    img,
+                    payload.boxes,
+                    set_image=set_image,
+                    predict_box=predict_box,
+                    zoom=payload.zoom,
+                    epsilon_factor=payload.epsilon_factor,
+                    keep_full=had_image,
+                    modes=payload.modes,
+                    text_masks=text_masks,
+                )
+    except SamNotReadyError as e:
+        err_msg = manager.status().error
+        raise HTTPException(status_code=503, detail=_sam_not_ready_detail(e.state, err_msg)) from e
+    return BoxesToPolygonsOut(
+        image_hash=h,
+        results=[_box_out(r) if r else None for r in results],
+        encodes=encodes,
+        ms=int((time.perf_counter() - started) * 1000),
     )
 
 
