@@ -34,6 +34,17 @@ def _raster(r: bc.BoxResult, h: int, w: int) -> np.ndarray:
     return m
 
 
+def _only(prompts: tuple[str, ...], mask: np.ndarray):
+    """Text prompts that find ``mask`` for ``prompts`` and nothing else."""
+    return lambda p: mask if p == prompts else np.zeros_like(mask)
+
+
+def _surfaces(found: dict[str, np.ndarray], like: np.ndarray):
+    """Text prompts that find ``found[prompt]`` for each ground prompt asked
+    alone, and nothing for anything else."""
+    return lambda p: found.get(p[0], np.zeros_like(like)) if len(p) == 1 else np.zeros_like(like)
+
+
 def _scene(h: int = 1080, w: int = 1920) -> np.ndarray:
     img = np.zeros((h, w, 3), dtype=np.uint8)
     img[500:540, 900:920] = 255     # a small "person" (20 x 40)
@@ -124,7 +135,7 @@ def test_ground_takes_the_material_fills_logos_and_kerbs_and_cuts_out_objects() 
                      predict_box=seg.predict_box, text_masks=text, modes=["object", "ground"], zoom=False)
     g = out[1].mask
     assert out[1].polygon == [] and g is not None
-    assert asked == [bc.GROUND_PROMPTS + bc.GROUND_EXTRA_PROMPTS, bc.WATER_PROMPTS, bc.GROUND_BLOCKER_PROMPTS]
+    assert asked == [(p,) for p in bc.GROUND_PROMPTS] + [bc.GROUND_EXTRA_PROMPTS, bc.WATER_PROMPTS, bc.GROUND_BLOCKER_PROMPTS]
     assert g[270, 130] == 1          # the painted logo is ground
     assert g[355, 50] == 1           # so is the kerb
     assert g[315, 270] == 0          # the car is cut out
@@ -139,7 +150,7 @@ def test_crowd_joins_people_and_falls_back_to_the_box() -> None:
         people[100:160, x:x + 10] = 1
     seg = _Seg()
     out = bc.convert(img, [[90, 90, 170, 170]], set_image=seg.set_image, predict_box=seg.predict_box,
-                     text_masks=lambda p: people, modes=["crowd"], zoom=False)
+                     text_masks=_only(bc.CROWD_PROMPTS, people), modes=["crowd"], zoom=False)
     assert out[0].mask[130, 111] == 1  # joined across the gap
     # Without text prompts: the box, minus what else is labelled.
     out2 = bc.convert(img, [[90, 90, 140, 170]], set_image=seg.set_image, predict_box=seg.predict_box,
@@ -332,7 +343,7 @@ def test_touching_crowd_boxes_come_back_as_one_crowd() -> None:
         people[100:160, x:x + 10] = 1
     seg = _Seg()
     out = bc.convert(np.zeros((h, w, 3), np.uint8), [[10, 90, 200, 170], [195, 90, 390, 170]],
-                     set_image=seg.set_image, predict_box=seg.predict_box, text_masks=lambda p: people,
+                     set_image=seg.set_image, predict_box=seg.predict_box, text_masks=_only(bc.CROWD_PROMPTS, people),
                      modes=["crowd", "crowd"], zoom=False)
     keep, gone = (0, 1) if out[0].mask is not None else (1, 0)
     assert out[gone].merged_into == keep and out[gone].mask is None
@@ -373,3 +384,122 @@ def test_water_is_ground_only_where_it_is_most_of_the_box() -> None:
                      text_masks=lambda p: pool if p == bc.WATER_PROMPTS
                      else (deck if p[0] == bc.GROUND_PROMPTS[0] else np.zeros((h, w), np.uint8)))
     assert out[0].mask[150, 200] == 1
+
+
+def test_competitors_inside_a_crowd_box_are_not_crowd() -> None:
+    h, w = 300, 400
+    people = np.zeros((h, w), np.uint8)
+    for x in (100, 113, 126, 139, 152):      # spectators along a barrier
+        people[60:120, x:x + 10] = 1
+    rider = np.zeros((h, w), np.uint8)
+    rider[180:240, 200:215] = 1              # a rider on the road, inside the box rectangle
+    found = {bc.CROWD_PROMPTS: people | rider, bc.ATHLETE_PROMPTS: rider}
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[90, 50, 260, 250]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, modes=["crowd"], zoom=False,
+                     text_masks=lambda p: found.get(p, np.zeros((h, w), np.uint8)))
+    m = out[0].mask
+    assert m[90, 105] == 1 and m[90, 111] == 1   # the spectators, joined
+    assert not m[175:245, 195:220].any()         # the rider is not
+
+
+class _ByBox(_Seg):
+    """A predictor with a mask of its own for each box."""
+
+    def __init__(self, masks: dict[tuple[int, ...], np.ndarray]) -> None:
+        super().__init__()
+        self.masks = masks
+
+    def predict_box(self, box):
+        self.boxes.append([float(v) for v in box])
+        return self.masks[tuple(int(round(v)) for v in box)].copy(), 0.9
+
+
+def test_what_is_labelled_inside_a_design_element_is_cut_out_of_it() -> None:
+    h, w = 300, 400
+    tile = np.zeros((h, w), np.uint8)
+    tile[100:250, 100:300] = 1               # a photo tile, a design element
+    car = np.zeros((h, w), np.uint8)
+    car[150:180, 150:210] = 1                # a car shown in it
+    scene = np.zeros((h, w), np.uint8)
+    scene[200:290, 280:330] = 1              # a person in the scene, partly behind the tile
+    seg = _ByBox({(100, 100, 300, 250): tile, (148, 148, 212, 182): car, (280, 200, 330, 290): scene})
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[100, 100, 300, 250], [148, 148, 212, 182], [280, 200, 330, 290]],
+                     set_image=seg.set_image, predict_box=seg.predict_box,
+                     modes=["overlay", "object", "object"], zoom=False)
+    o = _raster(out[0], h, w)
+    assert o[165, 180] == 0                  # the car is cut out of the tile
+    assert o[120, 120] == 1 and o[230, 290] == 1   # the rest of the tile stays, under the scene person too
+
+
+def test_a_ground_inside_a_design_element_is_not_blocked_by_it() -> None:
+    h, w = 300, 400
+    tile = np.zeros((h, w), np.uint8)
+    tile[100:250, 100:300] = 1               # a photo tile
+    bug = np.zeros((h, w), np.uint8)
+    bug[10:40, 10:80] = 1                    # a score bug over the main scene
+    material = np.zeros((h, w), np.uint8)
+    material[:, :] = 1
+    seg = _ByBox({(100, 100, 300, 250): tile, (10, 10, 80, 40): bug})
+    out = bc.convert(np.zeros((h, w, 3), np.uint8),
+                     [[100, 100, 300, 250], [10, 10, 80, 40], [110, 180, 290, 245], [0, 0, 400, 90]],
+                     set_image=seg.set_image, predict_box=seg.predict_box, text_masks=_surfaces({"road": material}, material),
+                     modes=["overlay", "overlay", "ground", "ground"], zoom=False)
+    inset_ground, main_ground = out[2].mask, out[3].mask
+    assert inset_ground[200, 200] == 1           # the track in the tile is ground...
+    assert _raster(out[0], h, w)[200, 200] == 0  # ...and not the tile
+    assert _raster(out[0], h, w)[120, 200] == 1
+    assert main_ground[25, 40] == 0 and main_ground[60, 200] == 1   # the score bug still blocks the main ground
+
+
+def test_a_barrier_at_an_angle_across_its_long_box_keeps_sams_whole_mask() -> None:
+    h, w = 300, 1600
+    wall = np.zeros((h, w), np.uint8)
+    for x in range(100, 1500):               # a thin wall running down across its box
+        y = 100 + (x - 100) * 120 // 1400
+        wall[y:y + 8, x] = 1
+
+    class P(_Seg):
+        def predict_box(self, box):
+            self.boxes.append([float(v) for v in box])
+            if box[2] - box[0] > 1000:
+                return wall.copy(), 0.9        # the whole box: the wall
+            m = np.zeros((h, w), np.uint8)     # a piece's square: mostly the track beside it
+            m[int(box[1]):int(box[3]), int(box[0]):int(box[2])] = 1
+            return m, 0.5
+
+    seg = P()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[100, 100, 1500, 230]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, modes=["flat"], zoom=False)
+    m = _raster(out[0], h, w)
+    assert len(seg.boxes) > 1
+    assert m[103, 110] == 1 and m[221, 1490] == 1    # the wall, end to end
+    assert m[200, 300] == 0                          # not the track below it
+
+
+def test_the_ground_is_the_course_not_the_field_beside_an_open_road() -> None:
+    h, w = 300, 400
+    road = np.zeros((h, w), np.uint8)
+    road[:, 0:180] = 1                       # the road the riders are on
+    road[:, 320:400] = 1                     # more of it beyond a hedge, no one on it
+    field = np.zeros((h, w), np.uint8)
+    field[:, 200:300] = 1                    # a field beside it...
+    field[297:300, 180:200] = 1              # ...touching the road only along the frame edge
+    trees = np.zeros((h, w), np.uint8)
+    trees[:297, 180:200] = 1
+    trees[:, 300:320] = 1
+    zero = np.zeros((h, w), np.uint8)
+
+    def text(p):
+        if p == bc.GROUND_BLOCKER_PROMPTS:
+            return trees
+        return {"road": road, "dirt": field}.get(p[0], zero) if len(p) == 1 else zero
+
+    riders = [[40, 60, 60, 120], [90, 120, 110, 180], [130, 180, 150, 240]]
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), riders + [[0, 0, 400, 300]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, text_masks=text, modes=["object"] * 3 + ["ground"], zoom=False)
+    g = out[3].mask
+    assert g[150, 100] == 1 and g[290, 100] == 1     # the road
+    assert g[150, 250] == 0                          # not the field
+    assert g[150, 360] == 1                          # the same road beyond the hedge is

@@ -26,14 +26,25 @@ the single most object-like thing in it (on a race track, one kerb):
   circuit is not ground but a pool is).
   Holes and short gaps no other label claims are filled, so painted
   logos, lines and kerbs stay part of it, and everything else labelled
-  on the image (cars, boards, people) is cut out.
+  on the image (cars, boards, people) is cut out. Only the course is
+  kept: the parts the competitors stand on, and parts of the same
+  surface. A field or garden beside an open road (dirt and grass where
+  the riders are on asphalt) touches the road only through a narrow neck
+  and is cut off there.
 * **crowd**: the people SAM 3.1 finds with the prompt "person" inside
-  the box, joined across the small gaps between them.
+  the box, joined across the small gaps between them, without the
+  competitors it finds there ("athlete", "cyclist"): a crowd box is a
+  rectangle, and the riders passing the stand inside it are not
+  spectators.
 
 Both come back as pixel masks (they have holes and several parts). An
 **overlay** box (a broadcast graphic) keeps SAM's outline when SAM finds
 the graphic, and falls back to the box for a faint, see-through bug
-where SAM only finds a blob of the scene behind it.
+where SAM only finds a blob of the scene behind it. An opaque overlay
+(a design element, a panel, a photo inset) gives way to what is labelled
+inside it: the cars, boards, track and crowd of an inset are cut out of
+it and keep their own labels, and a ground or crowd box inside it is not
+blocked by it.
 
 The other boxes differ in what their holes mean:
 
@@ -60,7 +71,10 @@ closed across them.
 
 A flat box much longer than high (a row of boards along a pitch) is also
 masked in overlapping pieces, and the pieces are joined: SAM given the
-whole row keeps one board of it. Crowd boxes that touch are one stand
+whole row keeps one board of it. When SAM given the whole box already
+runs its full length, and is sure of it (a barrier at an angle across
+its box), that mask is kept alone: a piece's square then holds mostly what lies beside the
+barrier (track, crowd), and SAM takes that. Crowd boxes that touch are one stand
 section: they are masked as one area and come back as one crowd (the
 largest box's); the others are marked as merged into it.
 """
@@ -116,6 +130,11 @@ GROUND_PROMPTS = (
 # street circuit, a river) it is scenery.
 WATER_PROMPTS = ("water",)
 CROWD_PROMPTS = ("person", "crowd")
+# Competitors inside a crowd box (riders passing a stand, the back of a
+# peloton) are not spectators. On the test frames these find riders,
+# boxers, fighters and surfers and no one in a stand; "racer" and
+# "player" also fire on spectators.
+ATHLETE_PROMPTS = ("athlete", "cyclist")
 # Ground also takes these (a kerb or logo running to the frame edge is
 # not a hole, so filling alone would miss it).
 GROUND_EXTRA_PROMPTS = ("kerb", "painted marking on the ground")
@@ -127,6 +146,15 @@ CROWD_CROP_MARGIN = 0.1
 # Gaps in the ground shorter than this share of the box's side are filled
 # (a kerb or line running across the whole frame is not a "hole").
 GROUND_GAP = 0.08
+# Ground parts joined by a neck narrower than this share of the image's
+# long side are separate parts (a field beside an open road).
+COURSE_NECK = 0.005
+# A part is the course when it holds at least this share of the
+# competitors standing on the ground...
+COURSE_STANDING = 0.1
+# ...or when at least half of it is a surface they stand on: one found
+# under at least this share of them, relative to the most found one.
+COURSE_SURFACE = 0.5
 # An overlay's SAM outline is kept only when it covers at least this much
 # of its box; otherwise the box is the mask.
 OVERLAY_MIN_FILL = 0.5
@@ -142,8 +170,16 @@ LONG_RATIO = 4.0
 LONG_PIECE = 2.0
 LONG_STRIDE = 1.5
 LONG_MAX_PIECES = 16
+# SAM's mask for the whole long box is kept alone when it covers at least
+# this share of the box's length, with at least this score (an unsure one
+# spanning it is usually a thin line or the pitch along a row of boards).
+LONG_SPAN = 0.8
+LONG_SCORE = 0.7
 # Crowd boxes closer than this (pixels) are one area.
 CROWD_TOUCH_PX = 4
+# A box with at least this share of it inside a bigger overlay's box lies
+# inside that overlay (an inset's car, its track).
+INSET_SHARE = 0.8
 
 
 @dataclass
@@ -320,6 +356,16 @@ def _long_pieces(box: list[float]) -> list[list[float]]:
     return [[x1, y1 + a, x2, y1 + a + piece] for a in starts]
 
 
+def _spans(piece: Piece, box: list[float]) -> bool:
+    """The mask covers at least LONG_SPAN of its long box's length."""
+    x1, y1, x2, y2 = box
+    along = 0 if x2 - x1 >= y2 - y1 else 1
+    lo, hi = (x1, x2) if along == 0 else (y1, y2)
+    start = piece.x0 if along == 0 else piece.y0
+    at = start + np.flatnonzero(piece.m.any(axis=along))
+    return int(((at >= lo) & (at < hi)).sum()) >= LONG_SPAN * (hi - lo)
+
+
 def _in_front(other: Piece, carrier: Piece) -> bool:
     """``other`` stands in front of a see-through carrier when its lowest
     pixel is below the carrier's lowest pixel in the same columns."""
@@ -382,6 +428,44 @@ def _claim(claimed: np.ndarray, poly: list[list[float]]) -> None:
         cv2.fillPoly(claimed, [np.round(np.asarray(poly)).astype(np.int32)], 1)
 
 
+def _inside(inner: list[float], outer: list[float]) -> bool:
+    """``inner`` lies inside ``outer``: smaller, and at least INSET_SHARE
+    of it within ``outer``. A scene object partly hidden behind a graphic
+    runs out of the graphic's box."""
+    ix1, iy1, ix2, iy2 = inner
+    ox1, oy1, ox2, oy2 = outer
+    area = (ix2 - ix1) * (iy2 - iy1)
+    if area <= 0 or area >= (ox2 - ox1) * (oy2 - oy1):
+        return False
+    over = max(0.0, min(ix2, ox2) - max(ix1, ox1)) * max(0.0, min(iy2, oy2) - max(iy1, oy1))
+    return over >= INSET_SHARE * area
+
+
+def _pixels(r: BoxResult, h: int, w: int) -> np.ndarray:
+    """A result as a full-image mask."""
+    if r.mask is not None:
+        return (r.mask > 0).astype(np.uint8)
+    m = np.zeros((h, w), dtype=np.uint8)
+    _claim(m, r.polygon)
+    return m
+
+
+def _trim(piece: Piece, box: list[float]) -> Piece | None:
+    """A design element with its insets cut out: the slivers left along
+    the cuts and the specks dropped; the cuts stay open, however small."""
+    m = piece.m
+    if min(box[2] - box[0], box[3] - box[1]) >= CLEANUP_MIN_SIDE:
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    total = int(m.sum())
+    if total == 0:
+        return None
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    keep = [i for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] >= max(16, PART_MIN * total)]
+    if not keep:
+        return None
+    return Piece(piece.x0, piece.y0, np.isin(labels, keep).astype(np.uint8))
+
+
 def _box_mask(box: list[float], h: int, w: int) -> np.ndarray:
     m = np.zeros((h, w), dtype=np.uint8)
     x1, y1, x2, y2 = (int(round(v)) for v in box)
@@ -396,18 +480,76 @@ def _fill_holes(m: np.ndarray) -> np.ndarray:
     return out
 
 
+def _course(
+    g: np.ndarray, base: np.ndarray, standing: list[list[float]], surfaces: dict[str, np.ndarray]
+) -> np.ndarray:
+    """The parts of the ground that are the course: those holding the
+    competitors (``standing``: boxes whose bottom may rest on the ground),
+    and those mostly of a surface they stand on (``surfaces``: each
+    ground prompt's mask). A field, garden or pavement beside an open
+    road touches it only through a narrow neck: the parts are told apart
+    with that neck cut, and the edges the cut took are given back to the
+    parts kept."""
+    h, w = g.shape
+    k = max(5, int(COURSE_NECK * max(h, w))) | 1
+    disc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    # Outside the image counts as not ground, so a neck along the frame
+    # edge is cut too.
+    opened = cv2.morphologyEx(g, cv2.MORPH_OPEN, disc, borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    n, labels = cv2.connectedComponents(opened, connectivity=8)
+    if n <= 2:
+        return g
+    # What each one stands on: a band across the bottom of its box.
+    hits = np.zeros(n, dtype=np.int64)
+    votes = dict.fromkeys(surfaces, 0)
+    voters = 0
+    for x1, y1, x2, y2 in standing:
+        bh = y2 - y1
+        bx0, bx1 = int(max(0, x1)), int(min(w, x2))
+        by0, by1 = int(max(0, y2 - 0.1 * bh)), int(min(h, y2 + max(4.0, 0.15 * bh)))
+        if bx1 <= bx0 or by1 <= by0:
+            continue
+        under = np.unique(labels[by0:by1, bx0:bx1])
+        under = under[under > 0]
+        if under.size == 0:
+            continue
+        hits[under] += 1
+        voters += 1
+        need = 0.1 * (by1 - by0) * (bx1 - bx0)
+        for p, m in surfaces.items():
+            if int(m[by0:by1, bx0:bx1].sum()) >= need:
+                votes[p] += 1
+    if voters == 0:
+        return g
+    top = max(votes.values(), default=0)
+    on = np.zeros((h, w), dtype=bool)
+    for p, v in votes.items():
+        if top and v >= COURSE_SURFACE * top:
+            on |= surfaces[p] > 0
+    b = base > 0
+    size = np.bincount(labels[b], minlength=n)
+    same = np.bincount(labels[b & on], minlength=n)
+    keep = [c for c in range(1, n) if hits[c] >= max(1.0, COURSE_STANDING * voters) or (size[c] and 2 * same[c] >= size[c])]
+    kept = np.isin(labels, keep).astype(np.uint8)
+    return g & cv2.dilate(kept, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k + 2, k + 2)))
+
+
 def ground_mask(
     material: np.ndarray,
     box: list[float],
     claimed: np.ndarray,
     blockers: np.ndarray | None = None,
     through: np.ndarray | None = None,
+    standing: list[list[float]] | None = None,
+    surfaces: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     """Ground-material pixels inside the box (kerbs and painted markings
     included), holes and short gaps filled (painted logos, lines, kerbs),
     except where something that is not ground stands (``blockers``:
     people, trees, buildings, walls, fences, poles, sky), closed across
-    see-through carriers (``through``), minus everything else labelled."""
+    see-through carriers (``through``), only the course (see
+    :func:`_course`; when ``standing`` and ``surfaces`` are given), minus
+    everything else labelled."""
     h, w = material.shape
     inside = _box_mask(box, h, w)
     base = (material > 0).astype(np.uint8) & inside
@@ -427,17 +569,23 @@ def ground_mask(
             g &= 1 - (b & (1 - base))
         if through is not None:
             g = _fill_across(g, through & inside)
+        if standing and surfaces:
+            g = _course(g, base, standing, surfaces)
     return g & (1 - claimed)
+
+
+def _wet(land: np.ndarray, water: np.ndarray, box: list[float]) -> bool:
+    """The water is most of what the box holds."""
+    h, w = land.shape
+    inside = _box_mask(box, h, w).astype(bool)
+    return int((water > 0)[inside].sum()) > int((land > 0)[inside].sum())
 
 
 def _with_water(land: np.ndarray, water: np.ndarray, box: list[float]) -> np.ndarray:
     """The ground material for one box: the land, plus the water when the
     water is most of what the box holds."""
-    h, w = land.shape
-    inside = _box_mask(box, h, w).astype(bool)
     land = (land > 0).astype(np.uint8)
-    wet = (water > 0).astype(np.uint8)
-    return land | wet if int(wet[inside].sum()) > int(land[inside].sum()) else land
+    return land | (water > 0).astype(np.uint8) if _wet(land, water, box) else land
 
 
 def crowd_mask(
@@ -445,10 +593,12 @@ def crowd_mask(
     boxes: list[float] | list[list[float]],
     claimed: np.ndarray,
     through: np.ndarray | None = None,
+    athletes: np.ndarray | None = None,
 ) -> np.ndarray:
     """People inside the box (or the touching boxes, as one area) joined
-    across small gaps and across ropes and nets, minus anything else
-    labelled; the boxes themselves when no person is found."""
+    across small gaps and across ropes and nets, minus the competitors
+    found there (``athletes``) and anything else labelled; the boxes
+    themselves when no person is found."""
     h, w = people.shape
     if np.ndim(boxes) == 1:
         boxes = [boxes]  # type: ignore[list-item]
@@ -467,6 +617,9 @@ def crowd_mask(
         c = cv2.morphologyEx(c, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8)) & inside
     if through is not None:
         c = _fill_across(c, through & inside)
+    if athletes is not None and athletes.any():
+        # After the joining, so it cannot close over them again.
+        c &= 1 - cv2.dilate((athletes > 0).astype(np.uint8), np.ones((5, 5), np.uint8))
     return c & (1 - claimed)
 
 
@@ -520,6 +673,7 @@ def convert(
     # distant spectators are missed on the full frame). The masks are
     # built once everything else is known, so they can give way to it.
     people: dict[int, np.ndarray] = {}
+    athletes: dict[int, np.ndarray] = {}
     if text_masks is not None:
         for i in (i for i in regions if modes[i] == "crowd"):
             x1, y1, x2, y2 = boxes[i]
@@ -527,28 +681,34 @@ def convert(
             cx0, cy0 = int(max(0, x1 - mx)), int(max(0, y1 - my))
             cx1, cy1 = int(min(w, x2 + mx)), int(min(h, y2 + my))
             set_image(np.ascontiguousarray(image[cy0:cy1, cx0:cx1]))
-            found = text_masks(CROWD_PROMPTS)
-            if found.shape == (h, w):
-                # A whole-frame mask (a model that does not crop).
-                people[i] = found
-            else:
-                people[i] = np.zeros((h, w), dtype=np.uint8)
-                people[i][cy0:cy1, cx0:cx1] = found
+            for into, prompts in ((people, CROWD_PROMPTS), (athletes, ATHLETE_PROMPTS)):
+                found = text_masks(prompts)
+                if found.shape == (h, w):
+                    # A whole-frame mask (a model that does not crop).
+                    into[i] = found
+                else:
+                    into[i] = np.zeros((h, w), dtype=np.uint8)
+                    into[i][cy0:cy1, cx0:cx1] = found
 
     # What SAM is given: every shaped box, plus overlapping pieces of the
     # long flat ones. ``jobs[j] = (box index, box given)``.
     jobs: list[tuple[int, list[float]]] = []
+    whole_job: dict[int, int] = {}
     for i in shaped:
+        whole_job[i] = len(jobs)
         jobs.append((i, boxes[i]))
         if modes[i] == "flat":
             jobs.extend((i, b) for b in _long_pieces(boxes[i]))
     found: dict[int, list[tuple[Piece, float, bool]]] = {}
+    whole: dict[int, tuple[Piece, float, bool]] = {}
 
     def take(j: int, mask: np.ndarray, score: float, zoomed: bool, offset: tuple[int, int]) -> None:
         i, given = jobs[j]
         piece = _clip(mask, given, offset)
         if piece is not None:
             found.setdefault(i, []).append((piece, score, zoomed))
+            if j == whole_job[i]:
+                whole[i] = (piece, score, zoomed)
 
     full_jobs, crops = plan([b for _, b in jobs], h, w, zoom=zoom)
     for c in crops:
@@ -566,6 +726,8 @@ def convert(
         take(j, m, score, False, (0, 0))
 
     for i, got in found.items():
+        if len(got) > 1 and i in whole and whole[i][1] >= LONG_SCORE and _spans(whole[i][0], boxes[i]):
+            got = [whole[i]]  # the whole run found at once; the pieces add what lies beside it
         if len(got) == 1:
             piece: Piece | None = got[0][0]
         else:
@@ -639,6 +801,9 @@ def convert(
             carrier.m = carrier.m & (1 - front[carrier.y0 : carrier.y0 + ch, carrier.x0 : carrier.x0 + cw])
 
     claimed = np.zeros((h, w), dtype=np.uint8) if regions else None
+    # Opaque overlays, finished last: what is labelled inside one is cut
+    # out of it, and a ground or crowd lying inside it is not blocked by it.
+    opaque: dict[int, np.ndarray] = {}
     # An overlay SAM found nothing for is a see-through bug: its box.
     for i in shaped:
         if modes[i] == "overlay" and i not in pieces:
@@ -649,8 +814,9 @@ def convert(
         if mode == "overlay":
             poly, translucent = _overlay_check(_polygon(piece, epsilon_factor), boxes[i])
             results[i] = BoxResult(poly, score, zoomed, translucent=translucent)
-            if claimed is not None and not translucent:
-                _claim(claimed, poly)
+            if not translucent:
+                opaque[i] = np.zeros((h, w), dtype=np.uint8)
+                _claim(opaque[i], poly)
             continue
         if _is_simple(piece):
             poly = _polygon(piece, epsilon_factor)
@@ -675,6 +841,17 @@ def convert(
             for i in see:
                 pieces[i].paste(through)
             through = cv2.dilate(through, np.ones((5, 5), np.uint8))
+
+        def taken(group: list[int]) -> np.ndarray:
+            """What a region may not take: everything labelled, and every
+            opaque overlay except the ones it lies inside (the track in a
+            photo inset is the inset's ground)."""
+            out = claimed.copy()
+            for o, om in opaque.items():
+                if not all(_inside(boxes[i], boxes[o]) for i in group):
+                    out |= om
+            return out
+
         # Crowds first: the ground gives way to them.
         crowds = [i for i in regions if modes[i] == "crowd"]
         for group in _touching(boxes, crowds):
@@ -682,12 +859,14 @@ def convert(
                 m = np.zeros((h, w), dtype=np.uint8)
                 for i in group:
                     m |= _box_mask(boxes[i], h, w)
-                m &= 1 - claimed
+                m &= 1 - taken(group)
             else:
                 seen = np.zeros((h, w), dtype=np.uint8)
+                competing = np.zeros((h, w), dtype=np.uint8)
                 for i in group:
                     seen |= people[i]
-                m = crowd_mask(seen, [boxes[i] for i in group], claimed, through)
+                    competing |= athletes[i]
+                m = crowd_mask(seen, [boxes[i] for i in group], taken(group), through, competing)
             # One stand section: the largest box carries it.
             keep = max(group, key=lambda i: (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
             if m.any():
@@ -699,17 +878,51 @@ def convert(
         grounds = [i for i in regions if modes[i] == "ground"]
         if grounds:
             material = water = blockers = None
+            surfaces: dict[str, np.ndarray] = {}
             if text_masks is not None:
-                material = text_masks(GROUND_PROMPTS + GROUND_EXTRA_PROMPTS)
+                # One prompt at a time: the course is told by the surface
+                # its competitors stand on (asphalt, not the field beside).
+                surfaces = {p: text_masks((p,)) for p in GROUND_PROMPTS}
+                material = text_masks(GROUND_EXTRA_PROMPTS)
+                for s in surfaces.values():
+                    material = material | s
                 water = text_masks(WATER_PROMPTS)
                 blockers = text_masks(GROUND_BLOCKER_PROMPTS)
+            # What may stand on the ground: objects, but not the spectators
+            # and their things inside a crowd box.
+            stands = [boxes[i] for i in regions if modes[i] == "crowd"]
+            standing = [boxes[j] for j, m in enumerate(modes) if m == "object" and not any(_inside(boxes[j], c) for c in stands)]
             for i in grounds:
                 if material is None or water is None:
-                    m = _box_mask(boxes[i], h, w) & (1 - claimed)
+                    m = _box_mask(boxes[i], h, w) & (1 - taken([i]))
                 else:
-                    m = ground_mask(_with_water(material, water, boxes[i]), boxes[i], claimed, blockers, through)
+                    wet = _wet(material, water, boxes[i])
+                    on = {**surfaces, WATER_PROMPTS[0]: water} if wet else surfaces
+                    m = ground_mask(_with_water(material, water, boxes[i]), boxes[i], taken([i]), blockers, through, standing, on)
                 if m.any():
                     results[i] = BoxResult([], 1.0, False, mask=m)
+
+    # A design element keeps only what nothing else inside it is labelled
+    # as: an inset's cars, boards, track and crowd keep their own labels.
+    for o, om in opaque.items():
+        cut = np.zeros((h, w), dtype=np.uint8)
+        for j, r in enumerate(results):
+            if j != o and r is not None and not r.translucent and r.merged_into is None and _inside(boxes[j], boxes[o]):
+                cut |= _pixels(r, h, w)
+        if not (om & cut).any():
+            continue
+        piece = _clip(om & (1 - cut), boxes[o], (0, 0))
+        piece = _trim(piece, boxes[o]) if piece else None
+        if piece is None:
+            continue
+        r = results[o]
+        assert r is not None
+        if _is_simple(piece):
+            results[o] = BoxResult(_polygon(piece, epsilon_factor), r.score, r.zoomed)
+        else:
+            full_mask = np.zeros((h, w), dtype=np.uint8)
+            piece.paste(full_mask)
+            results[o] = BoxResult([], r.score, r.zoomed, mask=full_mask)
     return results
 
 
