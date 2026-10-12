@@ -39,6 +39,12 @@ def _only(prompts: tuple[str, ...], mask: np.ndarray):
     return lambda p: mask if p == prompts else np.zeros_like(mask)
 
 
+def _people(mask: np.ndarray):
+    """Text prompts that find ``mask`` as people one by one, and nothing
+    else."""
+    return _only(bc.CROWD_PERSON_PROMPTS, mask)
+
+
 def _surfaces(found: dict[str, np.ndarray], like: np.ndarray):
     """Text prompts that find ``found[prompt]`` for each ground prompt asked
     alone, and nothing for anything else."""
@@ -150,7 +156,7 @@ def test_crowd_joins_people_and_falls_back_to_the_box() -> None:
         people[100:160, x:x + 10] = 1
     seg = _Seg()
     out = bc.convert(img, [[90, 90, 170, 170]], set_image=seg.set_image, predict_box=seg.predict_box,
-                     text_masks=_only(bc.CROWD_PROMPTS, people), modes=["crowd"], zoom=False)
+                     text_masks=_people(people), modes=["crowd"], zoom=False)
     assert out[0].mask[130, 111] == 1  # joined across the gap
     # Without text prompts: the box, minus what else is labelled.
     out2 = bc.convert(img, [[90, 90, 140, 170]], set_image=seg.set_image, predict_box=seg.predict_box,
@@ -343,7 +349,7 @@ def test_touching_crowd_boxes_come_back_as_one_crowd() -> None:
         people[100:160, x:x + 10] = 1
     seg = _Seg()
     out = bc.convert(np.zeros((h, w, 3), np.uint8), [[10, 90, 200, 170], [195, 90, 390, 170]],
-                     set_image=seg.set_image, predict_box=seg.predict_box, text_masks=_only(bc.CROWD_PROMPTS, people),
+                     set_image=seg.set_image, predict_box=seg.predict_box, text_masks=_people(people),
                      modes=["crowd", "crowd"], zoom=False)
     keep, gone = (0, 1) if out[0].mask is not None else (1, 0)
     assert out[gone].merged_into == keep and out[gone].mask is None
@@ -393,7 +399,7 @@ def test_competitors_inside_a_crowd_box_are_not_crowd() -> None:
         people[60:120, x:x + 10] = 1
     rider = np.zeros((h, w), np.uint8)
     rider[180:240, 200:215] = 1              # a rider on the road, inside the box rectangle
-    found = {bc.CROWD_PROMPTS: people | rider, bc.ATHLETE_PROMPTS: rider}
+    found = {bc.CROWD_PERSON_PROMPTS: people | rider, bc.ATHLETE_PROMPTS: rider}
     seg = _Seg()
     out = bc.convert(np.zeros((h, w, 3), np.uint8), [[90, 50, 260, 250]], set_image=seg.set_image,
                      predict_box=seg.predict_box, modes=["crowd"], zoom=False,
@@ -540,3 +546,120 @@ def test_a_ground_box_ending_where_the_ground_ends_is_not_widened() -> None:
     g = out[0].mask
     assert g[200, 200] == 1
     assert g[200, 10] == 0                   # ...and the grass beyond it is not the ground
+
+
+def _stand_people(h: int, w: int, rows: list[tuple[int, int]]) -> np.ndarray:
+    people = np.zeros((h, w), np.uint8)
+    for y0, y1 in rows:
+        for x in range(20, 590, 13):
+            people[y0:y1, x:x + 10] = 1
+    return people
+
+
+def test_crowd_boxes_across_a_narrow_gap_are_one_stand_with_its_people() -> None:
+    h, w = 400, 1000                          # a 20 px gap at most (2% of 1000)
+    people = _stand_people(h, w, [(60, 350)])  # one packed stand, gap included
+    boxes = [[10, 50, 600, 200], [10, 215, 600, 360]]   # 15 px apart
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), boxes, set_image=seg.set_image, predict_box=seg.predict_box,
+                     text_masks=_people(people), modes=["crowd", "crowd"], zoom=False)
+    keep, gone = (0, 1) if out[0].mask is not None else (1, 0)
+    assert out[gone].merged_into == keep
+    m = out[keep].mask
+    assert m[100, 25] == 1 and m[300, 25] == 1
+    assert m[207, 25] == 1                    # the spectators in the gap are crowd
+
+
+def test_crowd_boxes_far_apart_stay_apart() -> None:
+    h, w = 400, 1000
+    people = _stand_people(h, w, [(60, 350)])
+    boxes = [[10, 50, 600, 180], [10, 220, 600, 360]]   # 40 px apart: two sections
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), boxes, set_image=seg.set_image, predict_box=seg.predict_box,
+                     text_masks=_people(people), modes=["crowd", "crowd"], zoom=False)
+    assert out[0].mask is not None and out[1].mask is not None
+    assert out[0].mask[200, 25] == 0 and out[1].mask[200, 25] == 0
+
+
+def test_an_empty_gap_between_crowd_boxes_is_not_filled() -> None:
+    h, w = 400, 1000
+    people = _stand_people(h, w, [(60, 195), (220, 350)])   # stairs between the boxes
+    boxes = [[10, 50, 600, 200], [10, 215, 600, 360]]
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), boxes, set_image=seg.set_image, predict_box=seg.predict_box,
+                     text_masks=_people(people), modes=["crowd", "crowd"], zoom=False)
+    keep = 0 if out[0].mask is not None else 1
+    assert out[keep].mask[207, 25] == 0       # one stand, but nobody there is painted
+
+
+def test_stands_join_only_boxes_side_by_side_on_the_same_side_of_an_inset() -> None:
+    boxes = [[0, 0, 100, 100], [110, 0, 200, 100], [210, 110, 300, 200], [110, 105, 200, 200]]
+    # 0 and 1 side by side (10 px); 2 only diagonal to 1; 3 below 1 but in an inset.
+    groups = bc._stands(boxes, [0, 1, 2, 3], 20.0, lambda i: "inset" if i == 3 else "", lambda g: True)
+    by_box = {i: (sorted(g), gaps) for g, gaps in groups for i in g}
+    assert by_box[0][0] == [0, 1] and by_box[0][1] == [[100, 0, 110, 100]]
+    assert by_box[2][0] == [2] and by_box[3][0] == [3]
+
+
+def test_a_gap_under_a_graphic_does_not_join_two_stands() -> None:
+    boxes = [[0, 0, 100, 100], [110, 0, 200, 100]]
+    graphic = [95, 20, 130, 60]
+    groups = bc._stands(boxes, [0, 1], 20.0, lambda i: "", lambda g: not bc._meet(g, graphic))
+    assert sorted(sorted(g) for g, _ in groups) == [[0], [1]]
+
+
+def test_a_packed_stand_does_not_close_over_an_empty_gap() -> None:
+    # Packed spectators (wide blobs, a big closing) on both sides of an
+    # empty staircase 15 px wide between two crowd boxes.
+    h, w = 400, 1000
+    people = np.zeros((h, w), np.uint8)
+    for x in range(20, 590, 50):
+        people[60:200, x:x + 46] = 1          # up to the boxes' edges: the staircase
+        people[215:350, x:x + 46] = 1         # is narrower than the closing
+    boxes = [[10, 50, 600, 200], [10, 215, 600, 360]]
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), boxes, set_image=seg.set_image, predict_box=seg.predict_box,
+                     text_masks=_people(people), modes=["crowd", "crowd"], zoom=False)
+    keep = 0 if out[0].mask is not None else 1
+    m = out[keep].mask
+    assert m[100, 50] == 1 and m[300, 50] == 1
+    assert not m[200:215, 20:590].any()       # the staircase stays empty
+
+
+def test_only_the_people_in_a_gap_are_crowd_not_the_stairs_beside_them() -> None:
+    h, w = 400, 1000
+    people = np.zeros((h, w), np.uint8)
+    for x in range(20, 590, 50):
+        people[60:200, x:x + 46] = 1
+        people[215:350, x:x + 46] = 1
+    people[200:215, 20:66] = 1                # a spectator sitting on the stairs
+    boxes = [[10, 50, 600, 200], [10, 215, 600, 360]]
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), boxes, set_image=seg.set_image, predict_box=seg.predict_box,
+                     text_masks=_people(people), modes=["crowd", "crowd"], zoom=False)
+    keep = 0 if out[0].mask is not None else 1
+    m = out[keep].mask
+    assert m[207, 40] == 1                    # the spectator is crowd
+    assert not m[200:215, 75:590].any()       # the stairs beside them are not
+
+
+def test_a_crowd_area_found_as_a_whole_is_not_taken_into_a_gap() -> None:
+    # "crowd" finds the stand as one blob, stairs included; in the gap
+    # only the people found one by one count.
+    h, w = 400, 1000
+    one_by_one = _stand_people(h, w, [(60, 200), (215, 350)])
+    blob = np.zeros((h, w), np.uint8)
+    blob[55:355, 15:595] = 1
+    zero = np.zeros((h, w), np.uint8)
+
+    def text(p):
+        return {bc.CROWD_PERSON_PROMPTS: one_by_one, bc.CROWD_AREA_PROMPTS: blob}.get(p, zero)
+
+    boxes = [[10, 50, 600, 200], [10, 215, 600, 360]]
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), boxes, set_image=seg.set_image, predict_box=seg.predict_box,
+                     text_masks=text, modes=["crowd", "crowd"], zoom=False)
+    keep = 0 if out[0].mask is not None else 1
+    m = out[keep].mask
+    assert m[100, 25] == 1 and m[300, 25] == 1
+    assert not m[200:215].any()               # the blob alone fills nothing in the gap

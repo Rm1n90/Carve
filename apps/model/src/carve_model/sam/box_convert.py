@@ -78,7 +78,11 @@ runs its full length, and is sure of it (a barrier at an angle across
 its box), that mask is kept alone: a piece's square then holds mostly what lies beside the
 barrier (track, crowd), and SAM takes that. Crowd boxes that touch are one stand
 section: they are masked as one area and come back as one crowd (the
-largest box's); the others are marked as merged into it.
+largest box's); the others are marked as merged into it. So are crowd
+boxes side by side across a narrow gap, and the people found in the gap
+(only them, not the stairs beside them) are crowd too: a vision model's
+boxes over one stand rarely meet, and the strip between them would be
+left empty. A gap under a broadcast graphic joins nothing.
 """
 
 from __future__ import annotations
@@ -131,7 +135,12 @@ GROUND_PROMPTS = (
 # regatta, a surf break. Beside a road or a pitch (a harbour along a
 # street circuit, a river) it is scenery.
 WATER_PROMPTS = ("water",)
-CROWD_PROMPTS = ("person", "crowd")
+# A crowd is the people found one by one, and the packed areas "crowd"
+# finds as a whole. Only the people found one by one count in a gap
+# between two boxes: "crowd" also takes the stairs beside them.
+CROWD_PERSON_PROMPTS = ("person",)
+CROWD_AREA_PROMPTS = ("crowd",)
+CROWD_PROMPTS = CROWD_PERSON_PROMPTS + CROWD_AREA_PROMPTS
 # Competitors inside a crowd box (riders passing a stand, the back of a
 # peloton) are not spectators. On the test frames these find riders,
 # boxers, fighters and surfers and no one in a stand; "racer" and
@@ -185,6 +194,14 @@ LONG_SPAN = 0.8
 LONG_SCORE = 0.7
 # Crowd boxes closer than this (pixels) are one area.
 CROWD_TOUCH_PX = 4
+# Crowd boxes side by side with a narrow gap between them (a vision model's
+# boxes over one stand rarely meet) are one stand section, and the people
+# in the gap are crowd too: a gap up to this share of the frame's long
+# side, and no wider than the context each box's people are found in
+# (CROWD_CROP_MARGIN of both boxes' sides across the gap).
+CROWD_GAP = 0.02
+# People found in such a gap are joined across gaps up to this many pixels.
+CROWD_GAP_JOIN = 7
 # A box with at least this share of it inside a bigger overlay's box lies
 # inside that overlay (an inset's car, its track).
 INSET_SHARE = 0.8
@@ -652,6 +669,34 @@ def crowd_mask(
     return c & (1 - claimed)
 
 
+def crowd_gap_mask(
+    people: np.ndarray,
+    gaps: list[list[float]],
+    stand: np.ndarray,
+    claimed: np.ndarray,
+    through: np.ndarray | None = None,
+    athletes: np.ndarray | None = None,
+) -> np.ndarray:
+    """The people found in the narrow ``gaps`` between the boxes of one
+    stand section, joined across a few pixels (CROWD_GAP_JOIN), closed
+    across ropes and nets against the ``stand`` around them, minus the
+    competitors found there and anything else labelled. Only them: the
+    stand's own joining would bridge an empty staircase, or the stairs
+    beside the spectators sitting along an aisle."""
+    h, w = people.shape
+    in_gaps = np.zeros((h, w), dtype=np.uint8)
+    for b in gaps:
+        in_gaps |= _box_mask(b, h, w)
+    in_gaps &= 1 - (stand > 0).astype(np.uint8)
+    c = (people > 0).astype(np.uint8) & in_gaps
+    c = cv2.morphologyEx(c, cv2.MORPH_CLOSE, np.ones((CROWD_GAP_JOIN, CROWD_GAP_JOIN), np.uint8)) & in_gaps
+    if through is not None:
+        c = _fill_across(c | stand, through & in_gaps) & in_gaps
+    if athletes is not None and athletes.any():
+        c &= 1 - cv2.dilate((athletes > 0).astype(np.uint8), np.ones((5, 5), np.uint8))
+    return c & (1 - claimed)
+
+
 def _touching(boxes: list[list[float]], idx: list[int]) -> list[list[int]]:
     """``idx`` grouped by boxes that overlap or touch."""
     groups: list[list[int]] = []
@@ -664,6 +709,59 @@ def _touching(boxes: list[list[float]], idx: list[int]) -> list[list[int]]:
         merged = [i] + [j for g in near for j in g]
         groups = [g for g in groups if g not in near] + [merged]
     return groups
+
+
+def _meet(a: list[float], b: list[float]) -> bool:
+    """The two boxes overlap."""
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _gap_between(a: list[float], b: list[float], widest: float) -> list[float] | None:
+    """The gap between two crowd boxes side by side (one above the other,
+    or next to each other), as a box, when it is at most ``widest`` and
+    within the context their people are found in (CROWD_GAP)."""
+    ox1, ox2 = max(a[0], b[0]), min(a[2], b[2])
+    oy1, oy2 = max(a[1], b[1]), min(a[3], b[3])
+    if ox2 > ox1:  # one above the other
+        gap = oy1 - oy2
+        if 0 < gap <= min(widest, CROWD_CROP_MARGIN * ((a[3] - a[1]) + (b[3] - b[1]))):
+            return [ox1, oy2, ox2, oy1]
+    if oy2 > oy1:  # next to each other
+        gap = ox1 - ox2
+        if 0 < gap <= min(widest, CROWD_CROP_MARGIN * ((a[2] - a[0]) + (b[2] - b[0]))):
+            return [ox2, oy1, ox1, oy2]
+    return None
+
+
+def _stands(
+    boxes: list[list[float]],
+    idx: list[int],
+    widest: float,
+    side: Callable[[int], Any],
+    clear: Callable[[list[float]], bool],
+) -> list[tuple[list[int], list[list[float]]]]:
+    """Crowd boxes grouped into stand sections, each with the gaps that
+    join it: boxes that touch (``_touching``), and boxes side by side
+    across a narrow gap (``_gap_between``) on the same ``side`` of every
+    photo inset (both in it or both out of it), the gap ``clear`` of
+    graphics laid over the picture."""
+    groups = _touching(boxes, idx)
+    of = {i: k for k, g in enumerate(groups) for i in g}
+    gaps: list[tuple[int, int, list[float]]] = []
+    for n, i in enumerate(idx):
+        for j in idx[n + 1 :]:
+            gap = _gap_between(boxes[i], boxes[j], widest)
+            if gap is not None and side(i) == side(j) and clear(gap):
+                gaps.append((i, j, gap))
+    # Join the groups the gaps connect.
+    for i, j, _ in gaps:
+        gi, gj = of[i], of[j]
+        if gi != gj:
+            for b in groups[gj]:
+                of[b] = gi
+            groups[gi] += groups[gj]
+            groups[gj] = []
+    return [(g, [gap for i, _, gap in gaps if of[i] == k]) for k, g in enumerate(groups) if g]
 
 
 def convert(
@@ -702,6 +800,8 @@ def convert(
     # distant spectators are missed on the full frame). The masks are
     # built once everything else is known, so they can give way to it.
     people: dict[int, np.ndarray] = {}
+    persons: dict[int, np.ndarray] = {}
+    areas: dict[int, np.ndarray] = {}
     athletes: dict[int, np.ndarray] = {}
     if text_masks is not None:
         for i in (i for i in regions if modes[i] == "crowd"):
@@ -710,7 +810,8 @@ def convert(
             cx0, cy0 = int(max(0, x1 - mx)), int(max(0, y1 - my))
             cx1, cy1 = int(min(w, x2 + mx)), int(min(h, y2 + my))
             set_image(np.ascontiguousarray(image[cy0:cy1, cx0:cx1]))
-            for into, prompts in ((people, CROWD_PROMPTS), (athletes, ATHLETE_PROMPTS)):
+            for into, prompts in ((persons, CROWD_PERSON_PROMPTS), (areas, CROWD_AREA_PROMPTS),
+                                  (athletes, ATHLETE_PROMPTS)):
                 found = text_masks(prompts)
                 if found.shape == (h, w):
                     # A whole-frame mask (a model that does not crop).
@@ -718,6 +819,7 @@ def convert(
                 else:
                     into[i] = np.zeros((h, w), dtype=np.uint8)
                     into[i][cy0:cy1, cx0:cx1] = found
+            people[i] = persons[i] | areas[i]
 
     # What SAM is given: every shaped box, plus overlapping pieces of the
     # long flat ones. ``jobs[j] = (box index, box given)``.
@@ -883,19 +985,39 @@ def convert(
 
         # Crowds first: the ground gives way to them.
         crowds = [i for i in regions if modes[i] == "crowd"]
-        for group in _touching(boxes, crowds):
+        # Without people found by name there is nothing to fill a gap with.
+        if text_masks is None:
+            sections = [(g, []) for g in _touching(boxes, crowds)]
+        else:
+            sections = _stands(
+                boxes, crowds, CROWD_GAP * max(h, w),
+                lambda i: frozenset(o for o in opaque if _inside(boxes[i], boxes[o])),
+                lambda g: not any(_meet(g, boxes[o]) for o in opaque),
+            )
+        for group, gaps in sections:
             if text_masks is None:
                 m = np.zeros((h, w), dtype=np.uint8)
                 for i in group:
                     m |= _box_mask(boxes[i], h, w)
                 m &= 1 - taken(group)
             else:
-                seen = np.zeros((h, w), dtype=np.uint8)
-                competing = np.zeros((h, w), dtype=np.uint8)
-                for i in group:
-                    seen |= people[i]
-                    competing |= athletes[i]
-                m = crowd_mask(seen, [boxes[i] for i in group], taken(group), through, competing)
+                # Each part of touching boxes is masked on its own, as it
+                # would be alone; the people in the gaps join them.
+                m = np.zeros((h, w), dtype=np.uint8)
+                for part in _touching(boxes, group):
+                    seen = np.zeros((h, w), dtype=np.uint8)
+                    competing = np.zeros((h, w), dtype=np.uint8)
+                    for i in part:
+                        seen |= people[i]
+                        competing |= athletes[i]
+                    m |= crowd_mask(seen, [boxes[i] for i in part], taken(part), through, competing)
+                if gaps:
+                    seen = np.zeros((h, w), dtype=np.uint8)
+                    competing = np.zeros((h, w), dtype=np.uint8)
+                    for i in group:
+                        seen |= persons[i]
+                        competing |= athletes[i]
+                    m |= crowd_gap_mask(seen, gaps, m, taken(group), through, competing)
             # One stand section: the largest box carries it.
             keep = max(group, key=lambda i: (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
             if m.any():
