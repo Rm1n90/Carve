@@ -503,3 +503,40 @@ def test_the_ground_is_the_course_not_the_field_beside_an_open_road() -> None:
     assert g[150, 100] == 1 and g[290, 100] == 1     # the road
     assert g[150, 250] == 0                          # not the field
     assert g[150, 360] == 1                          # the same road beyond the hedge is
+
+
+def test_a_ground_box_drawn_short_of_the_frame_edge_is_taken_to_it() -> None:
+    h, w = 300, 400
+    grass = np.zeros((h, w), np.uint8)
+    grass[100:, :] = 1                       # the grass fills the frame's lower part
+    seg = _Seg()
+    # The box stops 30 px short of the left edge (a vision model's box).
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[30, 100, 400, 300]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, text_masks=_surfaces({"grass": grass}, grass),
+                     modes=["ground"], zoom=False)
+    g = out[0].mask
+    assert g[200, 200] == 1
+    assert g[200, 10] == 1                   # no straight cut along the box's side
+    assert g[250, 0] == 1
+
+
+def test_a_ground_box_ending_where_the_ground_ends_is_not_widened() -> None:
+    h, w = 300, 400
+    grass = np.zeros((h, w), np.uint8)
+    grass[100:, :] = 1
+    grass[:, 30:45] = 0                      # a fence just inside the box's side...
+    fence = np.zeros((h, w), np.uint8)
+    fence[100:, 30:45] = 1
+    zero = np.zeros((h, w), np.uint8)
+
+    def text(p):
+        if p == bc.GROUND_BLOCKER_PROMPTS:
+            return fence
+        return grass if p == ("grass",) else zero
+
+    seg = _Seg()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[30, 100, 400, 300]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, text_masks=text, modes=["ground"], zoom=False)
+    g = out[0].mask
+    assert g[200, 200] == 1
+    assert g[200, 10] == 0                   # ...and the grass beyond it is not the ground

@@ -30,7 +30,9 @@ the single most object-like thing in it (on a race track, one kerb):
   kept: the parts the competitors stand on, and parts of the same
   surface. A field or garden beside an open road (dirt and grass where
   the riders are on asphalt) touches the road only through a narrow neck
-  and is cut off there.
+  and is cut off there. A box side drawn just short of the frame edge,
+  that the ground runs into, is taken to the edge: the surface goes on
+  there, and the box would cut it off in a straight line.
 * **crowd**: the people SAM 3.1 finds with the prompt "person" inside
   the box, joined across the small gaps between them, without the
   competitors it finds there ("athlete", "cyclist"): a crowd box is a
@@ -146,6 +148,12 @@ CROWD_CROP_MARGIN = 0.1
 # Gaps in the ground shorter than this share of the box's side are filled
 # (a kerb or line running across the whole frame is not a "hole").
 GROUND_GAP = 0.08
+# A ground box's side this close to the frame edge (share of the frame's
+# width or height) is taken to the edge when the ground runs into it along
+# at least GROUND_RUNS_ON of its length: the box was drawn short of a
+# surface that fills the frame there.
+GROUND_EDGE_SNAP = 0.1
+GROUND_RUNS_ON = 0.25
 # Ground parts joined by a neck narrower than this share of the image's
 # long side are separate parts (a field beside an open road).
 COURSE_NECK = 0.005
@@ -471,6 +479,27 @@ def _box_mask(box: list[float], h: int, w: int) -> np.ndarray:
     x1, y1, x2, y2 = (int(round(v)) for v in box)
     m[max(0, y1) : min(h, y2), max(0, x1) : min(w, x2)] = 1
     return m
+
+
+def _to_frame_edges(g: np.ndarray, box: list[float]) -> list[float]:
+    """The ground box with each side near the frame edge that the ground
+    ``g`` runs into taken to that edge (GROUND_EDGE_SNAP, GROUND_RUNS_ON)."""
+    h, w = g.shape
+    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+    out = [float(v) for v in box]
+    if x2 - x1 < 3 or y2 - y1 < 3:
+        return out
+    sides = (
+        (0, 0.0, 0 < x1 <= GROUND_EDGE_SNAP * w, g[y1:y2, x1 : x1 + 3].any(axis=1)),
+        (1, 0.0, 0 < y1 <= GROUND_EDGE_SNAP * h, g[y1 : y1 + 3, x1:x2].any(axis=0)),
+        (2, float(w), (1 - GROUND_EDGE_SNAP) * w <= x2 < w, g[y1:y2, x2 - 3 : x2].any(axis=1)),
+        (3, float(h), (1 - GROUND_EDGE_SNAP) * h <= y2 < h, g[y2 - 3 : y2, x1:x2].any(axis=0)),
+    )
+    for k, edge, near, touched in sides:
+        if near and touched.mean() >= GROUND_RUNS_ON:
+            out[k] = edge
+    return out
 
 
 def _fill_holes(m: np.ndarray) -> np.ndarray:
@@ -898,7 +927,14 @@ def convert(
                 else:
                     wet = _wet(material, water, boxes[i])
                     on = {**surfaces, WATER_PROMPTS[0]: water} if wet else surfaces
-                    m = ground_mask(_with_water(material, water, boxes[i]), boxes[i], taken([i]), blockers, through, standing, on)
+                    stuff = _with_water(material, water, boxes[i])
+                    m = ground_mask(stuff, boxes[i], taken([i]), blockers, through, standing, on)
+                    # A box drawn just short of the frame edge cuts the
+                    # ground off in a straight line: take it to the edge
+                    # (not out of a photo inset it lies in).
+                    wide = _to_frame_edges(m, boxes[i])
+                    if wide != boxes[i] and not any(_inside(boxes[i], boxes[o]) for o in opaque):
+                        m = ground_mask(stuff, wide, taken([i]), blockers, through, standing, on)
                 if m.any():
                     results[i] = BoxResult([], 1.0, False, mask=m)
 
