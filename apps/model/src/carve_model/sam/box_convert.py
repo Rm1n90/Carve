@@ -23,7 +23,8 @@ the single most object-like thing in it (on a race track, one kerb):
 * **ground** (the playing surface): every ground-material pixel inside
   the box, found with SAM 3.1 text prompts (road, grass, gravel, ...;
   water only where it is most of the box, so a harbour beside a street
-  circuit is not ground but a pool is).
+  circuit is not ground but a pool is, and then the water alone: the
+  jetty, shore or deck around a regatta or a pool is not the course).
   Holes and short gaps no other label claims are filled, so painted
   logos, lines and kerbs stay part of it, and everything else labelled
   on the image (cars, boards, people) is cut out. Only the course is
@@ -628,10 +629,11 @@ def _wet(land: np.ndarray, water: np.ndarray, box: list[float]) -> bool:
 
 
 def _with_water(land: np.ndarray, water: np.ndarray, box: list[float]) -> np.ndarray:
-    """The ground material for one box: the land, plus the water when the
-    water is most of what the box holds."""
+    """The ground material for one box: the land, or the water alone when
+    the water is most of what the box holds (a regatta, a pool, a surf
+    break: the jetty, the shore and the pool deck are not the course)."""
     land = (land > 0).astype(np.uint8)
-    return land | (water > 0).astype(np.uint8) if _wet(land, water, box) else land
+    return (water > 0).astype(np.uint8) if _wet(land, water, box) else land
 
 
 def crowd_mask(

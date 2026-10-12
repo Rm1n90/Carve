@@ -390,6 +390,7 @@ def test_water_is_ground_only_where_it_is_most_of_the_box() -> None:
                      text_masks=lambda p: pool if p == bc.WATER_PROMPTS
                      else (deck if p[0] == bc.GROUND_PROMPTS[0] else np.zeros((h, w), np.uint8)))
     assert out[0].mask[150, 200] == 1
+    assert out[0].mask[10, 200] == 0         # the water alone: not the deck (nor a jetty, a shore)
 
 
 def test_competitors_inside_a_crowd_box_are_not_crowd() -> None:
