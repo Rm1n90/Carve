@@ -133,7 +133,7 @@ def test_coco_export_writes_coco_json(db_session) -> None:
         coco = json.loads(zf.read(f"{root}/coco.json"))
     assert len(coco["images"]) == 1
     assert len(coco["annotations"]) == 1
-    assert coco["categories"] == [{"id": 0, "name": "vehicle"}]
+    assert coco["categories"] == [{"id": 1, "name": "vehicle"}]
     assert coco["annotations"][0]["bbox"] == [50.0, 50.0, 100.0, 80.0]
 
 
@@ -506,3 +506,52 @@ def test_iter_asset_bytes_bounds_inflight_to_window(monkeypatch) -> None:
     # Never more than ``window`` downloads materialised simultaneously,
     # regardless of the 40-item input — the memory bound that prevents OOM.
     assert state["max"] <= window, state["max"]
+
+
+# ---------------------------------------------------------------------------
+# _partition_assets_by_split — a clip's frames stay in one split, so
+# validation never scores near copies of training images.
+# ---------------------------------------------------------------------------
+
+
+def _named(names: list[str]) -> list:
+    from types import SimpleNamespace
+
+    return [SimpleNamespace(id=uuid.uuid4(), original_name=n) for n in names]
+
+
+def test_clip_of_reads_videos_and_numbered_sequences() -> None:
+    from carve_api.exports.job import _clip_of
+
+    assert _clip_of("race.mp4 — frame 00012.jpg") == "race.mp4"
+    assert _clip_of("FE3_10000.jpg") == "fe3"
+    assert _clip_of("GIROITALIA55.jpg") == "giroitalia"
+    assert _clip_of("frame_00238_000271960ms.jpg") == "frame"
+    assert _clip_of("image (3).jpg") == "image"
+    # The number in a sequence's name stays: SBK2 and SBK4 are two clips.
+    assert _clip_of("SBK2_10319.jpg") == "sbk2"
+    assert _clip_of("photo.jpg") == "photo"
+
+
+def test_split_keeps_each_clip_in_one_split_at_the_asked_shares() -> None:
+    from carve_api.exports.job import _clip_of, _partition_assets_by_split
+
+    names = [f"clip{c}_{f:04d}.jpg" for c in range(40) for f in range(25)]
+    out = _partition_assets_by_split(_named(names), {"train": 0.8, "val": 0.1, "test": 0.1})
+    assert [len(out[k]) for k in ("train", "val", "test")] == [800, 100, 100]
+    seen: dict[str, str] = {}
+    for split, assets in out.items():
+        for a in assets:
+            assert seen.setdefault(_clip_of(a.original_name), split) == split
+
+
+def test_split_cuts_a_clip_too_big_for_the_smallest_share() -> None:
+    from carve_api.exports.job import _partition_assets_by_split
+
+    # One camera's photos all look like one clip; the shares still hold.
+    names = [f"IMG_{i:04d}.jpg" for i in range(100)]
+    out = _partition_assets_by_split(_named(names), {"train": 0.8, "val": 0.2, "test": 0.0})
+    assert [len(out[k]) for k in ("train", "val", "test")] == [80, 20, 0]
+    # Cut into runs of consecutive frames, not scattered.
+    val = sorted(int(a.original_name[4:8]) for a in out["val"])
+    assert val == list(range(val[0], val[0] + 10)) + list(range(val[10], val[10] + 10))

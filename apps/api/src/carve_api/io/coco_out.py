@@ -22,8 +22,10 @@ def build_coco(
 
     Per-kind handling (Plan-20):
 
-    * ``bbox``    — emitted as ``bbox: [x, y, w, h]`` with ``area = w*h``.
-                    No ``segmentation`` field.
+    * ``bbox``    — emitted as ``bbox: [x, y, w, h]`` with ``area = w*h``
+                    and its rectangle as ``segmentation``: COCO readers
+                    (pycocotools, mask trainers) expect one on every
+                    annotation.
     * ``polygon`` — emitted with ``segmentation: [[flat coords]]`` and
                     a derived ``bbox``/``area`` from the polygon's
                     axis-aligned bounding box.
@@ -43,11 +45,22 @@ def build_coco(
     ``images`` — list of {id (int), file_name, width, height}.
     ``annotations_by_image_id`` — image_id (int) → annotations on that image.
     ``remap`` — same shape as YOLO writer.
+
+    Category ids are the export ids plus one: COCO ids start at 1, and
+    readers that keep 0 for the background (torchvision) or subtract one
+    (Ultralytics' converter) lose the first class otherwise. Every class
+    of the remap is a category, used or not, so the class count matches
+    ``classes.json`` and the YOLO export.
     """
     targets = _normalise_remap(remap)
     images_by_id = {img["id"]: img for img in images}
 
     categories: dict[int, dict] = {}
+    for target in targets.values():
+        if target is not None:
+            categories.setdefault(
+                target.export_id + 1, {"id": target.export_id + 1, "name": target.name},
+            )
     coco_anns: list[dict] = []
     next_id = 1
 
@@ -62,8 +75,7 @@ def build_coco(
             target = targets.get(str(ann.class_id))
             if target is None:
                 continue
-            cat_id = target.export_id
-            categories.setdefault(cat_id, {"id": cat_id, "name": target.name})
+            cat_id = target.export_id + 1
             entry: dict[str, Any] = {
                 "id": next_id,
                 "image_id": img_id,
@@ -73,11 +85,10 @@ def build_coco(
             next_id += 1
             g = ann.geometry
             if ann.kind == AnnotationKind.bbox:
-                entry["bbox"] = [
-                    float(g["x"]), float(g["y"]),
-                    float(g["w"]), float(g["h"]),
-                ]
-                entry["area"] = float(g["w"]) * float(g["h"])
+                x, y, w, h = float(g["x"]), float(g["y"]), float(g["w"]), float(g["h"])
+                entry["bbox"] = [x, y, w, h]
+                entry["area"] = w * h
+                entry["segmentation"] = [[x, y, x + w, y, x + w, y + h, x, y + h]]
             elif ann.kind == AnnotationKind.polygon:
                 pts = [[float(p[0]), float(p[1])] for p in g["points"]]
                 flat = [c for p in pts for c in p]
@@ -139,7 +150,7 @@ def extract_image_tags_for_coco(
             if target is None:
                 continue
             tags.append(
-                {"category_id": int(target.export_id), "name": str(target.name)},
+                {"category_id": int(target.export_id) + 1, "name": str(target.name)},
             )
         if tags:
             out.append(

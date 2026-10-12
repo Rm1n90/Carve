@@ -47,7 +47,10 @@ def test_bbox_emits_xywh_and_area() -> None:
     a = coco["annotations"][0]
     assert a["bbox"] == [10.0, 20.0, 30.0, 40.0]
     assert a["area"] == 1200.0
-    assert a["category_id"] == 0
+    # Its rectangle: COCO readers expect a segmentation on every annotation.
+    assert a["segmentation"] == [[10.0, 20.0, 40.0, 20.0, 40.0, 60.0, 10.0, 60.0]]
+    # COCO ids start at 1: the export id plus one.
+    assert a["category_id"] == 1
     assert a["image_id"] == 1
     assert a["iscrowd"] == 0
 
@@ -117,7 +120,7 @@ def test_categories_dedup_by_export_id() -> None:
         remap=_remap(),
     )
     # Both classes mapped to export_id=0 ("vehicle"); should be one category.
-    assert coco["categories"] == [{"id": 0, "name": "vehicle"}]
+    assert coco["categories"] == [{"id": 1, "name": "vehicle"}]
 
 
 def test_skipped_remap_drops_annotation() -> None:
@@ -171,7 +174,26 @@ def test_categories_sorted_by_id() -> None:
         remap=remap,
     )
     ids = [c["id"] for c in coco["categories"]]
-    assert ids == [1, 5]
+    assert ids == [2, 6]
+
+
+def test_every_exported_class_is_a_category() -> None:
+    remap = {
+        str(CAR): {"export_id": 0, "name": "car"},
+        str(TRUCK): {"export_id": 1, "name": "truck"},
+    }
+    car_box = _FakeAnnotation(
+        kind=AnnotationKind.bbox,
+        geometry={"kind": "bbox", "x": 1, "y": 1, "w": 2, "h": 2},
+        class_id=CAR,
+    )
+    coco = build_coco(
+        images=_images(),
+        annotations_by_image_id={1: [car_box]},
+        remap=remap,
+    )
+    # No truck annotation, but the class count still matches the export.
+    assert coco["categories"] == [{"id": 1, "name": "car"}, {"id": 2, "name": "truck"}]
 
 
 def test_annotation_ids_are_unique_and_sequential() -> None:

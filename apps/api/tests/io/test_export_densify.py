@@ -363,8 +363,9 @@ def test_coco_export_densifies_category_ids(db_session) -> None:
     # Act
     result = run_export_inline(session=db_session, storage=storage, payload=payload)
 
-    # Assert — COCO categories must be 0..N-1, matching annotation
-    # category_ids — same correctness rule, different file format.
+    # Assert — COCO categories must be 1..N (COCO ids start at 1),
+    # matching annotation category_ids — same correctness rule, different
+    # file format.
     assert result["status"] == "completed"
     _, body = storage.uploaded[0]
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
@@ -373,6 +374,6 @@ def test_coco_export_densifies_category_ids(db_session) -> None:
         )
         coco = json.loads(zf.read(f"{root}/coco.json"))
     cat_ids = sorted(c["id"] for c in coco["categories"])
-    assert cat_ids == [0, 1, 2]
+    assert cat_ids == [1, 2, 3]
     ann_cat_ids = sorted({a["category_id"] for a in coco["annotations"]})
-    assert ann_cat_ids == [0, 1, 2]
+    assert ann_cat_ids == [1, 2, 3]

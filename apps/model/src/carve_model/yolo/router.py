@@ -498,6 +498,10 @@ def _run_train(
         imgsz=imgsz,
         device=device,
         project=str(project),
+        # Annotations nest (garments on a person, wheels on a car): the
+        # overlap mode would give each pixel to the smallest instance
+        # only. Detection ignores it.
+        overlap_mask=False,
     )
     metrics: dict[str, Any] = {}
     raw = getattr(results, "results_dict", None)

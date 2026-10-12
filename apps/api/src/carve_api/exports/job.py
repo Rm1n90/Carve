@@ -1,9 +1,11 @@
 # Armin Mehri — mehri.armin@gmail.com
 """Export RQ job — builds a ZIP archive and uploads to MinIO."""
 
+import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 import uuid
 import zipfile
@@ -173,31 +175,76 @@ class ExportJobPayload:
     yolo_mode: str = "segmentation"
 
 
+# Carve's extracted frames are "<video> — frame 00012.jpg"; other frames and
+# sequences end in their number ("FE3_10000.jpg", "GIROITALIA55.jpg",
+# "frame_00238_000271960ms.jpg", "image (3).jpg").
+_FRAME_OF = " — frame "
+_LAST_NUMBER = re.compile(r"[\s_.(-]*\d+[a-z]{0,2}\)?$")
+_SEPARATED_NUMBER = re.compile(r"[\s_.-]+\d+[a-z]{0,2}$")
+_SPLITS = ("train", "val", "test")
+
+
+def _clip_of(name: str) -> str:
+    """The clip or sequence an image belongs to: its video, or its name
+    without the trailing frame numbers ("SBK2_10319.jpg" -> "sbk2")."""
+    if _FRAME_OF in name:
+        return name.split(_FRAME_OF, 1)[0]
+    key = _LAST_NUMBER.sub("", Path(name).stem.lower(), count=1)
+    while (shorter := _SEPARATED_NUMBER.sub("", key, count=1)) != key:
+        key = shorter
+    return key
+
+
+def _natural(name: str) -> list[Any]:
+    """Sort key putting frame 9 before frame 10."""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", name.lower())]
+
+
 def _partition_assets_by_split(
     assets: list[Asset],
     splits: dict[str, float],
 ) -> dict[str, list[Asset]]:
-    """Deterministically partition assets into train/val/test buckets.
+    """Deterministically partition assets into train/val/test buckets, a
+    clip at a time.
 
-    Sort by ``Asset.id`` (stable across runs), then take ``floor(n*train)`` for
-    train, ``floor(n*val)`` for val, and the remainder for test. An empty bucket
-    (e.g. when ``splits["val"] == 0.0``) just won't appear in the resulting zip.
+    Frames of one clip are near copies: split between train and val, they
+    let validation score the training images again. So each clip
+    (``_clip_of``) goes to one split, clips in a fixed pseudo-random order,
+    each to the split furthest below its share that it fits in. A clip bigger than half the
+    smallest share (a long video, or every camera photo named IMG_xxxx) is
+    cut into runs of consecutive frames of that size first, so the shares
+    still come out right. An empty bucket (e.g. when ``splits["val"] ==
+    0.0``) just won't appear in the resulting zip.
     """
-    sorted_assets = sorted(assets, key=lambda a: a.id)
-    n = len(sorted_assets)
-    n_train = int(n * splits.get("train", 0.0))
-    n_val = int(n * splits.get("val", 0.0))
-    # Floor rounds down so any leftover from rounding lands in the test bucket.
-    n_test = n - n_train - n_val
-    if n_test < 0:
-        n_test = 0
-        n_train = min(n_train, n)
-        n_val = max(0, n - n_train)
-    return {
-        "train": sorted_assets[:n_train],
-        "val": sorted_assets[n_train : n_train + n_val],
-        "test": sorted_assets[n_train + n_val : n_train + n_val + n_test],
-    }
+    out: dict[str, list[Asset]] = {k: [] for k in _SPLITS}
+    n = len(assets)
+    shares = {k: float(splits.get(k, 0.0)) for k in _SPLITS}
+    live = [s for s in shares.values() if s > 0]
+    if not n or not live:
+        return out
+    run_max = max(1, int(n * min(live) / 2))
+    clips: dict[str, list[Asset]] = defaultdict(list)
+    for asset in assets:
+        clips[_clip_of(asset.original_name)].append(asset)
+    runs: list[tuple[str, list[Asset]]] = []
+    for clip, members in clips.items():
+        members.sort(key=lambda a: (_natural(a.original_name), str(a.id)))
+        for i in range(0, len(members), run_max):
+            order = hashlib.sha1(f"{clip}\0{i}".encode()).hexdigest()
+            runs.append((order, members[i : i + run_max]))
+    runs.sort(key=lambda r: r[0])
+    room = {k: n * shares[k] for k in _SPLITS if shares[k] > 0}
+    for _, run in runs:
+        # The emptiest split (for its share) the run fits in; when it fits
+        # none, the one it overfills least.
+        fits = [k for k in room if room[k] >= len(run)]
+        if fits:
+            split = max(fits, key=lambda k: room[k] / (n * shares[k]))
+        else:
+            split = max(room, key=lambda k: room[k])
+        out[split].extend(run)
+        room[split] -= len(run)
+    return out
 
 
 def _sanitize_for_path(raw: str) -> str:
@@ -697,24 +744,33 @@ def _yolo_readme(
             "Every `<stem>.txt` next to its image is a YOLO-seg polygon\n"
             "line `<id> x1 y1 x2 y2 ... xn yn`, all values normalised to\n"
             "`[0, 1]`. Bboxes were promoted to a 4-vertex axis-aligned\n"
-            "polygon so the file has uniform polygon-shaped lines. Masks\n"
-            "were converted to one polygon per 4-connected component via\n"
-            "Moore-neighbor boundary tracing, so segmentation detail is\n"
-            "preserved. Consumable by `yolo task=segment` out of the box.\n"
+            "polygon so the file has uniform polygon-shaped lines. Each\n"
+            "mask is one polygon (see below), so every annotation is one\n"
+            "instance. Consumable by `yolo task=segment` out of the box.\n"
             "Image-level tags are NOT in this archive (use the 'Tags only'\n"
             "mode for that).\n\n"
+            "**Train with `overlap_mask=False`.** Annotations nest (a\n"
+            "person with the garments on top, a car with its wheels, a\n"
+            "board inside a crowd): the default overlap mode keeps each\n"
+            "pixel for the smallest instance only, so a person would learn\n"
+            "a mask with holes where its garments are.\n\n"
         )
         layout = _layout_box_detect_or_seg(single_set, root)
         kind_section = (
             "## Per-annotation-kind handling\n\n"
             "**bbox** — promoted to a 4-vertex axis-aligned polygon\n"
-            "(clockwise from top-left). Emitted as a polygon line.\n\n"
+            "(clockwise from top-left). Emitted as a polygon line. A box\n"
+            "teaches a rectangle mask: convert boxes with SAM first.\n\n"
             "**polygon** — `<class_id> <x1> <y1> <x2> <y2> ... <xn> <yn>`\n"
             "(normalised). Vertex order preserved.\n\n"
-            "**mask (RLE)** — one polygon per 4-connected component, traced\n"
-            "from the bitmap. Disjoint blobs of the same mask produce\n"
-            "multiple polygon lines (treated as separate instances by the\n"
-            "trainer). Components smaller than 4 pixels are dropped.\n\n"
+            "**mask (RLE)** — one polygon visiting every piece and every\n"
+            "hole of the mask through zero-width cuts, so a ground with\n"
+            "the players cut out or a person split by ring ropes stays one\n"
+            "instance with its holes open. Specks under 9 px are dropped;\n"
+            "outlines are simplified by at most 1.5 px to stay within the\n"
+            "1000 points Ultralytics keeps per instance. Only a mask of\n"
+            "hundreds of pieces that cannot fit is written as a few lines\n"
+            "of neighbouring pieces.\n\n"
             "**tag (image-level label)** — not included in segmentation mode.\n\n"
         )
     classes_note = (
@@ -821,7 +877,8 @@ def _coco_archive(
     images: list[dict] = []
     asset_to_image_id: dict[uuid.UUID, int] = {}
     for i, asset in enumerate(assets, start=1):
-        if asset.width is None or asset.height is None:
+        # Only images ship in training_data/, so only they are COCO images.
+        if asset.kind != AssetKind.image or asset.width is None or asset.height is None:
             continue
         images.append({
             "id": i,
@@ -905,14 +962,17 @@ def _coco_readme(root: str = "export") -> str:
         "## Per-annotation-kind handling\n\n"
         "**bbox** — emitted into `coco.json#/annotations` as:\n"
         "```\n"
-        '{ "bbox": [x, y, w, h], "area": w*h, "iscrowd": 0 }\n'
+        '{ "bbox": [x, y, w, h], "area": w*h,\n'
+        '  "segmentation": [[<the box\'s 4 corners>]], "iscrowd": 0 }\n'
         "```\n"
-        "(no `segmentation` field).\n\n"
+        "The rectangle is there because COCO readers expect a\n"
+        "`segmentation` on every annotation; for mask training convert\n"
+        "boxes with SAM first.\n\n"
         "**polygon** — emitted with a single contour:\n"
         "```\n"
         '{ "segmentation": [[x1, y1, x2, y2, ..., xn, yn]],\n'
         '  "bbox": <axis-aligned polygon bbox>,\n'
-        '  "area": bbox.w * bbox.h,\n'
+        '  "area": <the polygon\'s own area>,\n'
         '  "iscrowd": 0 }\n'
         "```\n\n"
         "**mask (RLE)** — emitted as COCO-uncompressed RLE. The bbox is the\n"
@@ -932,15 +992,16 @@ def _coco_readme(root: str = "export") -> str:
         "```\n"
         "[ { \"image_id\": 1,\n"
         "    \"file_name\": \"IMG_001.jpg\",\n"
-        "    \"tags\": [ {\"category_id\": 0, \"name\": \"person\"} ] } ]\n"
+        "    \"tags\": [ {\"category_id\": 1, \"name\": \"person\"} ] } ]\n"
         "```\n"
         "An image with multiple tags has multiple entries in its `tags` list.\n"
         "An image with no tags is absent from `image_tags.json` (the file\n"
         "itself is omitted when no tags exist anywhere).\n\n"
         "## Class ids\n"
-        "Category ids in `coco.json` are densified to `0..N-1` based on the\n"
-        "per-export class remap order. The original project `idx` and the\n"
-        "dense `export_idx` are both available in `classes.json`.\n"
+        "Category ids in `coco.json` run `1..N` (COCO ids start at 1) in the\n"
+        "per-export class remap order: a category's id is its dense\n"
+        "`export_idx` in `classes.json` plus one (the YOLO class id plus\n"
+        "one). Every exported class is listed, with or without annotations.\n"
     )
 
 

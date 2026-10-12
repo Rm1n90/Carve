@@ -190,7 +190,9 @@ def write_data_yaml(
     names_sorted = [name for _id, name in sorted(by_id.items())]
     nc = len(by_id)
     quoted = ", ".join(f'"{n}"' for n in names_sorted)
-    lines = ["path: ."]
+    # No ``path:``: Ultralytics then resolves the splits against this
+    # file's folder, while ``path: .`` is the trainer's working directory.
+    lines: list[str] = []
     # Stable ordering: train, val, test.
     for key in ("train", "val", "test"):
         if key in splits:

@@ -211,3 +211,13 @@ def test_data_yaml_custom_splits() -> None:
     )
     assert "train: splits/t" in yaml
     assert "val: splits/v" in yaml
+
+
+def test_data_yaml_splits_resolve_against_its_own_folder() -> None:
+    # ``path: .`` would make Ultralytics look under the trainer's working
+    # directory; without ``path`` it looks next to data.yaml.
+    yaml = write_data_yaml(
+        targets=[RemapTarget(export_id=0, name="x")],
+        splits={"train": "training_data"},
+    )
+    assert "path:" not in yaml
