@@ -365,6 +365,14 @@ def test_a_model_restart_waits_for_sam_instead_of_failing(db_session, monkeypatc
     assert p["failed"] == 0 and p["polygons"] == 2
 
 
+def test_a_dropped_connection_during_a_restart_is_waited_out():
+    import httpx
+
+    assert bc._is_model_down(httpx.RemoteProtocolError("Server disconnected without sending a response."))
+    assert bc._is_model_down(httpx.ConnectError("refused"))
+    assert not bc._is_model_down(ValueError("bad geometry"))
+
+
 def test_another_sam_variant_stops_the_run(db_session, monkeypatch):
     _c, _t, tid, _frames, ids = _scene(db_session, monkeypatch)
     _bind_session_factory(db_session, monkeypatch)

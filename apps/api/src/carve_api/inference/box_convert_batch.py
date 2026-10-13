@@ -307,10 +307,14 @@ def ensure_sam(
 
 
 def _is_model_down(exc: Exception) -> bool:
-    """The model service restarting or reloading SAM: wait, don't fail."""
+    """The model service restarting or reloading SAM: wait, don't fail.
+    A restart can also drop the request in flight ("server disconnected
+    without sending a response")."""
+    import httpx
+
     from carve_api.inference.sam import SamModelUnreachable, SamNotReady
 
-    if isinstance(exc, SamNotReady | SamModelUnreachable):
+    if isinstance(exc, SamNotReady | SamModelUnreachable | httpx.TransportError):
         return True
     return isinstance(exc, ModelServiceError) and exc.status_code in (502, 503)
 
