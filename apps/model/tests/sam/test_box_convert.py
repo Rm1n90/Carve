@@ -60,7 +60,8 @@ def _scene(h: int = 1080, w: int = 1920) -> np.ndarray:
 
 
 def test_small_boxes_are_zoomed_and_neighbours_share_a_crop() -> None:
-    full, crops = bc.plan([[900, 500, 920, 540], [930, 500, 950, 540], [100, 100, 900, 700]], 1080, 1920, zoom=True)
+    # The third box covers most of the frame: nothing to gain from a crop.
+    full, crops = bc.plan([[900, 500, 920, 540], [930, 500, 950, 540], [50, 50, 1800, 1000]], 1080, 1920, zoom=True)
     assert full == [2]
     assert len(crops) == 1 and sorted(crops[0].members) == [0, 1]
     # Every member still fills enough of the model's input.
@@ -83,9 +84,11 @@ def test_masks_are_clipped_to_their_box_and_mapped_back_from_the_crop() -> None:
     seg = _Seg()
     boxes = [[900, 500, 920, 540], [930, 500, 950, 540], [100, 100, 900, 700]]
     out = bc.convert(img, boxes, set_image=seg.set_image, predict_box=seg.predict_box, zoom=True)
-    assert [r.zoomed for r in out] == [True, True, False]
-    # One crop for the pair, then the full image for the board.
-    assert len(seg.sets) == 2 and seg.sets[-1] == (1080, 1920)
+    assert [r.zoomed for r in out] == [True, True, True]
+    # One crop for the board (a big box gets its own: SAM's mask grid then
+    # covers the board, not the frame), one for the pair, and the full
+    # frame the board is decoded on as well (the crop scored as high: kept).
+    assert len(seg.sets) == 3 and seg.sets[-1] == (1080, 1920)
     for r, (x1, y1, x2, y2) in zip(out, boxes, strict=True):
         xs = [p[0] for p in r.polygon]; ys = [p[1] for p in r.polygon]
         margin = bc.CLIP_MARGIN * max(x2 - x1, y2 - y1) + 3
@@ -303,6 +306,33 @@ def test_a_net_is_found_by_name_not_by_a_loose_box() -> None:
     r = out[0]
     xs = [p[0] for p in r.polygon]
     assert r.mask is None and min(xs) >= 190 and max(xs) <= 210
+
+
+def test_rugby_posts_are_the_posts_not_the_area_between_them() -> None:
+    h, w = 400, 400
+    posts = np.zeros((h, w), np.uint8)
+    posts[20:380, 100:108] = 1               # left post
+    posts[20:380, 292:300] = 1               # right post
+    posts[250:256, 100:300] = 1              # crossbar
+    seg = _seg_with(posts)
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[90, 10, 310, 390]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, modes=["net"], zoom=False, text_masks=lambda p: posts)
+    m = _raster(out[0], h, w)
+    assert m[200, 104] == 1 and m[253, 200] == 1   # posts and crossbar
+    assert m[150, 200] == 0                        # the crowd between the posts is not the goal
+    assert m.sum() < 2 * posts.sum()
+
+
+def test_a_goal_with_its_net_is_its_whole_outline() -> None:
+    h, w = 300, 400
+    goal = np.zeros((h, w), np.uint8)
+    goal[100:200, 100:300] = 1               # the net, found as a surface
+    goal[100:200, 150:154] = 0               # a strand SAM missed
+    seg = _seg_with(goal)
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[95, 95, 305, 205]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, modes=["net"], zoom=False, text_masks=lambda p: goal)
+    m = _raster(out[0], h, w)
+    assert m[150, 152] == 1                  # filled across
 
 
 def test_a_long_row_of_boards_is_masked_in_pieces() -> None:
@@ -664,3 +694,132 @@ def test_a_crowd_area_found_as_a_whole_is_not_taken_into_a_gap() -> None:
     m = out[keep].mask
     assert m[100, 25] == 1 and m[300, 25] == 1
     assert not m[200:215].any()               # the blob alone fills nothing in the gap
+
+
+class _ByBox(_Seg):
+    """A predictor that answers each box with the mask registered for it
+    (the box whose corner is nearest)."""
+
+    def __init__(self, masks: dict[tuple[int, int], np.ndarray]) -> None:
+        super().__init__()
+        self.masks = masks
+
+    def predict_box(self, box):
+        self.boxes.append([float(v) for v in box])
+        key = min(self.masks, key=lambda k: abs(k[0] - box[0]) + abs(k[1] - box[1]))
+        return self.masks[key].copy(), 0.9
+
+
+def _rect(h, w, x1, y1, x2, y2):
+    m = np.zeros((h, w), np.uint8)
+    m[y1:y2, x1:x2] = 1
+    return m
+
+
+def test_a_board_running_under_a_scoreboard_loses_the_scoreboard_pixels() -> None:
+    h, w = 300, 600
+    board = _rect(h, w, 50, 100, 550, 160)
+    score = _rect(h, w, 20, 80, 220, 200)   # the graphic, over the board's left end
+    seg = _ByBox({(50, 100): board, (20, 80): score})
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[50, 100, 550, 160], [20, 80, 220, 200]],
+                     set_image=seg.set_image, predict_box=seg.predict_box, modes=["flat", "overlay"], zoom=False)
+    b = _raster(out[0], h, w)
+    assert b[130, 400] == 1                 # the board beside the graphic
+    assert b[130, 150] == 0                 # behind the graphic: not the board
+    assert _raster(out[1], h, w)[130, 150] == 1   # the graphic keeps its pixels
+
+
+def test_a_car_inside_an_inset_keeps_its_pixels() -> None:
+    h, w = 300, 600
+    inset = _rect(h, w, 300, 50, 580, 280)
+    car = _rect(h, w, 380, 150, 480, 200)
+    seg = _ByBox({(300, 50): inset, (380, 150): car})
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[300, 50, 580, 280], [380, 150, 480, 200]],
+                     set_image=seg.set_image, predict_box=seg.predict_box, modes=["overlay", "object"], zoom=False)
+    assert _raster(out[1], h, w)[175, 430] == 1   # the car
+    assert _raster(out[0], h, w)[175, 430] == 0   # the inset gave way to it
+
+
+def test_a_see_through_bug_cuts_nothing() -> None:
+    h, w = 300, 600
+    board = _rect(h, w, 50, 100, 550, 160)
+    blob = _rect(h, w, 100, 120, 110, 125)  # SAM finds only a speck: a faint bug, its box
+    seg = _ByBox({(50, 100): board, (80, 90): blob})
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[50, 100, 550, 160], [80, 90, 200, 150]],
+                     set_image=seg.set_image, predict_box=seg.predict_box, modes=["flat", "overlay"], zoom=False)
+    assert out[1].translucent
+    assert _raster(out[0], h, w)[130, 150] == 1
+
+
+def test_a_thin_logo_bug_is_found_by_name_not_left_as_its_box() -> None:
+    h, w = 200, 400
+    logo = np.zeros((h, w), np.uint8)
+    logo[60:70, 300:360] = 1                 # the "S": thin strokes, a third of its box
+    logo[60:95, 300:310] = 1
+    logo[85:95, 300:360] = 1
+    blob = _rect(h, w, 320, 70, 330, 80)     # SAM given the box: a speck of the scene
+    seg = _ByBox({(290, 50): blob})
+    found = []
+
+    def text(prompts):
+        found.append(prompts)
+        return logo if prompts == bc.OVERLAY_PROMPTS else np.zeros((h, w), np.uint8)
+
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[290, 50, 370, 105]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, modes=["overlay"], zoom=False, text_masks=text)
+    m = _raster(out[0], h, w)
+    assert found == [bc.OVERLAY_PROMPTS]
+    assert m[65, 330] == 1 and m[78, 340] == 0   # the logo's strokes, not the gap in the S
+    assert out[0].translucent
+
+
+def test_a_bug_nothing_finds_is_its_box() -> None:
+    h, w = 200, 400
+    blob = _rect(h, w, 320, 70, 330, 80)
+    seg = _ByBox({(290, 50): blob})
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[290, 50, 370, 105]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, modes=["overlay"], zoom=False,
+                     text_masks=lambda p: np.zeros((h, w), np.uint8))
+    assert out[0].translucent and len(out[0].polygon) == 4
+
+
+def test_a_big_box_is_segmented_on_a_crop_around_it() -> None:
+    full, crops = bc.plan([[400, 300, 900, 900]], 1080, 1920, zoom=True)
+    assert full == [] and len(crops) == 1
+    c = crops[0]
+    # The box with a margin of LARGE_CONTEXT of its long side, in the frame.
+    assert (c.x0, c.y0, c.x1, c.y1) == (310, 210, 990, 990)
+    # Most of the frame: the full image, as before.
+    full, crops = bc.plan([[100, 0, 1500, 1080]], 1080, 1920, zoom=True)
+    assert full == [0] and crops == []
+
+
+def test_a_big_box_keeps_the_mask_sam_scores_higher() -> None:
+    h, w = 1080, 1920
+    whole = np.zeros((h, w), np.uint8)
+    whole[300:900, 400:900] = 1               # the full frame: the whole person
+    part = np.zeros((h, w), np.uint8)
+    part[300:400, 400:500] = 1                # the crop: a piece of them
+
+    class P(_Seg):
+        def predict_box(self, box):
+            self.boxes.append([float(v) for v in box])
+            if self.image.shape[:2] == (h, w):
+                return whole.copy(), 0.93
+            m = np.zeros(self.image.shape[:2], np.uint8)
+            m[90:190, 90:190] = 1               # crop pixels: (400, 300) at offset (310, 210)
+            return m, 0.71
+
+    seg = P()
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[400, 300, 900, 900]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, zoom=True)
+    m = _raster(out[0], h, w)
+    assert out[0].zoomed is False and m[800, 800] == 1   # the full frame's, scored higher
+
+
+def test_a_big_graphic_stays_on_the_full_frame() -> None:
+    h, w = 1080, 1920
+    seg = _seg_with(_rect(h, w, 400, 300, 900, 600))
+    out = bc.convert(np.zeros((h, w, 3), np.uint8), [[400, 300, 900, 600]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, modes=["overlay"], zoom=True)
+    assert seg.sets == [(1080, 1920)] and out[0].zoomed is False

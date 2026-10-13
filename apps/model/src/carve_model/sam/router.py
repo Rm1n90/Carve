@@ -546,6 +546,8 @@ def _text_union_fn(sam: Any):
     def run(prompts: tuple[str, ...]) -> np.ndarray:
         state = adapter._state
         h, w = adapter._original_size
+        if max(h, w) > TEXT_MASK_MAX_SIDE:
+            return _text_union_capped(processor, state, prompts, h, w)
         out = np.zeros((h, w), dtype=np.uint8)
         before = getattr(processor, "confidence_threshold", 0.5)
         processor.set_confidence_threshold(0.3)
@@ -560,6 +562,44 @@ def _text_union_fn(sam: Any):
         return out
 
     return run
+
+
+# SAM 3.1 scales every text detection's mask up to the image size before
+# thresholding: "person" on a 12 MP crowd is hundreds of full-size masks,
+# several GB of GPU memory (a 4096 x 2915 photo ran it out). Its masks
+# come from a ~288 px decoder, so on a larger image they are made at this
+# long side and only their union is scaled up: the same shapes.
+TEXT_MASK_MAX_SIDE = 2048
+
+
+def _text_union_capped(processor: Any, state: dict, prompts: tuple[str, ...], h: int, w: int) -> np.ndarray:
+    """The union of the text detections on a large image, made at
+    TEXT_MASK_MAX_SIDE and scaled up smoothly (from the masks'
+    probabilities, so the edge is not stepped)."""
+    import cv2
+    import torch
+
+    scale = TEXT_MASK_MAX_SIDE / max(h, w)
+    th, tw = max(1, round(h * scale)), max(1, round(w * scale))
+    best = np.zeros((th, tw), dtype=np.float32)
+    saved = (state.get("original_height"), state.get("original_width"))
+    before = getattr(processor, "confidence_threshold", 0.5)
+    processor.set_confidence_threshold(0.3)
+    state["original_height"], state["original_width"] = th, tw
+    try:
+        for prompt in prompts:
+            with torch.no_grad():
+                processor.set_text_prompt(prompt=prompt, state=state)
+                probs = state.get("masks_logits")
+                if probs is None or int(probs.shape[0]) == 0:
+                    continue
+                m = probs.reshape(int(probs.shape[0]), th, tw).amax(dim=0).float().cpu().numpy()
+            np.maximum(best, m, out=best)
+    finally:
+        state["original_height"], state["original_width"] = saved
+        processor.set_confidence_threshold(before)
+    full = cv2.resize(best, (w, h), interpolation=cv2.INTER_LINEAR)
+    return (full > 0.5).astype(np.uint8)
 
 
 @router.post("/boxes-to-polygons", response_model=BoxesToPolygonsOut)

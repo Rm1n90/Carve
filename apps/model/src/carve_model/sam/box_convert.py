@@ -42,12 +42,16 @@ the single most object-like thing in it (on a race track, one kerb):
 
 Both come back as pixel masks (they have holes and several parts). An
 **overlay** box (a broadcast graphic) keeps SAM's outline when SAM finds
-the graphic, and falls back to the box for a faint, see-through bug
-where SAM only finds a blob of the scene behind it. An opaque overlay
+the graphic. A thin logo bug or a faint watermark, where SAM given the box
+only finds a blob of the scene behind it, is what SAM 3.1 finds by name
+in the box ("logo", "watermark", "text"), and the box only when that
+finds nothing; such a bug is see-through and cuts nothing behind it. An opaque overlay
 (a design element, a panel, a photo inset) gives way to what is labelled
 inside it: the cars, boards, track and crowd of an inset are cut out of
 it and keep their own labels, and a ground or crowd box inside it is not
-blocked by it.
+blocked by it. What runs out from under an opaque overlay (a board, a
+person, a car partly hidden by a scoreboard) is behind it: the overlay's
+pixels are cut out of it, as they are out of the ground and a crowd.
 
 The other boxes differ in what their holes mean:
 
@@ -64,7 +68,9 @@ The other boxes differ in what their holes mean:
 * **net** (goals, nets, backboards): the same, but the outline is taken
   from what SAM 3.1 finds by name ("net", "goal", ...) inside the box. A
   box prompt on a loose box around a net seen edge-on takes the floor
-  around it.
+  around it. A frame with nothing stretched across it (rugby posts, an
+  empty goal frame) is its posts and bars as found: its outline would
+  take the crowd and the field between the posts.
 * **ropes** (ring ropes, a fighting cage): the ropes and rails SAM 3.1
   finds by name, at their true width, and a cage's fence, filled. Never
   an outline over the whole ring.
@@ -107,6 +113,14 @@ CROP_MIN_PX = 96
 # Boxes share a crop only while every box in it still spans at least
 # this many pixels of the model's input.
 MIN_ENCODER_PX_IN_CROP = 160
+# A box too big to need zooming is still segmented on a crop around it
+# (this margin on each side, a share of its long side) when that crop is
+# at most LARGE_MAX_SHARE of the image's long side. SAM draws its mask on
+# a ~256 px grid over whatever it is given: over a whole 1920 px frame a
+# big object's edge comes in 7 px steps and runs off the object (a
+# close-up player's head with the wall behind it).
+LARGE_CONTEXT = 0.15
+LARGE_MAX_SHARE = 0.7
 # Masks may extend this far past their box (fraction of the box's long
 # side, plus a couple of pixels for the edge).
 CLIP_MARGIN = 0.06
@@ -176,8 +190,16 @@ COURSE_SURFACE = 0.5
 # An overlay's SAM outline is kept only when it covers at least this much
 # of its box; otherwise the box is the mask.
 OVERLAY_MIN_FILL = 0.5
+# An overlay the box prompt misses (a thin logo bug, a faint watermark) is
+# what SAM 3.1 finds by these names inside its box, when that covers at
+# least OVERLAY_NAMED_MIN of the box; the box only when it finds nothing.
+OVERLAY_PROMPTS = ("logo", "watermark", "text")
+OVERLAY_NAMED_MIN = 0.1
 # Nets, goals and backboards, found by name.
 NET_PROMPTS = ("net", "goal", "basketball backboard")
+# What SAM finds of a net covering less than this share of its outline is
+# a bare frame (posts and bars, no net between them): kept as found.
+NET_FRAME_SOLIDITY = 0.4
 # Ring ropes by name; a fighting cage (no ropes) by its fence.
 ROPE_PROMPTS = ("rope", "boxing ring ropes")
 CAGE_PROMPTS = ("fence",)
@@ -206,6 +228,9 @@ CROWD_GAP_JOIN = 7
 # A box with at least this share of it inside a bigger overlay's box lies
 # inside that overlay (an inset's car, its track).
 INSET_SHARE = 0.8
+# A shape less than this share of which is left beside an overlay over it
+# is kept whole: cutting would leave a sliver.
+OVERLAY_HIDES = 0.05
 
 
 @dataclass
@@ -246,6 +271,18 @@ def _window(box: list[float], h: int, w: int) -> tuple[int, int, int, int]:
     return x0, y0, int(min(w, x0 + side)), int(min(h, y0 + side))
 
 
+def _large_window(box: list[float], h: int, w: int) -> tuple[int, int, int, int] | None:
+    """The crop a big box is segmented on, or None when it would be most
+    of the image anyway (nothing gained over the full frame)."""
+    x1, y1, x2, y2 = box
+    m = LARGE_CONTEXT * max(x2 - x1, y2 - y1)
+    x0, y0 = int(max(0, x1 - m)), int(max(0, y1 - m))
+    xe, ye = int(min(w, np.ceil(x2 + m))), int(min(h, np.ceil(y2 + m)))
+    if max(xe - x0, ye - y0) > LARGE_MAX_SHARE * max(h, w):
+        return None
+    return x0, y0, xe, ye
+
+
 def plan(boxes: list[list[float]], h: int, w: int, *, zoom: bool) -> tuple[list[int], list[Crop]]:
     """Split the boxes into those decoded on the full image and crops
     (each with the boxes it serves)."""
@@ -255,8 +292,16 @@ def plan(boxes: list[list[float]], h: int, w: int, *, zoom: bool) -> tuple[list[
     order = sorted(range(len(boxes)), key=lambda i: -(boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
     for i in order:
         x1, y1, x2, y2 = boxes[i]
-        if not zoom or max(x2 - x1, y2 - y1) * scale >= ZOOM_BELOW_ENCODER_PX:
+        if not zoom:
             full.append(i)
+            continue
+        if max(x2 - x1, y2 - y1) * scale >= ZOOM_BELOW_ENCODER_PX:
+            win = _large_window(boxes[i], h, w)
+            if win is None:
+                full.append(i)
+            else:
+                # Its own crop; small boxes inside it may share it (below).
+                crops.append(Crop(*win, [i], max(win[2] - win[0], win[3] - win[1])))
             continue
         wx0, wy0, wx1, wy1 = _window(boxes[i], h, w)
         own = max(wx1 - wx0, wy1 - wy0)
@@ -354,6 +399,14 @@ def _hull(piece: Piece) -> Piece:
     if pts is not None:
         cv2.fillPoly(out, [cv2.convexHull(pts)], 1)
     return Piece(piece.x0, piece.y0, out)
+
+
+def _net_outline(piece: Piece) -> Piece:
+    """A net's shape: its filled outline, or a bare frame as found."""
+    hull = _hull(piece)
+    if int(piece.m.sum()) < NET_FRAME_SOLIDITY * max(1, int(hull.m.sum())):
+        return piece
+    return hull
 
 
 def _strands(piece: Piece) -> Piece | None:
@@ -844,19 +897,50 @@ def convert(
                 whole[i] = (piece, score, zoomed)
 
     full_jobs, crops = plan([b for _, b in jobs], h, w, zoom=zoom)
+    # A big box on its own crop is also decoded on the full frame, and the
+    # mask SAM scores higher is kept: the crop draws a big object's edge
+    # finer, but in a packed scene (a stand, a scrum) its tighter context
+    # can leave SAM with a piece of the object, which the whole frame does
+    # not. A decode costs little next to the encodes.
+    full_scale = ENCODER_SIDE / max(h, w)
+    dual = {
+        j for c in crops for j in c.members
+        if max(jobs[j][1][2] - jobs[j][1][0], jobs[j][1][3] - jobs[j][1][1]) * full_scale >= ZOOM_BELOW_ENCODER_PX
+    }
+    # A big broadcast graphic stays on the full frame: its outline came
+    # out as well there, and a crop of it was no better.
+    for j in [j for j in dual if modes[jobs[j][0]] == "overlay"]:
+        dual.discard(j)
+        full_jobs.append(j)
+        for c in crops:
+            if j in c.members:
+                c.members.remove(j)
+    crops = [c for c in crops if c.members]
+    on_crop: dict[int, tuple[np.ndarray, float, tuple[int, int]]] = {}
     for c in crops:
         set_image(np.ascontiguousarray(image[c.y0 : c.y1, c.x0 : c.x1]))
         for j in c.members:
             x1, y1, x2, y2 = jobs[j][1]
             local = np.array([x1 - c.x0, y1 - c.y0, x2 - c.x0, y2 - c.y0], dtype=np.float32)
             m, score = predict_box(local)
-            take(j, m, score, True, (c.x0, c.y0))
+            if j in dual:
+                on_crop[j] = (m, score, (c.x0, c.y0))
+            else:
+                take(j, m, score, True, (c.x0, c.y0))
     named = [i for i in shaped if modes[i] in ("net", "ropes")]
-    if full_jobs or regions or named or keep_full or not crops:
+    overlays = text_masks is not None and any(modes[i] == "overlay" for i in shaped)
+    if full_jobs or dual or regions or named or keep_full or overlays or not crops:
         set_image(image)
     for j in full_jobs:
         m, score = predict_box(np.asarray(jobs[j][1], dtype=np.float32))
         take(j, m, score, False, (0, 0))
+    for j in sorted(dual):
+        m, score = predict_box(np.asarray(jobs[j][1], dtype=np.float32))
+        cm, cscore, offset = on_crop[j]
+        if cscore >= score:
+            take(j, cm, cscore, True, offset)
+        else:
+            take(j, m, score, False, (0, 0))
 
     for i, got in found.items():
         if len(got) > 1 and i in whole and whole[i][1] >= LONG_SCORE and _spans(whole[i][0], boxes[i]):
@@ -872,7 +956,9 @@ def convert(
             continue  # shaped below; the box prompt is only the fallback
         piece = _clean(piece, boxes[i], modes[i]) if piece else None
         if piece is not None:
-            pieces[i] = _hull(piece) if modes[i] in ("carrier", "net") else piece
+            pieces[i] = (
+                _hull(piece) if modes[i] == "carrier" else _net_outline(piece) if modes[i] == "net" else piece
+            )
             scores[i] = (max(s for _, s, _ in got), any(z for _, _, z in got))
 
     # Nets and ropes by name, inside their box.
@@ -890,7 +976,7 @@ def convert(
                 p = named_piece(i, NET_PROMPTS)
                 p = _clean(p, boxes[i], "net") if p else None
                 if p is not None:
-                    pieces[i] = _hull(p)
+                    pieces[i] = _net_outline(p)
                     scores[i] = (1.0, False)
                 continue
             ropes = named_piece(i, ROPE_PROMPTS)
@@ -937,17 +1023,41 @@ def convert(
     # Opaque overlays, finished last: what is labelled inside one is cut
     # out of it, and a ground or crowd lying inside it is not blocked by it.
     opaque: dict[int, np.ndarray] = {}
-    # An overlay SAM found nothing for is a see-through bug: its box.
+    named_overlays: list[np.ndarray] = []
+
+    def overlay_by_name(i: int) -> BoxResult | None:
+        """An overlay the box prompt missed, as SAM 3.1 finds it by name in
+        its box. Still see-through: it cuts nothing out of what is behind."""
+        if text_masks is None:
+            return None
+        if not named_overlays:
+            named_overlays.append(text_masks(OVERLAY_PROMPTS))
+        x1, y1, x2, y2 = boxes[i]
+        p = _clip(named_overlays[0], boxes[i], (0, 0))
+        p = _clean(p, boxes[i], "overlay") if p else None
+        if p is None or int(p.m.sum()) < OVERLAY_NAMED_MIN * max(1.0, (x2 - x1) * (y2 - y1)):
+            return None
+        if _is_simple(p):
+            poly = _polygon(p, epsilon_factor)
+            return BoxResult(poly, 1.0, False, translucent=True) if poly else None
+        full_mask = np.zeros((h, w), dtype=np.uint8)
+        p.paste(full_mask)
+        return BoxResult([], 1.0, False, mask=full_mask, translucent=True)
+
+    # An overlay SAM found nothing for is a see-through bug: found by name,
+    # or its box.
     for i in shaped:
         if modes[i] == "overlay" and i not in pieces:
-            results[i] = BoxResult(_box_polygon(boxes[i]), 0.0, False, translucent=True)
+            results[i] = overlay_by_name(i) or BoxResult(_box_polygon(boxes[i]), 0.0, False, translucent=True)
     for i, piece in pieces.items():
         score, zoomed = scores[i]
         mode = modes[i]
         if mode == "overlay":
             poly, translucent = _overlay_check(_polygon(piece, epsilon_factor), boxes[i])
             results[i] = BoxResult(poly, score, zoomed, translucent=translucent)
-            if not translucent:
+            if translucent:
+                results[i] = overlay_by_name(i) or results[i]
+            else:
                 opaque[i] = np.zeros((h, w), dtype=np.uint8)
                 _claim(opaque[i], poly)
             continue
@@ -1083,6 +1193,38 @@ def convert(
             full_mask = np.zeros((h, w), dtype=np.uint8)
             piece.paste(full_mask)
             results[o] = BoxResult([], r.score, r.zoomed, mask=full_mask)
+
+    # A broadcast graphic is painted over the scene: what runs out from
+    # under one (a board, a person, a car partly hidden by a scoreboard)
+    # is behind it, and the graphic's pixels are not its own. (What lies
+    # inside one, an inset's content, was cut out of the graphic above.)
+    for o in opaque:
+        ro = results[o]
+        if ro is None:
+            continue
+        om = _pixels(ro, h, w)
+        for j, r in enumerate(results):
+            if j == o or r is None or r.merged_into is not None or modes[j] not in BOX_MODES or modes[j] == "overlay":
+                continue
+            if not _meet(boxes[j], boxes[o]) or _inside(boxes[j], boxes[o]):
+                continue
+            pj = _pixels(r, h, w)
+            under = int((pj & om).sum())
+            if under == 0:
+                continue
+            total = int(pj.sum())
+            if total - under < OVERLAY_HIDES * total:
+                continue  # all but hidden: kept as found rather than lost
+            piece = _clip(pj & (1 - om), boxes[j], (0, 0))
+            piece = _trim(piece, boxes[j]) if piece else None
+            if piece is None:
+                continue
+            if _is_simple(piece):
+                results[j] = BoxResult(_polygon(piece, epsilon_factor), r.score, r.zoomed, translucent=r.translucent)
+            else:
+                full_mask = np.zeros((h, w), dtype=np.uint8)
+                piece.paste(full_mask)
+                results[j] = BoxResult([], r.score, r.zoomed, mask=full_mask, translucent=r.translucent)
     return results
 
 

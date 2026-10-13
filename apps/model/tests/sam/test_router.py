@@ -325,3 +325,45 @@ def test_encode_bad_image_b64_returns_400() -> None:
         assert r.status_code == 400
     finally:
         predictor_mod.set_test_predictor(None)
+
+
+def test_text_masks_on_a_large_image_are_made_small_and_scaled_up() -> None:
+    """SAM 3.1 scales every text detection to the image size before
+    thresholding; on a 12 MP photo that ran the GPU out of memory. They
+    are made at TEXT_MASK_MAX_SIDE and only their union is scaled up."""
+    import torch
+
+    from carve_model.sam import router as r
+
+    h, w = 3000, 4000
+    seen: list[tuple[int, int]] = []
+
+    class Proc:
+        confidence_threshold = 0.5
+
+        def set_confidence_threshold(self, t):
+            self.confidence_threshold = t
+
+        def set_text_prompt(self, prompt, state):
+            th, tw = state["original_height"], state["original_width"]
+            seen.append((th, tw))
+            m = torch.zeros((2, 1, th, tw))
+            m[0, 0, : th // 2, : tw // 2] = 0.9      # top-left quarter
+            m[1, 0, th // 2 :, tw // 2 :] = 0.7      # bottom-right quarter
+            state["masks_logits"] = m
+
+    class Adapter:
+        _processor = Proc()
+        _original_size = (h, w)
+        _state = {"original_height": h, "original_width": w}
+
+    class Sam:
+        _adapter = Adapter()
+
+    out = r._text_union_fn(Sam())(("person", "crowd"))
+    assert out.shape == (h, w)
+    assert max(seen[0]) == r.TEXT_MASK_MAX_SIDE and len(seen) == 2
+    assert out[100, 100] == 1 and out[2900, 3900] == 1 and out[100, 3900] == 0
+    # The state is the image's again for whatever runs next.
+    assert (Adapter._state["original_height"], Adapter._state["original_width"]) == (h, w)
+    assert Adapter._processor.confidence_threshold == 0.5
