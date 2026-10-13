@@ -7,7 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Check, ImageOff, Search, Tag, Video, X } from "lucide-react";
+import { Check, FolderInput, ImageOff, Search, Tag, Trash2, Video, X } from "lucide-react";
 import {
   assetsApi,
   type Asset,
@@ -16,6 +16,8 @@ import {
 import { annotationsApi } from "@/api/annotations";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { Input } from "@/components/ui/Input";
+import { DeleteAssetsDialog, MoveAssetsDialog } from "@/components/assets/BulkAssetDialogs";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { useShortcutHandler } from "@/state/shortcuts";
 import { useAssetExtractStatus } from "@/state/useAssetExtractStatus";
@@ -287,8 +289,25 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
   const [bulkResult, setBulkResult] = useState<
     { tagged: number; skipped: number; failed: number; className: string } | null
   >(null);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const queryClient = useQueryClient();
   const selectMode = selected.size > 0;
+  const selectedIds = useMemo(() => Array.from(selected), [selected]);
+
+  // After a delete or move: the grids, counts and project figures of
+  // every task involved are stale.
+  const afterBulk = (otherTaskId?: string) => {
+    setSelected(new Set());
+    setAnchorId(null);
+    for (const t of [taskId, otherTaskId].filter(Boolean) as string[]) {
+      queryClient.invalidateQueries({ queryKey: ["task-assets", t] });
+      queryClient.invalidateQueries({ queryKey: ["task-assets-count", t] });
+      queryClient.invalidateQueries({ queryKey: ["task-annotations-raw", t] });
+    }
+    queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["project-stats", projectId] });
+  };
 
   const countQ = useQuery({
     queryKey: ["task-assets-count", taskId],
@@ -688,6 +707,24 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
           </button>
           <button
             type="button"
+            data-testid="asset-bulk-move-trigger"
+            onClick={() => setMoveOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium border border-[var(--border-strong)] text-secondary hover:text-primary hover:border-[var(--border-accent)] transition-colors"
+          >
+            <FolderInput className="h-3.5 w-3.5" />
+            Move to task…
+          </button>
+          <button
+            type="button"
+            data-testid="asset-bulk-delete-trigger"
+            onClick={() => setDeleteOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium border border-[var(--border-subtle)] text-[color:var(--danger)] hover:bg-[var(--danger-bg)] hover:border-[var(--danger)] transition-colors"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete…
+          </button>
+          <button
+            type="button"
             aria-label="Clear selection"
             data-testid="asset-bulk-clear"
             onClick={() => setSelected(new Set())}
@@ -710,6 +747,40 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
           }
         />
       )}
+
+      <MoveAssetsDialog
+        open={moveOpen}
+        onOpenChange={setMoveOpen}
+        projectId={projectId}
+        taskId={taskId}
+        assetIds={selectedIds}
+        onMoved={(r, target) => {
+          afterBulk(target);
+          const extra = [
+            r.skipped_duplicates ? `${r.skipped_duplicates} already there, left here` : "",
+            r.renamed ? `${r.renamed} renamed` : "",
+            r.classes_enabled ? `${r.classes_enabled} classes enabled` : "",
+            r.annotations_dropped ? `${r.annotations_dropped} annotations removed` : "",
+          ].filter(Boolean);
+          showToast(
+            `Moved ${r.moved} image${r.moved === 1 ? "" : "s"} with ${r.annotations_moved} annotations${extra.length ? ` · ${extra.join(" · ")}` : ""}.`,
+            { variant: "success" },
+          );
+        }}
+      />
+      <DeleteAssetsDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        taskId={taskId}
+        assetIds={selectedIds}
+        onDeleted={(r) => {
+          afterBulk();
+          showToast(
+            `Deleted ${r.deleted} image${r.deleted === 1 ? "" : "s"}${r.annotations_deleted ? ` and ${r.annotations_deleted} annotations` : ""}.`,
+            { variant: "success" },
+          );
+        }}
+      />
 
       {bulkResult && (
         <BulkResultToast

@@ -64,7 +64,87 @@ export interface ListAssetsParams {
  */
 const LIST_ALL_PAGE_SIZE = 2000;
 
+
+/** Annotations of one class among the selected images. */
+export interface ClassCount {
+  class_id: string;
+  name: string;
+  count: number;
+}
+
+/** What moving the selected images to ``task_id`` would do. */
+export interface BulkTargetPreview {
+  task_id: string;
+  name: string;
+  same_kind: boolean;
+  /** Why nothing can move in or out right now, or null. */
+  busy: string | null;
+  to_move: number;
+  annotations_to_move: number;
+  already_in_target: number;
+  renamed: number;
+  /** Classes of the moving annotations the target task does not use. */
+  missing_classes: ClassCount[];
+}
+
+/** What deleting or moving the selected images would touch. */
+export interface BulkPreview {
+  images: number;
+  not_found: number;
+  annotated_images: number;
+  annotations: number;
+  by_class: ClassCount[];
+  busy: string | null;
+  target: BulkTargetPreview | null;
+}
+
+export interface BulkMoveResult {
+  moved: number;
+  skipped_duplicates: number;
+  renamed: number;
+  annotations_moved: number;
+  annotations_dropped: number;
+  classes_enabled: number;
+}
+
 export const assetsApi = {
+  /** What deleting or moving these images would touch (no change made). */
+  bulkPreview: async (
+    taskId: string,
+    assetIds: string[],
+    targetTaskId?: string,
+  ): Promise<BulkPreview> =>
+    (
+      await api.post<BulkPreview>(`/tasks/${taskId}/assets:bulk-preview`, {
+        asset_ids: assetIds,
+        target_task_id: targetTaskId ?? null,
+      })
+    ).data,
+  /** Delete the images for good, with their annotations. The server
+   *  refuses if the annotation count differs from the preview's. */
+  bulkDelete: async (
+    taskId: string,
+    assetIds: string[],
+    annotationsExpected: number,
+  ): Promise<{ deleted: number; annotations_deleted: number }> =>
+    (
+      await api.post(`/tasks/${taskId}/assets:bulk-delete`, {
+        asset_ids: assetIds,
+        annotations_expected: annotationsExpected,
+      })
+    ).data,
+  /** Move the images, with their annotations, to another task. */
+  bulkMove: async (
+    taskId: string,
+    body: {
+      asset_ids: string[];
+      target_task_id: string;
+      missing_classes: "enable" | "drop";
+      skip_duplicates: boolean;
+      annotations_expected: number;
+    },
+  ): Promise<BulkMoveResult> =>
+    (await api.post<BulkMoveResult>(`/tasks/${taskId}/assets:move`, body)).data,
   /**
    * Paginated list with optional search + status filter. Default limit is
    * 100 to keep the v2.4 grid responsive even with 10K+ assets.

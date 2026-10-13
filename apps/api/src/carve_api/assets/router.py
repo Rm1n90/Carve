@@ -7,9 +7,12 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from carve_api.assets import bulk
 from carve_api.assets.models import AssetKind
 from carve_api.assets.schemas import AssetCount, AssetListPage, AssetOut, AssetWithUrl
 from carve_api.assets.service import AssetService
+from carve_api.audit.actions import ASSETS_DELETED, ASSETS_MOVED
+from carve_api.audit.service import record as record_audit
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
@@ -472,6 +475,229 @@ def frame_extract_status(
         uploaded=int(h.get("uploaded") or 0),
         message=h.get("message"),
         job_id=h.get("job_id") or None,
+    )
+
+
+# --- Bulk delete / move of selected images ---------------------------------
+
+
+class ClassCount(BaseModel):
+    class_id: str
+    name: str
+    count: int
+
+
+class TargetPreview(BaseModel):
+    task_id: str
+    name: str
+    same_kind: bool
+    busy: str | None
+    to_move: int
+    annotations_to_move: int
+    already_in_target: int
+    renamed: int
+    missing_classes: list[ClassCount]
+
+
+class BulkPreviewIn(BaseModel):
+    asset_ids: list[uuid.UUID] = Field(min_length=1, max_length=bulk.MAX_ASSETS)
+    target_task_id: uuid.UUID | None = None
+
+
+class BulkPreviewOut(BaseModel):
+    images: int
+    not_found: int
+    annotated_images: int
+    annotations: int
+    by_class: list[ClassCount]
+    busy: str | None
+    target: TargetPreview | None = None
+
+
+class BulkDeleteIn(BaseModel):
+    asset_ids: list[uuid.UUID] = Field(min_length=1, max_length=bulk.MAX_ASSETS)
+    # What the preview showed; a different count means the selection
+    # changed since, and the user must look again before anything goes.
+    annotations_expected: int = Field(ge=0)
+
+
+class BulkDeleteOut(BaseModel):
+    deleted: int
+    annotations_deleted: int
+
+
+class BulkMoveIn(BaseModel):
+    asset_ids: list[uuid.UUID] = Field(min_length=1, max_length=bulk.MAX_ASSETS)
+    target_task_id: uuid.UUID
+    # Annotations whose class the target task does not use: enable those
+    # classes there, or remove those annotations.
+    missing_classes: Literal["enable", "drop"] = "enable"
+    # Leave an image where it is when the target already has the file.
+    skip_duplicates: bool = True
+    annotations_expected: int = Field(ge=0)
+
+
+class BulkMoveOut(BaseModel):
+    moved: int
+    skipped_duplicates: int
+    renamed: int
+    annotations_moved: int
+    annotations_dropped: int
+    classes_enabled: int
+
+
+def _class_counts(db: Session, counts) -> list[ClassCount]:
+    names = bulk.class_names(db, counts.keys())
+    return sorted(
+        (ClassCount(class_id=str(c), name=names.get(c, "?"), count=n) for c, n in counts.items()),
+        key=lambda x: (-x.count, x.name),
+    )
+
+
+def _bulk_target(db: Session, user: User, source, target_id: uuid.UUID):
+    if target_id == source.id:
+        raise _http(bulk.BadTarget("the images are already in this task"))
+    try:
+        target = require_visible_task(db, user, target_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    if target.project_id != source.project_id or target.deleted_at is not None:
+        raise _http(bulk.BadTarget("not a task of this project"))
+    return target
+
+
+@router.post("/{task_id}/assets:bulk-preview", response_model=BulkPreviewOut)
+def bulk_preview(
+    task_id: uuid.UUID,
+    payload: BulkPreviewIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BulkPreviewOut:
+    """What deleting or moving the selected images would touch."""
+    try:
+        source = require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    sel = bulk.load_selection(db, source, payload.asset_ids)
+    out = BulkPreviewOut(
+        images=len(sel.assets),
+        not_found=sel.missing,
+        annotated_images=sel.annotated_assets,
+        annotations=sel.annotations,
+        by_class=_class_counts(db, sel.annotations_by_class),
+        busy=bulk.busy_reason(db, [source.id]),
+    )
+    if payload.target_task_id is not None:
+        target = _bulk_target(db, user, source, payload.target_task_id)
+        plan = bulk.plan_move(db, sel, source, target, skip_duplicates=True)
+        moving = {a.id for a in plan.move}
+        annotations_to_move = 0
+        if moving:
+            annotations_to_move = bulk.load_selection(db, source, list(moving)).annotations
+        out.target = TargetPreview(
+            task_id=str(target.id),
+            name=target.name,
+            same_kind=target.kind == source.kind,
+            busy=bulk.busy_reason(db, [target.id]),
+            to_move=len(plan.move),
+            annotations_to_move=annotations_to_move,
+            already_in_target=len(plan.already_in_target),
+            renamed=len(plan.renames),
+            missing_classes=_class_counts(db, plan.missing_classes),
+        )
+    return out
+
+
+def _require_bulk_rights(db: Session, user: User, task_id: uuid.UUID):
+    try:
+        task = require_visible_task(db, user, task_id, for_write=True)
+    except AppError as exc:
+        raise _http(exc) from exc
+    project = ProjectService(db).get(actor=user, project_id=task.project_id)
+    if not _can_modify(user, project):
+        raise _http(NotProjectOwner("only the owner or an admin can delete or move images"))
+    return task
+
+
+@router.post("/{task_id}/assets:bulk-delete", response_model=BulkDeleteOut)
+def bulk_delete(
+    task_id: uuid.UUID,
+    payload: BulkDeleteIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BulkDeleteOut:
+    """Delete the selected images for good, their annotations with them."""
+    source = _require_bulk_rights(db, user, task_id)
+    reason = bulk.busy_reason(db, [source.id])
+    if reason:
+        raise HTTPException(status_code=409, detail={"error": "task_busy", "reason": reason})
+    sel = bulk.load_selection(db, source, payload.asset_ids)
+    if sel.missing or sel.annotations != payload.annotations_expected:
+        raise _http(bulk.SelectionChanged("look at the preview again"))
+    keys = bulk.delete_assets(db, sel.assets)
+    record_audit(
+        db,
+        actor_id=user.id,
+        action=ASSETS_DELETED,
+        target_type="task",
+        target_id=source.id,
+        project_id=source.project_id,
+        summary=f"Deleted {len(sel.assets)} images ({sel.annotations} annotations) from {source.name}",
+        metadata={"images": len(sel.assets), "annotations": sel.annotations},
+    )
+    db.commit()
+    # Stored files go only once the rows are gone for good.
+    storage = MinioClient.from_settings()
+    for key in keys:
+        try:
+            storage.remove_object(key)
+        except Exception:  # noqa: BLE001 -- an orphaned file is harmless; a lost image is not
+            pass
+    return BulkDeleteOut(deleted=len(sel.assets), annotations_deleted=sel.annotations)
+
+
+@router.post("/{task_id}/assets:move", response_model=BulkMoveOut)
+def bulk_move(
+    task_id: uuid.UUID,
+    payload: BulkMoveIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BulkMoveOut:
+    """Move the selected images, with their annotations, to another task."""
+    require_data_movement(user)
+    source = _require_bulk_rights(db, user, task_id)
+    target = _bulk_target(db, user, source, payload.target_task_id)
+    try:
+        require_visible_task(db, user, target.id, for_write=True)
+    except AppError as exc:
+        raise _http(exc) from exc
+    if target.kind != source.kind:
+        raise _http(bulk.BadTarget("the target task holds a different kind of asset"))
+    reason = bulk.busy_reason(db, [source.id, target.id])
+    if reason:
+        raise HTTPException(status_code=409, detail={"error": "task_busy", "reason": reason})
+    sel = bulk.load_selection(db, source, payload.asset_ids)
+    if sel.missing or sel.annotations != payload.annotations_expected:
+        raise _http(bulk.SelectionChanged("look at the preview again"))
+    plan = bulk.plan_move(db, sel, source, target, skip_duplicates=payload.skip_duplicates)
+    result = bulk.apply_move(db, source, target, plan, missing_classes=payload.missing_classes)
+    record_audit(
+        db,
+        actor_id=user.id,
+        action=ASSETS_MOVED,
+        target_type="task",
+        target_id=target.id,
+        project_id=source.project_id,
+        summary=f"Moved {result['moved']} images from {source.name} to {target.name}",
+        metadata={
+            "from_task": str(source.id),
+            **result,
+            "skipped_duplicates": len(plan.already_in_target),
+        },
+    )
+    db.commit()
+    return BulkMoveOut(
+        skipped_duplicates=len(plan.already_in_target), renamed=len(plan.renames), **result
     )
 
 
