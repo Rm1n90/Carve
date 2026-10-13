@@ -133,6 +133,8 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
   const filter = useFilter((s) => s.filter);
   const clearFilter = useFilter((s) => s.clearFilter);
   const scorePreview = useFilter((s) => s.scorePreview);
+  const showAll = useFilter((s) => s.showAll);
+  const setShowAll = useFilter((s) => s.setShowAll);
   const confirm = useConfirm();
 
   const allOnFrame = Object.values(byId)
@@ -142,9 +144,10 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
     .sort((a, b) => a.tempId.localeCompare(b.tempId));
 
   const filterActive = hasMeaningfulRules(filter);
-  const items = filterActive
+  const matching = filterActive
     ? allOnFrame.filter((a) => evaluateFilter(a, classes ?? {}, filter))
     : allOnFrame;
+  const items = filterActive && !showAll ? matching : allOnFrame;
 
   // Sorted list (by idx) of available classes — passed to every popover.
   // Computed once here so the row renders don't each rebuild it.
@@ -165,12 +168,28 @@ export function ObjectsPanel({ frameId, classes }: ObjectsPanelProps) {
       {filterActive && (
         <div
           data-testid="filter-active-pill"
-          className="flex items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--accent)] bg-[var(--accent-bg)] px-2 py-1"
+          className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 rounded-[var(--radius-sm)] border border-[var(--accent)] bg-[var(--accent-bg)] px-2 py-1"
         >
           <span className="inline-flex items-center gap-1.5 text-[11px] font-medium tracking-tight text-[color:var(--accent)]">
             <Filter className="h-3 w-3" />
-            Filter active ({items.length} of {allOnFrame.length} shown)
+            {showAll
+              ? `Filter active (${matching.length} of ${allOnFrame.length} match, all shown)`
+              : `Filter active (${items.length} of ${allOnFrame.length} shown)`}
           </span>
+          <button
+            type="button"
+            data-testid="filter-active-show-all"
+            aria-pressed={showAll}
+            title={
+              showAll
+                ? "Show only the annotations that match"
+                : "Show every annotation on this image too"
+            }
+            onClick={() => setShowAll(!showAll)}
+            className="ml-auto rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10.5px] font-medium text-[color:var(--accent)] hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            {showAll ? "Matches only" : "Show all"}
+          </button>
           <button
             type="button"
             aria-label="Clear filter"

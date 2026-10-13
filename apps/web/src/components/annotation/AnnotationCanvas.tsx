@@ -1575,7 +1575,10 @@ export function AnnotationCanvas({
       // predicate are forced invisible — same gating path as the legacy
       // `hiddenAnnotationIds` list, just driven by the filter store.
       const filterTree = useFilter.getState().filter;
-      const filterApplies = hasMeaningfulRules(filterTree);
+      // "Show all" keeps every annotation in view: the filter then only
+      // picks the images the arrow keys stop on.
+      const filterApplies =
+        hasMeaningfulRules(filterTree) && !useFilter.getState().showAll;
       // Score thresholds previewed by the Logo AI filter (null = none).
       const scorePreview = useFilter.getState().scorePreview;
       // Build a synthetic ClassRow lookup from the canvas's classNameMap

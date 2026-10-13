@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import {
@@ -506,6 +507,8 @@ export function FilterBuilderDialog({
   const setFilter = useFilter((s) => s.setFilter);
   const clearFilter = useFilter((s) => s.clearFilter);
   const activeFilter = useFilter((s) => s.filter);
+  const showAll = useFilter((s) => s.showAll);
+  const setShowAll = useFilter((s) => s.setShowAll);
 
   // v3.24.13 — derive the Label dropdown options from the project's
   // class catalog. Sorted by creation order (``ClassRow.idx``) so the
@@ -524,6 +527,7 @@ export function FilterBuilderDialog({
 
   const [tree, setTree] = useState<FilterGroup>(() => makeEmptyGroup());
   const [recent, setRecent] = useState<FilterGroup[]>(() => loadRecent());
+  const [showAllDraft, setShowAllDraft] = useState(showAll);
 
   // Re-seed the working tree whenever the dialog opens. Pulls the
   // currently-applied filter back into the editor so the user sees
@@ -532,7 +536,8 @@ export function FilterBuilderDialog({
     if (!open) return;
     setTree(activeFilter ?? makeEmptyGroup());
     setRecent(loadRecent());
-  }, [open, activeFilter]);
+    setShowAllDraft(showAll);
+  }, [open, activeFilter, showAll]);
 
   const handleRuleChange = useCallback(
     (path: number[], next: FilterRule) => {
@@ -581,8 +586,9 @@ export function FilterBuilderDialog({
       saveRecent(tree);
       setRecent(loadRecent());
     }
+    setShowAll(showAllDraft);
     onOpenChange(false);
-  }, [tree, setFilter, clearFilter, onOpenChange]);
+  }, [tree, setFilter, clearFilter, onOpenChange, setShowAll, showAllDraft]);
 
   const handleLoadRecent = useCallback((preset: FilterGroup) => {
     setTree(preset);
@@ -650,6 +656,27 @@ export function FilterBuilderDialog({
             onRuleChange={handleRuleChange}
             labelOptions={labelOptions}
           />
+
+          <label
+            data-testid="filter-show-all-row"
+            className="flex cursor-pointer items-start gap-2 text-[12px] text-[color:var(--text-secondary)]"
+          >
+            <Checkbox
+              checked={showAllDraft}
+              onChange={(e) => setShowAllDraft(e.target.checked)}
+              data-testid="filter-show-all"
+              className="mt-0.5 h-3.5 w-3.5"
+              boxClassName="h-3.5 w-3.5"
+            />
+            <span className="grid gap-0.5">
+              <span className="text-[color:var(--text-primary)]">
+                Show all annotations on the matching images
+              </span>
+              <span className="text-[11px] text-[color:var(--text-tertiary)]">
+                The filter then only picks the images the arrow keys stop on.
+              </span>
+            </span>
+          </label>
         </div>
 
         <DialogFooter className="justify-between">

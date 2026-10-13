@@ -16,6 +16,23 @@ interface State {
    */
   scorePreview: ScoreThresholds | null;
   setScorePreview: (thresholds: ScoreThresholds | null) => void;
+  /**
+   * Keep every annotation on the matching images in view. The filter
+   * then only picks the images the arrow keys stop on. Remembered in
+   * this browser.
+   */
+  showAll: boolean;
+  setShowAll: (showAll: boolean) => void;
+}
+
+const SHOW_ALL_KEY = "carve:filter-show-all";
+
+function readShowAll(): boolean {
+  try {
+    return window.localStorage.getItem(SHOW_ALL_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 export const useFilter = create<State>((set) => ({
@@ -24,4 +41,13 @@ export const useFilter = create<State>((set) => ({
   clearFilter: () => set({ filter: null }),
   scorePreview: null,
   setScorePreview: (scorePreview) => set({ scorePreview }),
+  showAll: readShowAll(),
+  setShowAll: (showAll) => {
+    try {
+      window.localStorage.setItem(SHOW_ALL_KEY, showAll ? "1" : "0");
+    } catch {
+      /* the choice still holds for this session */
+    }
+    set({ showAll });
+  },
 }));
