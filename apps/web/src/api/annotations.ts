@@ -1,4 +1,5 @@
 // Armin Mehri — mehri.armin@gmail.com
+import type { FilterGroup } from "@/lib/annotation-filter";
 import { api } from "./client";
 import type {
   AnnotationDraft,
@@ -158,6 +159,16 @@ export const annotationsApi = {
       confidence: a.confidence ?? null,
       visible: a.visible ?? null,
     }));
+  },
+  /** The task's assets with an annotation matching the editor's
+   *  filter, worked out by the server: a large task holds far more
+   *  annotations than ``listForTaskRaw`` can return. */
+  matchingAssetIds: async (taskId: string, filter: FilterGroup): Promise<string[]> => {
+    const r = await api.post<{ asset_ids: string[] }>(
+      `/tasks/${taskId}/annotations:matching-assets`,
+      { filter },
+    );
+    return r.data.asset_ids;
   },
   batch: async (taskId: string, payload: BatchPayload): Promise<BatchOut> =>
     (await api.post<BatchOut>(`/tasks/${taskId}/annotations:batch`, payload)).data,

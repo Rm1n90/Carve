@@ -115,7 +115,6 @@ import { hasMeaningfulRules } from "@/lib/annotation-filter";
 import {
   applyLocalAssetOverride,
   computeFilteredNeighbours,
-  computeMatchingAssetIds,
 } from "@/lib/annotation-filter-nav";
 import { useShortcutHandler, useShortcutsQuery } from "@/state/shortcuts";
 import { ACTIONS } from "@/lib/shortcuts/actions";
@@ -766,16 +765,16 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     [activeFilter],
   );
 
-  // Raw annotations across the entire task — required to group by
-  // ``asset_id`` so we can ask "which assets contain a Bus?". Gated on
-  // ``filterActive`` so unfiltered sessions don't pay the network /
-  // memory cost. ``staleTime: 0`` keeps the matching set fresh after
-  // edits; React Query dedupes against the per-frame query so the
-  // network savings are real for warm caches.
-  const taskAnnotationsRawQ = useQuery({
-    queryKey: ["task-annotations-raw", taskId],
-    queryFn: () => annotationsApi.listForTaskRaw(taskId),
-    enabled: filterActive,
+  // Which assets contain a matching annotation ("which assets contain a
+  // Bus?"), answered by the server: a task can hold far more
+  // annotations than the browser could load to work it out itself.
+  // Keyed under ``task-annotations-raw`` so every refresh of that key
+  // (autosave, realtime resync, Logo AI) refreshes the matches too.
+  const filterKey = useMemo(() => JSON.stringify(activeFilter), [activeFilter]);
+  const filterMatchesQ = useQuery({
+    queryKey: ["task-annotations-raw", taskId, "filter-matches", filterKey],
+    queryFn: () => annotationsApi.matchingAssetIds(taskId, activeFilter!),
+    enabled: filterActive && activeFilter !== null,
     staleTime: 0,
   });
 
@@ -789,10 +788,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
 
   const matchingAssetIds = useMemo(() => {
     if (!filterActive) return new Set<string>();
-    const raw = taskAnnotationsRawQ.data ?? [];
-    const serverMatching = computeMatchingAssetIds(
-      raw, classByIdMap, activeFilter,
-    );
+    const serverMatching = new Set(filterMatchesQ.data ?? []);
     // Override the current asset's bit with the live store so deletes/
     // adds register immediately. ``assetId`` may be undefined during
     // initial mount before the route resolves — in that case the
@@ -807,7 +803,7 @@ export function AnnotateAssetPage({ projectId, taskId, assetId }: Props) {
     );
   }, [
     filterActive,
-    taskAnnotationsRawQ.data,
+    filterMatchesQ.data,
     classByIdMap,
     activeFilter,
     liveAnnotationsById,

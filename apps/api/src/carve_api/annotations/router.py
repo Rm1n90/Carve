@@ -3,9 +3,10 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from carve_api.annotations.filter_match import FilterGroup, FilterTooLarge, matching_asset_ids
 from carve_api.annotations.models import Annotation, AnnotationKind
 from carve_api.annotations.schemas import (
     AnnotationIn,
@@ -31,6 +32,11 @@ from carve_api.realtime.events import (
 )
 
 router = APIRouter(prefix="/tasks", tags=["annotations"])
+
+# The most annotations ``GET /tasks/{id}/annotations`` returns without a
+# ``frame_id``. A task past it answers its questions with a query of its
+# own (``annotations:matching-assets`` for the editor's filter).
+LIST_ALL_MAX = 200_000
 ann_router = APIRouter(prefix="/annotations", tags=["annotations"])
 
 
@@ -109,6 +115,14 @@ def list_annotations(
         task = require_visible_task(db, user, task_id)
     except AppError as exc:
         raise _http(exc) from exc
+    if frame_id is None:
+        # A whole task's annotations are built in memory before they are
+        # sent; past this many that takes the API down for everyone.
+        n = db.execute(
+            select(func.count()).select_from(Annotation).where(Annotation.task_id == task.id)
+        ).scalar_one()
+        if n > LIST_ALL_MAX:
+            raise HTTPException(status_code=413, detail="too_many_annotations_to_list")
     rows = AnnotationService(db).list_for_task(
         task=task, frame_id=frame_id, status=status
     )
@@ -133,6 +147,34 @@ def list_annotations(
         )
         for a in rows
     ]
+
+
+class MatchingAssetsIn(BaseModel):
+    filter: FilterGroup
+
+
+class MatchingAssetsOut(BaseModel):
+    asset_ids: list[str]
+
+
+@router.post("/{task_id}/annotations:matching-assets", response_model=MatchingAssetsOut)
+def matching_assets(
+    task_id: uuid.UUID,
+    payload: MatchingAssetsIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MatchingAssetsOut:
+    """The task's assets with an annotation matching the editor's filter,
+    so its arrow keys can stop on them without loading the whole task."""
+    try:
+        require_visible_task(db, user, task_id)
+    except AppError as exc:
+        raise _http(exc) from exc
+    try:
+        ids = matching_asset_ids(db, task_id, payload.filter)
+    except FilterTooLarge as exc:
+        raise HTTPException(status_code=422, detail="filter_too_large") from exc
+    return MatchingAssetsOut(asset_ids=ids)
 
 
 # Plan-18 — Bulk classify. Accepts a list of asset_ids on the same image

@@ -81,7 +81,8 @@ export function getFieldValue(
       return cls?.name ?? "";
     }
     case "kind":
-      return annotation.kind;
+      // The dialog offers a mask as ``mask_rle`` (its geometry's kind).
+      return annotation.kind === "mask" ? "mask_rle" : annotation.kind;
     case "obj_id":
       return annotation.serverId ?? annotation.tempId;
     case "confidence":

@@ -101,6 +101,25 @@ describe("evaluateFilter — single rule", () => {
     expect(evaluateFilter(polygon, CLASSES, filter)).toBe(false);
   });
 
+  it("'kind == mask_rle' (the dialog's Mask) matches a mask", () => {
+    const filter: FilterGroup = {
+      combinator: "AND",
+      rules: [{ not: false, field: "kind", op: "==", value: "mask_rle" }],
+    };
+    const mask = {
+      tempId: "a-3",
+      classId: "c-car",
+      kind: "mask",
+      geometry: { kind: "mask_rle", size: [100, 200], counts: "0,10" },
+      frameId: null,
+      serverId: null,
+      dirty: false,
+    } as unknown as AnnotationDraft;
+
+    expect(evaluateFilter(mask, CLASSES, filter)).toBe(true);
+    expect(evaluateFilter(bbox("a-1", "c-car", 0, 0, 10, 10), CLASSES, filter)).toBe(false);
+  });
+
   it("obj_id falls back to tempId when serverId is null", () => {
     const filter: FilterGroup = {
       combinator: "AND",
