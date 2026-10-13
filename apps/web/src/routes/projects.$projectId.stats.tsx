@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
+import { lazyWithReload } from "@/lib/chunkReload";
 import { createRoute, Link, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
@@ -10,7 +11,7 @@ import { projectsApi } from "@/api/projects";
 
 // Lazy-load StatsPanel so the recharts chunk is fetched only on the
 // stats route. Keeps the initial bundle under the 250 kB budget.
-const StatsPanel = lazy(() =>
+const StatsPanel = lazyWithReload(() =>
   import("@/pages/StatsPanel").then((m) => ({ default: m.StatsPanel })),
 );
 

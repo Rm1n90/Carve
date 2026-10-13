@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
-import { lazy, Suspense, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { Suspense, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { lazyWithReload } from "@/lib/chunkReload";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -59,7 +60,7 @@ import { ExportDialog } from "./ExportDialog";
 import { ImportDialog } from "./ImportDialog";
 // StatsPanel is dynamically imported so the recharts chunk lands in
 // its own bundle and is fetched only when the stats UI is rendered.
-const StatsPanel = lazy(() =>
+const StatsPanel = lazyWithReload(() =>
   import("./StatsPanel").then((m) => ({ default: m.StatsPanel })),
 );
 import { Breadcrumbs } from "@/components/nav/Breadcrumbs";

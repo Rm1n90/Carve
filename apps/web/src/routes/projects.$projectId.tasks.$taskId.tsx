@@ -1,4 +1,5 @@
-import { lazy, Suspense, useState } from "react";
+import { Suspense, useState } from "react";
+import { lazyWithReload } from "@/lib/chunkReload";
 import { createRoute, Link, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -17,7 +18,7 @@ import { ImportDialog } from "@/pages/ImportDialog";
 import { ExportDialog } from "@/pages/ExportDialog";
 import { AssetGrid } from "@/pages/AssetGrid";
 // Lazy: keeps the recharts chunk out of the initial bundle.
-const StatsPanel = lazy(() =>
+const StatsPanel = lazyWithReload(() =>
   import("@/pages/StatsPanel").then((m) => ({ default: m.StatsPanel })),
 );
 import { projectsApi } from "@/api/projects";

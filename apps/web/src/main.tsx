@@ -33,7 +33,12 @@ import {
 } from "./routes/phase2";
 import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { ConfirmProvider } from "./components/ui/ConfirmDialog";
+import { installChunkReload } from "./lib/chunkReload";
 import "./styles/global.css";
+
+// A tab from before a deploy reloads onto the new build instead of
+// failing to load a page's code.
+installChunkReload();
 
 const routeTree = rootRoute.addChildren([
   indexRoute,

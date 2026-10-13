@@ -1,4 +1,5 @@
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
+import { lazyWithReload } from "@/lib/chunkReload";
 import { createRoute, useParams } from "@tanstack/react-router";
 import { rootRoute } from "./_root";
 import { RequireAuth } from "@/auth/RequireAuth";
@@ -7,7 +8,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 // Lazy-load the annotate page so the Pixi-heavy AnnotationCanvas chunk
 // (and its transitive @pixi/* deps) is fetched only when the user opens
 // an asset, keeping the initial bundle below the 250 kB budget.
-const AnnotateAssetPage = lazy(() =>
+const AnnotateAssetPage = lazyWithReload(() =>
   import("@/pages/AnnotateAssetPage").then((m) => ({
     default: m.AnnotateAssetPage,
   })),
