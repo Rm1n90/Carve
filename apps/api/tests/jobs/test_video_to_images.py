@@ -122,3 +122,112 @@ def test_image_dimensions_returns_none_on_garbage() -> None:
     width, height = _image_dimensions(b"not a real jpeg")
 
     assert (width, height) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# Cancel: the frames made so far stay, the video goes
+# ---------------------------------------------------------------------------
+
+
+def _video_task(db_session):
+    from carve_api.assets.models import Asset, AssetKind
+    from carve_api.auth.models import User, UserRole
+    from carve_api.projects.models import Project, Task, TaskKind
+
+    u = User(email=f"v-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    v = Asset(task_id=t.id, kind=AssetKind.video, xxh3_128="vid", mime="video/mp4", size_bytes=1,
+              width=10, height=10, frames=100, original_name="reel.mp4")
+    db_session.add(v)
+    db_session.commit()
+    return t, v
+
+
+def _run(db_session, monkeypatch, video, *, cancel_after: int | None):
+    import io
+
+    from PIL import Image
+    from sqlalchemy.orm import sessionmaker
+
+    from carve_api import db as db_mod
+    from carve_api.jobs import video_to_images as vti
+    from carve_api.storage import client as storage_mod
+
+    removed: list[str] = []
+
+    class Storage:
+        @classmethod
+        def from_settings(cls):
+            return cls()
+
+        def presigned_get_internal(self, key, **k):
+            return f"https://x/{key}"
+
+        def put_object(self, *a, **k):
+            pass
+
+        def remove_object(self, key):
+            removed.append(key)
+
+    factory = sessionmaker(bind=db_session.get_bind(), autoflush=False, expire_on_commit=False,
+                           future=True, join_transaction_mode="create_savepoint")
+    monkeypatch.setattr(db_mod, "get_session_factory", lambda: factory)
+    monkeypatch.setattr(storage_mod, "MinioClient", Storage)
+    monkeypatch.setattr(vti, "set_progress", lambda *a, **k: None)
+    monkeypatch.setattr(vti, "_finalize_progress", lambda *a, **k: None)
+    monkeypatch.setattr(vti, "_enqueue_thumbnail", lambda *a, **k: None)
+    monkeypatch.setattr(
+        vti, "_probe", (lambda url: pytest.fail("probed a cancelled video")) if cancel_after == 0 else (lambda url: (100, 25.0, 4.0))
+    )
+    n = {"frames": 0}
+
+    def frame(url, ts, qv):
+        n["frames"] += 1
+        buf = io.BytesIO()
+        Image.new("RGB", (4, 4), (n["frames"] * 20, 0, 0)).save(buf, format="JPEG")
+        return buf.getvalue()
+
+    monkeypatch.setattr(vti, "_extract_one_frame", frame)
+    calls = {"n": 0}
+
+    def cancelled(job_id):
+        calls["n"] += 1
+        return cancel_after is not None and calls["n"] > cancel_after
+
+    monkeypatch.setattr(vti, "is_cancel_requested", cancelled)
+    payload = vti.VideoToImagesPayload(job_id="j", batch_id="b", task_id=str(video.task_id),
+                                       source_asset_id=str(video.id), mode="count", n_or_k=5, quality=90)
+    return vti.run_video_to_images(payload), removed
+
+
+def test_a_cancelled_extraction_keeps_its_frames_and_drops_the_video(db_session, monkeypatch) -> None:
+    from carve_api.assets.models import Asset, AssetKind
+
+    t, v = _video_task(db_session)
+    vid, tid = v.id, t.id
+    # The first check is before probing; two frames get made, then cancel.
+    out, removed = _run(db_session, monkeypatch, v, cancel_after=3)
+    assert out["status"] == "cancelled"
+    db_session.expire_all()
+    assert db_session.get(Asset, vid) is None
+    assert removed == ["assets/vid/original.mp4"]
+    frames = db_session.query(Asset).filter(Asset.task_id == tid, Asset.kind == AssetKind.image).all()
+    assert len(frames) == 2
+
+
+def test_a_job_cancelled_while_queued_drops_the_video_without_probing(db_session, monkeypatch) -> None:
+    from carve_api.assets.models import Asset
+
+    t, v = _video_task(db_session)
+    vid = v.id
+    out, removed = _run(db_session, monkeypatch, v, cancel_after=0)
+    assert out["status"] == "cancelled"
+    db_session.expire_all()
+    assert db_session.get(Asset, vid) is None

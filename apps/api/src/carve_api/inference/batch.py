@@ -2064,7 +2064,22 @@ def run_batch_auto_annotate(payload: BatchJobPayload) -> dict:
                     )
                     raise _SkipAsset
 
-                body = fetch_asset_bytes(asset_db)
+                # A video: its first extracted frame (the frame the
+                # annotations are saved on), as the YOLOE batch does. The
+                # video file itself is not an image the model can read.
+                frame_id = None
+                if getattr(asset_db, "kind", None) == "video":
+                    from carve_api.assets.models import Frame
+
+                    first = session.execute(
+                        select(Frame).where(Frame.asset_id == asset_db.id).order_by(Frame.idx).limit(1)
+                    ).scalar_one_or_none()
+                    if first is None:
+                        counts["failed"] += 1
+                        errors.append(f"{original_name}: video_no_frames_extracted")
+                        raise _SkipAsset
+                    frame_id = first.id
+                body = fetch_asset_bytes(asset_db, frame_id=frame_id)
                 aa_kwargs: dict = dict(
                     session=session,
                     actor=actor_db,

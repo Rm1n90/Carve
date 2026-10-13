@@ -453,6 +453,31 @@ export function AssetUploadDialog({
       }
     }
 
+    // Cancelled mid-upload: the videos that already landed were only
+    // here for their frames, and no extraction will run for them. Hand
+    // them to the extraction batch already cancelled, which removes the
+    // videos the same way a cancelled extraction does (and with the
+    // uploader's own rights), so no raw .mp4 stays in an image task.
+    if (mixedMode && cancelledRef.current && mixedVideoIdsRef.current.length > 0) {
+      const leftover = [...mixedVideoIdsRef.current];
+      mixedVideoIdsRef.current = [];
+      try {
+        const env = await videoExtractApi.enqueueBatch(projectId, taskId, {
+          source_asset_ids: leftover,
+          mode: cfg.strategy.strategy,
+          n_or_k: cfg.strategy.n ?? 0,
+          quality: cfg.strategy.quality,
+        });
+        await videoExtractApi.cancelBatch(projectId, taskId, env.batch_id);
+      } catch {
+        showToast(
+          `Upload cancelled, but ${leftover.length} uploaded video${leftover.length === 1 ? "" : "s"} could not be removed; delete ${leftover.length === 1 ? "it" : "them"} from the task.`,
+          { variant: "error", duration: 8000 },
+        );
+      }
+      invalidateAssetQueries();
+    }
+
     if (cancelledRef.current) {
       showToast(
         `Upload cancelled — ${succeeded} of ${total} file${total === 1 ? "" : "s"} uploaded.`,

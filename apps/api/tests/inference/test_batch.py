@@ -1493,3 +1493,65 @@ def test_run_batch_fails_fast_when_initial_yolo_load_fails(
     assert any(
         "weight_load_failed_at_start" in e for e in result.get("errors", [])
     ), result.get("errors")
+
+
+def test_a_video_is_predicted_on_its_first_frame_or_skipped_without_frames(db_session, monkeypatch) -> None:
+    """The batch used to send a video's .mp4 to the image model, which
+    failed with a 500 for every video. A video now goes by its first
+    extracted frame; without extracted frames it is skipped and says so."""
+    u = User(email=f"u-{uuid.uuid4()}@x.com", password_hash="x", role=UserRole.admin)
+    db_session.add(u)
+    db_session.flush()
+    p = Project(name="P", owner_id=u.id)
+    db_session.add(p)
+    db_session.flush()
+    t = Task(project_id=p.id, name="T", kind=TaskKind.image)
+    db_session.add(t)
+    db_session.flush()
+    db_session.add(Class(project_id=p.id, idx=0, name="car", color="#ff0000"))
+    w = Weight(project_id=p.id, name="y", task_kind=WeightTaskKind.detect, minio_key="weights/abc/x.pt",
+               size_bytes=1, class_names=["car"])
+    db_session.add(w)
+    db_session.flush()
+    with_frames = Asset(task_id=t.id, kind=AssetKind.video, xxh3_128="vv", mime="video/mp4", size_bytes=1,
+                        width=10, height=10, frames=3, original_name="clip.mp4")
+    bare = Asset(task_id=t.id, kind=AssetKind.video, xxh3_128="ww", mime="video/mp4", size_bytes=1,
+                 width=10, height=10, frames=900, original_name="raw.mp4")
+    db_session.add_all([with_frames, bare])
+    db_session.flush()
+    db_session.add(Frame(asset_id=with_frames.id, idx=0, pts_ms=0))
+    db_session.commit()
+
+    from carve_api.inference import autoannotate as aa_mod
+
+    read: list[str] = []
+
+    class _Storage(_FakeStorage):
+        def get_object(self, key):
+            read.append(key)
+            return io.BytesIO(_tiny_png())
+
+    monkeypatch.setattr(aa_mod, "MinioClient", _Storage)
+    predicted: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/yolo/load":
+            return httpx.Response(200, json={"loaded": "ok"})
+        if request.url.path == "/yolo/predict":
+            predicted.append(1)
+            return httpx.Response(200, json={"detections": [
+                {"class_name": "car", "confidence": 0.9, "bbox": {"x": 1, "y": 2, "w": 3, "h": 4}}], "polygons": []})
+        return httpx.Response(404)
+
+    model_client_mod.set_test_transport(httpx.MockTransport(handler))
+    _bind_session_factory_to_test_db(db_session, monkeypatch)
+    _patch_redis_to_raise(monkeypatch)
+    payload = batch_mod.build_job_payload(actor=u, task=t, weight=w, overwrite=False)
+    try:
+        result = batch_mod.run_batch_auto_annotate(payload)
+    finally:
+        model_client_mod.set_test_transport(None)
+    assert (result["done"], result["failed"]) == (1, 1)
+    assert predicted == [1]
+    assert read == ["assets/vv/frames/000000.jpg"]   # the frame, never the .mp4
+    assert any("raw.mp4: video_no_frames_extracted" in e for e in result["errors"])

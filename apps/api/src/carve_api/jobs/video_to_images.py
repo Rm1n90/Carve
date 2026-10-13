@@ -6,8 +6,11 @@ and writes frames under the same asset hash for the video-task editor),
 this worker:
 
   * Creates a fresh ``Asset(kind=image)`` per extracted frame.
-  * Deletes the source video Asset + MinIO object on succeeded/failed
-    (with carve-outs: worker crash, disk full).
+  * Deletes the source video Asset + MinIO object on succeeded, failed
+    and cancelled (with carve-outs: worker crash, disk full). The video
+    is only the vehicle for its frames: a cancelled extraction keeps the
+    frames it already made, and its video does not stay in the task as
+    a raw .mp4 asset (nothing in an image task can use one).
   * Reports progress + status via a Redis hash so the API status
     endpoint can read live state without going through RQ's own job
     introspection.
@@ -289,6 +292,17 @@ def run_video_to_images(payload: VideoToImagesPayload) -> dict[str, Any]:
         return summary
 
     source_key = f"assets/{asset_hash}/original.{ext}"
+    if is_cancel_requested(payload.job_id):
+        # Cancelled while queued: no frames wanted, and the video goes.
+        summary["status"] = "cancelled"
+        _delete_source(
+            SessionLocal,
+            storage,
+            src_uuid=uuid.UUID(payload.source_asset_id),
+            key=source_key,
+        )
+        _finalize_progress(payload.job_id, summary)
+        return summary
     source_url = storage.presigned_get_internal(source_key, expires_seconds=1800)
 
     # --- Probe the video ---
@@ -441,14 +455,14 @@ def run_video_to_images(payload: VideoToImagesPayload) -> dict[str, Any]:
         return summary
 
     # --- Terminal cleanup ---
-    if summary["status"] == "succeeded":
-        _delete_source(
-            SessionLocal,
-            storage,
-            src_uuid=uuid.UUID(payload.source_asset_id),
-            key=source_key,
-        )
-    # ``cancelled`` -> leave source intact per spec.
+    # Succeeded or cancelled (a queued job cancelled before it started
+    # lands here too, with no frames): the video goes; its frames stay.
+    _delete_source(
+        SessionLocal,
+        storage,
+        src_uuid=uuid.UUID(payload.source_asset_id),
+        key=source_key,
+    )
 
     _finalize_progress(payload.job_id, summary)
     return summary
