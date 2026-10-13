@@ -34,6 +34,7 @@ import {
 import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { ConfirmProvider } from "./components/ui/ConfirmDialog";
 import { installChunkReload } from "./lib/chunkReload";
+import { AppErrorBoundary, RouteError, logRouteError } from "./components/RouteError";
 import "./styles/global.css";
 
 // A tab from before a deploy reloads onto the new build instead of
@@ -63,7 +64,13 @@ const routeTree = rootRoute.addChildren([
   systemRoute,
   aboutRoute,
 ]);
-const router = createRouter({ routeTree });
+// A page that fails to render says so, with a way out, instead of
+// leaving an empty screen.
+const router = createRouter({
+  routeTree,
+  defaultErrorComponent: RouteError,
+  defaultOnCatch: logRouteError,
+});
 
 declare module "@tanstack/react-router" {
   interface Register {
@@ -75,12 +82,14 @@ const el = document.getElementById("root");
 if (!el) throw new Error("root element not found");
 createRoot(el).render(
   <React.StrictMode>
-    <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <ConfirmProvider>
-          <RouterProvider router={router} />
-        </ConfirmProvider>
-      </QueryClientProvider>
-    </ThemeProvider>
+    <AppErrorBoundary>
+      <ThemeProvider>
+        <QueryClientProvider client={queryClient}>
+          <ConfirmProvider>
+            <RouterProvider router={router} />
+          </ConfirmProvider>
+        </QueryClientProvider>
+      </ThemeProvider>
+    </AppErrorBoundary>
   </React.StrictMode>,
 );
