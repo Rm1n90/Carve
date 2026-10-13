@@ -89,6 +89,8 @@ def create_app() -> FastAPI:
 
     from carve_api.inference.router import task_inference_router
     app.include_router(task_inference_router)
+    from carve_api.inference.box_convert_router import router as box_convert_router
+    app.include_router(box_convert_router)
 
     # v3.23 — YOLOE: Real-Time Seeing Anything. Mount at /inference/yoloe/*
     # so the capability probe (and any future non-asset/task scoped YOLOE

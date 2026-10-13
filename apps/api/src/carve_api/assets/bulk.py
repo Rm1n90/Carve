@@ -76,6 +76,11 @@ def busy_reason(session: Session, task_ids: list[uuid.UUID]) -> str | None:
         for job in Job.fetch_many(ids, connection=conn):
             if job is not None and any(n in (job.description or "") for n in needles):
                 return "job_running"
+        # A box conversion walks the task between its RQ windows too.
+        from carve_api.inference.box_convert_batch import active_job_id
+
+        if any(active_job_id(conn, t) for t in task_ids):
+            return "job_running"
     except Exception:  # noqa: BLE001 -- no Redis, no worker running a batch either
         log.warning("bulk: could not read the job queues", exc_info=True)
     return None

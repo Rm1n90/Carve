@@ -17,6 +17,7 @@ import { annotationsApi } from "@/api/annotations";
 import { classesApi, type ClassRow } from "@/api/classes";
 import { Input } from "@/components/ui/Input";
 import { DeleteAssetsDialog, MoveAssetsDialog } from "@/components/assets/BulkAssetDialogs";
+import { BoxConvertEntry } from "@/components/annotation/BoxConvertDialog";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { useShortcutHandler } from "@/state/shortcuts";
@@ -537,6 +538,14 @@ export function AssetGrid({ projectId, taskId }: AssetGridProps) {
             </span>
           )}
         </p>
+        <BoxConvertEntry
+          projectId={projectId}
+          taskId={taskId}
+          onFinished={() => {
+            queryClient.invalidateQueries({ queryKey: ["task-assets", taskId] });
+            queryClient.invalidateQueries({ queryKey: ["task-assets-count", taskId] });
+          }}
+        />
         {assets.length > 0 && (
           <div
             className="flex items-center gap-2"

@@ -656,7 +656,7 @@ _ACTIVE_JOB_STATUSES: frozenset[str] = frozenset(
 # so they're enumerated separately by the frontend's same-user warning
 # and intentionally absent here.
 SAM_USING_BATCH_KINDS: frozenset[str] = frozenset(
-    {"sam-auto-text", "sam-auto-visual"}
+    {"sam-auto-text", "sam-auto-visual", "sam-box-convert"}
 )
 
 
