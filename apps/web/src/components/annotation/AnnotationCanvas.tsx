@@ -31,6 +31,44 @@ import { inferenceErrorMessage } from "@/lib/inferenceErrors";
  * src/lib/texture-lru.ts for the rationale.
  */
 const TEXTURE_LRU_CAPACITY = 3;
+
+/**
+ * Free a texture made from one of our canvases, GPU copy included.
+ * Pixi v8 keeps a texture's source (the uploaded GPU texture and the
+ * canvas it came from) on a plain ``texture.destroy()``; a mask is a
+ * full-image canvas, so each one left behind holds a full-size bitmap in
+ * memory and on the GPU, and browsing images with many masks crashed
+ * the tab ("Render process gone").
+ */
+export function destroyCanvasTexture(texture: unknown): void {
+  try {
+    (texture as { destroy?: (destroySource?: boolean) => void } | null)?.destroy?.(true);
+  } catch {
+    /* already gone */
+  }
+}
+
+/** A Sprite (it has a texture), not a Graphics (it has a context). */
+function isSprite(o: unknown): boolean {
+  return typeof o === "object" && o !== null && "texture" in o && !("context" in o);
+}
+
+/** Remove a compare-overlay child; a mask sprite's texture goes with it. */
+function disposeCompareChild(layer: { removeChild?: (c: never) => unknown }, child: unknown): void {
+  try {
+    layer.removeChild?.(child as never);
+  } catch {
+    /* ignore */
+  }
+  if (!isSprite(child)) return;
+  const texture = (child as { texture?: unknown }).texture;
+  try {
+    (child as { destroy?: (opts?: unknown) => void }).destroy?.({ texture: false });
+  } catch {
+    /* ignore */
+  }
+  destroyCanvasTexture(texture);
+}
 import {
   useAnnotations,
   placeClipboardEntries,
@@ -861,6 +899,18 @@ export function AnnotationCanvas({
 
     return () => {
       cancelled = true;
+      // Destroying the app takes the sprites, not the textures made from
+      // our canvases: free those (and their GPU copies) first.
+      for (const entry of maskSpriteByIdRef.current.values()) destroyCanvasTexture(entry.texture);
+      maskSpriteByIdRef.current.clear();
+      for (const g of compareGfxByIdRef.current.values()) {
+        if (isSprite(g)) destroyCanvasTexture((g as { texture?: unknown }).texture);
+      }
+      compareGfxByIdRef.current.clear();
+      destroyCanvasTexture(maskPreviewTextureRef.current);
+      maskPreviewTextureRef.current = null;
+      destroyCanvasTexture(samMaskPreviewTextureRef.current);
+      samMaskPreviewTextureRef.current = null;
       try {
         app.destroy();
       } catch {
@@ -1088,13 +1138,18 @@ export function AnnotationCanvas({
           /* ignore */
         }
       }
-      for (const g of compareMap.values()) {
+      for (const g of compareMap.values()) disposeCompareChild(app.shapeLayer as never, g);
+      // The previous image's masks: full-image bitmaps, freed now.
+      for (const entry of maskSpriteByIdRef.current.values()) {
         try {
-          app.shapeLayer.removeChild(g as never);
+          app.shapeLayer.removeChild(entry.sprite as never);
+          (entry.sprite as { destroy?: (opts?: unknown) => void }).destroy?.({ texture: false });
         } catch {
           /* ignore */
         }
+        destroyCanvasTexture(entry.texture);
       }
+      maskSpriteByIdRef.current.clear();
     }
     gfxMap.clear();
     labelMap.clear();
@@ -1923,11 +1978,7 @@ export function AnnotationCanvas({
             } catch {
               /* ignore */
             }
-            try {
-              (entry.texture as { destroy?: () => void }).destroy?.();
-            } catch {
-              /* ignore */
-            }
+            destroyCanvasTexture(entry.texture);
           }
           maskMap.delete(id);
         }
@@ -2025,14 +2076,8 @@ export function AnnotationCanvas({
       // Drop compare graphics whose id is no longer in the union.
       for (const id of Array.from(compareMap.keys())) {
         if (!compareSeen.has(id)) {
-          const g = compareMap.get(id) as InstanceType<typeof Graphics> | undefined;
-          if (g) {
-            try {
-              app.shapeLayer.removeChild(g as never);
-            } catch {
-              /* ignore */
-            }
-          }
+          const g = compareMap.get(id);
+          if (g) disposeCompareChild(app.shapeLayer as never, g);
           compareMap.delete(id);
         }
       }
@@ -2407,14 +2452,7 @@ export function AnnotationCanvas({
       }
     }
     maskPreviewSpriteRef.current = null;
-    const tex = maskPreviewTextureRef.current as
-      | { destroy?: () => void }
-      | null;
-    try {
-      tex?.destroy?.();
-    } catch {
-      /* ignore */
-    }
+    destroyCanvasTexture(maskPreviewTextureRef.current);
     maskPreviewTextureRef.current = null;
   }
 
@@ -2503,13 +2541,7 @@ export function AnnotationCanvas({
           /* ignore */
         }
       }
-      if (texture) {
-        try {
-          (texture as { destroy?: () => void }).destroy?.();
-        } catch {
-          /* ignore */
-        }
-      }
+      if (texture) destroyCanvasTexture(texture);
       try {
         const sourceCtor = (
           pixi as unknown as { CanvasSource?: new (opts: object) => unknown }
@@ -2556,14 +2588,7 @@ export function AnnotationCanvas({
       }
     }
     samMaskPreviewSpriteRef.current = null;
-    const tex = samMaskPreviewTextureRef.current as
-      | { destroy?: () => void }
-      | null;
-    try {
-      tex?.destroy?.();
-    } catch {
-      /* ignore */
-    }
+    destroyCanvasTexture(samMaskPreviewTextureRef.current);
     samMaskPreviewTextureRef.current = null;
     samMaskPreviewCanvasRef.current = null;
   }
@@ -5212,7 +5237,8 @@ async function renderMaskRleSprite(
     }
     let texture: InstanceType<typeof pixi.Texture>;
     try {
-      texture = pixi.Texture.from(cv);
+      // Not in Pixi's global cache, which would keep the canvas alive.
+      texture = pixi.Texture.from(cv, true);
     } catch {
       return;
     }
@@ -5295,7 +5321,7 @@ async function paintCompareMaskSprite(
   if (compareMap.has(id)) return;
   let texture: InstanceType<typeof pixi.Texture>;
   try {
-    texture = pixi.Texture.from(cv as TexImageSource);
+    texture = pixi.Texture.from(cv as TexImageSource, true);
   } catch {
     return;
   }
