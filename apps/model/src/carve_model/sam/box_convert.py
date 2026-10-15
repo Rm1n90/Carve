@@ -34,10 +34,10 @@ the single most object-like thing in it (on a race track, one kerb):
   and is cut off there. A box side drawn just short of the frame edge,
   that the ground runs into, is taken to the edge: the surface goes on
   there, and the box would cut it off in a straight line. A surface none
-  of the named ones fits (blue hockey turf, a padel court seen from
-  above, cobbles, a tiled floor) is what SAM 3.1 calls "ground" in the
-  box, less rock, sky, walls and buildings; only then, as "ground" alone
-  also takes the verges and floors around a course.
+  of the named ones fits (blue hockey turf, a blue tennis court, a padel
+  court seen from above, cobbles) is what SAM 3.1 calls "ground" or "hard
+  court" in the box, less rock, sky, walls and buildings; only then, as
+  "ground" alone also takes the verges and floors around a course.
 * **crowd**: the people SAM 3.1 finds with the prompt "person" inside
   the box, joined across the small gaps between them, without the
   competitors it finds there ("athlete", "cyclist"): a crowd box is a
@@ -171,9 +171,9 @@ GROUND_EXTRA_PROMPTS = ("kerb", "painted marking on the ground")
 # Never filled into the ground, though enclosed by it.
 GROUND_BLOCKER_PROMPTS = ("person", "animal", "tree", "plant", "rock", "building", "wall", "fence", "pole", "sky")
 # A ground box none of GROUND_PROMPTS finds anything in is what SAM 3.1
-# calls "ground" there (on test frames the only prompt to find blue hockey
-# turf), less what is never ground.
-GROUND_FALLBACK_PROMPTS = ("ground",)
+# calls "ground" or "hard court" there (on test frames the only prompts to
+# find blue hockey turf and a blue tennis court), less what is never ground.
+GROUND_FALLBACK_PROMPTS = ("ground", "hard court")
 GROUND_FALLBACK_NOT_PROMPTS = ("rock", "sky", "wall", "building")
 # Context around a crowd box when it is encoded on its own (fraction of
 # its size): distant spectators are found far better at that zoom.
