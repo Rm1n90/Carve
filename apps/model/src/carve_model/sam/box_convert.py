@@ -33,7 +33,11 @@ the single most object-like thing in it (on a race track, one kerb):
   the riders are on asphalt) touches the road only through a narrow neck
   and is cut off there. A box side drawn just short of the frame edge,
   that the ground runs into, is taken to the edge: the surface goes on
-  there, and the box would cut it off in a straight line.
+  there, and the box would cut it off in a straight line. A surface none
+  of the named ones fits (blue hockey turf, a padel court seen from
+  above, cobbles, a tiled floor) is what SAM 3.1 calls "ground" in the
+  box, less rock, sky, walls and buildings; only then, as "ground" alone
+  also takes the verges and floors around a course.
 * **crowd**: the people SAM 3.1 finds with the prompt "person" inside
   the box, joined across the small gaps between them, without the
   competitors it finds there ("athlete", "cyclist"): a crowd box is a
@@ -166,6 +170,11 @@ ATHLETE_PROMPTS = ("athlete", "cyclist")
 GROUND_EXTRA_PROMPTS = ("kerb", "painted marking on the ground")
 # Never filled into the ground, though enclosed by it.
 GROUND_BLOCKER_PROMPTS = ("person", "animal", "tree", "plant", "rock", "building", "wall", "fence", "pole", "sky")
+# A ground box none of GROUND_PROMPTS finds anything in is what SAM 3.1
+# calls "ground" there (on test frames the only prompt to find blue hockey
+# turf), less what is never ground.
+GROUND_FALLBACK_PROMPTS = ("ground",)
+GROUND_FALLBACK_NOT_PROMPTS = ("rock", "sky", "wall", "building")
 # Context around a crowd box when it is encoded on its own (fraction of
 # its size): distant spectators are found far better at that zoom.
 CROWD_CROP_MARGIN = 0.1
@@ -1155,6 +1164,7 @@ def convert(
             # and their things inside a crowd box.
             stands = [boxes[i] for i in regions if modes[i] == "crowd"]
             standing = [boxes[j] for j, m in enumerate(modes) if m == "object" and not any(_inside(boxes[j], c) for c in stands)]
+            fallback: np.ndarray | None = None
             for i in grounds:
                 if material is None or water is None:
                     m = _box_mask(boxes[i], h, w) & (1 - taken([i]))
@@ -1163,6 +1173,15 @@ def convert(
                     on = {**surfaces, WATER_PROMPTS[0]: water} if wet else surfaces
                     stuff = _with_water(material, water, boxes[i])
                     m = ground_mask(stuff, boxes[i], taken([i]), blockers, through, standing, on)
+                    if not m.any():
+                        # No named surface in the box (blue hockey turf):
+                        # what SAM 3.1 calls ground there.
+                        if fallback is None:
+                            never = text_masks(GROUND_FALLBACK_NOT_PROMPTS) > 0
+                            fallback = ((text_masks(GROUND_FALLBACK_PROMPTS) > 0) & ~never).astype(np.uint8)
+                        stuff = fallback
+                        on = {GROUND_FALLBACK_PROMPTS[0]: fallback}
+                        m = ground_mask(stuff, boxes[i], taken([i]), blockers, through, standing, on)
                     # A box drawn just short of the frame edge cuts the
                     # ground off in a straight line: take it to the edge
                     # (not out of a photo inset it lies in).

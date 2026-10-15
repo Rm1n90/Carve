@@ -557,6 +557,49 @@ def test_a_ground_box_drawn_short_of_the_frame_edge_is_taken_to_it() -> None:
     assert g[250, 0] == 1
 
 
+def test_a_surface_no_named_prompt_finds_is_what_sam_calls_ground() -> None:
+    h, w = 300, 400
+    img = np.zeros((h, w, 3), np.uint8)
+    img[200:240, 180:200] = 255              # a player on the turf
+    turf = np.zeros((h, w), np.uint8)
+    turf[100:, :] = 1                        # blue hockey turf: only "ground" finds it
+    rock = np.zeros((h, w), np.uint8)
+    rock[250:, 300:] = 1                     # a rock "ground" also takes
+    zero = np.zeros((h, w), np.uint8)
+    asked: list[tuple[str, ...]] = []
+
+    def text(p):
+        asked.append(p)
+        if p == bc.GROUND_FALLBACK_PROMPTS:
+            return turf
+        return rock if p == bc.GROUND_FALLBACK_NOT_PROMPTS else zero
+
+    seg = _Seg()
+    out = bc.convert(img, [[180, 200, 200, 240], [0, 100, 400, 300]], set_image=seg.set_image,
+                     predict_box=seg.predict_box, text_masks=text, modes=["object", "ground"], zoom=False)
+    g = out[1].mask
+    assert g is not None and g[150, 100] == 1
+    assert g[220, 190] == 0                  # the player is cut out
+    assert g[280, 350] == 0                  # rock is never ground
+    assert asked.count(bc.GROUND_FALLBACK_PROMPTS) == 1
+
+
+def test_the_ground_fallback_is_not_asked_when_a_named_surface_is_found() -> None:
+    h, w = 300, 400
+    grass = np.zeros((h, w), np.uint8)
+    grass[100:, :] = 1
+    asked: list[tuple[str, ...]] = []
+
+    def text(p):
+        asked.append(p)
+        return grass if p == ("grass",) else np.zeros((h, w), np.uint8)
+
+    seg = _Seg()
+    bc.convert(np.zeros((h, w, 3), np.uint8), [[0, 100, 400, 300]], set_image=seg.set_image,
+               predict_box=seg.predict_box, text_masks=text, modes=["ground"], zoom=False)
+    assert bc.GROUND_FALLBACK_PROMPTS not in asked
+
+
 def test_a_ground_box_ending_where_the_ground_ends_is_not_widened() -> None:
     h, w = 300, 400
     grass = np.zeros((h, w), np.uint8)
