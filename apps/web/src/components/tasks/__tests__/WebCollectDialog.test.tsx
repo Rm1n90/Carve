@@ -71,6 +71,46 @@ describe("<WebCollectDialog />", () => {
     expect(screen.getByRole("button", { name: /Collect 250 images/ })).toBeTruthy();
   });
 
+  it("number fields take what is typed (no 50-step or 'valid value' trouble)", async () => {
+    renderDialog();
+    const input = await screen.findByTestId("web-collect-new-keyword");
+    const count = screen.getByTestId("web-collect-new-count") as HTMLInputElement;
+    expect(count.value).toBe("300");
+    fireEvent.change(count, { target: { value: "" } }); // cleared to type a new number
+    expect(count.value).toBe("");
+    fireEvent.change(count, { target: { value: "300" } });
+    fireEvent.change(input, { target: { value: "Pirelli tyre" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(api.saveKeywords).toHaveBeenCalled());
+    expect(api.saveKeywords.mock.calls[0][1][0].target).toBe(300);
+
+    // The row's number: type, then Enter; arrows change it by 1.
+    const wanted = (await screen.findByLabelText("Images wanted for Pirelli tyre")) as HTMLInputElement;
+    fireEvent.focus(wanted);
+    fireEvent.change(wanted, { target: { value: "450" } });
+    fireEvent.keyDown(wanted, { key: "Enter" });
+    fireEvent.keyDown(wanted, { key: "ArrowUp" });
+    expect(wanted.value).toBe("451");
+    await waitFor(() => expect(api.saveKeywords.mock.calls.at(-1)![1][0].target).toBe(451), {
+      timeout: 3000,
+    });
+  });
+
+  it("an equal share of a total replaces every keyword's number", async () => {
+    api.state.mockResolvedValue(
+      state([
+        { id: "a", keyword: "A", slug: "a", target: 100, have: 0, exhausted: false },
+        { id: "b", keyword: "B", slug: "b", target: 700, have: 0, exhausted: false },
+      ]),
+    );
+    renderDialog();
+    expect(await screen.findByText("800")).toBeTruthy(); // total wanted
+    fireEvent.change(screen.getByLabelText("Total to share"), { target: { value: "1000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(api.saveKeywords).toHaveBeenCalled());
+    expect((api.saveKeywords.mock.calls.at(-1)![1] as WebCollectKeywordIn[]).map((k) => k.target)).toEqual([500, 500]);
+  });
+
   it("pastes a list, skipping lines already there", async () => {
     api.state.mockResolvedValue(
       state([{ id: "a", keyword: "Pirelli tyre", slug: "p", target: 100, have: 0, exhausted: false }]),

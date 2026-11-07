@@ -376,6 +376,76 @@ export function WebCollectDialog({ taskId, open }: { taskId: string; open: boole
 
 // ------------------------------------------------------------- keywords tab
 
+/** Digits only, while typing: "" while the field is being cleared. */
+const digits = (v: string) => v.replace(/[^0-9]/g, "").slice(0, 6);
+
+/**
+ * A whole-number field. A plain text box (not the browser's number box):
+ * no "enter a valid value" checks, no odd step sizes, and clearing it to
+ * type a new number does not jump back to a minimum. The number is taken
+ * when you press Enter or leave the field; ↑ / ↓ change it by 1 (with
+ * Shift by 10).
+ */
+function NumberField({
+  value,
+  onCommit,
+  min = 0,
+  label,
+  testId,
+  className,
+}: {
+  value: number;
+  onCommit: (n: number) => void;
+  min?: number;
+  label: string;
+  testId?: string;
+  className?: string;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setDraft(String(value));
+  }, [value, focused]);
+  const commit = (text = draft) => {
+    const n = Number(text);
+    if (text !== "" && Number.isFinite(n) && n >= min) {
+      if (n !== value) onCommit(n);
+    } else {
+      setDraft(String(value));
+    }
+  };
+  return (
+    <Input
+      type="text"
+      inputMode="numeric"
+      autoComplete="off"
+      aria-label={label}
+      data-testid={testId}
+      className={className}
+      value={draft}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false);
+        commit();
+      }}
+      onChange={(e) => setDraft(digits(e.target.value))}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+          e.preventDefault();
+          const base = Number(draft) || 0;
+          const step = (e.shiftKey ? 10 : 1) * (e.key === "ArrowUp" ? 1 : -1);
+          const next = Math.max(min, base + step);
+          setDraft(String(next));
+          onCommit(next);
+        }
+      }}
+    />
+  );
+}
+
 function KeywordsTab({
   rows,
   edit,
@@ -387,13 +457,16 @@ function KeywordsTab({
 }) {
   const [mode, setMode] = useState<"one" | "list">("one");
   const [word, setWord] = useState("");
-  const [count, setCount] = useState(DEFAULT_TARGET);
+  // Kept as text while typing; read when a keyword is added.
+  const [countText, setCountText] = useState(String(DEFAULT_TARGET));
   const [paste, setPaste] = useState("");
   const [total, setTotal] = useState("");
 
+  const count = Math.max(1, Number(countText) || DEFAULT_TARGET);
   const known = new Set(rows.map((r) => r.keyword.trim().toLowerCase()));
   const pasted = parseKeywordList(paste, count);
   const pastedNew = pasted.filter((i) => !known.has(i.keyword.toLowerCase()));
+  const wanted = rows.reduce((sum, r) => sum + (r.target || 0), 0);
 
   const addOne = () => {
     const keyword = word.replace(/\s+/g, " ").trim();
@@ -404,6 +477,7 @@ function KeywordsTab({
     }
     edit([...rows, { key: crypto.randomUUID(), keyword, target: count, have: 0, exhausted: false }]);
     setWord("");
+    setCountText(String(count));
   };
 
   const addList = () => {
@@ -417,12 +491,25 @@ function KeywordsTab({
   };
 
   const applyTotal = () => {
-    const n = Math.round(Number(total));
+    const n = Number(total);
     if (!Number.isFinite(n) || n <= 0 || rows.length === 0) return;
-    const parts = splitTotal(n, rows.length);
-    edit(rows.map((r, i) => ({ ...r, target: r.have + parts[i] })));
+    const parts = splitTotal(Math.round(n), rows.length);
+    edit(rows.map((r, i) => ({ ...r, target: parts[i] })));
     setTotal("");
   };
+
+  const countField = (
+    <Input
+      type="text"
+      inputMode="numeric"
+      autoComplete="off"
+      aria-label="Images"
+      value={countText}
+      onChange={(e) => setCountText(digits(e.target.value))}
+      onBlur={() => setCountText(String(count))}
+      data-testid="web-collect-new-count"
+    />
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -456,6 +543,7 @@ function KeywordsTab({
 
         {mode === "one" ? (
           <form
+            noValidate
             className="grid grid-cols-[1fr_120px_auto] gap-2"
             onSubmit={(e) => {
               e.preventDefault();
@@ -469,14 +557,7 @@ function KeywordsTab({
               onChange={(e) => setWord(e.target.value)}
               data-testid="web-collect-new-keyword"
             />
-            <Input
-              type="number"
-              min={1}
-              step={50}
-              value={count}
-              onChange={(e) => setCount(Math.max(1, Number(e.target.value) || 1))}
-              data-testid="web-collect-new-count"
-            />
+            {countField}
             <Button type="submit" variant="secondary" disabled={!word.trim()} leftIcon={<Plus className="h-4 w-4" />}>
               Add
             </Button>
@@ -492,13 +573,7 @@ function KeywordsTab({
                 placeholder={"Tenneco logo\nCadillac F1 car, 500\nPirelli tyre | 200"}
                 data-testid="web-collect-paste"
               />
-              <Input
-                type="number"
-                min={1}
-                step={50}
-                value={count}
-                onChange={(e) => setCount(Math.max(1, Number(e.target.value) || 1))}
-              />
+              {countField}
             </div>
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] text-[color:var(--text-tertiary)]">
@@ -529,8 +604,8 @@ function KeywordsTab({
             <span className="flex items-center gap-1">
               Wanted
               <Help label="wanted">
-                How many images this keyword should have. Change it any time; raise it to
-                collect more later.
+                How many images this keyword should have. Click the number to change it, then
+                press Enter (↑ and ↓ change it by 1). Raise it later to collect more.
               </Help>
             </span>
             <span className="flex items-center gap-1">
@@ -554,20 +629,15 @@ function KeywordsTab({
                   <span className="truncate text-[13px] px-1" title={r.keyword}>
                     {r.keyword}
                   </span>
-                  <Input
-                    type="number"
-                    min={0}
-                    step={50}
-                    value={Number.isFinite(r.target) ? r.target : 0}
-                    onChange={(e) =>
+                  <NumberField
+                    value={r.target}
+                    label={`Images wanted for ${r.keyword}`}
+                    onCommit={(n) =>
                       edit(
-                        rows.map((x) =>
-                          x.key === r.key ? { ...x, target: Math.max(0, Number(e.target.value) || 0) } : x,
-                        ),
+                        rows.map((x) => (x.key === r.key ? { ...x, target: n } : x)),
                         true,
                       )
                     }
-                    aria-label={`Images wanted for ${r.keyword}`}
                   />
                   <div className="flex flex-col gap-1">
                     <span className="text-[12px] tabular-nums">
@@ -595,29 +665,10 @@ function KeywordsTab({
             })}
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-            {rows.length > 1 ? (
-              <div className="flex items-center gap-2 text-[12px] text-[color:var(--text-secondary)]">
-                <span>One total for all keywords:</span>
-                <Input
-                  type="number"
-                  min={0}
-                  className="w-28 h-8"
-                  value={total}
-                  placeholder="e.g. 5000"
-                  onChange={(e) => setTotal(e.target.value)}
-                />
-                <Button size="sm" variant="ghost" onClick={applyTotal} disabled={!total}>
-                  Split evenly
-                </Button>
-                <Help label="one total">
-                  Shares one number equally between all keywords. Example: 5,000 for 10 keywords
-                  gives each keyword 500.
-                </Help>
-              </div>
-            ) : (
-              <span />
-            )}
+          <div className="flex items-center justify-between px-1 text-[12px]">
+            <span className="text-[color:var(--text-secondary)]">
+              Total wanted: <span className="tabular-nums font-medium text-[color:var(--text-primary)]">{fmt(wanted)}</span>
+            </span>
             <span className="flex items-center gap-1 text-[11px] text-[color:var(--text-tertiary)]">
               {saving ? "Saving…" : "Saved"} · for this task only
               <Help label="saving">
@@ -626,6 +677,33 @@ function KeywordsTab({
               </Help>
             </span>
           </div>
+
+          {rows.length > 1 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] px-3 py-2 text-[12px] text-[color:var(--text-secondary)]">
+              <span>Replace all numbers with an equal share of</span>
+              <Input
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                aria-label="Total to share"
+                className="w-24 h-8"
+                value={total}
+                placeholder="e.g. 5000"
+                onChange={(e) => setTotal(digits(e.target.value))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") applyTotal();
+                }}
+              />
+              <Button size="sm" variant="secondary" onClick={applyTotal} disabled={!total}>
+                Apply
+              </Button>
+              <Help label="equal share">
+                This replaces the number of every keyword. Example: 5,000 for 10 keywords sets each
+                one to 500. You can still change single numbers afterwards. Leave it empty to keep
+                your own numbers.
+              </Help>
+            </div>
+          )}
         </div>
       )}
     </div>
