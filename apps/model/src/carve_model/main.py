@@ -2,7 +2,7 @@ import logging
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 
 from carve_model.devices_router import router as devices_router
 from carve_model.gpu import get_device
@@ -279,7 +279,25 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok"}
+        from carve_model import remote_settings
+
+        return {"status": "ok", "settings_version": remote_settings.version}
+
+    @app.post("/system/restart")
+    def system_restart(x_carve_service_token: str = Header(default="")) -> dict:
+        """Exit so Docker starts the service again and it reads the
+        settings saved in Carve (Settings → Configuration). Only the API
+        holds the token."""
+        import hmac
+        import os
+
+        from carve_model import remote_settings
+
+        if not hmac.compare_digest(x_carve_service_token, remote_settings.token()):
+            raise HTTPException(status_code=403, detail="forbidden")
+        log.warning("restarting at Carve's request to apply saved settings")
+        threading.Timer(0.5, os._exit, args=(0,)).start()
+        return {"restarting": True}
 
     @app.get("/capabilities")
     def capabilities() -> dict:

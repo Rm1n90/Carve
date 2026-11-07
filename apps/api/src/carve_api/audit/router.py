@@ -34,6 +34,7 @@ from carve_api.auth.models import User
 from carve_api.permissions import require_superadmin
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
+from carve_api.projects.models import Project
 from carve_api.projects.service import _READ_ROLES, require_project_role
 
 
@@ -76,7 +77,9 @@ def list_workspace_audit(
     limit: int = Query(50, ge=1, le=200),
     cursor: str | None = None,
     action: str | None = None,
+    action_prefix: str | None = Query(None, max_length=64),
     actor: uuid.UUID | None = None,
+    person: uuid.UUID | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AuditPage:
@@ -88,14 +91,28 @@ def list_workspace_audit(
     revocations — are workspace events with no project, so they would
     otherwise be invisible to everyone. This view is where they surface,
     and it is restricted to the one role that can perform them.
+
+    ``action`` takes one action or several separated by commas;
+    ``action_prefix`` matches a family (``user.``); ``person`` matches
+    what someone did *and* what was done to them.
     """
     require_superadmin(user)
 
     stmt = select(AuditEvent)
     if action is not None:
-        stmt = stmt.where(AuditEvent.action == action)
+        actions = [a.strip() for a in action.split(",") if a.strip()]
+        stmt = stmt.where(AuditEvent.action.in_(actions))
+    if action_prefix:
+        stmt = stmt.where(AuditEvent.action.startswith(action_prefix, autoescape=True))
     if actor is not None:
         stmt = stmt.where(AuditEvent.actor_id == actor)
+    if person is not None:
+        stmt = stmt.where(
+            or_(
+                AuditEvent.actor_id == person,
+                and_(AuditEvent.target_type == "user", AuditEvent.target_id == person),
+            )
+        )
     if cursor is not None:
         decoded = _decode_cursor(cursor)
         if decoded is None:
@@ -121,10 +138,27 @@ def list_workspace_audit(
         last = rows[-1]
         next_cursor = _encode_cursor(last.occurred_at, last.id)
 
-    return AuditPage(
-        items=[AuditEventOut.from_orm_event(r) for r in rows],
-        next_cursor=next_cursor,
+    items = [AuditEventOut.from_orm_event(r) for r in rows]
+    # Removed people and projects are still named: the log is where you
+    # find out what happened to them.
+    emails = dict(
+        db.execute(
+            select(User.id, User.email).where(
+                User.id.in_({r.actor_id for r in rows if r.actor_id})
+            )
+        ).all()
     )
+    names = dict(
+        db.execute(
+            select(Project.id, Project.name).where(
+                Project.id.in_({r.project_id for r in rows if r.project_id})
+            )
+        ).all()
+    )
+    for item in items:
+        item.actor_email = emails.get(item.actor_id)
+        item.project_name = names.get(item.project_id)
+    return AuditPage(items=items, next_cursor=next_cursor)
 
 
 @router.get(

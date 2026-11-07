@@ -197,26 +197,48 @@ def render_view(im: Image.Image, view: View) -> bytes:
     return _encode_jpeg(region)
 
 
-def render_reference_crop(
-    im: Image.Image, bbox_xyxy: tuple[float, float, float, float], spec: GridSpec
-) -> bytes:
-    """A small exemplar crop of one annotated logo, with a little context.
+def reference_grid(spec: GridSpec) -> GridSpec:
+    """The budget of one exemplar crop for a model of grid ``spec``.
 
     Exemplars sit in the cached prompt prefix and are re-read on every
-    request, so they are kept to a few dozen patches each.
+    request, so where an image is billed by its patches they are kept to
+    a few dozen patches each.
     """
+    return GridSpec(patch=spec.patch, max_edge=spec.patch * 8, max_patches=48)
+
+
+def _reference_box(
+    width: int, height: int, bbox_xyxy: tuple[float, float, float, float]
+) -> tuple[int, int, int, int]:
+    """The region an exemplar shows: the mark with a little context."""
     x1, y1, x2, y2 = bbox_xyxy
     pad = 0.12 * max(x2 - x1, y2 - y1)
     box = (
         max(0, int(x1 - pad)), max(0, int(y1 - pad)),
-        min(im.width, int(math.ceil(x2 + pad))),
-        min(im.height, int(math.ceil(y2 + pad))),
+        min(width, int(math.ceil(x2 + pad))),
+        min(height, int(math.ceil(y2 + pad))),
     )
     if box[2] - box[0] < 2 or box[3] - box[1] < 2:
         raise ValueError("reference box is empty")
-    crop = im.crop(box)
-    small = GridSpec(patch=spec.patch, max_edge=spec.patch * 8, max_patches=48)
-    w, h = fit_grid(crop.width, crop.height, small)
+    return box
+
+
+def reference_crop_size(
+    width: int, height: int, bbox_xyxy: tuple[float, float, float, float], grid: GridSpec
+) -> tuple[int, int]:
+    """Size the exemplar of ``bbox_xyxy`` in a ``width`` x ``height``
+    image is sent at, without rendering it."""
+    x0, y0, x1, y1 = _reference_box(width, height, bbox_xyxy)
+    return fit_grid(x1 - x0, y1 - y0, grid)
+
+
+def render_reference_crop(
+    im: Image.Image, bbox_xyxy: tuple[float, float, float, float], grid: GridSpec
+) -> bytes:
+    """An exemplar crop of one annotated logo, with a little context, at
+    most ``grid`` (see :func:`reference_grid`)."""
+    crop = im.crop(_reference_box(im.width, im.height, bbox_xyxy))
+    w, h = fit_grid(crop.width, crop.height, grid)
     return _encode_jpeg(crop.resize((w, h), Image.LANCZOS))
 
 

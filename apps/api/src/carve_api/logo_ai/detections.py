@@ -17,7 +17,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy.orm import Session
 
 from carve_api.annotations.models import Annotation, AnnotationKind
-from carve_api.logo_ai.catalog import COORDS_GRID999
+from carve_api.logo_ai.catalog import COORDS_BOX1000, COORDS_GRID999
 from carve_api.logo_ai.imaging import View
 from carve_api.logo_ai.prompt import row_length
 
@@ -58,8 +58,9 @@ class Detection:
 def parse_detections(text: str, *, n_classes: int) -> list[dict]:
     """Validate the answer's shape; returns one dict per usable row.
 
-    A row is ``[x1, y1, x2, y2, confidence, visible]``, with the class
-    number in front when there is more than one class. OpenAI enforces
+    A row is ``[x1, y1, x2, y2, confidence, visible]`` (the box in
+    ``ymin, xmin, ymax, xmax`` order for Gemini's coordinates), with the
+    class number in front when there is more than one class. OpenAI enforces
     the row length; Anthropic's schema cannot, so a row of the wrong
     length is dropped here rather than misread.
     """
@@ -100,7 +101,13 @@ def to_original(
     dets: list[Detection] = []
     for item in raw:
         x1, y1, x2, y2 = item["box"]
-        if coords == COORDS_GRID999:
+        if coords == COORDS_BOX1000:
+            # [ymin, xmin, ymax, xmax] on 0..1000: scaled to the image as
+            # sent, as in Google's own conversion.
+            ymin, xmin, ymax, xmax = item["box"]
+            x1, x2 = (v * view.out_w / 1000 for v in (xmin, xmax))
+            y1, y2 = (v * view.out_h / 1000 for v in (ymin, ymax))
+        elif coords == COORDS_GRID999:
             # The grid addresses pixel centres 0..w-1, as in OpenAI's
             # reference conversion.
             x1, x2 = (v * (view.out_w - 1) / 999 for v in (x1, x2))

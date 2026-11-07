@@ -64,6 +64,9 @@ class UserOut(BaseModel):
     blocked: bool = False
     blocked_at: datetime | None = None
     blocked_reason: str | None = None
+    # Filled by the members list (from the audit log); None elsewhere and
+    # for anyone who has not signed in since sign-ins were recorded.
+    last_sign_in_at: datetime | None = None
 
     @classmethod
     def from_orm_user(cls, u) -> "UserOut":
@@ -86,3 +89,15 @@ class ChangePasswordIn(BaseModel):
 
     current_password: str = Field(min_length=1)
     new_password: str = Field(min_length=8, max_length=128)
+
+
+class EmailPatchIn(BaseModel):
+    email: EmailStr
+
+
+class RemovedMemberOut(BaseModel):
+    id: str
+    email: str
+    role: UserRole
+    deleted_at: datetime
+

@@ -6,6 +6,7 @@
     PUT  /inference/logo-ai/billing/{provider}/credit   enter the credit balance
     POST /assets/{id}/logo-ai/detect           one image, synchronously
     POST /tasks/{id}/logo-ai/estimate          tokens + cost before running
+    POST /tasks/{id}/logo-ai/cache-fill        reference examples that make the prompt cacheable
     POST /tasks/{id}/logo-ai/jobs              start a realtime or batch run
     GET  /tasks/{id}/logo-ai/jobs              recent runs for the task
     GET  /tasks/{id}/logo-ai/jobs/{job}        one run (progress polling)
@@ -76,6 +77,7 @@ from carve_api.logo_ai.service import (
     build_context,
     detect_image,
     estimate,
+    fill_cache_with_references,
     first_frame,
     first_frames,
     read_image_bytes,
@@ -196,8 +198,9 @@ def get_config(
                         blurb=m.blurb,
                         efforts=list(m.efforts),
                         default_effort=m.default_effort,
-                        input_usd=m.input_usd,
-                        output_usd=m.output_usd,
+                        # Today's rates: an introductory price ends.
+                        input_usd=m.rates()[0],
+                        output_usd=m.rates()[1],
                         supports_batch=m.supports_batch,
                     )
                     for m in p.models
@@ -275,6 +278,7 @@ class CreditIn(BaseModel):
 _BILLING_URLS = {
     catalog.OPENAI: "https://platform.openai.com/settings/organization/billing/overview",
     catalog.ANTHROPIC: "https://platform.claude.com/settings/billing",
+    catalog.GEMINI: "https://aistudio.google.com/usage",
 }
 
 
@@ -377,7 +381,7 @@ class RunIn(BaseModel):
     # Keep a box only if at least this percentage of the logo is in
     # view (the model's estimate). 0 keeps every box.
     min_visible: int = Field(default=0, ge=0, le=100)
-    # OpenAI only: near-realtime processing at the batch price.
+    # OpenAI and Gemini: near-realtime processing at the batch price.
     flex: bool = False
     # A second look at every box, enlarged, that drops the ones that
     # are not logos. Not available for batch runs.
@@ -637,6 +641,45 @@ def estimate_run(
     except AppError as exc:
         raise _http(exc) from exc
     return EstimateOut(**figures)
+
+
+class SuggestedReferenceOut(BaseModel):
+    class_id: str
+    asset_id: str
+    # The box it is cut from, so the dialog can show it as picked.
+    annotation_id: str
+    kind: str
+    bbox: list[float]
+
+
+class CacheFillOut(BaseModel):
+    # Reference examples to add; empty when the prompt is already long
+    # enough, or when the task cannot make it so (see ``message``).
+    references: list[SuggestedReferenceOut]
+    prefix_tokens: int
+    # The shared prompt with the suggested references added.
+    filled_tokens: int
+    min_cache_tokens: int
+    cached: bool
+    message: str | None
+
+
+@task_router.post("/{task_id}/logo-ai/cache-fill", response_model=CacheFillOut)
+def cache_fill(
+    task_id: uuid.UUID,
+    payload: TaskRunIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CacheFillOut:
+    """Reference examples that bring the run's shared prompt up to the
+    model's caching minimum. Reads the task's boxes; spends nothing."""
+    options = _with_prompts(db, task_id, payload.options())
+    try:
+        task = require_logo_ai_task(db, user, task_id)
+        figures = fill_cache_with_references(db, task, options)
+    except AppError as exc:
+        raise _http(exc) from exc
+    return CacheFillOut(**figures)
 
 
 # ---------------------------------------------------------------------------
@@ -981,10 +1024,11 @@ def cancel_job(
 
 # Far more than a thorough rubric needs; the point is a bound.
 _PROMPT_MAX_CHARS = 40_000
-# A prompt prefix shorter than this is not cached by OpenAI (1,024
-# tokens, at about four characters per token), so every request of a
-# run pays for it in full.
-_PROMPT_CACHE_MIN_CHARS = 4_400
+# Characters per prompt token, measured on these prompts (about four).
+# A prompt prefix shorter than the selected model's cache minimum (1,024
+# tokens for OpenAI, 4,096 for Gemini 4 Argon) is not cached, so every
+# request of a run pays for it in full.
+_CHARS_PER_TOKEN = 4.3
 
 
 _Source = Literal["task", "project", "default"]
@@ -1065,7 +1109,9 @@ class TaskPromptOut(BaseModel):
     format_preview: str
     check_format_preview: str
     max_chars: int
+    # The selected model's cache minimum, in tokens and as characters.
     cache_min_chars: int
+    cache_min_tokens: int
     updated_at: datetime | None
 
 
@@ -1080,8 +1126,11 @@ class TaskPromptIn(BaseModel):
 
 
 def _prompt_out(
-    row: LogoAiTaskPrompt | None, project_row: LogoAiProjectPrompt | None, coords: str
+    row: LogoAiTaskPrompt | None,
+    project_row: LogoAiProjectPrompt | None,
+    selected: tuple[str, int],
 ) -> TaskPromptOut:
+    coords, min_cache_tokens = selected
     (text, source), (check, check_source) = _resolved(row, project_row)
     (shared, _), (shared_check, _) = _resolved(None, project_row)
     updated = [r.updated_at for r in (row, project_row) if r is not None and r.updated_at]
@@ -1100,21 +1149,23 @@ def _prompt_out(
         format_preview=prompt_mod.format_preview(coords),
         check_format_preview=prompt_mod.check_format_preview(),
         max_chars=_PROMPT_MAX_CHARS,
-        cache_min_chars=_PROMPT_CACHE_MIN_CHARS,
+        cache_min_chars=round(min_cache_tokens * _CHARS_PER_TOKEN),
+        cache_min_tokens=min_cache_tokens,
         updated_at=max(updated) if updated else None,
     )
 
 
-def _coords_for(provider: str | None, model: str | None) -> str:
-    """The coordinate system of the model the dialog has selected, for
-    the preview; the default provider's if it is not given or unknown."""
+def _selected(provider: str | None, model: str | None) -> tuple[str, int]:
+    """The coordinate system and cache minimum of the model the dialog
+    has selected, for the preview; the default provider's if it is not
+    given or unknown."""
     try:
         spec = catalog.get_provider(provider or catalog.OPENAI)
         chosen = catalog.get_model(spec.id, model or spec.default_model)
     except ValueError:
         spec = catalog.get_provider(catalog.OPENAI)
         chosen = catalog.get_model(spec.id, spec.default_model)
-    return chosen.coords or spec.coords
+    return chosen.coords or spec.coords, chosen.min_cache_tokens
 
 
 def _own_text(text: str | None, inherited: str) -> str | None:
@@ -1139,7 +1190,7 @@ def get_prompt(
     return _prompt_out(
         db.get(LogoAiTaskPrompt, task_id),
         _project_prompt(db, task_id),
-        _coords_for(provider, model),
+        _selected(provider, model),
     )
 
 
@@ -1193,7 +1244,7 @@ def put_prompt(
             row.updated_by = user.id
             row.updated_at = now
     db.commit()
-    return _prompt_out(row, project_row, _coords_for(provider, model))
+    return _prompt_out(row, project_row, _selected(provider, model))
 
 
 # ---------------------------------------------------------------------------

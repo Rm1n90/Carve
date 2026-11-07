@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from carve_api.logo_ai.catalog import COORDS_GRID999, COORDS_PIXEL
+from carve_api.logo_ai.catalog import COORDS_BOX1000, COORDS_GRID999, COORDS_PIXEL
 from carve_api.logo_ai.detections import (
     BadModelOutput,
     Detection,
@@ -81,6 +81,28 @@ def test_grid999_coords_span_the_whole_image() -> None:
     (d,) = to_original(raw, view, coords=COORDS_GRID999, image_w=2000, image_h=1000)
     assert d.x1 == 0 and d.y1 == 0
     assert d.x2 == pytest.approx(1998) and d.y2 == pytest.approx(998)
+
+
+def test_gemini_boxes_are_ymin_xmin_ymax_xmax_on_0_to_1000() -> None:
+    view = View(0, 0, 0, 2000, 1000, 1000, 500)
+    # [ymin, xmin, ymax, xmax] = rows 100-300, columns 200-400 of 1000.
+    raw = parse_detections(_answer([100, 200, 300, 400, 90, 100]), n_classes=1)
+    (d,) = to_original(raw, view, coords=COORDS_BOX1000, image_w=2000, image_h=1000)
+    assert (d.x1, d.y1, d.x2, d.y2) == pytest.approx((400, 100, 800, 300))
+    full = parse_detections(_answer([0, 0, 1000, 1000, 90, 100]), n_classes=1)
+    (d,) = to_original(full, view, coords=COORDS_BOX1000, image_w=2000, image_h=1000)
+    assert (d.x1, d.y1, d.x2, d.y2) == pytest.approx((0, 0, 2000, 1000))
+
+
+def test_gemini_prompt_and_schema_describe_its_own_box_order() -> None:
+    text = build_system_text(_CLASSES, COORDS_BOX1000)
+    assert "[label, ymin, xmin, ymax, xmax, confidence, visible]" in text
+    assert "0 to 1000" in text and "vertical coordinates come first" in text
+    single = build_system_text(_CLASSES[:1], COORDS_BOX1000)
+    assert "`[ymin, xmin, ymax, xmax, confidence, visible]`" in single
+    row = build_schema(1, COORDS_BOX1000, numeric_bounds=True)["properties"]["detections"]["items"]
+    assert (row["minItems"], row["maxItems"]) == (6, 6)
+    assert row["items"] == {"type": "integer", "minimum": 0, "maximum": 1000}
 
 
 def test_tile_coords_are_offset_by_the_tile_origin() -> None:

@@ -9,22 +9,27 @@ from carve_api.errors import AppError
 from carve_api.health import router as health_router
 
 
+class _SettingsCORSMiddleware(CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        return origin in get_settings().cors_origin_list
+
+
 def create_app() -> FastAPI:
-    settings = get_settings()
     app = FastAPI(title="Carve API", version="0.1.0")
     # Plan-20.12 — SlowAPI removed application-wide. The app is
     # self-hosted behind an authenticated boundary; per-minute caps
     # caused real-user pain (uploads of 1000+ images returning 429)
     # and added no security value.
 
-    if settings.cors_origin_list:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=settings.cors_origin_list,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+    # The allowed origins are read per request, so a change saved in
+    # Settings → Configuration applies without a restart.
+    app.add_middleware(
+        _SettingsCORSMiddleware,
+        allow_origins=[],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.include_router(health_router)
     app.include_router(auth_router)
@@ -164,6 +169,22 @@ def create_app() -> FastAPI:
         return {"pong": "admin"}
 
     app.include_router(admin_router)
+
+    # Provider API keys and other runtime settings, superadmin-only.
+    from carve_api.app_settings.router import (
+        internal_router as service_settings_router,
+        router as app_settings_router,
+    )
+    app.include_router(app_settings_router)
+    app.include_router(service_settings_router)
+
+    # Database backups on disk and "Back up now", superadmin-only.
+    from carve_api.backups.router import router as backups_router
+    app.include_router(backups_router)
+
+    # Annotation counts by person, superadmin-only.
+    from carve_api.reports.router import router as reports_router
+    app.include_router(reports_router)
 
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError) -> JSONResponse:

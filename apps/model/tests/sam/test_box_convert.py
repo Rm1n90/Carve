@@ -272,7 +272,7 @@ def test_a_see_through_carrier_is_cut_by_what_stands_in_front_not_by_what_is_beh
     assert net[150, 130] == 1     # the ball behind shows through: the net is drawn over it
 
 
-def test_ropes_keep_their_true_width_and_a_cage_fence_is_filled() -> None:
+def test_ropes_keep_their_true_width_and_a_cage_is_its_posts_and_rail_not_its_fence() -> None:
     h, w = 300, 400
     ropes = np.zeros((h, w), np.uint8)
     for y in (100, 150, 200):
@@ -285,13 +285,16 @@ def test_ropes_keep_their_true_width_and_a_cage_fence_is_filled() -> None:
     m = _raster(out[0], h, w)
     assert m[101, 200] == 1 and m[125, 200] == 0   # a rope, and the gap below it stays open
 
-    fence = np.zeros((h, w), np.uint8)
-    fence[100:200, 20:380] = 1
-    fence[140:160, 100:300] = 0              # mesh SAM did not take
+    cage = np.zeros((h, w), np.uint8)
+    cage[100:106, 20:380] = 1                # the top rail
+    for x in (20, 195, 370):
+        cage[100:200, x:x + 10] = 1          # three posts
     out = bc.convert(np.zeros((h, w, 3), np.uint8), [[10, 90, 390, 210]], set_image=seg.set_image,
                      predict_box=seg.predict_box, modes=["ropes"], zoom=False,
-                     text_masks=lambda p: fence if p == bc.CAGE_PROMPTS else np.zeros((h, w), np.uint8))
-    assert _raster(out[0], h, w)[150, 200] == 1   # the mesh is part of the cage
+                     text_masks=lambda p: cage if p == bc.CAGE_PROMPTS else np.zeros((h, w), np.uint8))
+    m = _raster(out[0], h, w)
+    assert m[102, 100] == 1 and m[150, 198] == 1   # the rail and a post
+    assert m[150, 100] == 0                        # the fence between the posts is not the cage
 
 
 def test_a_net_is_found_by_name_not_by_a_loose_box() -> None:
@@ -866,3 +869,35 @@ def test_a_big_graphic_stays_on_the_full_frame() -> None:
     out = bc.convert(np.zeros((h, w, 3), np.uint8), [[400, 300, 900, 600]], set_image=seg.set_image,
                      predict_box=seg.predict_box, modes=["overlay"], zoom=True)
     assert seg.sets == [(1080, 1920)] and out[0].zoomed is False
+
+
+def test_a_big_object_gets_a_second_look_kept_when_sam_scores_it_higher() -> None:
+    patchy = np.zeros((200, 300), dtype=np.uint8)
+    patchy[40:160, 40:260] = 1
+    patchy[60:140, 80:220] = 0     # a shirt with a hole where it is in shade
+    whole = np.zeros((200, 300), dtype=np.uint8)
+    whole[40:160, 40:260] = 1
+    for second, expect in ((0.95, 1), (0.6, 0)):
+        seg = _seg_with(patchy)
+        looked: list[list[float]] = []
+
+        def refine(box, second=second):
+            looked.append([float(v) for v in box])
+            return whole.copy(), second
+
+        out = bc.convert(np.zeros((200, 300, 3), np.uint8), [[40, 40, 260, 160]], set_image=seg.set_image,
+                         predict_box=seg.predict_box, refine_box=refine, modes=["object"], zoom=False)
+        assert looked == [[40, 40, 260, 160]]
+        assert _raster(out[0], 200, 300)[100, 150] == expect   # the hole closed only by the better look
+
+
+def test_small_boxes_and_boards_get_no_second_look() -> None:
+    m = np.zeros((1080, 1920), dtype=np.uint8)
+    m[500:540, 900:920] = 1
+    m[100:400, 100:1200] = 1
+    seg = _seg_with(m)
+    looked: list[list[float]] = []
+    bc.convert(np.zeros((1080, 1920, 3), np.uint8), [[900, 500, 920, 540], [100, 100, 1200, 400]],
+               set_image=seg.set_image, predict_box=seg.predict_box, modes=["object", "flat"], zoom=False,
+               refine_box=lambda b: (looked.append(list(b)), (m.copy(), 1.0))[1])
+    assert looked == []

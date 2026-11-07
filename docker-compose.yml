@@ -122,11 +122,31 @@ services:
       # single-image runs; the worker does batches. Both need the keys.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       # Optional, api only: reads OpenAI's cost report for the Billing tab.
       OPENAI_ADMIN_KEY: ${OPENAI_ADMIN_KEY:-}
       LOGO_AI_CONCURRENCY: ${LOGO_AI_CONCURRENCY:-4}
       LOGO_AI_BATCH_PART_REQUESTS: ${LOGO_AI_BATCH_PART_REQUESTS:-300}
       LOGO_AI_ALLOW_MEMBERS: ${LOGO_AI_ALLOW_MEMBERS:-false}
+      # Not used by the api itself: Settings → Configuration shows what the
+      # model and backup services run with (same values and defaults as
+      # theirs below) and which start-up values are set.
+      SAM_MODEL: ${SAM_MODEL:-sam2.1-large}
+      SAM_DTYPE: ${SAM_DTYPE:-bf16}
+      SAM_ATTN_IMPL: ${SAM_ATTN_IMPL:-sdpa}
+      SAM_COMPILE: ${SAM_COMPILE:-true}
+      SAM_CLIENT_ENCODE: ${SAM_CLIENT_ENCODE:-0}
+      SAM3_TOPK_PROPOSALS: ${SAM3_TOPK_PROPOSALS:-64}
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      VLM_FO1_AVAILABLE: ${VLM_FO1_AVAILABLE:-0}
+      HF_TOKEN: ${HF_TOKEN:-}
+      BACKUP_HOUR: ${BACKUP_HOUR:-02}
+      KEEP_DAILY: ${KEEP_DAILY:-14}
+      KEEP_WEEKLY: ${KEEP_WEEKLY:-8}
+      KEEP_MONTHLY: ${KEEP_MONTHLY:-12}
+      CARVE_DOMAIN: ${CARVE_DOMAIN:-}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       # /system/info path-rewrite root — see apps/api/src/carve_api/system/router.py
       HOST_ROOT: /host
       # /system/info GPU overlay — kept as a defensive fallback for hosts
@@ -141,6 +161,9 @@ services:
       # without leaking container mounts back out. Standard monitoring
       # pattern used by node-exporter, cAdvisor, Netdata.
       - /:/host:ro,rslave
+      # Database dumps written by db-backup, listed in Settings ->
+      # Configuration. Read-only: the API never writes or deletes them.
+      - ./backups:/backups:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -187,6 +210,7 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       LOGO_AI_CONCURRENCY: ${LOGO_AI_CONCURRENCY:-4}
       LOGO_AI_BATCH_PART_REQUESTS: ${LOGO_AI_BATCH_PART_REQUESTS:-300}
       LOGO_AI_ALLOW_MEMBERS: ${LOGO_AI_ALLOW_MEMBERS:-false}
@@ -294,6 +318,9 @@ services:
       # before assets exist — the client falls back to server /sam/decode when
       # a decoder asset is missing (canDecodeLocally → false).
       SAM_CLIENT_ENCODE: ${SAM_CLIENT_ENCODE:-0}
+      # Settings saved in Carve (Settings → Configuration) are read from
+      # the API on start and take precedence over the values above.
+      CARVE_SETTINGS_URL: http://api:8000/internal/service-settings/model
       # v3.21+ -- VLM-FO1 precision filter. OFF by default. Setting to 1
       # registers the filter at lifespan (lazy-load on first opted-in
       # request). When OFF, /sam/text-prompt behaves identically to

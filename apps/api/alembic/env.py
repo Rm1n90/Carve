@@ -8,7 +8,7 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from carve_api.config import get_settings  # noqa: E402
+from carve_api.config import get_env_settings  # noqa: E402
 from carve_api.db import Base  # noqa: E402
 import carve_api.auth.models  # noqa: F401, E402  (populate metadata)
 import carve_api.projects.models  # noqa: F401, E402  (populate metadata)
@@ -18,7 +18,7 @@ import carve_api.weights.models  # noqa: F401, E402  (populate metadata)
 import carve_api.exports.models  # noqa: F401, E402  (populate metadata)
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option("sqlalchemy.url", get_env_settings().database_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 

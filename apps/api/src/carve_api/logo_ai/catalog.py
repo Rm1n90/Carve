@@ -3,7 +3,7 @@
 
 Everything vendor-specific that is *data* lives here so the rest of the
 package can stay provider-neutral. Figures were read from the vendors'
-published docs on 2026-09-30; prices drift, so the UI labels every
+published docs on 2026-09-30 (Gemini on 2026-10-23); prices drift, so the UI labels every
 dollar amount derived from them as an estimate and the job row stores
 the token counts it was computed from.
 """
@@ -11,18 +11,24 @@ the token counts it was computed from.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 
-from carve_api.logo_ai.imaging import GridSpec
+from carve_api.logo_ai.imaging import GridSpec, image_patches, reference_grid
 
 ANTHROPIC = "anthropic"
 OPENAI = "openai"
+GEMINI = "gemini"
 
 # "pixel"   — absolute pixel coordinates in the image as sent. What
 #             Anthropic documents Claude to be best at.
 # "grid999" — integers on a fixed 0..999 grid per axis. What OpenAI's
 #             vision cookbook prescribes for GPT localization.
+# "box1000" — Gemini's own convention: each box as [ymin, xmin, ymax,
+#             xmax], integers normalised to 0..1000 per axis. What Google
+#             documents its models to be trained on for detection.
 COORDS_PIXEL = "pixel"
 COORDS_GRID999 = "grid999"
+COORDS_BOX1000 = "box1000"
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,28 @@ class ModelSpec:
     # The coordinate system this model is asked for, when it is not the
     # provider's usual one.
     coords: str | None = None
+    # Tokens an image is billed, by detail, for providers that bill an
+    # image by the resolution asked for rather than by its patches
+    # (Gemini). Empty: ``grid`` patches times ``image_token_multiplier``.
+    image_tokens: tuple[tuple[str, int], ...] = ()
+    # Rates from a later day on, as (ISO date, input, output, cache
+    # read) in USD per 1M tokens: an introductory price that ends.
+    price_change: tuple[str, float, float, float] | None = None
+
+    def rates(self, on: date | None = None) -> tuple[float, float, float]:
+        """(input, output, cache read) USD per 1M tokens on ``on``
+        (today, UTC, by default)."""
+        if self.price_change is not None:
+            day = on or datetime.now(UTC).date()
+            starts, input_usd, output_usd, cache_read_usd = self.price_change
+            if day >= date.fromisoformat(starts):
+                return input_usd, output_usd, cache_read_usd
+        return self.input_usd, self.output_usd, self.cache_read_usd
+
+    def tokens_per_image(self, detail: str) -> int | None:
+        """The fixed tokens an image costs at ``detail``, or ``None``
+        where images are billed by their patches."""
+        return dict(self.image_tokens).get(detail) if self.image_tokens else None
 
 
 @dataclass(frozen=True)
@@ -66,7 +94,7 @@ class ProviderSpec:
     # Cache-write surcharge over the input price (realtime / batch TTLs).
     cache_write_mult: float
     cache_write_mult_batch: float
-    # OpenAI only: near-realtime processing at the batch price.
+    # Near-realtime processing at the batch price (OpenAI, Gemini).
     supports_flex: bool
     default_model: str
     models: tuple[ModelSpec, ...]
@@ -74,6 +102,10 @@ class ProviderSpec:
     # another. ``None``: the run's own detection model and effort.
     default_check_model: str | None = None
     default_check_effort: str | None = None
+    # Whether the provider's structured output takes array lengths and
+    # number ranges (OpenAI, Gemini); Anthropic rejects a request that
+    # carries them.
+    numeric_bounds: bool = False
 
 
 _ALL_EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -158,6 +190,7 @@ _OPENAI = ProviderSpec(
     cache_write_mult=1.25,
     cache_write_mult_batch=1.25,
     supports_flex=True,
+    numeric_bounds=True,
     default_model="gpt-6.1-sol",
     # Measured on 2026-10-02 on 278 detected boxes (31 clearly wrong, 219
     # real), each model scoring the same check sheets, rejecting under 40:
@@ -184,6 +217,22 @@ _OPENAI = ProviderSpec(
             grid=_GPT_HIGH,
             image_token_multiplier=1.2,
             supports_batch=False,
+        ),
+        ModelSpec(
+            id="gpt-6.1-terra",
+            label="GPT-6.1 Terra",
+            provider=OPENAI,
+            blurb="Half Sol's price; OpenAI's fast vision model. Takes Batch and "
+                  "Flex. Not yet measured against Sol on logos.",
+            # OpenAI's default is medium; low is what Sol was measured best
+            # at for the cost. Unlike Sol, Terra can turn reasoning off.
+            efforts=("none", *_ALL_EFFORTS),
+            default_effort="low",
+            input_usd=1.0, output_usd=5.0, cache_read_usd=0.05,
+            grid=_GPT_HIGH,
+            # OpenAI's vision page lists no 6.1 model; every GPT-5.6/6 model
+            # it lists bills 1.2. Only the pre-run estimate uses it.
+            image_token_multiplier=1.2,
         ),
         ModelSpec(
             id="gpt-6-sol",
@@ -226,7 +275,66 @@ _OPENAI = ProviderSpec(
     ),
 )
 
-PROVIDERS: dict[str, ProviderSpec] = {p.id: p for p in (_ANTHROPIC, _OPENAI)}
+# Gemini bills an image a fixed number of tokens set by the resolution it
+# is asked to look at it with, whatever its pixel size. Images are still
+# pre-sized (to the detail's megapixels, 16 px steps), only so that a
+# request carries no more image than the model will use.
+_GEMINI_GRID = GridSpec(patch=16, max_edge=3072, max_patches=(3072 // 16) ** 2)
+# Detail → Gemini 3/4 media resolution and the tokens it bills an image.
+# "low" is MEDIUM: Gemini's LOW (280 tokens) is too coarse for small marks.
+GEMINI_MEDIA_RESOLUTION: dict[str, tuple[str, int]] = {
+    "low": ("MEDIA_RESOLUTION_MEDIUM", 560),
+    "standard": ("MEDIA_RESOLUTION_HIGH", 1120),
+    "high": ("MEDIA_RESOLUTION_ULTRA_HIGH", 2240),
+    "max": ("MEDIA_RESOLUTION_ULTRA_HIGH", 2240),
+}
+# Reference crops are small, cut-out marks: MEDIUM shows them whole, at
+# half the tokens of HIGH. They are in the cached prefix.
+GEMINI_REFERENCE_RESOLUTION = ("MEDIA_RESOLUTION_MEDIUM", 560)
+# Those 560 tokens are billed whatever the crop's size, so a reference
+# is sent at up to 384 px rather than shrunk to the few dozen patches
+# that keep it cheap where an image is billed by its patches.
+_GEMINI_REFERENCE_GRID = GridSpec(patch=16, max_edge=384, max_patches=(384 // 16) ** 2)
+
+_GEMINI = ProviderSpec(
+    id=GEMINI,
+    label="Google Gemini",
+    env_var="GEMINI_API_KEY",
+    coords=COORDS_BOX1000,
+    batch_discount=0.5,           # Batch and Flex are both half price
+    # Implicit caching only: nothing is charged to write the cache, and a
+    # hit is billed at the cached rate (95% off).
+    cache_write_mult=1.0,
+    cache_write_mult_batch=1.0,
+    supports_flex=True,
+    numeric_bounds=True,
+    default_model="gemini-4-argon",
+    default_check_model="gemini-4-argon",
+    default_check_effort="low",
+    models=(
+        ModelSpec(
+            id="gemini-4-argon",
+            label="Gemini 4 Argon",
+            provider=GEMINI,
+            blurb="Google's newest; leads detection benchmarks. Introductory "
+                  "price until Nov 30, 2026 (then 2×). Takes Batch and Flex.",
+            efforts=("low", "medium", "high"),
+            # Google's default is medium. Low is the setting the other
+            # providers' detection runs were measured best at for the cost;
+            # on Roboflow's detection benchmark high scored 85.1 mAP@50 and
+            # low 82.5.
+            default_effort="low",
+            input_usd=2.0, output_usd=10.0, cache_read_usd=0.10,
+            price_change=("2026-12-01", 4.0, 20.0, 0.20),
+            grid=_GEMINI_GRID,
+            # Implicit caching starts at 4,096 prompt tokens for this model.
+            min_cache_tokens=4096,
+            image_tokens=tuple((d, t) for d, (_, t) in GEMINI_MEDIA_RESOLUTION.items()),
+        ),
+    ),
+)
+
+PROVIDERS: dict[str, ProviderSpec] = {p.id: p for p in (_ANTHROPIC, _OPENAI, _GEMINI)}
 
 # Megapixels sent per view; "max" is whatever the chosen model accepts
 # without resizing. A budget only ever shrinks an image: one already
@@ -296,6 +404,19 @@ def grid_for(model: ModelSpec, detail: str) -> GridSpec:
         max_edge=grid.max_edge,
         max_patches=max(1, min(grid.max_patches, budget)),
     )
+
+
+def reference_grid_for(model: ModelSpec) -> GridSpec:
+    """The size budget of one reference crop sent to ``model``."""
+    return _GEMINI_REFERENCE_GRID if model.image_tokens else reference_grid(model.grid)
+
+
+def reference_tokens(model: ModelSpec, width: int, height: int) -> float:
+    """Tokens a reference crop of ``width`` x ``height`` adds to the
+    prompt prefix."""
+    if model.image_tokens:
+        return GEMINI_REFERENCE_RESOLUTION[1]
+    return image_patches(width, height, model.grid.patch) * model.image_token_multiplier
 
 
 def estimated_output_tokens(effort: str | None) -> int:

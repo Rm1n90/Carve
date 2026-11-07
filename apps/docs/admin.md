@@ -10,6 +10,35 @@ The first visit to the app triggers the **First-run admin wizard**, which create
 - User roles: **admin** (full access) and **annotator** (project-scoped access).
 - Admins manage members via **Settings → Members** in the web UI.
 
+### Superadmin
+
+The superadmin can do everything an admin can, on every account (admins included, but not their own through Settings → Members):
+
+- **Settings → Members:** each row shows the last sign-in. The ⋮ menu has **Set password…**, **Change email…** (their password stays; single sign-on links the new address the next time they use it), **API keys…** (see and revoke any of their keys), **Sign out everywhere**, **Block account** and **Delete member**. The role menu can also make someone **superadmin**, after a warning: a second superadmin has the same powers, over your account too. Carve always keeps at least one superadmin.
+- **Removed members** (on the same page) lists deleted accounts. **Restore** brings one back with its role, password and work; its old sessions and API keys stay revoked. A removed account keeps its email, so **Add member** refuses that email until the account is restored.
+- **Settings → Activity log:** everything recorded across the workspace, newest first (sign-ins, account changes, configuration, deletions, exports, training, review), filterable by kind and by person.
+- **Settings → Annotation counts:** how many annotations each person made, for all projects or one project or task, broken down by task or by class, over a period (all time, 24 hours, 7, 30 or 90 days), with **Download CSV**. An annotation counts for whoever created it; *from AI runs* are those an AI tool they ran made (they carry a model score), *drawn* the rest, SAM clicks included. Editing someone else's annotation does not move it. Projects and tasks in the Trash are left out. Counting every project takes a few seconds.
+- **Settings → Configuration:** see below, including database backups.
+- Freezing a project, emptying the Trash.
+
+## Configuration (superadmin)
+
+**Settings → Configuration** is seen only by the superadmin. It holds Carve's settings that used to be set only in `.env`, in tabs; each section says when a change applies:
+
+- **AI providers:** the OpenAI, Gemini and Anthropic API keys, each with a button to the provider's key page and **Test** (a free request to the provider). Each provider charges its own account; you need only the ones you use. The **OpenAI admin key** is not a second way to run models: it can only read what the OpenAI organization spent, for the Logo AI Billing tab, and only an organization owner can make one.
+- **Logo AI:** requests at once, requests per batch part.
+- **Member access:** for each AI tool (SAM, My model, Smart Find, Logo AI), whether members and viewers may use it: *admins only*, *on tasks opened for them* (the **AI tools for members** switch in each task's ⋮ menu; the default for SAM, My model and Smart Find), or *on every task they can open*. Admins always may. Logo AI starts as admins only (it costs money per image).
+- **Sign-in** and **Single sign-on:** token lifetimes, enabled providers, the Google / Microsoft client settings.
+- **Uploads and models**, **Addresses:** the largest upload, the model service timeout and address, the storage address browsers load images from, allowed browser origins (CORS).
+- **Model service (SAM, YOLO):** SAM variant at start, GPU, precision, attention, compile, browser encoding, SAM 3 proposals, PyTorch allocator, the FO1 filter, the Hugging Face token.
+- **Backups:** the daily backup hour and how many daily, weekly and monthly dumps are kept; the dumps on disk; **Back up now**, which the backup service starts within 30 seconds (it counts as one of the daily copies kept). Restoring is done on the server (see *Backups* below).
+
+API and worker settings apply within about five seconds, with no restart. The backup service reads its settings before every check (every 30 seconds). The model service reads its settings from the API when it starts: after a change the section says so, and **Restart model service** restarts it (SAM and YOLO stop for about a minute; requests in progress are retried). If the API cannot be reached when the model service starts, it starts with its `.env` values.
+
+A value saved there takes precedence over `.env`. **Clear** removes it, and the `.env` value (or the default) applies again; each row says where its value comes from. Keys, tokens and client secrets are stored encrypted (with a key derived from `PASSWORD_PEPPER`, so a database dump or backup alone does not reveal them) and are shown only by their last four characters. Every change is written to the audit log, without the secret.
+
+What stays in `.env` is what has to match the services as they are: the database and Redis connection, object storage credentials and bucket, `JWT_SECRET`, `PASSWORD_PEPPER`, the HTTPS domain and certificate contact, the GPUs handed to the containers. A new database password typed into Carve would not change the database's own (it would only cut Carve off from its data), and a new pepper would break every password, so these are changed together with those services and the containers recreated. The page lists them with whether each is set. If `PASSWORD_PEPPER` is ever changed, the page marks the saved secrets *Enter again*.
+
 ## API keys (v2.0)
 
 API keys let you call the Carve API from headless clients (CI scripts, custom tooling, batch import jobs). They authenticate the same way JWT tokens do — `Authorization: Bearer <token>` — and grant the same permissions as the user that owns the key.
@@ -397,23 +426,12 @@ The API enforces the following default rate limits:
 
 ## Logo AI
 
-Logo AI detects logos through a hosted vision LLM. It is off until a provider key is set in `.env`:
+Logo AI detects logos through a hosted vision LLM. It is off until a provider key is set. The superadmin sets the keys in **Settings → Configuration**: paste a key, **Save**, and optionally **Test** it (a free request to the provider that lists its models). The key is in use by the API and the worker within about five seconds, with no restart. Set any of them; only configured providers are offered in the editor. The Gemini key comes from Google AI Studio (*API keys*) and must belong to a project with billing enabled: Gemini 4 Argon has no free tier.
 
-```env
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-```
+The keys can also be set in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, then `docker compose up -d api worker`); a key saved in Settings → Configuration takes precedence, and **Clear** there goes back to the `.env` key.
 
-Set either or both; only configured providers are offered in the editor. Then rebuild and restart the services that use them:
-
-```bash
-docker compose up -d --build api worker web
-```
-
-The `api` container runs the database migration on start. Both `api` (single-image runs) and `worker` (runs over many assets, batch collection) need the keys.
-
-- **Who can use it:** workspace admins. It bills per image, so members are excluded by default; `LOGO_AI_ALLOW_MEMBERS=true` extends it to members on tasks that grant them the AI tools.
-- **Throughput:** `LOGO_AI_CONCURRENCY` (default 4) is the number of requests in flight during a realtime run. Raise it if your provider rate limits allow.
+- **Who can use it:** workspace admins. It bills per image, so members are excluded by default; *Members may use Logo AI* in Settings → Configuration (or `LOGO_AI_ALLOW_MEMBERS=true`) extends it to members on tasks that grant them the AI tools.
+- **Throughput:** *Requests at once* (`LOGO_AI_CONCURRENCY`, default 4) is the number of requests in flight during a realtime run. Raise it if your provider rate limits allow.
 - **Batch runs** are submitted to the provider and polled from the `api` container; results are written as soon as the provider finishes, whether or not anyone has the page open. Every run is tracked in Postgres, not in Redis or in memory.
 - **What a run survives.** A power cut, a frozen or restarted machine, a killed worker, a wiped Redis, a restarted database, the internet or the provider going away, the image store being down. In each case the run waits (the Runs tab says what for, and when it tries again) and goes on by itself from the last thing it finished; nothing needs to be started again by hand.
   - A batch part is recorded before it is sent. After a crash the provider is asked whether it has that batch before anything is sent again, so a part is not paid for twice.
@@ -425,5 +443,6 @@ The `api` container runs the database migration on start. Both `api` (single-ima
 - **Stopping.** *Cancel* on a batch stops it at the provider and keeps the results it had produced. A run that stays in *Canceling* because the provider cannot be reached can be closed with **Force stop**, which gives up the results not collected yet. A task or project with a run in progress cannot be deleted until the run is canceled: its batches would go on being billed with nothing left to collect them.
 - **Running out of credit.** When the provider refuses a request because the account's credit is used up or a spend limit is reached, the run waits instead of failing the images: the Runs tab says so, nothing is sent while the account is empty except one small request every few minutes (up to 15) to see whether it is back, and the run continues by itself once credit is added or the limit raised. A refused request is not charged. The few images that were mid-way when the credit ran out (detected, not yet double-checked) are done again, so they can be billed twice; a batch part the provider turned away is sent again later from the file already uploaded.
 - **Billing tab.** The Logo AI dialog's *Billing* tab shows, per provider, what Logo AI has spent (this task, this month, all time) from the app's own books. No provider tells an API key what is left of a prepaid balance, so an admin enters the balance shown on the provider's billing page once; every cost booked after that is taken off it and the tab, and the cost estimate of a new run, show what is left. With `OPENAI_ADMIN_KEY` set (an OpenAI *admin* key from Organization settings, Admin keys; used read-only, by the api container only) the tab also shows what OpenAI itself reports for the whole organization (today, this month, the monthly spend limit), and if that shows more spent than Logo AI spent here, something else is using the account and OpenAI's figure is the one taken off the balance. OpenAI's report is in whole UTC days and runs a few minutes behind.
+- **Gemini.** Realtime, Flex and Batch work as for OpenAI. Flex is half price; with no Flex capacity Google answers "unavailable" and the run waits and retries at Flex, never at the standard price (Google does not upgrade a Flex request either, and the run stops if a response ever says it was served at standard). A Gemini batch that Google did not run within its 48 hours, or turned away because the account's batch queue was full, is sent again by itself; it is not charged. Gemini's cache is implicit: it needs a prompt prefix of 4,096 tokens or more, which the default instructions alone (about 2,000) do not reach, but class descriptions and reference crops count towards it. Gemini 4 Argon's introductory price ends on 30 November 2026; from 1 December the app books costs at the new price ($4 / $20 per 1M input / output tokens). The Billing tab has no Google cost report: enter the balance from Google AI Studio's billing page.
 - **Do not change the provider API key to another account's while a batch run is open.** The provider then answers that the batches do not exist; the run waits 24 hours for the right key before it gives the affected parts up.
 - **Data:** the image (resized) and the class names and descriptions are sent to the selected provider. Reference examples are crops of images in the same task.

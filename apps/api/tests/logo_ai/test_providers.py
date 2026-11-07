@@ -26,6 +26,7 @@ from carve_api.logo_ai.providers.base import (
     Usage,
     is_out_of_credit,
 )
+from carve_api.logo_ai.providers.gemini_provider import APIError, GeminiClient
 from carve_api.logo_ai.providers.openai_provider import OpenAIClient
 
 _CLASSES = [TargetClass("c1", "Acme", "red circle wordmark")]
@@ -43,7 +44,7 @@ def _ctx(provider_id: str, model_id: str, *, effort="medium", refs=False, flex=F
         classes=_CLASSES,
         references=[Reference(0, _JPEG)] if refs else [],
         system_text=build_system_text(_CLASSES, provider.coords),
-        schema=build_schema(1, provider.coords, numeric_bounds=provider_id == "openai"),
+        schema=build_schema(1, provider.coords, numeric_bounds=provider.numeric_bounds),
         flex=flex,
         coords=provider.coords,
     )
@@ -61,10 +62,11 @@ class _Wire:
         reply = self.routes[(request.method, request.url.path)]
         if isinstance(reply, list):
             reply = reply.pop(0)
-        status, body = reply
+        status, body, *rest = reply
+        headers = rest[0] if rest else None
         if isinstance(body, str | bytes):
-            return httpx2.Response(status, content=body)
-        return httpx2.Response(status, json=body)
+            return httpx2.Response(status, content=body, headers=headers)
+        return httpx2.Response(status, json=body, headers=headers)
 
     def body(self, i: int = -1) -> dict:
         return json.loads(self.requests[i].content)
@@ -424,6 +426,15 @@ def test_openai_luna_can_turn_reasoning_off() -> None:
     # Sol does not accept "none": the model's default is sent instead.
     client = OpenAIClient(_ctx("openai", "gpt-6.1-sol", effort="none"), "k")
     assert client.build_request(_JPEG, "x", batch=False)["reasoning"] == {"effort": "low"}
+
+
+def test_openai_terra_costs_half_of_sol_and_takes_batch() -> None:
+    terra = catalog.get_model("openai", "gpt-6.1-terra")
+    sol = catalog.get_model("openai", "gpt-6.1-sol")
+    assert terra.rates() == pytest.approx([r / 2 for r in sol.rates()])
+    assert terra.supports_batch and terra.coords is None
+    client = OpenAIClient(_ctx("openai", "gpt-6.1-terra", effort="none"), "k")
+    assert client.build_request(_JPEG, "x", batch=False)["reasoning"] == {"effort": "none"}
 
 
 def test_openai_refusal_and_truncation_are_errors() -> None:
@@ -1016,3 +1027,434 @@ def test_the_default_prompts_are_instructions_plus_a_fixed_format() -> None:
     check = prompt_mod.build_check_text(_CLASSES, "Score strictly.")
     assert check.startswith("Score strictly.\n\nReturn one row per tile")
     assert check.endswith("1. Acme: red circle wordmark")
+
+
+# --- Gemini ----------------------------------------------------------------
+
+_GEN = "/v1beta/models/gemini-4-argon:generateContent"
+_UPLOAD_PATH = "/upload/v1beta/files"
+_CREATE = "/v1beta/models/gemini-4-argon:batchGenerateContent"
+
+
+def _gemini_response(text=_ANSWER, finish="STOP", parts=None, **usage) -> dict:
+    return {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": parts or [{"text": text}]},
+                "finishReason": finish,
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 5200,
+            "cachedContentTokenCount": 4100,
+            "candidatesTokenCount": 40,
+            "thoughtsTokenCount": 300,
+            "totalTokenCount": 5540,
+            **usage,
+        },
+        "modelVersion": "gemini-4-argon",
+    }
+
+
+def _gemini_error(status: int, rpc: str, message: str, reason: str | None = None) -> tuple:
+    error: dict = {"code": status, "status": rpc, "message": message}
+    if reason:
+        error["details"] = [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}]
+    return (status, {"error": error})
+
+
+def _gemini(ctx: RunContext, wire: _Wire) -> GeminiClient:
+    client = GeminiClient(ctx, "AIza-test")
+    client._http = httpx2.Client(
+        transport=httpx2.MockTransport(wire), headers={"x-goog-api-key": "AIza-test"}
+    )
+    client._sleep = lambda seconds: None
+    return client
+
+
+def test_gemini_request_shape_and_result() -> None:
+    wire = _Wire({("POST", _GEN): (200, _gemini_response())})
+    ctx = _ctx("gemini", "gemini-4-argon", refs=True)
+    client = _gemini(ctx, wire)
+    text = "The image above is the one to annotate."
+    result = client.send(client.build_request(_JPEG, text, batch=False))
+
+    assert result.error is None and result.text == _ANSWER
+    # promptTokenCount includes the cached part; thinking is output.
+    assert result.usage == Usage(
+        input_tokens=1100, cache_read_tokens=4100, output_tokens=340,
+        reasoning_tokens=300, requests=1,
+    )
+    sent = wire.requests[0]
+    assert sent.headers["x-goog-api-key"] == "AIza-test"
+    body = wire.body()
+    assert body["systemInstruction"] == {"parts": [{"text": ctx.system_text}]}
+    parts = body["contents"][0]["parts"]
+    assert parts[0]["text"].startswith("Reference examples")
+    assert parts[1]["text"] == "Example of class 1 (Acme):"
+    # The reference crop at MEDIUM, the image to annotate at the run's
+    # detail (standard → HIGH), then the one line that differs.
+    assert parts[2]["mediaResolution"] == {"level": "MEDIA_RESOLUTION_MEDIUM"}
+    assert parts[3]["inlineData"]["mimeType"] == "image/jpeg"
+    assert parts[3]["mediaResolution"] == {"level": "MEDIA_RESOLUTION_HIGH"}
+    assert parts[4] == {"text": text}
+    config = body["generationConfig"]
+    assert config["responseMimeType"] == "application/json"
+    assert config["responseJsonSchema"] == ctx.schema
+    assert config["responseJsonSchema"]["properties"]["detections"]["items"]["maxItems"] == 6
+    assert config["thinkingConfig"] == {"thinkingLevel": "medium"}
+    assert "service_tier" not in body
+
+
+def test_gemini_prefix_is_identical_across_requests() -> None:
+    client = GeminiClient(_ctx("gemini", "gemini-4-argon", refs=True), "AIza-test")
+    a = client.build_request(_JPEG, "x", batch=False)
+    b = client.build_request(_JPEG + b"other", "x", batch=False)
+    # Implicit caching matches on the prefix: everything up to the image
+    # to annotate must be byte-identical.
+    assert json.dumps(a["systemInstruction"]) == json.dumps(b["systemInstruction"])
+    assert json.dumps(a["contents"][0]["parts"][:3]) == json.dumps(b["contents"][0]["parts"][:3])
+    assert a["contents"][0]["parts"][3] != b["contents"][0]["parts"][3]
+
+
+def test_gemini_detail_sets_the_media_resolution() -> None:
+    from dataclasses import replace
+
+    ctx = _ctx("gemini", "gemini-4-argon")
+    levels = {"low": "MEDIUM", "standard": "HIGH", "high": "ULTRA_HIGH", "max": "ULTRA_HIGH"}
+    for detail, level in levels.items():
+        body = GeminiClient(replace(ctx, detail=detail), "k").build_request(_JPEG, "x", batch=False)
+        part = body["contents"][0]["parts"][0]
+        assert part["mediaResolution"] == {"level": f"MEDIA_RESOLUTION_{level}"}
+
+
+def test_gemini_flex_is_never_retried_at_the_standard_price() -> None:
+    full = _gemini_error(503, "UNAVAILABLE", "The model is overloaded. Please try again later.")
+    wire = _Wire({("POST", _GEN): [full] * 5})
+    client = _gemini(_ctx("gemini", "gemini-4-argon", flex=True), wire)
+    result = client.send(client.build_request(_JPEG, "x", batch=False))
+    # Google has no Flex capacity: the run waits for it, uncharged.
+    assert result.error == "rate_limited" and result.usage.requests == 0
+    assert len(wire.requests) == 5
+    assert all(json.loads(r.content)["service_tier"] == "flex" for r in wire.requests)
+
+    # A batch request never carries a tier.
+    assert "service_tier" not in client.build_request(_JPEG, "x", batch=True)
+
+
+def test_gemini_request_is_priced_at_the_tier_it_was_served_at() -> None:
+    provider = catalog.get_provider("gemini")
+    model = catalog.get_model("gemini", "gemini-4-argon")
+    for tier, discounted in (("flex", True), ("standard", False), ("SERVICE_TIER_FLEX", True)):
+        wire = _Wire({("POST", _GEN): (200, _gemini_response(serviceTier=tier))})
+        client = _gemini(_ctx("gemini", "gemini-4-argon", flex=True), wire)
+        result = client.send(client.build_request(_JPEG, "x", batch=False))
+        assert result.discounted is discounted
+        full = result.usage.cost_usd(provider, model, batch=False, discounted=False)
+        expected = full / 2 if discounted else full
+        priced = result.cost_usd(provider, model, batch=False, discounted=True)
+        assert priced == pytest.approx(expected)
+    # No tier in the answer: the request's own setting decides.
+    wire = _Wire({("POST", _GEN): (200, _gemini_response())})
+    result = _gemini(_ctx("gemini", "gemini-4-argon"), wire).send({"contents": []})
+    assert result.discounted is None
+
+
+def test_gemini_error_mapping() -> None:
+    ctx = _ctx("gemini", "gemini-4-argon")
+    cases = [
+        (
+            _gemini_error(
+                400, "INVALID_ARGUMENT", "API key not valid. Please pass a valid API key.",
+                "API_KEY_INVALID",
+            ),
+            ProviderFatal,
+        ),
+        (_gemini_error(403, "PERMISSION_DENIED", "Permission denied"), ProviderFatal),
+        (_gemini_error(404, "NOT_FOUND", "models/gemini-4-argon is not found"), ProviderFatal),
+        (
+            _gemini_error(400, "FAILED_PRECONDITION", "User location is not supported."),
+            ProviderFatal,
+        ),
+    ]
+    for reply, fatal in cases:
+        wire = _Wire({("POST", _GEN): reply})
+        with pytest.raises(fatal):
+            _gemini(ctx, wire).send({"contents": []})
+        assert len(wire.requests) == 1  # never retried
+
+    wire = _Wire({("POST", _GEN): _gemini_error(400, "INVALID_ARGUMENT", "Invalid JSON payload")})
+    assert _gemini(ctx, wire).send({}).error.startswith("bad_request: Invalid JSON payload")
+
+    limited = _gemini_error(
+        429, "RESOURCE_EXHAUSTED",
+        "You exceeded your current quota, please check your plan and billing details.",
+    )
+    wire = _Wire({("POST", _GEN): [limited] * 5})
+    assert _gemini(ctx, wire).send({}).error == "rate_limited"
+    assert len(wire.requests) == 5
+
+    broke = _gemini_error(
+        429, "RESOURCE_EXHAUSTED", "Your prepayment credits are depleted. Please add credits."
+    )
+    wire = _Wire({("POST", _GEN): broke})
+    assert _gemini(ctx, wire).send({}).error == "out_of_credit"
+    assert len(wire.requests) == 1  # asking again changes nothing
+
+    wire = _Wire({("POST", _GEN): [_gemini_error(500, "INTERNAL", "boom")] * 5})
+    assert _gemini(ctx, wire).send({}).error == "provider_error_500"
+
+    def dead(request):
+        raise httpx2.ConnectError("connection refused")
+
+    client = _gemini(ctx, _Wire({}))
+    client._http = httpx2.Client(transport=httpx2.MockTransport(dead))
+    assert client.send({}).error == "provider_unreachable"
+
+
+@pytest.mark.parametrize(
+    ("answer", "error"),
+    [
+        (_gemini_response(finish="MAX_TOKENS"), "max_tokens"),
+        (_gemini_response(finish="SAFETY"), "refusal"),
+        (
+            {
+                "promptFeedback": {"blockReason": "PROHIBITED_CONTENT"},
+                "usageMetadata": {"promptTokenCount": 10},
+            },
+            "refusal",
+        ),
+        ({"candidates": [], "usageMetadata": {}}, "empty_answer"),
+    ],
+)
+def test_gemini_unusable_answers_are_errors_but_still_billed(answer, error) -> None:
+    wire = _Wire({("POST", _GEN): (200, answer)})
+    result = _gemini(_ctx("gemini", "gemini-4-argon"), wire).send({})
+    assert result.error == error and result.text is None
+
+
+def test_gemini_thoughts_are_not_the_answer() -> None:
+    parts = [{"text": "Looking at the boards...", "thought": True}, {"text": _ANSWER}]
+    wire = _Wire({("POST", _GEN): (200, _gemini_response(parts=parts))})
+    assert _gemini(_ctx("gemini", "gemini-4-argon"), wire).send({}).text == _ANSWER
+
+
+def _g_batch(state: str, *, ok: int = 0, failed: int = 0, total: int = 2, **extra) -> dict:
+    meta = {
+        "@type": "type.googleapis.com/google.ai.generativelanguage.v1main.GenerateContentBatch",
+        "model": "models/gemini-4-argon",
+        "displayName": "tag-1",
+        "inputConfig": {"fileName": "files/in1"},
+        "createTime": "2026-10-23T10:00:00.000000Z",
+        "state": state,
+        "batchStats": {
+            "requestCount": str(total),
+            "successfulRequestCount": str(ok),
+            "failedRequestCount": str(failed),
+        },
+        **extra,
+    }
+    return {"name": "batches/b1", "metadata": meta}
+
+
+def _upload_routes() -> list:
+    return [
+        (200, {}, {"x-goog-upload-url": "https://generativelanguage.googleapis.com/upload/v1beta/files?upload_id=u1&upload_protocol=resumable"}),
+        (200, {"file": {"name": "files/in1", "displayName": "logo-ai-tag-1"}}),
+    ]
+
+
+def test_gemini_batch_roundtrip() -> None:
+    lines = "\n".join(
+        json.dumps(line)
+        for line in (
+            {"key": "p-0_0", "response": _gemini_response(serviceTier="standard")},
+            {
+                "key": "p-1_0",
+                "error": {"code": 8, "status": "RESOURCE_EXHAUSTED", "message": "try later"},
+            },
+            {
+                "key": "p-2_0",
+                "error": {"code": 3, "status": "INVALID_ARGUMENT", "message": "bad image"},
+            },
+        )
+    )
+    output = {"responsesFile": "files/out1"}
+    done = (200, _g_batch("BATCH_STATE_SUCCEEDED", ok=1, failed=2, total=3, output=output))
+    running = (200, _g_batch("BATCH_STATE_RUNNING", ok=1))
+    wire = _Wire(
+        {
+            ("POST", _UPLOAD_PATH): _upload_routes(),
+            ("POST", _CREATE): (200, _g_batch("BATCH_STATE_PENDING")),
+            ("GET", "/v1beta/batches/b1"): [running, done, done],
+            ("GET", "/download/v1beta/files/out1:download"): (200, lines),
+            ("DELETE", "/v1beta/files/in1"): (200, {}),
+            ("POST", "/v1beta/batches/b1:cancel"): (200, {}),
+        }
+    )
+    client = _gemini(_ctx("gemini", "gemini-4-argon", flex=True), wire)
+    request = client.build_request(_JPEG, "x", batch=True)
+    batch_id, file_id = client.batch_create([("p-0_0", request), ("p-1_0", request)], tag="tag-1")
+    assert (batch_id, file_id) == ("batches/b1", "files/in1")
+
+    start, finalize, create = wire.requests[:3]
+    assert start.headers["x-goog-upload-protocol"] == "resumable"
+    assert start.headers["x-goog-upload-command"] == "start"
+    assert json.loads(start.content) == {"file": {"display_name": "logo-ai-tag-1"}}
+    assert finalize.url.params["upload_id"] == "u1"
+    assert finalize.headers["x-goog-upload-command"] == "upload, finalize"
+    jsonl = [json.loads(line) for line in finalize.content.decode().splitlines()]
+    assert [line["key"] for line in jsonl] == ["p-0_0", "p-1_0"]
+    assert "service_tier" not in jsonl[0]["request"]  # the batch is its own tier
+    assert json.loads(create.content) == {
+        "batch": {"display_name": "tag-1", "input_config": {"file_name": "files/in1"}}
+    }
+
+    state = client.batch_state(batch_id)
+    assert not state.ended and (state.total, state.finished) == (2, 1)
+    assert state.expires_at == datetime(2026, 10, 25, 10, 0, tzinfo=UTC)
+    done = client.batch_state(batch_id)
+    assert done.ended and done.finished == 3 and done.failed_reason is None
+
+    results = dict(client.batch_results(batch_id))
+    # Billed at the batch rate whatever tier the line names.
+    assert results["p-0_0"].text == _ANSWER and results["p-0_0"].discounted is None
+    assert results["p-1_0"].retryable  # Google's own trouble: send again
+    assert not results["p-2_0"].retryable and results["p-2_0"].error.startswith("INVALID_ARGUMENT")
+
+    client.batch_cleanup(batch_id, file_id)
+    client.batch_cancel(batch_id)
+    assert [r.method for r in wire.requests[-2:]] == ["DELETE", "POST"]
+
+
+def test_gemini_creating_a_batch_is_never_retried() -> None:
+    # Google took the batch and its answer was lost. A retry would make a
+    # second batch, and both would be billed: the call fails once, so the
+    # run can look the first one up by its display name.
+    lost = _gemini_error(500, "INTERNAL", "upstream timeout")
+    wire = _Wire({("POST", _UPLOAD_PATH): _upload_routes(), ("POST", _CREATE): [lost, lost, lost]})
+    client = _gemini(_ctx("gemini", "gemini-4-argon"), wire)
+    with pytest.raises(APIError) as excinfo:
+        client.batch_create([("0_0", client.build_request(_JPEG, "x", batch=True))], tag="t")
+    assert [r.url.path for r in wire.requests].count(_CREATE) == 1
+    # The upload got through: the next attempt starts from that file.
+    assert excinfo.value.uploaded_file_id == "files/in1"
+    assert excinfo.value.status_code == 500
+
+
+def test_gemini_batch_create_tells_a_refusal_from_an_outage() -> None:
+    refused = _gemini_error(400, "INVALID_ARGUMENT", "bad request")
+    wire = _Wire({("POST", _UPLOAD_PATH): _upload_routes(), ("POST", _CREATE): refused})
+    client = _gemini(_ctx("gemini", "gemini-4-argon"), wire)
+    with pytest.raises(ProviderFatal):
+        client.batch_create([("0_0", {})], tag="t")
+    limited = _gemini_error(429, "RESOURCE_EXHAUSTED", "Enqueued token limit reached")
+    wire = _Wire({("POST", _UPLOAD_PATH): _upload_routes(), ("POST", _CREATE): limited})
+    client = _gemini(_ctx("gemini", "gemini-4-argon"), wire)
+    with pytest.raises(APIError) as excinfo:
+        client.batch_create([("0_0", {})], tag="t")
+    assert excinfo.value.status_code == 429  # the run waits and tries again
+
+
+def test_gemini_sends_a_part_again_from_the_file_already_uploaded() -> None:
+    gone = _gemini_error(404, "NOT_FOUND", "file gone")
+    wire = _Wire({("POST", _CREATE): [(200, _g_batch("JOB_STATE_PENDING")), gone]})
+    client = _gemini(_ctx("gemini", "gemini-4-argon"), wire)
+    assert client.batch_create_from_file("files/in1", tag="t") == "batches/b1"
+    # Uploaded files live 48 hours: an expired one is uploaded again.
+    assert client.batch_create_from_file("files/in1", tag="t") is None
+
+
+def test_gemini_finds_the_batch_an_interrupted_create_left_behind() -> None:
+    other = _g_batch("BATCH_STATE_RUNNING")
+    other["name"], other["metadata"]["displayName"] = "batches/x", "someone-else"
+    page1 = {"operations": [other], "nextPageToken": "n2"}
+    page2 = {"operations": [_g_batch("BATCH_STATE_PENDING")]}
+    wire = _Wire({("GET", "/v1beta/batches"): [(200, page1), (200, page2)]})
+    client = _gemini(_ctx("gemini", "gemini-4-argon"), wire)
+    since = datetime(2026, 10, 23, 9, 59, tzinfo=UTC)
+    found = client.batch_find("tag-1", request_count=2, since=since, known=set())
+    assert found == ("batches/b1", "files/in1")
+    assert wire.requests[1].url.params["pageToken"] == "n2"
+
+    wire = _Wire({("GET", "/v1beta/batches"): (200, {"operations": []})})
+    assert _gemini(_ctx("gemini", "gemini-4-argon"), wire).batch_find(
+        "tag-1", request_count=2, since=since, known=set()
+    ) is None
+
+
+def test_gemini_batch_that_never_ran_can_go_again() -> None:
+    for state, error in (
+        ("BATCH_STATE_EXPIRED", None),
+        ("BATCH_STATE_FAILED", {"code": 8, "message": "Enqueued tokens limit exceeded"}),
+    ):
+        op = _g_batch(state)
+        if error:
+            op["error"] = error
+        wire = _Wire({("GET", "/v1beta/batches/b1"): (200, op)})
+        result = _gemini(_ctx("gemini", "gemini-4-argon"), wire).batch_state("batches/b1")
+        assert result.ended and result.queue_full and "nothing was charged" in result.failed_reason
+
+    op = _g_batch("BATCH_STATE_FAILED")
+    op["error"] = {"code": 3, "message": "Invalid request in line 1"}
+    wire = _Wire({("GET", "/v1beta/batches/b1"): (200, op)})
+    failed = _gemini(_ctx("gemini", "gemini-4-argon"), wire).batch_state("batches/b1")
+    assert not failed.queue_full and failed.failed_reason == "Invalid request in line 1"
+
+
+def test_gemini_batch_that_no_longer_exists_is_reported_as_gone() -> None:
+    wire = _Wire({("GET", "/v1beta/batches/b1"): _gemini_error(404, "NOT_FOUND", "not found")})
+    client = _gemini(_ctx("gemini", "gemini-4-argon"), wire)
+    with pytest.raises(BatchGone):
+        client.batch_state("batches/b1")
+    with pytest.raises(BatchGone):
+        client.batch_download("batches/b1")
+
+
+def test_gemini_batch_results_are_not_read_before_the_output_file_exists() -> None:
+    wire = _Wire({("GET", "/v1beta/batches/b1"): (200, _g_batch("BATCH_STATE_SUCCEEDED", ok=2))})
+    with pytest.raises(RuntimeError):
+        _gemini(_ctx("gemini", "gemini-4-argon"), wire).batch_download("batches/b1")
+
+
+def test_gemini_one_unreadable_result_line_does_not_cost_the_others() -> None:
+    client = GeminiClient(_ctx("gemini", "gemini-4-argon"), "k")
+    raw = (json.dumps({"key": "a", "response": _gemini_response()}) + "\nnot json\n").encode()
+    assert [k for k, _ in client.batch_parse(raw)] == ["a"]
+
+
+def test_gemini_notices_a_dead_link_without_waiting_out_the_read_timeout() -> None:
+    import socket
+
+    http = GeminiClient(_ctx("gemini", "gemini-4-argon"), "k")._http
+    assert http.timeout.read >= 600 and http.timeout.connect <= 15
+    pool = http._transport._pool
+    options = {(level, name): value for level, name, value in pool._socket_options}
+    assert options[(socket.SOL_SOCKET, socket.SO_KEEPALIVE)] == 1
+    assert options[(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT)] == 60_000
+
+
+def test_gemini_introductory_price_ends_on_december_first() -> None:
+    from datetime import date
+
+    argon = catalog.get_model("gemini", "gemini-4-argon")
+    assert argon.rates(date(2026, 11, 30)) == (2.0, 10.0, 0.10)
+    assert argon.rates(date(2026, 12, 1)) == (4.0, 20.0, 0.20)
+    # Implicit caching: nothing to pay for writing the cache.
+    gemini = catalog.get_provider("gemini")
+    assert gemini.cache_write_mult == gemini.cache_write_mult_batch == 1.0
+
+
+def test_gemini_check_request_carries_the_sheet_and_a_strict_schema() -> None:
+    from carve_api.logo_ai.prompt import build_check_schema, build_check_text
+
+    client = GeminiClient(_ctx("gemini", "gemini-4-argon", flex=True), "k")
+    schema = build_check_schema(numeric_bounds=True)
+    body = client.build_check_request(
+        _JPEG, "Score the boxes.", system_text=build_check_text(_CLASSES), schema=schema
+    )
+    parts = body["contents"][0]["parts"]
+    assert parts[0]["mediaResolution"] == {"level": "MEDIA_RESOLUTION_HIGH"}
+    assert parts[1] == {"text": "Score the boxes."}
+    assert body["generationConfig"]["responseJsonSchema"] == schema
+    assert body["service_tier"] == "flex"

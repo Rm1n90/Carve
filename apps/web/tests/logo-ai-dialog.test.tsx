@@ -32,6 +32,7 @@ vi.mock("@/api/logoAi", async () => {
       config: vi.fn(),
       detect: vi.fn(),
       estimate: vi.fn(),
+      cacheFill: vi.fn(),
       createJob: vi.fn(),
       listJobs: vi.fn(),
       getJob: vi.fn(),
@@ -307,6 +308,63 @@ describe("LogoAiDialog", () => {
       expect.stringContaining("created 2 boxes · 3 mostly hidden left out"),
       expect.anything(),
     );
+  });
+
+  it("offers Gemini with Flex once its key is set", async () => {
+    const base = config();
+    api.config.mockResolvedValue({
+      ...base,
+      providers: [
+        ...base.providers,
+        {
+          id: "gemini",
+          label: "Google Gemini",
+          configured: true,
+          env_var: "GEMINI_API_KEY",
+          supports_flex: true,
+          default_check_model: "gemini-4-argon",
+          default_check_effort: "low",
+          default_model: "gemini-4-argon",
+          models: [
+            {
+              id: "gemini-4-argon", label: "Gemini 4 Argon", blurb: "Leads detection.",
+              efforts: ["low", "medium", "high"], default_effort: "low",
+              input_usd: 2, output_usd: 10, supports_batch: true,
+            },
+          ],
+        },
+      ],
+    });
+    api.detect.mockResolvedValue({
+      annotations: [], annotations_created: 1, below_threshold: 0, mostly_hidden: 0,
+      overwrite_skipped: false, usage: {}, cost_usd: 0.004,
+    });
+    renderDialog();
+    await openDialog();
+
+    const provider = screen.getByTestId("logo-ai-provider") as HTMLSelectElement;
+    expect(Array.from(provider.options).map((o) => o.value)).toEqual(["anthropic", "gemini"]);
+    fireEvent.change(provider, { target: { value: "gemini" } });
+    await waitFor(() =>
+      expect((screen.getByTestId("logo-ai-model") as HTMLSelectElement).value).toBe(
+        "gemini-4-argon",
+      ),
+    );
+    expect((screen.getByTestId("logo-ai-effort") as HTMLSelectElement).value).toBe("low");
+    const flex = screen.getByTestId("logo-ai-flex");
+    expect(flex.closest("label")?.textContent).toContain("if Google Gemini ever serves");
+    fireEvent.click(flex);
+    fireEvent.click(screen.getByTestId("logo-ai-run"));
+
+    await waitFor(() => expect(api.detect).toHaveBeenCalledTimes(1));
+    expect(api.detect.mock.calls[0][1]).toMatchObject({
+      provider: "gemini",
+      model: "gemini-4-argon",
+      effort: "low",
+      flex: true,
+      check_model: "gemini-4-argon",
+      check_effort: "low",
+    });
   });
 
   it("does not offer Batch for a model the provider's batch API refuses", async () => {
@@ -673,6 +731,77 @@ describe("LogoAiDialog", () => {
     const line = await screen.findByTestId("logo-ai-credit-left", undefined, { timeout: 3000 });
     expect(line.textContent).toContain("Credit left: about $0.020");
     expect(line.textContent).toContain("less than this run is estimated to cost");
+  });
+
+  it("makes a prompt under the cache minimum cacheable with the task's own examples", async () => {
+    api.estimate.mockResolvedValue({
+      assets: 3, requests: 3, image_tokens: 3360, prefix_tokens: 1900,
+      prefix_cached: false, min_cache_tokens: 4096, output_tokens: 1500,
+      based_on_requests: 0,
+      cost_realtime_usd: 0.03, cost_flex_usd: null, cost_batch_usd: 0.015,
+    });
+    api.cacheFill.mockResolvedValue({
+      references: [
+        { class_id: "c1", asset_id: "a2", annotation_id: "n1", kind: "bbox", bbox: [10, 10, 70, 50] },
+        { class_id: "c2", asset_id: "a3", annotation_id: "n2", kind: "polygon", bbox: [5, 5, 45, 35] },
+      ],
+      prefix_tokens: 1900, filled_tokens: 4580, min_cache_tokens: 4096,
+      cached: true, message: null,
+    });
+    renderDialog();
+    await openDialog();
+    fireEvent.click(
+      screen.getByTestId("logo-ai-scope-all").querySelector("input") as HTMLInputElement,
+    );
+    const estimate = await screen.findByTestId("logo-ai-estimate", undefined, { timeout: 3000 });
+    await waitFor(() => expect(estimate.textContent).toContain("4,096-token caching minimum"));
+
+    fireEvent.click(screen.getByTestId("logo-ai-fill-cache"));
+    await waitFor(() => expect(api.cacheFill).toHaveBeenCalledTimes(1));
+    expect(api.cacheFill.mock.calls[0][0]).toBe("t1");
+    await waitFor(() =>
+      expect(screen.getByTestId("logo-ai-refs-toggle").textContent).toContain("2/16 picked"),
+    );
+    expect(showToast).toHaveBeenCalledWith(
+      expect.stringContaining("Added 2 reference examples"),
+      expect.objectContaining({ variant: "success" }),
+    );
+    // They go out with the run like examples picked by hand.
+    await waitFor(() => {
+      const body = api.estimate.mock.calls.at(-1)?.[1];
+      expect(body?.references).toEqual([
+        { class_id: "c1", asset_id: "a2", bbox: [10, 10, 70, 50] },
+        { class_id: "c2", asset_id: "a3", bbox: [5, 5, 45, 35] },
+      ]);
+    }, { timeout: 3000 });
+  });
+
+  it("says why when the task has no examples to make the prompt cacheable", async () => {
+    api.estimate.mockResolvedValue({
+      assets: 3, requests: 3, image_tokens: 3360, prefix_tokens: 1900,
+      prefix_cached: false, min_cache_tokens: 4096, output_tokens: 1500,
+      based_on_requests: 0,
+      cost_realtime_usd: 0.03, cost_flex_usd: null, cost_batch_usd: 0.015,
+    });
+    api.cacheFill.mockResolvedValue({
+      references: [], prefix_tokens: 1900, filled_tokens: 1900, min_cache_tokens: 4096,
+      cached: false, message: "This task has no boxes of these classes that make a clear example yet.",
+    });
+    renderDialog();
+    await openDialog();
+    fireEvent.click(
+      screen.getByTestId("logo-ai-scope-all").querySelector("input") as HTMLInputElement,
+    );
+    fireEvent.click(
+      await screen.findByTestId("logo-ai-fill-cache", undefined, { timeout: 3000 }),
+    );
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.stringContaining("no boxes of these classes"),
+        expect.objectContaining({ variant: "warning" }),
+      ),
+    );
+    expect(screen.getByTestId("logo-ai-refs-toggle").textContent).not.toContain("picked");
   });
 
   it("says what a waiting run is waiting for", async () => {

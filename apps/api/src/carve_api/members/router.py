@@ -4,23 +4,32 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from carve_api.api_keys.models import ApiKey
+from carve_api.api_keys.schemas import ApiKeyOut
 from carve_api.audit import service as audit_service
 from carve_api.audit.actions import (
+    API_KEY_REVOKED,
     USER_BLOCKED,
     USER_CREATED,
     USER_DELETED,
+    USER_EMAIL_CHANGED,
     USER_PASSWORD_RESET,
+    USER_RESTORED,
     USER_ROLE_CHANGED,
     USER_SESSIONS_REVOKED,
+    USER_SIGNED_IN,
     USER_UNBLOCKED,
 )
+from carve_api.audit.models import AuditEvent
 from carve_api.auth.models import ADMIN_LEVEL_ROLES, User, UserRole
 from carve_api.auth.schemas import (
     BlockUserIn,
     CreateMemberIn,
+    EmailPatchIn,
+    RemovedMemberOut,
     SetPasswordIn,
     UserOut,
 )
@@ -106,7 +115,36 @@ def list_members(
             .order_by(User.created_at)
         ).scalars()
     )
-    return [UserOut.from_orm_user(u) for u in rows]
+    last = dict(
+        db.execute(
+            select(AuditEvent.actor_id, func.max(AuditEvent.occurred_at))
+            .where(AuditEvent.action == USER_SIGNED_IN)
+            .group_by(AuditEvent.actor_id)
+        ).all()
+    )
+    out = []
+    for u in rows:
+        item = UserOut.from_orm_user(u)
+        item.last_sign_in_at = last.get(u.id)
+        out.append(item)
+    return out
+
+
+@router.get("/removed", response_model=list[RemovedMemberOut])
+def list_removed_members(
+    actor: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+) -> list[RemovedMemberOut]:
+    """Removed (soft-deleted) accounts, newest first. Superadmin-only:
+    they can be restored from here."""
+    require_superadmin(actor)
+    rows = db.execute(
+        select(User).where(User.deleted_at.is_not(None)).order_by(User.deleted_at.desc())
+    ).scalars()
+    return [
+        RemovedMemberOut(id=str(u.id), email=u.email, role=u.role, deleted_at=u.deleted_at)
+        for u in rows
+    ]
 
 
 @router.post(
@@ -132,6 +170,13 @@ def create_member(
     if service.email_exists(payload.email):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="email_taken"
+        )
+    # A removed account keeps its email (the column is unique), so a new
+    # account cannot take it: restore the removed one instead.
+    if _removed_holder(db, payload.email) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="email_belongs_to_removed_member",
         )
     try:
         new_user = service.register(
@@ -336,6 +381,130 @@ def revoke_member_sessions(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.patch("/{user_id}/email", response_model=UserOut)
+def patch_member_email(
+    user_id: uuid.UUID,
+    payload: EmailPatchIn,
+    actor: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+) -> UserOut:
+    """Change the email someone signs in with. Superadmin-only: with
+    single sign-on matching accounts by email, whoever can change an
+    email can hand an account to another person.
+
+    The link to their single sign-on identity is cleared, so their next
+    sign-on links the new address; their password is unchanged.
+    """
+    require_superadmin(actor)
+    target = _target_or_404(db, user_id)
+    _require_can_manage(actor, target)
+    email = str(payload.email).strip()
+    if email == target.email:
+        return UserOut.from_orm_user(target)
+    clash = db.execute(
+        select(User).where(func.lower(User.email) == email.lower(), User.id != target.id)
+    ).scalar_one_or_none()
+    if clash is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="email_belongs_to_removed_member" if clash.deleted_at else "email_taken",
+        )
+    previous = target.email
+    target.email = email
+    target.sso_subject = None
+    audit_service.record(
+        db,
+        actor_id=actor.id,
+        action=USER_EMAIL_CHANGED,
+        target_type="user",
+        target_id=target.id,
+        project_id=None,
+        summary=f"email changed: {previous} → {email}",
+    )
+    db.commit()
+    return UserOut.from_orm_user(target)
+
+
+@router.post("/{user_id}/restore", response_model=UserOut)
+def restore_member(
+    user_id: uuid.UUID,
+    actor: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+) -> UserOut:
+    """Bring back a removed account with its role, password and
+    annotations. Superadmin-only.
+
+    Sessions from before the removal stay dead and its API keys are
+    revoked: whatever it held when it was removed is not trusted again.
+    """
+    require_superadmin(actor)
+    target = db.get(User, user_id)
+    if target is None or target.deleted_at is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
+    target.deleted_at = None
+    AuthService(db).revoke_sessions(target)
+    now = datetime.now(timezone.utc)
+    for key in db.execute(
+        select(ApiKey).where(ApiKey.user_id == target.id, ApiKey.revoked_at.is_(None))
+    ).scalars():
+        key.revoked_at = now
+    audit_service.record(
+        db,
+        actor_id=actor.id,
+        action=USER_RESTORED,
+        target_type="user",
+        target_id=target.id,
+        project_id=None,
+        summary=f"restored {target.email} ({target.role.value})",
+    )
+    db.commit()
+    return UserOut.from_orm_user(target)
+
+
+@router.get("/{user_id}/api-keys", response_model=list[ApiKeyOut])
+def list_member_api_keys(
+    user_id: uuid.UUID,
+    actor: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+) -> list[ApiKeyOut]:
+    """Someone's API keys (never the keys themselves). Superadmin-only."""
+    require_superadmin(actor)
+    target = _target_or_404(db, user_id)
+    rows = db.execute(
+        select(ApiKey).where(ApiKey.user_id == target.id).order_by(ApiKey.created_at.desc())
+    ).scalars()
+    return [ApiKeyOut.from_orm_key(k) for k in rows]
+
+
+@router.delete("/{user_id}/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_member_api_key(
+    user_id: uuid.UUID,
+    key_id: uuid.UUID,
+    actor: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Revoke one of someone's API keys; it stops working at once.
+    Superadmin-only."""
+    require_superadmin(actor)
+    target = _target_or_404(db, user_id)
+    key = db.get(ApiKey, key_id)
+    if key is None or key.user_id != target.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="api_key_not_found")
+    if key.revoked_at is None:
+        key.revoked_at = datetime.now(timezone.utc)
+        audit_service.record(
+            db,
+            actor_id=actor.id,
+            action=API_KEY_REVOKED,
+            target_type="user",
+            target_id=target.id,
+            project_id=None,
+            summary=f"revoked API key {key.name!r} ({key.prefix}…) of {target.email}",
+        )
+        db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ---------------------------------------------------------------------------
 # shared helpers
 # ---------------------------------------------------------------------------
@@ -350,6 +519,15 @@ def _target_or_404(db: Session, user_id: uuid.UUID) -> User:
             status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found"
         )
     return target
+
+
+def _removed_holder(db: Session, email: str) -> User | None:
+    """The removed account holding this email, if any."""
+    return db.execute(
+        select(User).where(
+            func.lower(User.email) == email.strip().lower(), User.deleted_at.is_not(None)
+        )
+    ).scalars().first()
 
 
 def _require_can_manage(actor: User, target: User) -> None:

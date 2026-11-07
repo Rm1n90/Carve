@@ -14,6 +14,8 @@ from carve_api.logo_ai.imaging import (
     image_patches,
     load_image,
     plan_views,
+    reference_crop_size,
+    reference_grid,
     render_reference_crop,
     render_view,
 )
@@ -142,12 +144,30 @@ def test_load_image_flattens_alpha_and_applies_exif_orientation() -> None:
 
 def test_reference_crop_is_small_and_on_the_grid() -> None:
     im = load_image(_jpeg(2000, 1500))
-    crop = render_reference_crop(im, (500, 400, 900, 600), CLAUDE_HI)
+    grid = reference_grid(CLAUDE_HI)
+    crop = render_reference_crop(im, (500, 400, 900, 600), grid)
     with Image.open(BytesIO(crop)) as out:
         assert out.width % 28 == 0 and out.height % 28 == 0
         assert image_patches(out.width, out.height, 28) <= 48
+        assert out.size == reference_crop_size(2000, 1500, (500, 400, 900, 600), grid)
     with pytest.raises(ValueError):
-        render_reference_crop(im, (10, 10, 10, 10), CLAUDE_HI)
+        render_reference_crop(im, (10, 10, 10, 10), grid)
+
+
+def test_gemini_reference_crops_keep_their_detail() -> None:
+    # Gemini bills a reference the same 560 tokens at any size, so it is
+    # not shrunk to the few dozen patches other providers get.
+    argon = catalog.get_model("gemini", "gemini-4-argon")
+    im = load_image(_jpeg(2000, 1500))
+    with Image.open(BytesIO(render_reference_crop(
+        im, (500, 400, 800, 500), catalog.reference_grid_for(argon)
+    ))) as out:
+        assert max(out.size) == 368  # the 300 px mark plus its margin, whole
+    with Image.open(BytesIO(render_reference_crop(
+        im, (100, 100, 1100, 400), catalog.reference_grid_for(argon)
+    ))) as out:
+        assert max(out.size) <= 384
+    assert catalog.reference_tokens(argon, 368, 112) == 560
 
 
 def test_check_sheet_has_one_numbered_tile_per_box() -> None:

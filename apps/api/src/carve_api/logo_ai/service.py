@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from io import BytesIO
 
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
-from carve_api.annotations.models import Annotation
-from carve_api.assets.models import Asset, Frame
+from carve_api.annotations.models import Annotation, AnnotationKind
+from carve_api.assets.models import Asset, AssetKind, Frame
 from carve_api.errors import AppError
 from carve_api.inference.autoannotate import fetch_asset_bytes
 from carve_api.logo_ai import catalog
@@ -31,6 +33,7 @@ from carve_api.logo_ai.imaging import (
     image_patches,
     load_image,
     plan_views,
+    reference_crop_size,
     render_check_sheet,
     render_reference_crop,
     render_view,
@@ -211,11 +214,12 @@ def build_context(
         classes=classes,
         references=references,
         system_text=build_system_text(classes, coords, options.instructions),
-        schema=build_schema(len(classes), coords, numeric_bounds=provider.id == catalog.OPENAI),
+        schema=build_schema(len(classes), coords, numeric_bounds=provider.numeric_bounds),
         flex=bool(options.flex and provider.supports_flex),
         coords=coords,
         check_model=check_model,
         check_effort=check_effort,
+        detail=options.detail,
     )
 
 
@@ -251,7 +255,7 @@ def _build_references(
             raise LogoAiBadRequest("reference bbox must be [x1, y1, x2, y2]")
         try:
             jpeg = render_reference_crop(
-                images[aid], tuple(float(v) for v in bbox), model.grid
+                images[aid], tuple(float(v) for v in bbox), catalog.reference_grid_for(model)
             )
         except ValueError as exc:
             raise LogoAiBadRequest(str(exc)) from exc
@@ -444,7 +448,7 @@ def check_detections(
     checker = client.checker()
     check_model = ctx.check_model or ctx.model
     system_text = build_check_text(ctx.classes, options.check_instructions)
-    schema = build_check_schema(numeric_bounds=ctx.provider.id == catalog.OPENAI)
+    schema = build_check_schema(numeric_bounds=ctx.provider.numeric_bounds)
     kept: list[Detection] = []
     for start in range(0, len(candidates), CHECK_MAX_TILES):
         chunk = candidates[start : start + CHECK_MAX_TILES]
@@ -545,7 +549,8 @@ def estimate(session: Session, task: Task, options: RunOptions, assets: list[Ass
     """
     ctx = build_context(session, task, options)
     model, provider = ctx.model, ctx.provider
-    patch = model.grid.patch
+    # Gemini bills an image by the resolution asked for, not its size.
+    fixed = model.tokens_per_image(options.detail)
 
     requests = 0
     image_tokens = 0.0
@@ -555,13 +560,14 @@ def estimate(session: Session, task: Task, options: RunOptions, assets: list[Ass
         w, h = asset.width or 1920, asset.height or 1080
         for v in views_for(ctx, options, w, h):
             requests += 1
-            image_tokens += image_patches(v.out_w, v.out_h, patch) * model.image_token_multiplier
+            image_tokens += (
+                fixed
+                if fixed is not None
+                else image_patches(v.out_w, v.out_h, model.grid.patch)
+                * model.image_token_multiplier
+            )
 
-    ref_tokens = sum(
-        image_patches(*Image.open(BytesIO(r.jpeg)).size, patch) * model.image_token_multiplier
-        for r in ctx.references
-    )
-    prefix_tokens = int(len(ctx.system_text) * _TOKENS_PER_CHAR + ref_tokens)
+    prefix_tokens = prompt_prefix_tokens(ctx)
     prefix_cached = prefix_tokens >= model.min_cache_tokens
     measured = measured_output_per_request(session, task.id, model.id, ctx.effort)
     per_request = (
@@ -608,3 +614,232 @@ def estimate(session: Session, task: Task, options: RunOptions, assets: list[Ass
         ),
         "cost_batch_usd": cost(batch=True, discounted=True),
     }
+
+
+def prompt_prefix_tokens(ctx: RunContext) -> int:
+    """Estimated tokens of what every request of a run starts with, the
+    part a provider caches: the prompt text and the reference crops."""
+    refs = sum(
+        catalog.reference_tokens(ctx.model, *Image.open(BytesIO(r.jpeg)).size)
+        for r in ctx.references
+    )
+    return int(len(ctx.system_text) * _TOKENS_PER_CHAR + refs)
+
+
+# ---------------------------------------------------------------------------
+# Filling the prompt up to the cache minimum
+# ---------------------------------------------------------------------------
+#
+# A provider caches the shared start of a run's requests only from a
+# minimum length on (4,096 tokens on Gemini 4 Argon); below it every
+# request pays for the whole prompt. The one thing that lengthens the
+# prompt and helps the answer rather than diluting it is more reference
+# examples: crops of confirmed instances of the classes being detected.
+# So the gap is filled with the task's clearest boxes of those classes.
+
+# Filled to this much over the minimum: the token count is an estimate,
+# and a prompt that turns out a few tokens short is not cached at all.
+_CACHE_FILL_MARGIN = 1.1
+# What makes a box a usable example: large enough to make out, whole
+# (not cut by the image edge, not mostly hidden), not most of the
+# frame, and, when a model drew it, one the model was sure of.
+_EXAMPLE_MIN_SIDE = 24
+_EXAMPLE_MIN_VISIBLE = 90
+_EXAMPLE_MIN_CONFIDENCE = 0.85
+_EXAMPLE_MAX_AREA = 0.5
+# Boxes looked at per class, best first.
+_EXAMPLE_CANDIDATES = 400
+
+
+@dataclass
+class _Example:
+    annotation_id: uuid.UUID
+    class_id: str
+    asset_id: uuid.UUID
+    kind: str
+    bbox: tuple[float, float, float, float]
+    tokens: float
+
+
+def _xyxy(kind: AnnotationKind, geometry: dict) -> tuple[float, float, float, float] | None:
+    try:
+        if kind == AnnotationKind.bbox:
+            x, y, w, h = (float(geometry[k]) for k in ("x", "y", "w", "h"))
+            return x, y, x + w, y + h
+        xs = [float(p[0]) for p in geometry["points"]]
+        ys = [float(p[1]) for p in geometry["points"]]
+        return min(xs), min(ys), max(xs), max(ys)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def _bbox_key(asset_id: object, bbox: tuple[float, ...] | list[float]) -> tuple:
+    return str(asset_id), tuple(round(float(v)) for v in bbox)
+
+
+def _examples(
+    session: Session, task: Task, ctx: RunContext, taken: set[tuple]
+) -> dict[str, list[_Example]]:
+    """Per class, the boxes that make good examples, best first.
+
+    Best is: reviewed and accepted, then drawn by a person, then a
+    model's box by its confidence; within that, larger first (a crop is
+    sharper the more pixels the mark has, up to the crop's own size).
+    Each image gives one example before any gives a second: crops from
+    different images show the model more of how a mark varies.
+    """
+    model = ctx.model
+    grid = catalog.reference_grid_for(model)
+    tier = case(
+        (Annotation.status == "accepted", 0),
+        (Annotation.confidence.is_(None), 1),
+        else_=2,
+    )
+    out: dict[str, list[_Example]] = {}
+    for cls in ctx.classes:
+        rows = session.execute(
+            select(
+                Annotation.id, Annotation.kind, Annotation.geometry,
+                Annotation.confidence, Annotation.visible, tier,
+                Asset.id, Asset.width, Asset.height,
+            )
+            .join(Frame, Frame.id == Annotation.frame_id)
+            .join(Asset, Asset.id == Frame.asset_id)
+            .where(
+                Annotation.task_id == task.id,
+                Annotation.class_id == uuid.UUID(cls.class_id),
+                Annotation.kind.in_((AnnotationKind.bbox, AnnotationKind.polygon)),
+                Annotation.status != "rejected",
+                # References are read from an asset's first frame.
+                Asset.task_id == task.id,
+                Asset.kind == AssetKind.image,
+            )
+            .order_by(tier, Annotation.confidence.desc().nulls_last(), Annotation.id)
+            .limit(_EXAMPLE_CANDIDATES)
+        ).all()
+        ranked: list[tuple[tuple, _Example]] = []
+        for ann_id, kind, geometry, confidence, visible, rank, asset_id, width, height in rows:
+            box = _xyxy(kind, geometry)
+            if box is None or _bbox_key(asset_id, box) in taken:
+                continue
+            x1, y1, x2, y2 = box
+            bw, bh = x2 - x1, y2 - y1
+            if min(bw, bh) < _EXAMPLE_MIN_SIDE:
+                continue
+            if visible is not None and visible < _EXAMPLE_MIN_VISIBLE:
+                continue
+            if rank == 2 and (confidence or 0.0) < _EXAMPLE_MIN_CONFIDENCE:
+                continue
+            w, h = width or int(math.ceil(x2 + bw)), height or int(math.ceil(y2 + bh))
+            if x1 <= 1 or y1 <= 1 or x2 >= w - 1 or y2 >= h - 1:
+                continue
+            if bw * bh > _EXAMPLE_MAX_AREA * w * h:
+                continue
+            try:
+                size = reference_crop_size(w, h, box, grid)
+            except ValueError:
+                continue
+            example = _Example(
+                annotation_id=ann_id,
+                class_id=cls.class_id,
+                asset_id=asset_id,
+                kind=getattr(kind, "value", kind),
+                bbox=box,
+                tokens=catalog.reference_tokens(model, *size),
+            )
+            sharpness = min(math.sqrt(bw * bh), 128.0)
+            ranked.append(((rank, -sharpness, -(confidence or 1.0)), example))
+        ranked.sort(key=lambda r: r[0])
+        seen: set[uuid.UUID] = set()
+        first, again = [], []
+        for _, e in ranked:
+            (again if e.asset_id in seen else first).append(e)
+            seen.add(e.asset_id)
+        out[cls.class_id] = first + again
+    return out
+
+
+def fill_cache_with_references(session: Session, task: Task, options: RunOptions) -> dict:
+    """Reference examples to add so that the run's shared prompt reaches
+    the model's cache minimum, and what the prompt comes to with them.
+
+    Spends nothing: it only reads the task's boxes. The examples are
+    spread over the classes, those with the fewest references first.
+    When the task does not hold enough usable boxes to reach the
+    minimum, nothing is suggested: examples that leave the prompt short
+    of it would be paid for in full on every image.
+    """
+    ctx = build_context(session, task, options)
+    model = ctx.model
+    have = prompt_prefix_tokens(ctx)
+    goal = math.ceil(model.min_cache_tokens * _CACHE_FILL_MARGIN)
+    out = {
+        "references": [],
+        "prefix_tokens": have,
+        "filled_tokens": have,
+        "min_cache_tokens": model.min_cache_tokens,
+        "cached": have >= model.min_cache_tokens,
+        "message": None,
+    }
+    if have >= goal:
+        return out
+
+    room = MAX_REFERENCES - len(options.references)
+    taken = {_bbox_key(r.get("asset_id"), r.get("bbox") or ()) for r in options.references}
+    pools = _examples(session, task, ctx, taken)
+    held = Counter(ctx.classes[r.class_index].class_id for r in ctx.references)
+    order = sorted(
+        range(len(ctx.classes)), key=lambda i: (held[ctx.classes[i].class_id], i)
+    )
+    picked: list[_Example] = []
+    filled = float(have)
+    while filled < goal and len(picked) < room:
+        took = False
+        for i in order:
+            pool = pools[ctx.classes[i].class_id]
+            if filled >= goal or len(picked) >= room or not pool:
+                continue
+            example = pool.pop(0)
+            picked.append(example)
+            filled += example.tokens
+            took = True
+        if not took:
+            break
+
+    if filled < goal:
+        if len(picked) >= room:
+            out["message"] = (
+                f"Even {MAX_REFERENCES} reference examples do not bring the prompt "
+                f"to the {model.min_cache_tokens:,}-token minimum {model.label} "
+                "caches from. Longer class descriptions would."
+            )
+        elif not picked:
+            out["message"] = (
+                "This task has no boxes of these classes that make a clear example "
+                "yet: whole, at least 24 px, and drawn by a person or found with high "
+                "confidence. Draw or accept a few, then try again."
+            )
+        else:
+            short = goal - filled
+            out["message"] = (
+                f"This task has only {len(picked)} clear example"
+                f"{'' if len(picked) == 1 else 's'} of these classes, about "
+                f"{int(short):,} tokens short of the "
+                f"{model.min_cache_tokens:,}-token minimum. Add a few more boxes, "
+                "or longer class descriptions, then try again."
+            )
+        return out
+
+    out["references"] = [
+        {
+            "class_id": e.class_id,
+            "asset_id": str(e.asset_id),
+            "annotation_id": str(e.annotation_id),
+            "kind": e.kind,
+            "bbox": [round(v, 2) for v in e.bbox],
+        }
+        for e in picked
+    ]
+    out["filled_tokens"] = int(filled)
+    out["cached"] = True
+    return out

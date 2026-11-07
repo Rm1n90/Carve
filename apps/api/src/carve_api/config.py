@@ -1,8 +1,15 @@
 # Armin Mehri — mehri.armin@gmail.com
+import logging
+import os
+import threading
+import time
 from functools import lru_cache
+from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -41,10 +48,15 @@ class Settings(BaseSettings):
     sam_model: str = Field(alias="SAM_MODEL", default="sam2.1-tiny")
 
     # Logo AI — logo detection through hosted vision LLMs. A provider is
-    # offered in the editor only when its key is set; with neither set
-    # the feature is off. Images are sent to the chosen provider.
+    # offered in the editor only when its key is set; with none set the
+    # feature is off. Images are sent to the chosen provider. These and
+    # the other settings in ``app_settings.registry`` can also be saved
+    # by a superadmin in Settings → Configuration, which takes precedence.
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    # A Gemini API key (Google AI Studio, paid tier: Gemini 4 Argon has
+    # no free tier).
+    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     # Optional. An OpenAI *admin* key, used only to read the
     # organization's cost report and spend limit for the Billing tab.
     openai_admin_key: str = Field(default="", alias="OPENAI_ADMIN_KEY")
@@ -60,6 +72,22 @@ class Settings(BaseSettings):
     # When true, members may also use it on tasks that grant them the
     # AI tools (``tasks.gpu_access_for_members``).
     logo_ai_allow_members: bool = Field(default=False, alias="LOGO_AI_ALLOW_MEMBERS")
+
+    # Who below admin may use each AI tool: "admins" (nobody), "opened_tasks"
+    # (on tasks whose "AI tools for members" switch is on) or "all_tasks".
+    # Set in Settings → Configuration → Member access.
+    members_sam: str = Field(default="opened_tasks", alias="MEMBERS_SAM")
+    members_my_model: str = Field(default="opened_tasks", alias="MEMBERS_MY_MODEL")
+    members_yoloe: str = Field(default="opened_tasks", alias="MEMBERS_YOLOE")
+    # Unset: follows the older LOGO_AI_ALLOW_MEMBERS (false → admins only,
+    # true → tasks opened for members).
+    members_logo_ai: str = Field(default="", alias="MEMBERS_LOGO_AI")
+
+    @model_validator(mode="after")
+    def _logo_ai_members_default(self) -> "Settings":
+        if not self.members_logo_ai:
+            self.members_logo_ai = "opened_tasks" if self.logo_ai_allow_members else "admins"
+        return self
 
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
     api_env: str = Field(default="development", alias="API_ENV")
@@ -136,5 +164,96 @@ def get_enabled_sso_providers() -> list[str]:
 
 
 @lru_cache
-def get_settings() -> Settings:
+def get_env_settings() -> Settings:
+    """The settings from the environment alone: what the server starts
+    with. Infrastructure (the database, storage, secrets that sign
+    tokens) is read from here, never from the app's own table."""
     return Settings()  # type: ignore[call-arg]
+
+
+# Saved values are read again at most this often, so a change made in
+# one API process reaches the other processes and the worker within it.
+OVERRIDES_TTL_SECONDS = 5.0
+_overrides_lock = threading.Lock()
+_cached: tuple[float, Settings] | None = None
+_refreshing = False
+# Bumped by ``cache_clear()``: a background read that started before it
+# must not put back what it read.
+_generation = 0
+# The last overrides read successfully: a database blip keeps them in
+# force rather than falling back to an (outdated) key in the environment
+# in the middle of a paid run.
+_last_overrides: dict[str, Any] = {}
+
+
+def _reload(generation: int) -> Settings:
+    """Read the saved values and lay them over the environment's. Called
+    with ``_overrides_lock`` held."""
+    global _cached, _last_overrides
+    base = get_env_settings()
+    try:
+        from carve_api.app_settings.service import read_overrides
+
+        _last_overrides = read_overrides()
+    except Exception:  # noqa: BLE001 — e.g. before the table exists
+        log.warning("app_settings.read_failed", exc_info=True)
+    settings = base.model_copy(update=_last_overrides) if _last_overrides else base
+    if generation == _generation:
+        _cached = (time.monotonic(), settings)
+    return settings
+
+
+def _refresh(generation: int) -> None:
+    global _refreshing
+    try:
+        with _overrides_lock:
+            _reload(generation)
+    finally:
+        _refreshing = False
+
+
+def get_settings() -> Settings:
+    """The environment's settings with the values a superadmin saved in
+    the app (``app_settings``) laid over them.
+
+    Only the first call waits for the database. After that a caller
+    always gets the settings in hand at once; once they are older than
+    ``OVERRIDES_TTL_SECONDS`` a background thread reads them again, so
+    no request or worker thread ever waits on that query."""
+    global _refreshing
+    cached = _cached
+    if cached is not None:
+        if time.monotonic() - cached[0] >= OVERRIDES_TTL_SECONDS and not _refreshing:
+            _refreshing = True
+            threading.Thread(
+                target=_refresh, args=(_generation,), name="settings-refresh", daemon=True
+            ).start()
+        return cached[1]
+    with _overrides_lock:
+        if _cached is not None:
+            return _cached[1]
+        return _reload(_generation)
+
+
+def _clear_settings_cache() -> None:
+    """Re-read the environment and the saved values on the next call."""
+    global _cached, _generation
+    _generation += 1
+    get_env_settings.cache_clear()
+    _cached = None
+
+
+def _after_fork_in_child() -> None:
+    # A lock or a refresh flag held by another thread at the moment of a
+    # fork would stay held for ever in the child.
+    global _overrides_lock, _refreshing
+    _overrides_lock = threading.Lock()
+    _refreshing = False
+
+
+os.register_at_fork(after_in_child=_after_fork_in_child)
+
+
+# Tests change the environment and then call ``get_settings.cache_clear()``;
+# saving a setting calls it so the saving process sees the value at once.
+get_settings.cache_clear = _clear_settings_cache  # type: ignore[attr-defined]

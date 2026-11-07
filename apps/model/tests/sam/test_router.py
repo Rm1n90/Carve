@@ -367,3 +367,23 @@ def test_text_masks_on_a_large_image_are_made_small_and_scaled_up() -> None:
     # The state is the image's again for whatever runs next.
     assert (Adapter._state["original_height"], Adapter._state["original_width"]) == (h, w)
     assert Adapter._processor.confidence_threshold == 0.5
+
+
+def test_boxes_to_polygons_gives_a_big_object_a_second_look_with_its_own_mask() -> None:
+    mask = np.zeros((24, 32), dtype=np.uint8)
+    mask[2:22, 2:30] = 1
+
+    class _WithLogits(_FakePredictor):
+        def predict(self, point_coords, point_labels, multimask_output=True, box=None, mask_input=None):
+            m, s, _ = super().predict(point_coords, point_labels, multimask_output, box, mask_input)
+            return m, s, np.zeros((1, 8, 8), dtype=np.float32)
+
+    stub = _WithLogits(mask, 0.8)
+    predictor_mod.set_test_predictor(stub)
+    router_mod._reset_for_test()
+    client = TestClient(create_app())
+    r = client.post("/sam/boxes-to-polygons", json={
+        "image_b64": _png_b64(), "boxes": [[2, 2, 30, 22]], "modes": ["object"], "zoom": False,
+    })
+    assert r.status_code == 200, r.text
+    assert [c["had_mask_input"] for c in stub.predict_calls] == [False, False, True]

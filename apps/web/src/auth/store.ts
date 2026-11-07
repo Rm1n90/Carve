@@ -27,6 +27,8 @@ interface AuthState {
   user: User | null;
   setSession: (s: Session) => void;
   setAccessToken: (t: string) => void;
+  /** Replace the signed-in user, e.g. after their role changed. */
+  setUser: (u: User) => void;
   clear: () => void;
 }
 
@@ -52,6 +54,10 @@ export const useAuth = create<AuthState>((set) => ({
   setAccessToken: (t) => {
     localStorage.setItem(ACCESS_KEY, t);
     set({ accessToken: t });
+  },
+  setUser: (u) => {
+    localStorage.setItem(USER_KEY, JSON.stringify(u));
+    set({ user: u });
   },
   clear: () => {
     localStorage.removeItem(ACCESS_KEY);

@@ -832,6 +832,32 @@ def test_poll_waits_then_ingests_exactly_once(db_session, provider, queue) -> No
     assert len(_annotations(db_session, s.task.id)) == 3
 
 
+def test_a_gemini_batch_run_lands_its_boxes_where_gemini_put_them(
+    db_session, provider, queue
+) -> None:
+    # Gemini answers [ymin, xmin, ymax, xmax] on 0..1000: rows 4.9-9.8%
+    # and columns 4.9-14.7% of the 392x196 image.
+    box = answer((49, 49, 98, 147))
+    provider.script = [ok(box)]
+    for cid in ("0_0", "1_0"):
+        provider.batch_answers[f"batch-1:{cid}"] = ok(box)
+    s = seed(db_session, n_assets=3)
+    job = s.job(db_session, delivery=DELIVERY_BATCH, provider="gemini", model="gemini-4-argon")
+    jobs_mod.run_logo_ai_batch_submit(str(job.id))
+    job = _reload(db_session, job)
+    assert job.status == STATUS_SUBMITTED
+    provider.batch_ended["batch-1"] = True
+    jobs_mod.poll_logo_ai_batch(str(job.id))
+    job = _reload(db_session, job)
+    assert job.status == STATUS_COMPLETED and job.annotations_created == 3
+    for ann in _annotations(db_session, s.task.id):
+        g = ann.geometry
+        assert g["x"] == pytest.approx(0.049 * 392, abs=2)
+        assert g["y"] == pytest.approx(0.049 * 196, abs=2)
+        assert g["w"] == pytest.approx(0.098 * 392, abs=2)
+        assert g["h"] == pytest.approx(0.049 * 196, abs=2)
+
+
 def test_batch_results_are_billed_at_the_batch_rate(db_session, provider, queue) -> None:
     _, job = _submitted(db_session, provider, n_assets=2)
     preflight_cost = job.cost_usd
@@ -1597,8 +1623,14 @@ def test_a_model_with_its_own_coordinate_system_is_read_in_it(db_session, provid
     assert round(grid["x"]) != 50  # 49/999 of the width, not 49 pixels
 
 
+_FLEX_MODELS = [
+    ("openai", "gpt-6.1-sol"), ("openai", "gpt-6.1-terra"), ("gemini", "gemini-4-argon"),
+]
+
+
+@pytest.mark.parametrize(("provider_id", "model_id"), _FLEX_MODELS)
 def test_a_flex_run_waits_for_flex_capacity_instead_of_paying_full_price(
-    db_session, provider, queue, monkeypatch
+    db_session, provider, queue, monkeypatch, provider_id, model_id
 ) -> None:
     monkeypatch.setattr(jobs_mod.time, "sleep", lambda _s: None)
     s = seed(db_session, n_assets=3)
@@ -1606,7 +1638,7 @@ def test_a_flex_run_waits_for_flex_capacity_instead_of_paying_full_price(
     # other hits "no Flex capacity" three times before it clears — more
     # retries than an ordinary passing error gets.
     provider.script = [ok(), ok(), *[ProviderResult(error="rate_limited")] * 3, ok()]
-    job = s.job(db_session, provider="openai", model="gpt-6.1-sol", flex=True)
+    job = s.job(db_session, provider=provider_id, model=model_id, flex=True)
 
     jobs_mod.run_logo_ai_realtime(str(job.id))
 
@@ -1616,15 +1648,16 @@ def test_a_flex_run_waits_for_flex_capacity_instead_of_paying_full_price(
     assert len(provider.sent) == 6
 
 
+@pytest.mark.parametrize(("provider_id", "model_id"), _FLEX_MODELS)
 def test_a_flex_run_stops_the_moment_a_request_is_served_at_full_price(
-    db_session, provider, queue, monkeypatch
+    db_session, provider, queue, monkeypatch, provider_id, model_id
 ) -> None:
     monkeypatch.setattr(jobs_mod, "REALTIME_CHUNK_ASSETS", 100)
     s = seed(db_session, n_assets=12)
     full = ok()
     full.discounted = False  # the provider says: served as standard
     provider.script = [ok(), ok(), full]
-    job = s.job(db_session, provider="openai", model="gpt-6.1-sol", flex=True)
+    job = s.job(db_session, provider=provider_id, model=model_id, flex=True)
 
     jobs_mod.run_logo_ai_realtime(str(job.id))
 

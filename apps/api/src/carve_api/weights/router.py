@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 from carve_api.auth.models import User
 from carve_api.deps import get_current_admin_user, get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.permissions import is_admin, require_data_movement, require_gpu_task
+from carve_api.permissions import (
+    TOOL_MY_MODEL,
+    is_admin,
+    require_data_movement,
+    require_gpu_task,
+)
 from carve_api.projects.models import Class, ProjectMember
 from carve_api.projects.service import (
     ProjectService,
@@ -364,7 +369,7 @@ def mapping_suggestions(
         # the My Model predict popover, so it follows the same GPU gate
         # as predict itself: a member on an ungranted task has no reason
         # to reach it.
-        task = require_gpu_task(db, user, task_id)
+        task = require_gpu_task(db, user, task_id, tool=TOOL_MY_MODEL)
     except AppError as exc:
         raise _http(exc) from exc
     # ...and the weight must actually be visible from THIS task's

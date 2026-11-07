@@ -188,7 +188,7 @@ _PASSING_ERRORS = frozenset(
         "provider_error_409",
     }
 )
-# SDK errors (same names in both SDKs) that mean no answer came at all.
+# Errors (same names in every adapter) that mean no answer came at all.
 _UNREACHABLE = frozenset({"APIConnectionError", "APITimeoutError"})
 _REASONS = {
     OUT_OF_CREDIT: (

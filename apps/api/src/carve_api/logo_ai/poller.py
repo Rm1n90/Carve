@@ -44,6 +44,9 @@ def _tick() -> None:
     )
 
     s = get_settings()
+    # Without a key there can be no batch to poll.
+    if not (s.anthropic_api_key or s.openai_api_key or s.gemini_api_key):
+        return
     conn = Redis(host=s.redis_host, port=s.redis_port, socket_connect_timeout=2)
     # One API process does the scheduling per tick, however many run.
     if not conn.set(_LOCK_KEY, "1", nx=True, ex=_TICK_SECONDS - 1):
@@ -67,12 +70,10 @@ def _loop(stop: threading.Event) -> None:
 
 
 def start_poller() -> None:
-    """Start the thread once per process. No-op when no provider is
-    configured: without a key there can be no batch to poll."""
+    """Start the thread once per process. It runs even with no provider
+    key yet (ticks are skipped until one is set): keys can be saved in
+    the app at any time, without a restart."""
     global _started
-    s = get_settings()
-    if not (s.anthropic_api_key or s.openai_api_key):
-        return
     with _start_lock:
         if _started:
             return

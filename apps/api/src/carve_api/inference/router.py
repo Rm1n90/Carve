@@ -42,7 +42,12 @@ from carve_api.inference.sam import (
 )
 # v3.27 — legacy /sam-track/* import removed. Tracking now uses
 # /assets/{id}/track/* in assets/router.py (SAM 3.1 multiplex only).
-from carve_api.permissions import require_gpu_task
+from carve_api.permissions import (
+    TOOL_MY_MODEL,
+    TOOL_SAM,
+    TOOL_YOLOE,
+    require_gpu_task,
+)
 from carve_api.projects.service import (
     _MUTATING_ROLES,
     require_project_role,
@@ -137,7 +142,7 @@ def auto_annotate(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        task = require_gpu_task(db, user, asset.task_id)
+        task = require_gpu_task(db, user, asset.task_id, tool=TOOL_MY_MODEL)
         # Plan-13 Phase 7 Task 2 — auto-annotate is a mutation; viewers 403.
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
@@ -258,7 +263,7 @@ def enqueue_batch_auto_annotate(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        task = require_gpu_task(db, user, task_id)
+        task = require_gpu_task(db, user, task_id, tool=TOOL_MY_MODEL)
         # Plan-13 Phase 7 Task 2 — batch auto-annotate is a mutation; viewers 403.
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
@@ -413,7 +418,7 @@ def get_batch_progress(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_MY_MODEL)
     except AppError as exc:
         raise _http(exc) from exc
     return read_progress(_redis_client_or_none(), job_id)
@@ -458,7 +463,7 @@ def enqueue_sam_auto_text_batch(
     dialog (BatchProgressDialog) works for both engines.
     """
     try:
-        task = require_gpu_task(db, user, task_id)
+        task = require_gpu_task(db, user, task_id, tool=TOOL_SAM)
         # Plan-13 Phase 7 Task 2 — SAM auto-text batch is a mutation; viewers 403.
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
@@ -538,7 +543,7 @@ def get_sam_auto_text_batch_progress(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     return read_progress(_redis_client_or_none(), job_id)
@@ -560,7 +565,7 @@ def cancel_auto_annotate_batch(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_MY_MODEL)
     except AppError as exc:
         raise _http(exc) from exc
     client = _redis_client_or_none()
@@ -596,7 +601,7 @@ def cancel_sam_auto_text_batch(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     client = _redis_client_or_none()
@@ -789,7 +794,7 @@ def sam_auto_text_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        task = require_gpu_task(db, user, asset.task_id)
+        task = require_gpu_task(db, user, asset.task_id, tool=TOOL_SAM)
         # Plan-13 Phase 7 Task 2 — sync SAM auto-text mutates annotations; viewers 403.
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
@@ -869,7 +874,7 @@ def sam_auto_visual_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        task = require_gpu_task(db, user, asset.task_id)
+        task = require_gpu_task(db, user, asset.task_id, tool=TOOL_SAM)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
@@ -925,7 +930,7 @@ def enqueue_sam_auto_visual_batch(
 ) -> dict:
     """Enqueue a multi-asset SAM 3.1 visual-prompt batch."""
     try:
-        task = require_gpu_task(db, user, task_id)
+        task = require_gpu_task(db, user, task_id, tool=TOOL_SAM)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
@@ -995,7 +1000,7 @@ def get_sam_auto_visual_batch_progress(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     return read_progress(_redis_client_or_none(), job_id)
@@ -1012,7 +1017,7 @@ def cancel_sam_auto_visual_batch(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     client = _redis_client_or_none()
@@ -1038,7 +1043,7 @@ def sam_encode_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_gpu_task(db, user, asset.task_id)
+        require_gpu_task(db, user, asset.task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     try:
@@ -1079,7 +1084,7 @@ def sam_boxes_to_polygons_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_gpu_task(db, user, asset.task_id)
+        require_gpu_task(db, user, asset.task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     try:
@@ -1106,7 +1111,7 @@ def sam_decode_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_gpu_task(db, user, asset.task_id)
+        require_gpu_task(db, user, asset.task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     try:
@@ -1138,7 +1143,7 @@ def sam_text_prompt_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_gpu_task(db, user, asset.task_id)
+        require_gpu_task(db, user, asset.task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     try:
@@ -1169,7 +1174,7 @@ def sam_box_prompt_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_gpu_task(db, user, asset.task_id)
+        require_gpu_task(db, user, asset.task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     if len(payload.boxes) != len(payload.box_labels):
@@ -1382,7 +1387,7 @@ def yoloe_text_predict_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        task = require_gpu_task(db, user, asset.task_id)
+        task = require_gpu_task(db, user, asset.task_id, tool=TOOL_YOLOE)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
@@ -1437,7 +1442,7 @@ def yoloe_visual_predict_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        task = require_gpu_task(db, user, asset.task_id)
+        task = require_gpu_task(db, user, asset.task_id, tool=TOOL_YOLOE)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
@@ -1466,7 +1471,7 @@ def yoloe_visual_predict_endpoint(
                     detail=f"source_asset_not_found:{s.asset_id}",
                 )
             try:
-                require_gpu_task(db, user, source_asset.task_id)
+                require_gpu_task(db, user, source_asset.task_id, tool=TOOL_YOLOE)
             except AppError as exc:
                 raise _http(exc) from exc
             refer_bytes = _resolve_yoloe_asset_bytes(source_asset, None)
@@ -1500,7 +1505,7 @@ def yoloe_visual_predict_endpoint(
                     status_code=404, detail="refer_asset_not_found",
                 )
             try:
-                require_gpu_task(db, user, refer_asset.task_id)
+                require_gpu_task(db, user, refer_asset.task_id, tool=TOOL_YOLOE)
             except AppError as exc:
                 raise _http(exc) from exc
             refer_bytes = _resolve_yoloe_asset_bytes(refer_asset, None)
@@ -1566,7 +1571,7 @@ def yoloe_prompt_free_predict_endpoint(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        task = require_gpu_task(db, user, asset.task_id)
+        task = require_gpu_task(db, user, asset.task_id, tool=TOOL_YOLOE)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
@@ -1642,7 +1647,7 @@ def enqueue_yoloe_batch(
     from carve_api.inference.batch import build_yoloe_payload, run_yoloe_batch
 
     try:
-        task = require_gpu_task(db, user, task_id)
+        task = require_gpu_task(db, user, task_id, tool=TOOL_YOLOE)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
@@ -1695,7 +1700,7 @@ def get_yoloe_batch_progress(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_YOLOE)
     except AppError as exc:
         raise _http(exc) from exc
     return read_progress(_redis_client_or_none(), job_id)
@@ -1712,7 +1717,7 @@ def cancel_yoloe_batch(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_YOLOE)
     except AppError as exc:
         raise _http(exc) from exc
     client = _redis_client_or_none()

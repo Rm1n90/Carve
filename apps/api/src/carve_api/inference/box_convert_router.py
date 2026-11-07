@@ -24,7 +24,10 @@ from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
 from carve_api.inference import box_convert_batch as bc
 from carve_api.inference.batch import _b2s, progress_key, read_cursor
-from carve_api.permissions import require_gpu_task
+from carve_api.permissions import (
+    TOOL_SAM,
+    require_gpu_task,
+)
 from carve_api.projects.service import _MUTATING_ROLES, require_project_role
 
 log = logging.getLogger(__name__)
@@ -75,7 +78,7 @@ def get_box_convert(
     are not counted while a run goes (polled every few seconds, and a
     count over a million boxes is not free)."""
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     client = _redis()
@@ -95,7 +98,7 @@ def start_box_convert(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        task = require_gpu_task(db, user, task_id)
+        task = require_gpu_task(db, user, task_id, tool=TOOL_SAM)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
@@ -162,7 +165,7 @@ def cancel_box_convert(
 ) -> dict:
     """Stops after the image in work, which is saved; nothing is undone."""
     try:
-        task = require_gpu_task(db, user, task_id)
+        task = require_gpu_task(db, user, task_id, tool=TOOL_SAM)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
@@ -185,7 +188,7 @@ def resume_box_convert(
 ) -> dict:
     """Go on from the image a stopped, failed or stalled run had reached."""
     try:
-        task = require_gpu_task(db, user, task_id)
+        task = require_gpu_task(db, user, task_id, tool=TOOL_SAM)
         require_project_role(db, user, task.project_id, _MUTATING_ROLES)
     except AppError as exc:
         raise _http(exc) from exc
@@ -229,7 +232,7 @@ def box_convert_log(
     """The converted images, newest first. ``flagged``: a box SAM found
     nothing in, or scored low; ``errors``: images that failed."""
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     client = _redis()
@@ -255,7 +258,7 @@ def shapes_preview(
 ) -> Response:
     """The image with its annotations drawn on it (JPEG)."""
     try:
-        require_gpu_task(db, user, task_id)
+        require_gpu_task(db, user, task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     asset = db.get(Asset, asset_id)

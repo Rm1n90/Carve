@@ -24,6 +24,10 @@ class AuditEventOut(BaseModel):
     project_id: uuid.UUID | None = None
     summary: str
     metadata: dict[str, Any] | None = Field(default=None)
+    # Filled by the workspace log only, so the page can name people and
+    # projects (including removed ones) without a second request.
+    actor_email: str | None = None
+    project_name: str | None = None
 
     @classmethod
     def from_orm_event(cls, ev: Any) -> "AuditEventOut":

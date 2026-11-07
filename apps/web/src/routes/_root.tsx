@@ -5,6 +5,7 @@ import { AppShell, AppShellBleed } from "@/components/AppShell";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAuth } from "@/auth/store";
 import { bootstrapStatus } from "@/auth/api";
+import { useSessionUserSync } from "@/auth/useSessionUserSync";
 import { FirstRunWizard } from "@/pages/FirstRunWizard";
 
 const EDITOR_PATH_RX = /^\/projects\/[^/]+\/tasks\/[^/]+\/assets\/[^/]+$/;
@@ -19,6 +20,7 @@ function RootComponent() {
   const onAuthPage =
     path === "/login" || path === "/register" || path.startsWith("/invite/");
   const onEditorPage = EDITOR_PATH_RX.test(path);
+  useSessionUserSync(Boolean(token) && !onAuthPage);
 
   const bs = useQuery({
     queryKey: ["auth", "bootstrap-status"],

@@ -2,6 +2,7 @@
 """HTTP surface: config, single-image detect, estimate, job lifecycle."""
 
 import json
+import math
 import uuid
 
 import pytest
@@ -69,14 +70,32 @@ def test_config_lists_providers_and_what_is_configured(db_session) -> None:
     ).json()
     assert body["allowed"] is True
     by_id = {p["id"]: p for p in body["providers"]}
-    assert set(by_id) == {"anthropic", "openai"}
+    assert set(by_id) == {"anthropic", "openai", "gemini"}
     # No keys in the test environment.
-    assert not by_id["anthropic"]["configured"] and not by_id["openai"]["configured"]
+    assert not any(p["configured"] for p in by_id.values())
     assert by_id["anthropic"]["default_model"] == "claude-opus-5-5"
     assert by_id["openai"]["supports_flex"] and not by_id["anthropic"]["supports_flex"]
+    gemini = by_id["gemini"]
+    assert gemini["env_var"] == "GEMINI_API_KEY" and gemini["supports_flex"]
+    (argon,) = gemini["models"]
+    assert argon["id"] == "gemini-4-argon" and argon["supports_batch"]
+    assert argon["efforts"] == ["low", "medium", "high"]
     haiku = next(m for m in by_id["anthropic"]["models"] if m["id"] == "claude-haiku-4-5")
     assert haiku["efforts"] == [] and haiku["default_effort"] is None
     assert body["default_detail"] in body["details"]
+
+
+def test_config_shows_a_gemini_key_from_the_environment(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    get_settings.cache_clear()
+    try:
+        s = seed(db_session)
+        body = _client(db_session, s).get("/inference/logo-ai/config").json()
+        by_id = {p["id"]: p for p in body["providers"]}
+        assert by_id["gemini"]["configured"] and not by_id["openai"]["configured"]
+    finally:
+        monkeypatch.delenv("GEMINI_API_KEY")
+        get_settings.cache_clear()
 
 
 def test_config_reflects_keys_from_the_environment(db_session, monkeypatch) -> None:
@@ -245,6 +264,25 @@ def test_estimate_prices_realtime_above_batch(db_session, provider) -> None:
     assert subset["assets"] == 1
 
 
+def test_gemini_estimate_bills_each_image_by_resolution(db_session, provider) -> None:
+    s = seed(db_session)
+    params = s.params(provider="gemini", model="gemini-4-argon", flex=True)
+    body = _client(db_session, s).post(
+        f"/tasks/{s.task.id}/logo-ai/estimate", json=params
+    ).json()
+    # A fixed 1,120 tokens per image at the standard detail, whatever its
+    # size; 2,240 at high.
+    assert body["image_tokens"] == 3 * 1120
+    high = _client(db_session, s).post(
+        f"/tasks/{s.task.id}/logo-ai/estimate", json={**params, "detail": "high"}
+    ).json()
+    assert high["image_tokens"] == 3 * 2240
+    assert body["min_cache_tokens"] == 4096
+    # Flex and batch are both half price.
+    assert body["cost_flex_usd"] == pytest.approx(body["cost_realtime_usd"] / 2, rel=0.01)
+    assert body["cost_batch_usd"] < body["cost_realtime_usd"]
+
+
 def test_estimate_learns_from_the_tasks_own_runs(db_session, provider) -> None:
     s = seed(db_session)
     client = _client(db_session, s)
@@ -267,6 +305,135 @@ def test_estimate_learns_from_the_tasks_own_runs(db_session, provider) -> None:
         f"/tasks/{s.task.id}/logo-ai/estimate", json=s.params(effort="high")
     ).json()
     assert other["based_on_requests"] == 0
+
+
+# --- filling the prompt up to the cache minimum ------------------------------
+
+
+def _box(db, s: Seeded, i: int, xywh, *, cls=0, confidence=None, visible=None,
+         status="proposed", kind="bbox") -> Annotation:
+    x, y, w, h = xywh
+    geometry = (
+        {"kind": "bbox", "x": x, "y": y, "w": w, "h": h}
+        if kind == "bbox"
+        else {"kind": "polygon", "points": [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]}
+    )
+    a = Annotation(
+        task_id=s.task.id, frame_id=s.frames[i].id, class_id=s.classes[cls].id, kind=kind,
+        geometry=geometry, confidence=confidence, visible=visible, status=status,
+    )
+    db.add(a)
+    db.flush()
+    return a
+
+
+def _gemini(s: Seeded, **overrides) -> dict:
+    return s.params(provider="gemini", model="gemini-4-argon", flex=True, **overrides)
+
+
+def test_cache_fill_adds_the_clearest_examples_until_gemini_caches(db_session, provider) -> None:
+    s = seed(db_session)
+    drawn = [_box(db_session, s, i, (40, 40, 60, 40)) for i in range(3)]
+    found = [
+        _box(db_session, s, i, (200, 60, 50, 40), confidence=0.95, visible=100, kind="polygon")
+        for i in range(3)
+    ]
+    unusable = [
+        _box(db_session, s, 0, (300, 100, 40, 40), confidence=0.5),        # unsure
+        _box(db_session, s, 0, (100, 150, 10, 10)),                          # too small
+        _box(db_session, s, 1, (0, 50, 60, 40)),                             # cut by the edge
+        _box(db_session, s, 1, (300, 100, 40, 40), confidence=0.95, visible=40),  # mostly hidden
+        _box(db_session, s, 2, (300, 100, 40, 40), status="rejected"),
+        _box(db_session, s, 2, (300, 20, 40, 40), cls=1),                    # not being detected
+    ]
+    db_session.commit()
+    client = _client(db_session, s)
+    params = _gemini(s, prompts=[{"class_id": str(s.classes[0].id), "prompt": ""}])
+
+    before = client.post(f"/tasks/{s.task.id}/logo-ai/estimate", json=params).json()
+    assert before["prefix_cached"] is False and before["min_cache_tokens"] == 4096
+
+    r = client.post(f"/tasks/{s.task.id}/logo-ai/cache-fill", json=params)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cached"] is True and body["message"] is None
+    assert body["prefix_tokens"] == before["prefix_tokens"]
+    # 560 tokens each, just enough for the minimum with a margin.
+    refs = body["references"]
+    need = math.ceil((4096 * 1.1 - body["prefix_tokens"]) / 560)
+    assert len(refs) == need and body["filled_tokens"] >= 4096
+    picked = {r["annotation_id"] for r in refs}
+    assert not picked & {str(a.id) for a in unusable}
+    # People's boxes first, one per image, then the model's surest.
+    assert {r["annotation_id"] for r in refs[:3]} == {str(a.id) for a in drawn}
+    assert picked <= {str(a.id) for a in drawn + found}
+    assert refs[3]["kind"] == "polygon" and refs[3]["bbox"] == [200, 60, 250, 100]
+
+    # Picked in the dialog, they make the estimate cached.
+    with_refs = {**params, "references": [
+        {"class_id": r["class_id"], "asset_id": r["asset_id"], "bbox": r["bbox"]} for r in refs
+    ]}
+    after = client.post(f"/tasks/{s.task.id}/logo-ai/estimate", json=with_refs).json()
+    assert after["prefix_cached"] is True
+    assert after["prefix_tokens"] == body["filled_tokens"]
+    assert provider.sent == []
+
+
+def test_cache_fill_spreads_examples_over_the_classes(db_session, provider) -> None:
+    s = seed(db_session)
+    for i in range(3):
+        _box(db_session, s, i, (40, 40, 60, 40), cls=0)
+        _box(db_session, s, i, (200, 40, 60, 40), cls=1)
+    db_session.commit()
+    already = {"class_id": str(s.classes[0].id), "asset_id": str(s.assets[0].id),
+               "bbox": [40, 40, 100, 80]}
+    params = _gemini(s, prompts=[
+        {"class_id": str(c.id), "prompt": ""} for c in s.classes
+    ], references=[already])
+    body = _client(db_session, s).post(
+        f"/tasks/{s.task.id}/logo-ai/cache-fill", json=params
+    ).json()
+    classes = [r["class_id"] for r in body["references"]]
+    # The class without a reference goes first, then they alternate.
+    assert classes[:2] == [str(s.classes[1].id), str(s.classes[0].id)]
+    assert abs(classes.count(classes[0]) - classes.count(classes[1])) <= 1
+    # The box already picked is not suggested again.
+    assert not any(
+        r["asset_id"] == already["asset_id"] and r["bbox"] == already["bbox"]
+        for r in body["references"]
+    )
+
+
+def test_cache_fill_says_why_when_the_task_cannot_reach_the_minimum(db_session, provider) -> None:
+    s = seed(db_session)
+    client = _client(db_session, s)
+    url = f"/tasks/{s.task.id}/logo-ai/cache-fill"
+    params = _gemini(s, prompts=[{"class_id": str(s.classes[0].id), "prompt": ""}])
+
+    empty = client.post(url, json=params).json()
+    assert empty["references"] == [] and empty["cached"] is False
+    assert "no boxes of these classes" in empty["message"]
+
+    # Two examples are not enough: none are suggested, since examples
+    # that leave the prompt short would be paid in full on every image.
+    _box(db_session, s, 0, (40, 40, 60, 40))
+    _box(db_session, s, 1, (40, 40, 60, 40))
+    db_session.commit()
+    short = client.post(url, json=params).json()
+    assert short["references"] == [] and short["cached"] is False
+    assert "only 2 clear examples" in short["message"]
+
+
+def test_cache_fill_leaves_a_cached_prompt_alone(db_session, provider) -> None:
+    s = seed(db_session)
+    _box(db_session, s, 0, (40, 40, 60, 40))
+    db_session.commit()
+    body = _client(db_session, s).post(
+        f"/tasks/{s.task.id}/logo-ai/cache-fill", json=s.params()
+    ).json()
+    # Claude caches from 512 tokens; the default text alone is over that.
+    assert body["cached"] is True and body["references"] == []
+    assert body["filled_tokens"] == body["prefix_tokens"] >= 512
 
 
 # --- jobs -------------------------------------------------------------------
@@ -542,6 +709,7 @@ def test_batch_is_refused_for_a_model_the_batch_api_does_not_take(db_session, pr
     openai = next(p for p in cfg["providers"] if p["id"] == "openai")
     by_id = {m["id"]: m["supports_batch"] for m in openai["models"]}
     assert by_id["gpt-6.1-sol"] is False and by_id["gpt-6-sol"] is True
+    assert by_id["gpt-6.1-terra"] is True
 
 
 # --- the task's own instructions ----------------------------------------------

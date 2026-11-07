@@ -3,6 +3,7 @@ import { Navigate, createRoute } from "@tanstack/react-router";
 import { rootRoute } from "./_root";
 import { RequireAuth } from "@/auth/RequireAuth";
 import { RequireAdmin } from "@/auth/RequireAdmin";
+import { RequireSuperadmin } from "@/auth/RequireSuperadmin";
 import {
   SettingsApiKeysPage,
   SettingsMembersPage,
@@ -10,6 +11,9 @@ import {
   SettingsWorkspacePage,
 } from "@/pages/SettingsPages";
 import { SettingsShortcutsPage } from "@/pages/SettingsShortcutsPage";
+import { SettingsActivityPage } from "@/pages/SettingsActivityPage";
+import { SettingsAnnotationCountsPage } from "@/pages/SettingsAnnotationCountsPage";
+import { SettingsConfigurationPage } from "@/pages/SettingsConfigurationPage";
 import { ModelsYoloPage, ModelsSamPage, TrashPage } from "@/pages/Phase2Pages";
 import { AboutPage } from "@/pages/AboutPage";
 import { SystemPage } from "@/pages/SystemPage";
@@ -87,6 +91,39 @@ export const settingsJobsRoute = createRoute({
     <RequireAdmin>
       <JobsPage />
     </RequireAdmin>
+  ),
+});
+
+// Annotation counts by person, superadmin only.
+export const settingsAnnotationCountsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/annotation-counts",
+  component: () => (
+    <RequireSuperadmin>
+      <SettingsAnnotationCountsPage />
+    </RequireSuperadmin>
+  ),
+});
+
+// Workspace activity log (audit), superadmin only.
+export const settingsActivityRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/activity",
+  component: () => (
+    <RequireSuperadmin>
+      <SettingsActivityPage />
+    </RequireSuperadmin>
+  ),
+});
+
+// Provider API keys and the runtime settings that used to need .env.
+export const settingsConfigurationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/configuration",
+  component: () => (
+    <RequireSuperadmin>
+      <SettingsConfigurationPage />
+    </RequireSuperadmin>
   ),
 });
 

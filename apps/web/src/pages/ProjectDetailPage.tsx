@@ -850,9 +850,9 @@ function TaskRowMenu({
             </DropdownMenu.Item>
           )}
           {/* Outsourcing hardening — the admin's per-task escape hatch.
-              Off by default: members annotate manually and cannot reach
-              My Model / Auto-Annotate / Smart Find / SAM. Turning it on
-              hands the GPU tools to this one task only. */}
+              Off by default. Turning it on opens this task to members for
+              every AI tool the superadmin set to "on tasks opened for
+              them" (Settings → Configuration → Member access). */}
           {onToggleGpuAccess && (
             <DropdownMenu.Item
               data-testid={`project-detail-task-gpu-access-${task.id}`}
@@ -870,7 +870,10 @@ function TaskRowMenu({
               ) : (
                 <Lock className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
               )}
-              <span className="flex-1">
+              <span
+                className="flex-1"
+                title="Opens this task for the AI tools set to 'on tasks opened for them' in Settings → Configuration → Member access."
+              >
                 {task.gpu_access_for_members
                   ? "Disable AI tools for members"
                   : "Enable AI tools for members"}

@@ -1,7 +1,7 @@
 // Armin Mehri — mehri.armin@gmail.com
 /**
  * Logo AI — logo detection (bounding boxes only) through a hosted
- * vision LLM (Anthropic or OpenAI).
+ * vision LLM (Anthropic, OpenAI or Google Gemini).
  *
  * "This image" runs synchronously. "All assets" / "Range" start a run
  * on the server, either realtime or through the provider's batch API
@@ -55,6 +55,7 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { ScopePicker } from "@/components/annotation/ScopePicker";
 import {
   VisualReferencePicker,
+  pickKey,
   type VisualPick,
 } from "@/components/annotation/VisualReferencePicker";
 import { LogoAiBilling } from "@/components/annotation/LogoAiBilling";
@@ -684,6 +685,55 @@ export function LogoAiDialog({
     },
   });
 
+  // ---- cacheable prompt ----------------------------------------------------
+  // A model caches the shared start of a run's requests only from a
+  // minimum length on (4,096 tokens for Gemini). Below it, the server
+  // picks enough of the task's clearest boxes as reference examples to
+  // get there: they lengthen the prompt with something that helps the
+  // model, not filler. They land in the picker, to be checked or removed.
+  const fillCache = useMutation({
+    mutationFn: () => {
+      if (!taskId || !runBody) throw new Error("nothing to run");
+      return logoAiApi.cacheFill(taskId, runBody);
+    },
+    onSuccess: (res) => {
+      if (res.references.length === 0) {
+        showToast(res.message ?? "The shared prompt is already cached.", {
+          variant: res.cached ? "info" : "warning",
+          duration: 9000,
+        });
+        return;
+      }
+      setPicks((prev) => {
+        const next = { ...prev };
+        for (const r of res.references) {
+          const cls = classes.find((c) => c.id === r.class_id);
+          next[pickKey(r.asset_id, r.annotation_id)] = {
+            assetId: r.asset_id,
+            annotationId: r.annotation_id,
+            classId: r.class_id,
+            className: cls?.name ?? "<unmapped>",
+            color: cls?.color ?? "#9ca3af",
+            sourceKind: r.kind,
+            geometry: { kind: "bbox", xyxy: r.bbox },
+          };
+        }
+        return next;
+      });
+      setShowRefs(true);
+      const n = res.references.length;
+      showToast(
+        `Added ${n} reference example${n === 1 ? "" : "s"} from this task's clearest boxes. ` +
+          `The shared prompt is now about ${res.filled_tokens.toLocaleString()} tokens, ` +
+          "so it is cached. Check them under Reference examples.",
+        { variant: "success", duration: 8000 },
+      );
+    },
+    onError: (err) => {
+      showToast(`Could not add examples: ${errorMessage(err)}`, { variant: "error" });
+    },
+  });
+
   // Hidden until the server says it is usable here (see file header).
   if (!available) return null;
 
@@ -1307,8 +1357,8 @@ export function LogoAiDialog({
                     />
                     Flex pricing: 50% off, slower responses, for detection and the
                     double-check alike. Never sent at the standard price: with no Flex
-                    capacity the run waits and retries, and if OpenAI ever serves a request
-                    at standard anyway the run stops at once.
+                    capacity the run waits and retries, and if {provider.label} ever serves a
+                    request at standard anyway the run stops at once.
                   </label>
                 )}
                 {scope !== "this" && (
@@ -1363,8 +1413,26 @@ export function LogoAiDialog({
                           {" "}The run shows its actual cost as it goes.
                           {estimate.prefix_cached
                             ? " The shared prompt is cached and re-read at the cache rate."
-                            : ` The shared prompt is under this model's ${estimate.min_cache_tokens}-token caching minimum, so it is billed in full each time.`}
+                            : ` The shared prompt (about ${estimate.prefix_tokens.toLocaleString()} tokens) is under this model's ${estimate.min_cache_tokens.toLocaleString()}-token caching minimum, so it is billed in full each time.`}
                         </div>
+                        {!estimate.prefix_cached && (
+                          <div className="flex items-center gap-2 pt-1">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              disabled={fillCache.isPending}
+                              onClick={() => fillCache.mutate()}
+                              data-testid="logo-ai-fill-cache"
+                            >
+                              {fillCache.isPending ? "Adding examples…" : "Make it cacheable"}
+                            </Button>
+                            <span className="text-[10.5px] text-[color:var(--text-tertiary)]">
+                              Adds just enough of this task's clearest boxes as reference
+                              examples: the prompt grows with pictures of the logos, not
+                              filler.
+                            </span>
+                          </div>
+                        )}
                         {creditLeft != null && (
                           <div
                             data-testid="logo-ai-credit-left"

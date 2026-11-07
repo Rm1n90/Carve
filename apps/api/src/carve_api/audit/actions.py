@@ -39,3 +39,14 @@ USER_SESSIONS_REVOKED: str = "user.sessions_revoked"
 
 PROJECT_SUSPENDED: str = "project.suspended"
 PROJECT_UNSUSPENDED: str = "project.unsuspended"
+
+# --- app settings (alembic 0048) -------------------------------------------
+SETTING_UPDATED: str = "setting.updated"
+SETTING_CLEARED: str = "setting.cleared"
+
+# --- superadmin: sign-ins, accounts, keys, backups (no migration) ----------
+USER_SIGNED_IN: str = "user.signed_in"
+USER_EMAIL_CHANGED: str = "user.email_changed"
+USER_RESTORED: str = "user.restored"
+API_KEY_REVOKED: str = "api_key.revoked"
+BACKUP_REQUESTED: str = "backup.requested"

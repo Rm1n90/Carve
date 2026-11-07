@@ -47,7 +47,8 @@ import { SamVariantSwitcher } from "@/components/annotation/SamVariantSwitcher";
 import { AutoAnnotateDialog } from "@/components/annotation/AutoAnnotateDialog";
 import { YoloeDialog } from "@/components/annotation/YoloeDialog";
 import { LogoAiDialog } from "@/components/annotation/LogoAiDialog";
-import { hasAdminAuthority, useTaskGpuAccess } from "@/auth/capabilities";
+import { hasAdminAuthority } from "@/auth/capabilities";
+import { useAiToolAccess } from "@/auth/aiAccess";
 import { FrameExtractDialog } from "@/components/annotation/FrameExtractDialog";
 import { useFilter } from "@/state/annotationFilter";
 import { hasMeaningfulRules } from "@/lib/annotation-filter";
@@ -2794,9 +2795,10 @@ export function EditorToolbar({
   });
   const me = useAuth((s) => s.user);
   // Outsourcing hardening — every GPU-backed control in this toolbar
-  // (SAM tool + mode + auto-apply, My Model, Auto-Annotate, Smart Find)
-  // is hidden unless the actor is a workspace admin or an admin has
-  // granted this specific task. The API refuses the same calls, so a
+  // (SAM tool + mode + auto-apply + SAM 3 auto-annotate, My Model, Smart
+  // Find) is hidden unless the actor is a workspace admin or the
+  // superadmin's Member access setting for that tool lets members use it
+  // here (on every task, or on tasks an admin opened for members). The API refuses the same calls, so a
   // member who reaches them another way still gets a 403 — this only
   // keeps dead controls off screen. The manual tools (bbox, polygon,
   // mask brush, tag) are never touched: members are here to annotate.
@@ -2805,7 +2807,7 @@ export function EditorToolbar({
   // editor page already holds it, and a null/loading task resolves to
   // "no access" for members, so the AI controls never flash in before
   // the grant is known.
-  const gpuAllowed = useTaskGpuAccess(task);
+  const ai = useAiToolAccess(task);
   const canPersistSamDefault = Boolean(
     me
       && samPersistProjectQ.data
@@ -2968,7 +2970,7 @@ export function EditorToolbar({
 
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
-      {TOOLS.filter((t) => gpuAllowed || t.name !== "sam").map((t) => (
+      {TOOLS.filter((t) => ai.sam || t.name !== "sam").map((t) => (
         <ToolButton
           key={t.name}
           active={active === t.name}
@@ -2982,7 +2984,7 @@ export function EditorToolbar({
 
       <span aria-hidden className="mx-1 h-5 w-px bg-[var(--glass-border-strong)]" />
 
-      {gpuAllowed && (
+      {ai.sam && (
         <>
           <SamModelPicker
             projectId={projectId}
@@ -3047,21 +3049,21 @@ export function EditorToolbar({
         onRetry={onSave}
       />
 
-      {/* Outsourcing hardening — the My Model / Auto-Annotate / Smart
-          Find trio is the GPU surface members must not reach. All three
-          disappear together so the toolbar reads as a coherent
-          manual-annotation tool rather than a crippled AI one. */}
-      {gpuAllowed && (
+      {/* Outsourcing hardening — My Model, the SAM 3 auto-annotate and
+          Smart Find each follow their own Member access setting, so a
+          member sees only the tools they may use here. */}
+      {ai.my_model && (
+        <YoloPredictButton
+          ref={predictRef}
+          projectId={projectId}
+          taskId={taskId}
+          assetId={assetId}
+          classes={classesProp ?? []}
+          onAfter={onAfterYoloPredict}
+        />
+      )}
+      {ai.sam && (
         <>
-          <YoloPredictButton
-            ref={predictRef}
-            projectId={projectId}
-            taskId={taskId}
-            assetId={assetId}
-            classes={classesProp ?? []}
-            onAfter={onAfterYoloPredict}
-          />
-
           {/* v3.8 Phase 3.5 — Auto-annotate (SAM 3 text). Lives next to
               the YOLO predict button so users have one consistent place
               for "let the model help me". */}
@@ -3071,7 +3073,10 @@ export function EditorToolbar({
             classes={classesProp ?? []}
             onSuccess={onAfterYoloPredict}
           />
-
+        </>
+      )}
+      {ai.yoloe && (
+        <>
           {/* v3.23 — YOLOE: Real-Time Seeing Anything. Three modes
               (text / visual / prompt-free), supports both current asset
               and all assets in task. The dialog is capability-gated and
@@ -3085,11 +3090,10 @@ export function EditorToolbar({
         </>
       )}
 
-      {/* Logo AI — logo detection through a hosted vision LLM. Not a
-          GPU tool, so it sits outside the gate above: it bills per
-          image and has its own server-side permission (admins, or
-          members where the deployment opts in). The dialog asks the
-          server and renders nothing when it is not usable here. */}
+      {/* Logo AI — logo detection through a hosted vision LLM. It bills
+          per image and has its own Member access setting; the dialog
+          asks the server and renders nothing when it is not usable
+          here. */}
       <LogoAiDialog
         assetId={assetId ?? null}
         taskId={taskId}

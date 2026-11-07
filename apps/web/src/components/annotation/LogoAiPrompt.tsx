@@ -47,6 +47,7 @@ function Editor({
   onReset,
   fixed,
   minCacheChars,
+  alsoCounts,
   maxChars,
   testId,
 }: {
@@ -59,6 +60,8 @@ function Editor({
   onReset: () => void;
   fixed: string;
   minCacheChars: number;
+  /** What else is in the cached part, after the text. */
+  alsoCounts: string;
   maxChars: number;
   testId: string;
 }) {
@@ -99,8 +102,8 @@ function Editor({
         </span>
         {chars > 0 && chars < minCacheChars && (
           <span data-testid={`${testId}-short`} className="text-[color:var(--warning)]">
-            Under about 1,024 tokens the provider does not cache it: every image then pays
-            for the whole text.
+            On its own this is under the {Math.round(minCacheChars / 4.3).toLocaleString()}{" "}
+            tokens this model caches from. {alsoCounts}
           </span>
         )}
       </div>
@@ -280,6 +283,7 @@ export function LogoAiPrompt({ taskId, providerId, modelId, onClose }: LogoAiPro
           onReset={() => setInstructions(saved.default_instructions)}
           fixed={saved.format_preview}
           minCacheChars={saved.cache_min_chars}
+          alsoCounts="The class list, its descriptions and any reference examples count too: a run's cost estimate says whether it is cached, and can add examples to get there."
           maxChars={saved.max_chars}
           testId="logo-ai-prompt-instructions"
         />
@@ -293,6 +297,7 @@ export function LogoAiPrompt({ taskId, providerId, modelId, onClose }: LogoAiPro
           onReset={() => setCheckInstructions(saved.default_check_instructions)}
           fixed={saved.check_format_preview}
           minCacheChars={saved.cache_min_chars}
+          alsoCounts="The class list and its descriptions count too; below the minimum, every image pays for the whole text."
           maxChars={saved.max_chars}
           testId="logo-ai-prompt-check"
         />

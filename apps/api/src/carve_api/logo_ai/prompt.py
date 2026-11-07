@@ -5,7 +5,7 @@ The prompt is split where it changes:
 
 * **Stable prefix** — the annotation rubric, the target classes and the
   optional reference crops. Identical for every request of a run, so
-  both providers cache it and bill re-reads at 5–10% of the input
+  the providers cache it and bill re-reads at 5–10% of the input
   price. Nothing request-specific may leak into it: one differing byte
   and the cache never hits.
 * **Per-request suffix** — the image to annotate and one line giving
@@ -23,14 +23,16 @@ cached its length is nearly free after the first request. Keep it above
 the providers' minimum cacheable prefix (512 tokens on current Claude
 models, 1,024 on OpenAI) even for a single class with no description:
 below the minimum nothing is cached and every request pays for the
-whole prompt at the full input rate.
+whole prompt at the full input rate. Gemini 4 Argon caches from 4,096
+tokens only, which the default text alone (about 2,000) does not reach;
+class descriptions and reference crops count towards it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from carve_api.logo_ai.catalog import COORDS_GRID999, COORDS_PIXEL
+from carve_api.logo_ai.catalog import COORDS_BOX1000, COORDS_GRID999, COORDS_PIXEL
 
 DEFAULT_INSTRUCTIONS = """\
 You are annotating images for a logo-detection training set. Your boxes are \
@@ -194,6 +196,13 @@ _COORDS_TEXT = {
         "whatever the aspect ratio. `x1, y1` is the box's top-left corner and "
         "`x2, y2` its bottom-right corner, so x1 < x2 and y1 < y2."
     ),
+    COORDS_BOX1000: (
+        "Each box is given as `ymin, xmin, ymax, xmax`, integers normalised "
+        "to 0 to 1000 over the image as provided: x = 0 is the left edge and "
+        "x = 1000 the right edge, y = 0 the top edge and y = 1000 the bottom "
+        "edge, independently per axis whatever the aspect ratio. So ymin < "
+        "ymax and xmin < xmax, and the vertical coordinates come first."
+    ),
 }
 
 # A row is positional to keep the answer short: the JSON is billed as
@@ -213,6 +222,23 @@ _ROW_TEXT = {
         "`[2, 412, 96, 530, 141, 95, 100]`."
     ),
 }
+# The same rows with the box in Gemini's own order.
+_ROW_TEXT_BOX1000 = {
+    False: (
+        "`[ymin, xmin, ymax, xmax, confidence, visible]`, for example "
+        "`[88, 214, 131, 276, 95, 100]`."
+    ),
+    True: (
+        "`[label, ymin, xmin, ymax, xmax, confidence, visible]`, where `label` "
+        "is the number of the target class below, for example "
+        "`[2, 88, 214, 131, 276, 95, 100]`."
+    ),
+}
+
+
+def _row_text(coords: str, multi_class: bool) -> str:
+    table = _ROW_TEXT_BOX1000 if coords == COORDS_BOX1000 else _ROW_TEXT
+    return table[multi_class]
 
 REFERENCE_INTRO = (
     "Reference examples. Each crop below shows one confirmed instance of a "
@@ -260,7 +286,7 @@ def build_system_text(
         + "\n\n"
         + _FORMAT.format(
             coords=_COORDS_TEXT[coords],
-            row=_ROW_TEXT[len(classes) > 1],
+            row=_row_text(coords, len(classes) > 1),
             classes="\n".join(lines),
         )
     )
@@ -270,7 +296,7 @@ def format_preview(coords: str, *, multi_class: bool = False) -> str:
     """The fixed part as shown next to the editor, classes left open."""
     return _FORMAT.format(
         coords=_COORDS_TEXT[coords],
-        row=_ROW_TEXT[multi_class],
+        row=_row_text(coords, multi_class),
         classes="(the classes chosen for the run, numbered, with their descriptions)",
     )
 
@@ -296,18 +322,19 @@ def build_request_text(width: int, height: int, *, is_tile: bool, coords: str) -
 def build_schema(n_classes: int, coords: str, *, numeric_bounds: bool) -> dict:
     """Strict JSON schema for the answer: a list of integer rows.
 
-    Kept to keywords both providers' constrained decoders accept.
-    ``numeric_bounds`` adds the row length and value range. OpenAI
-    enforces them; Anthropic rejects a request that carries them, so
+    Kept to keywords every provider's constrained decoder accepts.
+    ``numeric_bounds`` adds the row length and value range. OpenAI and
+    Gemini take them; Anthropic rejects a request that carries them, so
     there the row shape rests on the prompt and is checked when parsed.
     """
     row: dict = {"type": "array", "items": {"type": "integer"}}
     if numeric_bounds:
         row["minItems"] = row["maxItems"] = row_length(n_classes)
-        if coords == COORDS_GRID999:
-            # Every field fits: coordinates 0-999, percentages 0-100,
-            # labels 1-100.
-            row["items"] = {"type": "integer", "minimum": 0, "maximum": 999}
+        if coords in (COORDS_GRID999, COORDS_BOX1000):
+            # Every field fits: coordinates 0-999 (0-1000), percentages
+            # 0-100, labels 1-100.
+            top = 1000 if coords == COORDS_BOX1000 else 999
+            row["items"] = {"type": "integer", "minimum": 0, "maximum": top}
     return {
         "type": "object",
         "properties": {"detections": {"type": "array", "items": row}},

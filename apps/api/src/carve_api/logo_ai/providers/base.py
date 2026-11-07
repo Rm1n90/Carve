@@ -47,18 +47,33 @@ BILLING_CODES = frozenset(
 )
 
 
+# Wording that says the account cannot pay, where the provider has no
+# code for it: Anthropic answers 400 "Your credit balance is too low ...";
+# Gemini's prepaid billing answers 429 RESOURCE_EXHAUSTED, like a rate
+# limit, saying its credits are used up.
+_OUT_OF_CREDIT_WORDS = (
+    "credit balance is too low",
+    "prepayment",
+    "prepaid",
+    "credits are depleted",
+    "credit balance",
+    "billing account",
+)
+
+
 def is_out_of_credit(exc: Exception) -> bool:
-    """Whether an SDK error says the account cannot pay: by its error
-    code where the provider gives one, by its wording where it does not
-    (Anthropic answers 400 "Your credit balance is too low ...")."""
+    """Whether a provider error says the account cannot pay: by its
+    error code where the provider gives one, by its wording where it
+    does not."""
     code = getattr(exc, "code", None)
     body = getattr(exc, "body", None)
     if isinstance(body, dict):
         inner = body.get("error") if isinstance(body.get("error"), dict) else body
         code = code or inner.get("code") or inner.get("type")
-    if code in BILLING_CODES:
+    if isinstance(code, str) and code in BILLING_CODES:
         return True
-    return "credit balance is too low" in api_error_message(exc).lower()
+    message = api_error_message(exc).lower()
+    return any(words in message for words in _OUT_OF_CREDIT_WORDS)
 
 
 def live_connection_transport():  # noqa: ANN201 — httpx2.HTTPTransport
@@ -100,7 +115,7 @@ def api_error_message(exc: Exception) -> str:
     """The provider's own words for an SDK error, without the status
     line and body dump the SDKs wrap around it.
 
-    Both SDKs expose the decoded error body: Anthropic as
+    Each adapter exposes the decoded error body: Anthropic and Gemini as
     ``{"error": {"message": ...}}``, OpenAI as ``{"message": ...}``.
     """
     body = getattr(exc, "body", None)
@@ -171,11 +186,12 @@ class Usage:
         write_mult = (
             provider.cache_write_mult_batch if batch else provider.cache_write_mult
         )
+        input_usd, output_usd, cache_read_usd = model.rates()
         usd = (
-            self.input_tokens * model.input_usd
-            + self.cache_read_tokens * model.cache_read_usd
-            + self.cache_write_tokens * model.input_usd * write_mult
-            + self.output_tokens * model.output_usd
+            self.input_tokens * input_usd
+            + self.cache_read_tokens * cache_read_usd
+            + self.cache_write_tokens * input_usd * write_mult
+            + self.output_tokens * output_usd
         ) / 1_000_000
         return usd * (provider.batch_discount if discounted else 1.0)
 
@@ -193,8 +209,8 @@ class ProviderResult:
     # not charged and sending it again can succeed.
     retryable: bool = False
     # Whether the provider says it served the request at its discounted
-    # rate (OpenAI's response carries the tier it actually used; a Flex
-    # request can come back served as standard). ``None`` when the
+    # rate (OpenAI's and Gemini's responses carry the tier they actually
+    # used; a Flex request can come back served as standard). ``None`` when the
     # provider does not say, and the request's own setting decides.
     discounted: bool | None = None
 
@@ -246,6 +262,9 @@ class RunContext:
     # The model and effort of the second pass, when the run has one.
     check_model: ModelSpec | None = None
     check_effort: str | None = None
+    # The run's detail setting. Gemini looks at an image at the
+    # resolution it is asked for, so its requests carry it.
+    detail: str = ""
 
 
 class ProviderClient(ABC):

@@ -644,6 +644,15 @@ def boxes_to_polygons(payload: BoxesToPolygonsIn) -> BoxesToPolygonsOut:
                     )
                     return box_convert.single_mask(masks, scores)
 
+                def refine_box(box: np.ndarray) -> tuple[np.ndarray, float]:
+                    _, _, logits = sam.predict_point(
+                        point_coords=None, point_labels=None, box=box, multimask_output=False,
+                    )
+                    masks, scores, _ = sam.predict_point(
+                        point_coords=None, point_labels=None, box=box, mask_input=logits, multimask_output=False,
+                    )
+                    return box_convert.single_mask(masks, scores)
+
                 text_masks = _text_union_fn(sam) if getattr(sam, "supports_text", False) else None
 
                 results = box_convert.convert(
@@ -651,6 +660,7 @@ def boxes_to_polygons(payload: BoxesToPolygonsIn) -> BoxesToPolygonsOut:
                     payload.boxes,
                     set_image=set_image,
                     predict_box=predict_box,
+                    refine_box=refine_box,
                     zoom=payload.zoom,
                     epsilon_factor=payload.epsilon_factor,
                     keep_full=had_image,

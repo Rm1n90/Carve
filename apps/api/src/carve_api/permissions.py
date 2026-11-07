@@ -13,12 +13,13 @@ cannot carry the dataset out of Carve, nor push foreign data in.
 
 **GPU / model features** — My Model predict, Auto-Annotate, Smart Find
 (YOLOE), interactive SAM, SAM tracking, retrain, and the global device /
-SAM-variant switches. Admin-only *by default*; a workspace admin can
-re-open them for one specific task by setting
-``tasks.gpu_access_for_members`` (Task settings → "AI tools for
-members"). Global controls that affect every user (device preference,
-active SAM variant, unload/free-memory) stay admin-only regardless —
-there is no per-task meaning for a workspace-wide switch.
+SAM-variant switches. Each tool (SAM, My model, Smart Find, Logo AI) has
+its own member setting (Settings → Configuration → Member access):
+admins only, on tasks opened for members (``tasks.gpu_access_for_members``,
+the task's "AI tools for members" switch; the default), or on every task.
+Global controls that affect every user (device preference, active SAM
+variant, unload/free-memory) stay admin-only regardless — there is no
+per-task meaning for a workspace-wide switch.
 
 Everything an annotator actually needs — listing assets, reading images,
 creating/editing/deleting annotations, saving, reviewing — is untouched.
@@ -126,15 +127,66 @@ def data_movement_guard(user: User = Depends(get_current_user)) -> User:
 # ---------------------------------------------------------------------------
 
 
-def task_gpu_allowed(user: User, task: Task) -> bool:
-    """Whether ``user`` may run GPU-backed inference against ``task``."""
+# The AI tools a member may be allowed, each with its own setting.
+TOOL_SAM = "sam"
+TOOL_MY_MODEL = "my_model"
+TOOL_YOLOE = "yoloe"
+TOOL_LOGO_AI = "logo_ai"
+TOOLS = (TOOL_SAM, TOOL_MY_MODEL, TOOL_YOLOE, TOOL_LOGO_AI)
+_TOOL_NAMES = {
+    TOOL_SAM: "SAM",
+    TOOL_MY_MODEL: "My model",
+    TOOL_YOLOE: "Smart Find",
+    TOOL_LOGO_AI: "Logo AI",
+}
+
+
+def member_mode(tool: str) -> str:
+    """Who below admin may use ``tool``: "admins", "opened_tasks" or
+    "all_tasks". Anything unexpected reads as "admins"."""
+    from carve_api.config import get_settings
+
+    mode = getattr(get_settings(), f"members_{tool}", "admins")
+    return mode if mode in ("admins", "opened_tasks", "all_tasks") else "admins"
+
+
+def member_modes() -> dict[str, str]:
+    return {tool: member_mode(tool) for tool in TOOLS}
+
+
+def task_tool_allowed(user: User, task: Task, tool: str) -> bool:
+    """Whether ``user`` may use AI ``tool`` on ``task``."""
     if is_admin(user):
         return True
-    return bool(getattr(task, "gpu_access_for_members", False))
+    mode = member_mode(tool)
+    if mode == "all_tasks":
+        return True
+    if mode == "opened_tasks":
+        return bool(getattr(task, "gpu_access_for_members", False))
+    return False
+
+
+def task_gpu_allowed(user: User, task: Task) -> bool:
+    """Whether ``user`` may use any of the GPU tools on ``task``."""
+    return any(
+        task_tool_allowed(user, task, t) for t in (TOOL_SAM, TOOL_MY_MODEL, TOOL_YOLOE)
+    )
+
+
+def _tool_forbidden(tool: str) -> HTTPException:
+    name = _TOOL_NAMES.get(tool, "This AI tool")
+    if member_mode(tool) == "opened_tasks":
+        message = (
+            f"{name} is restricted to workspace admins on this task. An admin can open "
+            "the AI tools to members from the task's menu."
+        )
+    else:
+        message = f"{name} is restricted to workspace admins."
+    return _forbid(LOGO_AI_FORBIDDEN if tool == TOOL_LOGO_AI else GPU_FORBIDDEN, message)
 
 
 def require_gpu_task(
-    db: Session, user: User, task_id: uuid.UUID
+    db: Session, user: User, task_id: uuid.UUID, *, tool: str
 ) -> Task:
     """Resolve a task for a GPU-backed route, enforcing the model gate.
 
@@ -149,26 +201,19 @@ def require_gpu_task(
     # Every GPU route writes annotations, so it is a write for the
     # purposes of project suspension.
     task = require_visible_task(db, user, task_id, for_write=True)
-    if not task_gpu_allowed(user, task):
-        raise _forbid(GPU_FORBIDDEN, _GPU_MESSAGE)
+    if not task_tool_allowed(user, task, tool):
+        raise _tool_forbidden(tool)
     return task
 
 
 def task_logo_ai_allowed(user: User, task: Task) -> bool:
     """Whether ``user`` may run Logo AI (hosted vision LLMs) on ``task``.
 
-    Unlike the GPU tools this one bills the workspace per image, so the
-    per-task AI grant alone is not enough for a member: the deployment
-    must also opt in with ``LOGO_AI_ALLOW_MEMBERS``.
+    It bills the workspace per image, so for members it is off unless
+    the superadmin chose otherwise (``MEMBERS_LOGO_AI``; before that
+    setting existed, ``LOGO_AI_ALLOW_MEMBERS``).
     """
-    if is_admin(user):
-        return True
-    from carve_api.config import get_settings
-
-    return bool(
-        get_settings().logo_ai_allow_members
-        and getattr(task, "gpu_access_for_members", False)
-    )
+    return task_tool_allowed(user, task, TOOL_LOGO_AI)
 
 
 def require_logo_ai_task(db: Session, user: User, task_id: uuid.UUID) -> Task:
@@ -178,10 +223,7 @@ def require_logo_ai_task(db: Session, user: User, task_id: uuid.UUID) -> Task:
 
     task = require_visible_task(db, user, task_id, for_write=True)
     if not task_logo_ai_allowed(user, task):
-        raise _forbid(
-            LOGO_AI_FORBIDDEN,
-            "Logo AI uses a paid API and is restricted to workspace admins.",
-        )
+        raise _tool_forbidden(TOOL_LOGO_AI)
     return task
 
 
@@ -268,4 +310,11 @@ __all__ = [
     "require_superadmin",
     "superadmin_guard",
     "task_gpu_allowed",
+    "task_tool_allowed",
+    "member_mode",
+    "member_modes",
+    "TOOL_SAM",
+    "TOOL_MY_MODEL",
+    "TOOL_YOLOE",
+    "TOOL_LOGO_AI",
 ]

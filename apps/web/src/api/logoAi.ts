@@ -11,7 +11,7 @@
  */
 import { api } from "./client";
 
-export type LogoAiProviderId = "anthropic" | "openai";
+export type LogoAiProviderId = "anthropic" | "openai" | "gemini";
 /** How a many-asset run is delivered. */
 export type LogoAiDelivery = "realtime" | "batch";
 /** A recorded run: the above, or one image run from the editor. */
@@ -127,7 +127,7 @@ export interface LogoAiRunRequest {
    *  view, by the model's estimate. 0 keeps every box. */
   min_visible?: number;
   overwrite?: boolean;
-  /** OpenAI only: near-realtime processing at the batch price. */
+  /** OpenAI and Gemini: near-realtime processing at the batch price. */
   flex?: boolean;
   /** A second look at every box, enlarged, that drops the ones that are
    *  not logos. Realtime and single-image runs only. */
@@ -185,6 +185,23 @@ export interface LogoAiEstimate {
   cost_realtime_usd: number;
   cost_flex_usd: number | null;
   cost_batch_usd: number;
+}
+
+/** Reference examples that bring a run's shared prompt up to the
+ *  model's caching minimum (POST /tasks/{id}/logo-ai/cache-fill). */
+export interface LogoAiCacheFill {
+  references: (LogoAiReference & {
+    /** The box it is cut from, to show it as picked. */
+    annotation_id: string;
+    kind: "bbox" | "polygon";
+  })[];
+  prefix_tokens: number;
+  /** The shared prompt with the suggested references added. */
+  filled_tokens: number;
+  min_cache_tokens: number;
+  cached: boolean;
+  /** Why nothing was suggested, when the task cannot reach the minimum. */
+  message: string | null;
 }
 
 export type LogoAiJobStatus =
@@ -285,8 +302,10 @@ export interface LogoAiTaskPrompt {
   format_preview: string;
   check_format_preview: string;
   max_chars: number;
-  /** Shorter than this, the provider does not cache the prompt. */
+  /** Shorter than this, the selected model does not cache the prompt
+   *  (its minimum in tokens, and about that many characters). */
   cache_min_chars: number;
+  cache_min_tokens: number;
   updated_at: string | null;
 }
 
@@ -333,6 +352,12 @@ export const logoAiApi = {
     body: LogoAiTaskRunRequest,
   ): Promise<LogoAiEstimate> =>
     (await api.post<LogoAiEstimate>(`/tasks/${taskId}/logo-ai/estimate`, body)).data,
+
+  cacheFill: async (
+    taskId: string,
+    body: LogoAiTaskRunRequest,
+  ): Promise<LogoAiCacheFill> =>
+    (await api.post<LogoAiCacheFill>(`/tasks/${taskId}/logo-ai/cache-fill`, body)).data,
 
   createJob: async (
     taskId: string,

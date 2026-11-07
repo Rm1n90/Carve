@@ -20,7 +20,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+COPY pyproject.toml constraints.txt ./
+# Every pip install below resolves to the exact versions in constraints.txt,
+# so a rebuild without the build cache reproduces the running image.
+ENV PIP_CONSTRAINT=/app/constraints.txt
 # Install runtime deps + GPU extras (Torch + Ultralytics + SAM-related libs).
 # --break-system-packages: container is isolated, no risk of breaking the host.
 RUN pip3 install --no-cache-dir --break-system-packages -e ".[gpu]"
@@ -34,7 +37,7 @@ RUN pip3 install --no-cache-dir --break-system-packages -e ".[gpu]"
 RUN pip3 install --no-cache-dir --break-system-packages \
         "ftfy==6.1.1" "iopath>=0.1.10" "einops>=0.7" "timm>=1.0.17" \
     && pip3 install --no-cache-dir --break-system-packages --no-deps \
-        "git+https://github.com/facebookresearch/sam3.git"
+        "git+https://github.com/facebookresearch/sam3.git@5dd401d1c5c1d5c3eedff06d41b77af824517619"
 
 # v3.23.3 — YOLOE text-prompt mode requires OpenAI CLIP (Ultralytics'
 # text encoder imports the ``clip`` module). Without this, every
@@ -43,7 +46,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # extra are preserved. The mobileclip2_b.ts text encoder weights
 # (~242 MB) are auto-downloaded by Ultralytics on first use.
 RUN pip3 install --no-cache-dir --break-system-packages --no-deps \
-        "git+https://github.com/openai/CLIP.git"
+        "git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6"
 
 # YOLOv5 compatibility.
 #

@@ -13,6 +13,12 @@ Two things decide the quality of a mask made from a box:
   with some context and encoded on their own, so the object fills the
   model's input. Boxes close together share one crop, so a crowd costs a
   few extra encodes, not one per person.
+* **A second look at a big object.** A person or a garment filling much of
+  a close-up photo (a shirt with a hand and a trophy in front, a hand
+  across a blurred table) often comes back patchy, or spilt into the
+  background. SAM given its own mask back with the box redraws it whole.
+  That mask is one more candidate, kept when SAM scores it higher: on
+  small boxes a second look is as often worse as better, so they get none.
 
 Each mask is then clipped to its box (plus a small margin), so a mask
 cannot run into the next object, and cleaned before it is traced.
@@ -75,9 +81,10 @@ The other boxes differ in what their holes mean:
   around it. A frame with nothing stretched across it (rugby posts, an
   empty goal frame) is its posts and bars as found: its outline would
   take the crowd and the field between the posts.
-* **ropes** (ring ropes, a fighting cage): the ropes and rails SAM 3.1
-  finds by name, at their true width, and a cage's fence, filled. Never
-  an outline over the whole ring.
+* **ropes** (ring ropes, a fighting cage): the ropes, posts and top rail
+  SAM 3.1 finds by name, as found, at their true width. Never the
+  see-through fence between a cage's posts, never an outline over the
+  whole ring.
 
 The ground and a crowd are seen through glass, nets and ropes: they are
 closed across them.
@@ -209,9 +216,10 @@ NET_PROMPTS = ("net", "goal", "basketball backboard")
 # What SAM finds of a net covering less than this share of its outline is
 # a bare frame (posts and bars, no net between them): kept as found.
 NET_FRAME_SOLIDITY = 0.4
-# Ring ropes by name; a fighting cage (no ropes) by its fence.
+# Ring ropes by name; a fighting cage (no ropes) by its posts and top
+# rail, its padding included: the fence between them is not the cage.
 ROPE_PROMPTS = ("rope", "boxing ring ropes")
-CAGE_PROMPTS = ("fence",)
+CAGE_PROMPTS = ("post", "top rail")
 # A flat box at least this many times longer than high is also masked in
 # overlapping pieces, each this many short sides long, one every
 # LONG_STRIDE short sides, at most about LONG_MAX_PIECES of them.
@@ -839,9 +847,12 @@ def convert(
     zoom: bool = True,
     epsilon_factor: float | None = None,
     keep_full: bool = False,
+    refine_box: Callable[[np.ndarray], tuple[np.ndarray, float]] | None = None,
 ) -> list[BoxResult | None]:
     """Run every box. ``set_image`` encodes an image; ``predict_box``
     returns ``(mask, score)`` for an xyxy box in that image's pixels;
+    ``refine_box`` the same, decoded a second time with the first mask
+    given back to SAM with the box (big objects only, see above);
     ``text_masks`` returns the union of SAM's masks for some text prompts
     on the image currently set (``None`` when the model has no text
     prompts: ground and crowd then fall back to their box minus
@@ -940,11 +951,24 @@ def convert(
     overlays = text_masks is not None and any(modes[i] == "overlay" for i in shaped)
     if full_jobs or dual or regions or named or keep_full or overlays or not crops:
         set_image(image)
+    def on_full(j: int) -> tuple[np.ndarray, float]:
+        """The box on the full frame; a big object also given a second
+        look, kept when SAM scores it higher."""
+        given = np.asarray(jobs[j][1], dtype=np.float32)
+        m, score = predict_box(given)
+        x1, y1, x2, y2 = jobs[j][1]
+        if (refine_box is not None and modes[jobs[j][0]] == "object"
+                and max(x2 - x1, y2 - y1) * full_scale >= ZOOM_BELOW_ENCODER_PX):
+            m2, score2 = refine_box(given)
+            if score2 > score:
+                return m2, score2
+        return m, score
+
     for j in full_jobs:
-        m, score = predict_box(np.asarray(jobs[j][1], dtype=np.float32))
+        m, score = on_full(j)
         take(j, m, score, False, (0, 0))
     for j in sorted(dual):
-        m, score = predict_box(np.asarray(jobs[j][1], dtype=np.float32))
+        m, score = on_full(j)
         cm, cscore, offset = on_crop[j]
         if cscore >= score:
             take(j, cm, cscore, True, offset)
@@ -991,7 +1015,7 @@ def convert(
             ropes = named_piece(i, ROPE_PROMPTS)
             ropes = _strands(ropes) if ropes else None
             cage = named_piece(i, CAGE_PROMPTS)
-            cage = _clean(cage, boxes[i], "flat") if cage else None
+            cage = _strands(cage) if cage else None
             if ropes is not None and cage is not None:
                 joined = np.zeros((h, w), dtype=np.uint8)
                 ropes.paste(joined)
@@ -999,9 +1023,8 @@ def convert(
                 p = _clip(joined, boxes[i], (0, 0))
             else:
                 p = ropes or cage
-            if ropes is not None and cage is None:
-                strands.add(i)  # ropes only: found as seen, nothing to cut
             if p is not None:
+                strands.add(i)  # found as seen: nothing to cut
                 pieces[i] = p
                 scores[i] = (1.0, False)
     for i in (i for i in named if modes[i] == "ropes" and i not in pieces and i in found):

@@ -16,7 +16,11 @@ from carve_api.audit.service import record as record_audit
 from carve_api.auth.models import User
 from carve_api.deps import get_current_user, get_db
 from carve_api.errors import AppError
-from carve_api.permissions import require_data_movement, require_gpu_task
+from carve_api.permissions import (
+    TOOL_SAM,
+    require_data_movement,
+    require_gpu_task,
+)
 from carve_api.projects.service import ProjectService, TaskService, _can_modify, NotProjectOwner, require_visible_task
 from carve_api.storage.client import MinioClient
 
@@ -765,7 +769,7 @@ def track_open(
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_gpu_task(db, user, a.task_id)
+        require_gpu_task(db, user, a.task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     p = payload or TrackOpenIn()
@@ -792,7 +796,7 @@ def track_prompt(
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_gpu_task(db, user, a.task_id)
+        require_gpu_task(db, user, a.task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     try:
@@ -815,7 +819,7 @@ def track_propagate_endpoint(
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_gpu_task(db, user, a.task_id)
+        require_gpu_task(db, user, a.task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     p = payload or {}
@@ -849,7 +853,7 @@ def track_propagate_stream_endpoint(
     if a is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     try:
-        require_gpu_task(db, user, a.task_id)
+        require_gpu_task(db, user, a.task_id, tool=TOOL_SAM)
     except AppError as exc:
         raise _http(exc) from exc
     p = payload or {}

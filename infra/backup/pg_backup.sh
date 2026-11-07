@@ -43,6 +43,47 @@ BACKUP_ON_START="${BACKUP_ON_START:-1}"
 
 log() { echo "[db-backup $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
+# Values a superadmin saved in Carve (Settings -> Configuration) take
+# precedence over the environment. Read again before every check, so a
+# change applies without restarting this container; a value cleared there
+# goes back to the environment's. If the database cannot be asked, the
+# values in force stay as they are.
+ENV_BACKUP_HOUR="$BACKUP_HOUR"; ENV_KEEP_DAILY="$KEEP_DAILY"
+ENV_KEEP_WEEKLY="$KEEP_WEEKLY"; ENV_KEEP_MONTHLY="$KEEP_MONTHLY"
+_applied=""
+load_settings() {
+  _rows=$(psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -At -F '=' -c \
+    "SELECT key, value FROM app_settings WHERE NOT encrypted AND key IN \
+     ('BACKUP_HOUR','KEEP_DAILY','KEEP_WEEKLY','KEEP_MONTHLY')" 2>/dev/null) || return 0
+  BACKUP_HOUR="$ENV_BACKUP_HOUR"; KEEP_DAILY="$ENV_KEEP_DAILY"
+  KEEP_WEEKLY="$ENV_KEEP_WEEKLY"; KEEP_MONTHLY="$ENV_KEEP_MONTHLY"
+  for _r in $_rows; do
+    _k="${_r%%=*}"; _v="${_r#*=}"
+    case "$_v" in ''|*[!0-9]*) continue ;; esac
+    case "$_k" in
+      BACKUP_HOUR) BACKUP_HOUR=$(printf '%02d' "$_v") ;;
+      KEEP_DAILY) KEEP_DAILY="$_v" ;;
+      KEEP_WEEKLY) KEEP_WEEKLY="$_v" ;;
+      KEEP_MONTHLY) KEEP_MONTHLY="$_v" ;;
+    esac
+  done
+  _now="daily@${BACKUP_HOUR}:00Z keep(d/w/m)=${KEEP_DAILY}/${KEEP_WEEKLY}/${KEEP_MONTHLY}"
+  if [ "$_now" != "$_applied" ]; then
+    [ -n "$_applied" ] && log "settings changed: schedule=$_now"
+    _applied="$_now"
+  fi
+}
+
+# A superadmin pressed "Back up now" in Carve (Settings -> Configuration).
+# The request is taken off before the dump, so one that fails is not
+# retried every 30 s; the page shows it as gone either way.
+backup_requested() {
+  _req=$(psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -qAt -c \
+    "DELETE FROM app_settings WHERE key = 'BACKUP_REQUESTED_AT' RETURNING value" \
+    2>/dev/null) || return 1
+  [ -n "$_req" ]
+}
+
 mkdir -p "$BACKUP_DIR/daily" "$BACKUP_DIR/weekly" "$BACKUP_DIR/monthly"
 
 # Keep only the newest $2 *.sql.gz files in directory $1; delete the rest.
@@ -87,13 +128,14 @@ do_backup() {
   return 0
 }
 
-log "starting: schedule=daily@${BACKUP_HOUR}:00Z keep(d/w/m)=${KEEP_DAILY}/${KEEP_WEEKLY}/${KEEP_MONTHLY} dir=$BACKUP_DIR"
-
 # Wait for the database to accept connections before the first dump.
 until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" >/dev/null 2>&1; do
   log "waiting for postgres to be ready..."
   sleep 3
 done
+
+load_settings
+log "starting: schedule=daily@${BACKUP_HOUR}:00Z keep(d/w/m)=${KEEP_DAILY}/${KEEP_WEEKLY}/${KEEP_MONTHLY} dir=$BACKUP_DIR"
 
 if [ "$BACKUP_ON_START" = "1" ]; then
   do_backup || log "startup backup failed; will retry on schedule"
@@ -103,6 +145,11 @@ fi
 # `last_day` de-dupes so a single day never produces two scheduled dumps.
 last_day=""
 while true; do
+  load_settings
+  if backup_requested; then
+    log "backup requested in Carve"
+    do_backup || log "requested backup failed"
+  fi
   _h="$(date -u +%H)"; _m="$(date -u +%M)"; _d="$(date -u +%Y%m%d)"
   if [ "$_h" = "$BACKUP_HOUR" ] && [ "$_m" = "00" ] && [ "$_d" != "$last_day" ]; then
     last_day="$_d"

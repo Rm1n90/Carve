@@ -170,7 +170,7 @@ def test_billing_endpoint_and_who_may_enter_a_balance(db_session, provider, monk
     assert _provider_row(body, "openai")["credit"] is None
 
     # A member who may run Logo AI sees the figures but does not set them.
-    monkeypatch.setattr(get_settings(), "logo_ai_allow_members", True)
+    monkeypatch.setattr(get_settings(), "members_logo_ai", "opened_tasks")
     m = seed(db_session, role=UserRole.member)
     db_session.add(ProjectMember(project_id=m.project.id, user_id=m.user.id, role="member"))
     m.task.gpu_access_for_members = True

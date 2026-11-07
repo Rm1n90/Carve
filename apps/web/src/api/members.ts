@@ -1,5 +1,6 @@
 // Armin Mehri — mehri.armin@gmail.com
 import { api } from "./client";
+import type { ApiKey } from "./api_keys";
 
 export type Role = "superadmin" | "admin" | "member" | "viewer";
 
@@ -17,6 +18,17 @@ export interface Member {
   blocked?: boolean;
   blocked_at?: string | null;
   blocked_reason?: string | null;
+  /** From the activity log; null until they sign in after it started
+   * recording sign-ins (2026-11-01). */
+  last_sign_in_at?: string | null;
+}
+
+/** A removed (soft-deleted) account, which a superadmin can restore. */
+export interface RemovedMember {
+  id: string;
+  email: string;
+  role: Role;
+  deleted_at: string;
 }
 
 export interface MemberProject {
@@ -72,4 +84,21 @@ export const membersApi = {
   revokeSessions: async (userId: string): Promise<void> => {
     await api.post(`/auth/members/${userId}/revoke-sessions`);
   },
+
+  /** Change the email they sign in with (superadmin). Their single
+   * sign-on link is cleared; their password stays. */
+  setEmail: async (userId: string, email: string): Promise<Member> =>
+    (await api.patch<Member>(`/auth/members/${userId}/email`, { email })).data,
+  /** Their API keys, never the keys themselves (superadmin). */
+  apiKeys: async (userId: string): Promise<ApiKey[]> =>
+    (await api.get<ApiKey[]>(`/auth/members/${userId}/api-keys`)).data,
+  revokeApiKey: async (userId: string, keyId: string): Promise<void> => {
+    await api.delete(`/auth/members/${userId}/api-keys/${keyId}`);
+  },
+  /** Removed accounts, newest first (superadmin). */
+  removed: async (): Promise<RemovedMember[]> =>
+    (await api.get<RemovedMember[]>("/auth/members/removed")).data,
+  /** Bring a removed account back with its role, password and work. */
+  restore: async (userId: string): Promise<Member> =>
+    (await api.post<Member>(`/auth/members/${userId}/restore`)).data,
 };

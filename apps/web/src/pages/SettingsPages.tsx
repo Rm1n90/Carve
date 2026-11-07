@@ -8,7 +8,9 @@ import {
   Copy,
   KeyRound,
   LogOut,
+  Mail,
   MoreVertical,
+  RotateCcw,
   ShieldCheck,
   Trash2,
   UserCog,
@@ -48,16 +50,20 @@ import {
 } from "@/api/invites";
 import { projectsApi, type Project } from "@/api/projects";
 import { workspaceApi } from "@/api/workspace";
+import { errorCode } from "@/lib/apiError";
 import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 
-const TABS: { to: string; label: string; adminOnly?: boolean }[] = [
+const TABS: { to: string; label: string; adminOnly?: boolean; superadminOnly?: boolean }[] = [
   { to: "/settings/profile", label: "Profile" },
   { to: "/settings/api-keys", label: "API Keys" },
   { to: "/settings/shortcuts", label: "Shortcuts" },
   { to: "/settings/members", label: "Members", adminOnly: true },
   { to: "/settings/jobs", label: "Jobs", adminOnly: true },
   { to: "/settings/workspace", label: "Workspace" },
+  { to: "/settings/configuration", label: "Configuration", superadminOnly: true },
+  { to: "/settings/activity", label: "Activity log", superadminOnly: true },
+  { to: "/settings/annotation-counts", label: "Annotation counts", superadminOnly: true },
 ];
 
 export function SettingsLayout({ children }: { children: ReactNode }) {
@@ -80,7 +86,11 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
       </header>
       <div className="grid grid-cols-[200px_1fr] gap-8 items-start">
         <nav aria-label="Settings sections" className="grid gap-0.5">
-          {TABS.filter((t) => !t.adminOnly || hasAdminAuthority(role)).map((t) => {
+          {TABS.filter(
+            (t) =>
+              (!t.adminOnly || hasAdminAuthority(role)) &&
+              (!t.superadminOnly || role === "superadmin"),
+          ).map((t) => {
             const active = path === t.to;
             return (
               <Link
@@ -445,6 +455,12 @@ function ApiKeyRow({ k, onRevoke }: { k: ApiKey; onRevoke: () => void }) {
 // the DB or promoting through the API, not casually from a dropdown, and
 // only a superadmin could pick it anyway.
 const ROLES: Role[] = ["admin", "member", "viewer"];
+// A superadmin may make someone else superadmin too (after a warning).
+const SUPERADMIN_ROLES: Role[] = ["superadmin", ...ROLES];
+
+function formatWhen(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
 // v3.0 Bug 14 — the new "Invite member" dialog only exposes admin and
 // member. ``viewer`` remains in the role-edit dropdown for legacy data.
 const INVITE_ROLES: CreateRole[] = ["admin", "member"];
@@ -467,6 +483,13 @@ export function SettingsMembersPage() {
     mutationFn: ({ id, role }: { id: string; role: Role }) =>
       membersApi.setRole(id, role),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["members"] }),
+    onError: (err: unknown) =>
+      showToast(
+        errorCode(err) === "last_superadmin_protected"
+          ? "Carve must keep at least one superadmin"
+          : "Failed to change the role",
+        { variant: "error" },
+      ),
   });
   const createM = useMutation({
     mutationFn: ({
@@ -485,7 +508,12 @@ export function SettingsMembersPage() {
     onError: (err: unknown) => {
       const status =
         (err as { response?: { status?: number } } | undefined)?.response?.status;
-      if (status === 409) {
+      if (errorCode(err) === "email_belongs_to_removed_member") {
+        showToast(
+          "That email belongs to a removed member. Restore them under Removed members.",
+          { variant: "error" },
+        );
+      } else if (status === 409) {
         showToast("That email is already taken", { variant: "error" });
       } else if (status === 403) {
         showToast("Only admins can invite members", { variant: "error" });
@@ -503,10 +531,10 @@ export function SettingsMembersPage() {
       showToast("Member removed", { variant: "success" });
     },
     onError: (err: unknown) => {
-      const detail = (err as {
-        response?: { data?: { detail?: string } };
-      } | undefined)?.response?.data?.detail;
-      if (detail === "cannot_delete_last_admin") {
+      const detail = errorCode(err);
+      if (detail === "last_superadmin_protected") {
+        showToast("Carve must keep at least one superadmin", { variant: "error" });
+      } else if (detail === "cannot_delete_last_admin") {
         showToast("Can't remove the last admin", { variant: "error" });
       } else if (detail === "cannot_delete_self") {
         showToast("You can't remove yourself", { variant: "error" });
@@ -550,8 +578,19 @@ export function SettingsMembersPage() {
     onError: () => showToast("Failed to set password", { variant: "error" }),
   });
 
+  const emailM = useMutation({
+    mutationFn: ({ id, email }: { id: string; email: string }) =>
+      membersApi.setEmail(id, email),
+    onSuccess: (m) => {
+      qc.invalidateQueries({ queryKey: ["members"] });
+      showToast(`Email changed to ${m.email}`, { variant: "success" });
+    },
+  });
+
   const [inviting, setInviting] = useState(false);
   const [passwordTarget, setPasswordTarget] = useState<Member | null>(null);
+  const [emailTarget, setEmailTarget] = useState<Member | null>(null);
+  const [keysTarget, setKeysTarget] = useState<Member | null>(null);
 
   const members = membersQ.data ?? [];
   const caps = useCapabilities();
@@ -571,6 +610,16 @@ export function SettingsMembersPage() {
             <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
               Everyone with access to this workspace.
             </p>
+            {caps.isSuperAdmin && (
+              <p
+                className="text-[12px] text-[color:var(--text-tertiary)] mt-1"
+                data-testid="members-superadmin-hint"
+              >
+                As superadmin you can set anyone's password, block them, sign
+                them out or change their role, admins included: use the ⋮
+                menu at the end of their row.
+              </p>
+            )}
           </div>
           {isAdmin ? (
             <Button
@@ -580,7 +629,7 @@ export function SettingsMembersPage() {
               onClick={() => setInviting(true)}
               data-testid="members-invite-button"
             >
-              Invite member
+              Add member
             </Button>
           ) : (
             <Badge variant="neutral">
@@ -619,8 +668,23 @@ export function SettingsMembersPage() {
                   canDelete={canManage && !isLastAdmin}
                   canManage={canManage}
                   projects={memberProjectsQ.data?.[m.id] ?? []}
-                  onChangeRole={(role) => setRoleM.mutate({ id: m.id, role })}
+                  roleOptions={caps.isSuperAdmin ? SUPERADMIN_ROLES : ROLES}
+                  onChangeRole={async (role) => {
+                    if (role === "superadmin") {
+                      const ok = await confirm({
+                        title: `Make ${m.email} a superadmin?`,
+                        description:
+                          "They get every power you have: they can change any account, yours included, read the activity log and change Carve's configuration.",
+                        confirmLabel: "Make superadmin",
+                        variant: "danger",
+                      });
+                      if (!ok) return;
+                    }
+                    setRoleM.mutate({ id: m.id, role });
+                  }}
                   onSetPassword={() => setPasswordTarget(m)}
+                  onChangeEmail={() => setEmailTarget(m)}
+                  onApiKeys={() => setKeysTarget(m)}
                   onRevokeSessions={async () => {
                     const ok = await confirm({
                       title: `Sign ${m.email} out everywhere?`,
@@ -684,6 +748,21 @@ export function SettingsMembersPage() {
           );
         }}
       />
+
+      <ChangeEmailDialog
+        target={emailTarget}
+        onOpenChange={(o) => !o && setEmailTarget(null)}
+        pending={emailM.isPending}
+        onSubmit={(email) =>
+          emailTarget
+            ? emailM.mutateAsync({ id: emailTarget.id, email }).then(() => setEmailTarget(null))
+            : Promise.resolve()
+        }
+      />
+
+      <MemberApiKeysDialog target={keysTarget} onOpenChange={(o) => !o && setKeysTarget(null)} />
+
+      {caps.isSuperAdmin && <RemovedMembersSection />}
 
       <ProjectMembersSection />
     </SettingsLayout>
@@ -797,6 +876,240 @@ function SetPasswordDialog({
 // ---------------------- Per-project members (Plan-13 Phase 7 Task 4) -----
 
 const PROJECT_INVITE_ROLES: InviteRole[] = ["admin", "member", "viewer"];
+
+/** Superadmin: change the email someone signs in with. */
+function ChangeEmailDialog({
+  target,
+  onOpenChange,
+  pending,
+  onSubmit,
+}: {
+  target: Member | null;
+  onOpenChange: (open: boolean) => void;
+  pending: boolean;
+  onSubmit: (email: string) => Promise<void>;
+}) {
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (target) {
+      setEmail(target.email);
+      setError(null);
+    }
+  }, [target]);
+  const trimmed = email.trim();
+  const changed = target !== null && trimmed.length > 0 && trimmed !== target.email;
+  return (
+    <Dialog open={target !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(92vw,460px)]">
+        <DialogHeader>
+          <DialogTitle>Change email</DialogTitle>
+          <DialogDescription>
+            The address {target?.email} signs in with. Their password stays the
+            same; single sign-on links the new address the next time they use
+            it. Carve does not email them.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="grid gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!changed) return;
+            setError(null);
+            onSubmit(trimmed).catch((err: unknown) => {
+              const code = errorCode(err);
+              setError(
+                code === "email_taken"
+                  ? "Another account already uses that email."
+                  : code === "email_belongs_to_removed_member"
+                    ? "A removed account uses that email. Restore it under Removed members, or pick another."
+                    : (err as { response?: { status?: number } }).response?.status === 422
+                      ? "Enter a valid email address."
+                      : "Could not change the email.",
+              );
+            });
+          }}
+        >
+          <Input
+            label="New email"
+            type="email"
+            autoComplete="off"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            data-testid="change-email-input"
+            autoFocus
+          />
+          {error && (
+            <p className="text-[12px] text-[color:var(--danger)]" role="alert">
+              {error}
+            </p>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              loading={pending}
+              disabled={!changed || pending}
+              data-testid="change-email-submit"
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Superadmin: someone's API keys, with a Revoke for each. */
+function MemberApiKeysDialog({
+  target,
+  onOpenChange,
+}: {
+  target: Member | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const keysQ = useQuery({
+    queryKey: ["members", "api-keys", target?.id],
+    queryFn: () => membersApi.apiKeys(target!.id),
+    enabled: target !== null,
+  });
+  const revokeM = useMutation({
+    mutationFn: (keyId: string) => membersApi.revokeApiKey(target!.id, keyId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["members", "api-keys", target?.id] });
+      showToast("API key revoked", { variant: "success" });
+    },
+    onError: () => showToast("Failed to revoke the API key", { variant: "error" }),
+  });
+  const keys = keysQ.data ?? [];
+  return (
+    <Dialog open={target !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(92vw,560px)]">
+        <DialogHeader>
+          <DialogTitle>API keys</DialogTitle>
+          <DialogDescription>
+            Keys {target?.email} made for scripts and tools. A revoked key stops
+            working at once.
+          </DialogDescription>
+        </DialogHeader>
+        {keysQ.isLoading ? (
+          <p className="text-[13px] text-[color:var(--text-tertiary)]">Loading…</p>
+        ) : keys.length === 0 ? (
+          <p className="text-[13px] text-[color:var(--text-tertiary)]" data-testid="member-api-keys-empty">
+            No API keys.
+          </p>
+        ) : (
+          <ul className="grid gap-2" data-testid="member-api-keys">
+            {keys.map((k) => (
+              <li
+                key={k.id}
+                className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] px-3 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] truncate">
+                    {k.name}{" "}
+                    <span className="font-mono text-[11px] text-[color:var(--text-tertiary)]">
+                      {k.prefix}…
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-[color:var(--text-tertiary)]">
+                    Made {formatWhen(k.created_at)} ·{" "}
+                    {k.last_used_at ? `last used ${formatWhen(k.last_used_at)}` : "never used"}
+                  </p>
+                </div>
+                {k.revoked_at ? (
+                  <Badge variant="neutral">Revoked</Badge>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Revoke ${k.name}`}
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Revoke "${k.name}"?`,
+                        description: "Anything using this key stops working at once.",
+                        confirmLabel: "Revoke",
+                        variant: "danger",
+                      });
+                      if (ok) revokeM.mutate(k.id);
+                    }}
+                  >
+                    Revoke
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Superadmin: removed accounts, which can be brought back. */
+function RemovedMembersSection() {
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const removedQ = useQuery({ queryKey: ["members", "removed"], queryFn: membersApi.removed });
+  const restoreM = useMutation({
+    mutationFn: (id: string) => membersApi.restore(id),
+    onSuccess: (m) => {
+      qc.invalidateQueries({ queryKey: ["members"] });
+      showToast(`Restored ${m.email}`, { variant: "success" });
+    },
+    onError: () => showToast("Failed to restore the account", { variant: "error" }),
+  });
+  const removed = removedQ.data ?? [];
+  if (removed.length === 0) return null;
+  return (
+    <Card variant="surface" radius="lg" className="p-6 grid gap-3" data-testid="removed-members">
+      <div>
+        <h2 className="text-[16px] font-semibold tracking-tight">Removed members</h2>
+        <p className="text-[13px] text-[color:var(--text-secondary)] mt-1">
+          Restoring brings the account back with its role, password and work.
+          Its old sessions and API keys stay revoked.
+        </p>
+      </div>
+      <ul className="grid gap-2">
+        {removed.map((m) => (
+          <li
+            key={m.id}
+            className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elev)] px-4 py-2.5"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-[13.5px] truncate">{m.email}</p>
+              <p className="text-[11px] text-[color:var(--text-tertiary)]">
+                {m.role} · removed {formatWhen(m.deleted_at)}
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              leftIcon={<RotateCcw className="h-3.5 w-3.5" />}
+              loading={restoreM.isPending && restoreM.variables === m.id}
+              onClick={async () => {
+                const ok = await confirm({
+                  title: `Restore ${m.email}?`,
+                  description: `They can sign in again as ${m.role} with their old password.`,
+                  confirmLabel: "Restore",
+                });
+                if (ok) restoreM.mutate(m.id);
+              }}
+            >
+              Restore
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
 
 function ProjectMembersSection() {
   const projectsQ = useQuery({
@@ -1064,7 +1377,7 @@ function InviteMemberDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Invite member</DialogTitle>
+          <DialogTitle>Add member</DialogTitle>
           <DialogDescription>
             Create an account with an initial password. They can change it
             later from Settings → Profile.
@@ -1174,6 +1487,9 @@ function MemberRow({
   onSetPassword,
   onRevokeSessions,
   onToggleBlock,
+  onChangeEmail,
+  onApiKeys,
+  roleOptions = ROLES,
   projects = [],
 }: {
   m: Member;
@@ -1191,6 +1507,10 @@ function MemberRow({
   onSetPassword: () => void;
   onRevokeSessions: () => void;
   onToggleBlock: () => void;
+  onChangeEmail?: () => void;
+  onApiKeys?: () => void;
+  /** Roles the viewer may pick for this row. */
+  roleOptions?: Role[];
   projects?: import("@/api/members").MemberProject[];
 }) {
   const initial = m.email[0]?.toUpperCase() ?? "?";
@@ -1216,6 +1536,14 @@ function MemberRow({
               <Ban className="h-2.5 w-2.5" /> Blocked
             </span>
           )}
+        </p>
+        <p
+          className="text-[11px] text-[color:var(--text-tertiary)]"
+          data-testid={`member-last-sign-in-${m.id}`}
+        >
+          {m.last_sign_in_at
+            ? `Last sign-in ${formatWhen(m.last_sign_in_at)}`
+            : "No sign-in recorded yet"}
         </p>
         {projects.length > 0 ? (
           <div
@@ -1253,7 +1581,7 @@ function MemberRow({
             <Select.Value />
           </Select.Trigger>
           <Select.Content>
-            {ROLES.map((r) => (
+            {roleOptions.map((r) => (
               <Select.Item key={r} value={r}>
                 {r}
               </Select.Item>
@@ -1314,6 +1642,32 @@ function MemberRow({
                     <KeyRound className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
                     Set password…
                   </DropdownMenu.Item>
+                  {onChangeEmail && (
+                    <DropdownMenu.Item
+                      data-testid={`member-menu-email-${m.id}`}
+                      onSelect={() => onChangeEmail()}
+                      className={cn(
+                        "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] outline-none",
+                        "data-[highlighted]:bg-[var(--bg-hover)] cursor-pointer",
+                      )}
+                    >
+                      <Mail className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                      Change email…
+                    </DropdownMenu.Item>
+                  )}
+                  {onApiKeys && (
+                    <DropdownMenu.Item
+                      data-testid={`member-menu-api-keys-${m.id}`}
+                      onSelect={() => onApiKeys()}
+                      className={cn(
+                        "flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-xs)] text-[12.5px] outline-none",
+                        "data-[highlighted]:bg-[var(--bg-hover)] cursor-pointer",
+                      )}
+                    >
+                      <KeyRound className="h-3.5 w-3.5 text-[color:var(--text-tertiary)]" />
+                      API keys…
+                    </DropdownMenu.Item>
+                  )}
                   <DropdownMenu.Item
                     data-testid={`member-menu-revoke-${m.id}`}
                     onSelect={() => onRevokeSessions()}

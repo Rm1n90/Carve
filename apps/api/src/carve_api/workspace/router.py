@@ -23,6 +23,16 @@ from carve_api.workspace.service import WorkspaceService
 router = APIRouter(prefix="/workspace", tags=["workspace"])
 
 
+@router.get("/ai-access")
+def ai_access(_user: User = Depends(get_current_user)) -> dict[str, str]:
+    """Who below admin may use each AI tool ("admins", "opened_tasks",
+    "all_tasks"), so the editor shows a member only the tools they may
+    use. The API enforces the same on every AI route."""
+    from carve_api.permissions import member_modes
+
+    return member_modes()
+
+
 def _members_count(db: Session) -> int:
     """Active (non-soft-deleted) member count. Mirrors the filter applied
     in ``members.router.list_members`` so the stat card matches the

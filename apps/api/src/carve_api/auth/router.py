@@ -7,6 +7,8 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from carve_api.audit import service as audit_service
+from carve_api.audit.actions import USER_SIGNED_IN
 from carve_api.auth.jwt import (
     InvalidToken,
     create_access_token,
@@ -119,7 +121,28 @@ def login(request: Request, payload: LoginIn, db: Session = Depends(get_db)) -> 
         ) from exc
     except InvalidCredentials as exc:
         raise _to_http(exc) from exc
+    _record_sign_in(db, user, "password")
     return _tokens_for(user)
+
+
+def _record_sign_in(db: Session, user: User, method: str) -> None:
+    """Note a sign-in in the audit log, for the superadmin's last sign-in
+    column and activity log. Token refreshes are not sign-ins."""
+    audit_service.record(
+        db,
+        actor_id=user.id,
+        action=USER_SIGNED_IN,
+        target_type="user",
+        target_id=user.id,
+        project_id=None,
+        summary=f"{user.email} signed in ({method})",
+        metadata={"method": method},
+    )
+    # Never let the note stop the sign-in itself.
+    try:
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
 
 
 @router.post("/refresh", response_model=TokenPair)
@@ -270,6 +293,7 @@ async def sso_callback(
         elif user.sso_subject != sub:
             raise HTTPException(status_code=409, detail="sso_subject_conflict")
     db.commit()
+    _record_sign_in(db, user, provider)
     jwt_token = create_access_token(subject=str(user.id), role=user.role.value)
     # Token is delivered via URL fragment so it never appears in HTTP
     # access logs (the fragment is stripped before the request leaves the
