@@ -16,6 +16,7 @@ import carve_api.assets.models  # noqa: F401, E402  (populate metadata)
 import carve_api.annotations.models  # noqa: F401, E402  (populate metadata)
 import carve_api.weights.models  # noqa: F401, E402  (populate metadata)
 import carve_api.exports.models  # noqa: F401, E402  (populate metadata)
+import carve_api.web_collect.models  # noqa: F401, E402  (populate metadata)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_env_settings().database_url)

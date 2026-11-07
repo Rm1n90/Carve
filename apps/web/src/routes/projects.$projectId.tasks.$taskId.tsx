@@ -9,6 +9,7 @@ import {
   Download,
   Images,
   BarChart3,
+  Globe,
 } from "lucide-react";
 import { rootRoute } from "./_root";
 import { RequireAuth } from "@/auth/RequireAuth";
@@ -16,6 +17,7 @@ import { useCapabilities } from "@/auth/capabilities";
 import { AssetUploadDialog } from "@/pages/AssetUploadDialog";
 import { ImportDialog } from "@/pages/ImportDialog";
 import { ExportDialog } from "@/pages/ExportDialog";
+import { WebCollectDialog, WebCollectStatusChip } from "@/components/tasks/WebCollectDialog";
 import { AssetGrid } from "@/pages/AssetGrid";
 // Lazy: keeps the recharts chunk out of the initial bundle.
 const StatsPanel = lazyWithReload(() =>
@@ -84,7 +86,21 @@ export function TaskDetail() {
   // Outsourcing hardening — gates the Upload / Import / Export toolbar.
   const caps = useCapabilities();
   const [tab, setTab] = useState<Tab>("assets");
-  const [openDialog, setOpenDialog] = useState<"upload" | "import" | "export" | null>(null);
+  const [openDialog, setOpenDialog] = useState<
+    "upload" | "collect" | "import" | "export" | null
+  >(() => {
+    // The new-task dialog's "then collect images from the web" opens it.
+    try {
+      const key = `carve.openCollect.${taskId}`;
+      if (sessionStorage.getItem(key)) {
+        sessionStorage.removeItem(key);
+        return "collect";
+      }
+    } catch {
+      /* storage blocked: just open the page */
+    }
+    return null;
+  });
 
   const projectQ = useQuery({
     queryKey: ["project", projectId],
@@ -141,6 +157,9 @@ export function TaskDetail() {
               carve_api.permissions), so this only stops us rendering
               buttons that would 403. */}
           <div className="flex flex-wrap items-center gap-2.5">
+            {caps.isAdmin && task?.kind === "image" && (
+              <WebCollectStatusChip taskId={taskId} enabled />
+            )}
             {caps.isAdmin && (
             <>
             <Dialog
@@ -165,6 +184,26 @@ export function TaskDetail() {
                 />
               </DialogContent>
             </Dialog>
+
+            {task?.kind === "image" && (
+              <Dialog
+                open={openDialog === "collect"}
+                onOpenChange={(o) => setOpenDialog(o ? "collect" : null)}
+              >
+                <ToolbarAction
+                  icon={<Globe className="h-4 w-4" />}
+                  label="Collect from web"
+                  hint="Download images from Bing, Wikimedia Commons and Openverse by keywords"
+                  testId="task-action-collect"
+                />
+                <DialogContent className="w-[min(94vw,760px)]">
+                  <DialogHeader>
+                    <DialogTitle>Collect images from the web</DialogTitle>
+                  </DialogHeader>
+                  <WebCollectDialog taskId={taskId} open={openDialog === "collect"} />
+                </DialogContent>
+              </Dialog>
+            )}
 
             <Dialog
               open={openDialog === "import"}

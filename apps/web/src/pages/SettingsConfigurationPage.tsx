@@ -431,6 +431,15 @@ const TABS: { id: string; label: string; groups: string[]; intro?: string }[] = 
   },
   { id: "logo-ai", label: "Logo AI", groups: ["Logo AI"] },
   {
+    id: "web-collect",
+    label: "Collect from web",
+    groups: ["Collect from web"],
+    intro:
+      "Downloading images from Bing, Wikimedia Commons and Openverse into a task " +
+      "(a task's Collect from web button). Stock, AI-image and Chinese sites are always " +
+      "blocked; add more sites here.",
+  },
+  {
     id: "access",
     label: "Member access",
     groups: ["Member access"],

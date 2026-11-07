@@ -153,7 +153,12 @@ def create_app() -> FastAPI:
     app.include_router(logo_ai_asset_router)
     app.include_router(logo_ai_task_router)
     # Collects finished provider batches whether or not anyone is watching.
+    # (It also restarts Collect-from-web runs whose worker died.)
     app.add_event_handler("startup", start_poller)
+
+    # Collect from web — keyword image search and download into a task.
+    from carve_api.web_collect.router import router as web_collect_router
+    app.include_router(web_collect_router)
 
     from fastapi import APIRouter, Depends
 

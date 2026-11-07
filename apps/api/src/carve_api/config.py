@@ -73,6 +73,24 @@ class Settings(BaseSettings):
     # AI tools (``tasks.gpu_access_for_members``).
     logo_ai_allow_members: bool = Field(default=False, alias="LOGO_AI_ALLOW_MEMBERS")
 
+    # Collect from web (web_collect). Downloads at once per run.
+    web_collect_threads: int = Field(default=24, alias="WEB_COLLECT_THREADS")
+    # Sites never collected from, besides the built-in stock / AI / Chinese
+    # lists: domains separated by commas or new lines.
+    web_collect_blocked_sites: str = Field(default="", alias="WEB_COLLECT_BLOCKED_SITES")
+    # Scores at or above these are rejected (0–1, from the model service).
+    web_collect_ai_threshold: float = Field(default=0.9, alias="WEB_COLLECT_AI_THRESHOLD")
+    web_collect_watermark_threshold: float = Field(
+        default=0.5, alias="WEB_COLLECT_WATERMARK_THRESHOLD"
+    )
+    # Contact put in the User-Agent sent to Wikimedia and Openverse, as
+    # Wikimedia's User-Agent policy asks (an email or a URL).
+    web_collect_contact: str = Field(default="", alias="WEB_COLLECT_CONTACT")
+    # Free keys for the official Pexels, Pixabay and Unsplash APIs (optional sources).
+    web_collect_pexels_key: str = Field(default="", alias="WEB_COLLECT_PEXELS_KEY")
+    web_collect_pixabay_key: str = Field(default="", alias="WEB_COLLECT_PIXABAY_KEY")
+    web_collect_unsplash_key: str = Field(default="", alias="WEB_COLLECT_UNSPLASH_KEY")
+
     # Who below admin may use each AI tool: "admins" (nobody), "opened_tasks"
     # (on tasks whose "AI tools for members" switch is on) or "all_tasks".
     # Set in Settings → Configuration → Member access.

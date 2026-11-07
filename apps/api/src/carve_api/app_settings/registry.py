@@ -70,6 +70,7 @@ _NETWORK = "Addresses"
 _MODEL = "Model service (SAM, YOLO)"
 _BACKUP = "Database backups"
 _ACCESS = "Member access"
+_WEB_COLLECT = "Collect from web"
 
 API = "api"
 MODEL = "model"
@@ -197,6 +198,57 @@ SETTINGS: tuple[SettingDef, ...] = (
         "Requests handed to the provider in one batch. Lower it if one part is larger than "
         "the account's batch queue allows.",
         INT, minimum=1, maximum=50_000,
+    ),
+    SettingDef(
+        "WEB_COLLECT_THREADS", "web_collect_threads", _WEB_COLLECT, "Downloads at once",
+        "Images a run downloads in parallel (never more than 4 from the same site).",
+        INT, minimum=1, maximum=64,
+    ),
+    SettingDef(
+        "WEB_COLLECT_BLOCKED_SITES", "web_collect_blocked_sites", _WEB_COLLECT,
+        "More blocked sites",
+        "Sites never collected from, besides the built-in lists (stock agencies such as "
+        "Alamy, Adobe Stock, Getty and Shutterstock; AI-image galleries; Chinese sites). "
+        "Domains separated by commas, e.g. example.com, photos.example.org.",
+        TEXT, allow_empty=True,
+    ),
+    SettingDef(
+        "WEB_COLLECT_AI_THRESHOLD", "web_collect_ai_threshold", _WEB_COLLECT,
+        "AI-image rejection score",
+        "Images the AI-image detector scores at or above this (0–1) are thrown away. "
+        "Lower rejects more.",
+        FLOAT, minimum=0.05, maximum=1.0,
+    ),
+    SettingDef(
+        "WEB_COLLECT_WATERMARK_THRESHOLD", "web_collect_watermark_threshold", _WEB_COLLECT,
+        "Watermark rejection score",
+        "Images the watermark detector scores at or above this (0–1) are thrown away. "
+        "Lower rejects more.",
+        FLOAT, minimum=0.05, maximum=1.0,
+    ),
+    SettingDef(
+        "WEB_COLLECT_CONTACT", "web_collect_contact", _WEB_COLLECT, "Contact for image sites",
+        "An email or web address sent to Wikimedia Commons and Openverse with every "
+        "request, as Wikimedia's rules ask, so they can reach you instead of blocking.",
+        TEXT, allow_empty=True,
+    ),
+    SettingDef(
+        "WEB_COLLECT_PEXELS_KEY", "web_collect_pexels_key", _WEB_COLLECT, "Pexels API key",
+        "Free; turns on Pexels as a source (free-licence photos, 200 searches an hour).",
+        SECRET, allow_empty=True, links=(("Get a Pexels key", "https://www.pexels.com/api/"),),
+    ),
+    SettingDef(
+        "WEB_COLLECT_PIXABAY_KEY", "web_collect_pixabay_key", _WEB_COLLECT, "Pixabay API key",
+        "Free; turns on Pixabay as a source (free-licence photos and illustrations).",
+        SECRET, allow_empty=True, links=(("Get a Pixabay key", "https://pixabay.com/api/docs/"),),
+    ),
+    SettingDef(
+        "WEB_COLLECT_UNSPLASH_KEY", "web_collect_unsplash_key", _WEB_COLLECT,
+        "Unsplash access key",
+        "Free; turns on Unsplash as a source (free-licence photos; 50 searches an hour "
+        "until Unsplash approves the app for more).",
+        SECRET, allow_empty=True,
+        links=(("Get an Unsplash key", "https://unsplash.com/oauth/applications"),),
     ),
     SettingDef(
         "JWT_ACCESS_TTL_MIN", "jwt_access_ttl_min", _SIGN_IN, "Access token lifetime",

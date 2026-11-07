@@ -58,3 +58,61 @@ Detects logos with a hosted vision LLM (Anthropic, OpenAI or Google Gemini) and 
 **Filtering after a run.** Every box Logo AI writes keeps its confidence and visibility scores, so thresholds can be changed afterwards without running (and paying for) the images again. Run once with loose values, then open the filter button next to **Logo AI**: moving its two sliders hides, live on the canvas, the boxes that would go, and shows how many the current image and the whole task would keep. *Remove* deletes them for this image or for the task; that is permanent. Boxes you drew, edited or accepted are never counted or removed — reshaping or relabelling a Logo AI box makes it yours and clears its scores. The same scores are available in the editor's annotation filter as *Confidence* and *Visible %*, e.g. `Confidence < 0.7` to step through the images that contain doubtful boxes.
 
 Runs continue on the server when the dialog or the browser is closed, and a batch's results are collected automatically. A run also survives the machine being switched off, a lost internet connection or the provider being down: it waits, shows what it is waiting for in the **Runs** tab, and carries on by itself. The **Runs** tab shows every run, single-image ones included, with its progress, how long it took, the tokens billed (input, cached, output, reasoning) and what it cost. The cost shown before a run is an estimate: once the task has a run with the same model and effort, it is based on what those requests actually cost, so run one image first.
+
+## Collect from web
+
+Fills an image task with pictures found on the web, by keywords. Admins
+only, like Upload. On the task page, **Collect from web**; or tick
+*Then collect images from the web* when creating the task.
+
+1. Add keywords: one per search ("Tenneco logo", "Cadillac F1 car on
+   track"), each with how many images it should hold. *Paste list*
+   takes one per line, optionally `keyword, 300`. *Split evenly* sets
+   every number from one total.
+2. Pick the sources, the smallest allowed side (500 px by default) and
+   the filters, then **Collect**. Sources:
+   - web search: **Bing** (on), **Yandex** (off by default: it asks for
+     a CAPTCHA after a page or two, and the run then pauses it);
+   - open-licence archives: **Wikimedia Commons**, **Openverse** (on);
+   - free photo sites: **Unsplash**, **Pexels**, **Pixabay**, each once
+     its free API key is set in Settings → Configuration → Collect from
+     web; good for general subjects, rarely for a brand.
+   Google, Yahoo and DuckDuckGo are not offered: they answer automated
+   requests from the server with a CAPTCHA or an anti-bot check.
+
+The run works in the background on its own worker: close the dialog or
+the page and it keeps going (a chip on the task page shows it); **Stop**
+ends it and keeps what was added.
+
+A source that hits a limit, asks for a CAPTCHA or blocks the server is
+stopped for the rest of the run — never waited for — and the other
+sources fill in. When no source can find more, the run ends there and
+the task is left alone: nothing arrives later while you work on it. Each
+keyword ends ✓ (has its images), ⚑ (every source ran out) or ⛔ (only
+stopped sources had more); the progress shows each source's count and
+which were stopped and why. A source stopped for a limit is skipped by
+runs started soon after too, until its pause is over. To collect more later, raise a number
+or add keywords and run again: it searches on from where it stopped and
+never downloads the same address twice.
+
+Every image is checked before it is added; what fails is thrown away and
+replaced from further results, so the count holds unless the sources run
+out (the keyword then shows "no more found"). Turned away:
+
+- sites on the blocklist: stock agencies (Alamy, Adobe Stock, Getty,
+  Shutterstock, Dreamstime…), AI-image galleries and Chinese sites, plus
+  any added in Settings → Configuration → Collect from web;
+- images whose short side is under the minimum, animated images, SVGs;
+- exact and near duplicates (resized or recompressed copies), also of
+  images already in the task;
+- AI-generated images and watermarked ones, scored by the model service.
+  The AI check also catches some product renders and flat logo graphics;
+  untick it for logo-only keywords if too many are turned away.
+
+Every image is stored as JPEG, named after the keyword:
+`tenneco_logo_000001.jpg`, numbering on across runs. A JPEG is kept as
+it was downloaded; PNG, WebP, AVIF, GIF, BMP and TIFF are converted at
+quality 95, transparent areas become white, and photos stored sideways
+are turned upright. Wikimedia Commons needs a contact address (Settings →
+Configuration → Collect from web) before it can be used.
+

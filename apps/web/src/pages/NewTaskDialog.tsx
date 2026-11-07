@@ -6,6 +6,7 @@ import axios from "axios";
 import { Plus } from "lucide-react";
 import { tasksApi, type Task, type TaskKind } from "@/api/tasks";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
@@ -33,6 +34,7 @@ export function NewTaskDialog({
   const [name, setName] = useState("");
   const [kind, setKind] = useState<TaskKind>("image");
   const [dueDate, setDueDate] = useState(""); // YYYY-MM-DD; empty = no schedule
+  const [collect, setCollect] = useState(false);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -51,6 +53,13 @@ export function NewTaskDialog({
       qc.invalidateQueries({ queryKey: ["tasks", projectId] });
       setName("");
       onCreated();
+      if (collect && created.kind === "image") {
+        try {
+          sessionStorage.setItem(`carve.openCollect.${created.id}`, "1");
+        } catch {
+          /* storage blocked: the button is on the task page */
+        }
+      }
       navigate({
         to: "/projects/$projectId/tasks/$taskId",
         params: { projectId, taskId: created.id },
@@ -110,6 +119,17 @@ export function NewTaskDialog({
       >
         {create.isPending ? "Creating" : "Add task"}
       </Button>
+      {kind === "image" && (
+        <div className="sm:col-span-4">
+          <Checkbox
+            label="Then collect images from the web"
+            description="Opens Collect from web on the new task: type keywords, Bing, Wikimedia Commons and Openverse fill it."
+            checked={collect}
+            onChange={(e) => setCollect(e.target.checked)}
+            data-testid="new-task-collect"
+          />
+        </div>
+      )}
       {create.error != null ? (
         <p
           role="alert"

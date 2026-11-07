@@ -222,6 +222,44 @@ services:
       postgres:
         condition: service_healthy
 
+  # Collect from web: its own lane and worker, so a run (hours, mostly
+  # waiting on the network) never holds a worker the other jobs need.
+  # The run's threads download in parallel; see apps/api web_collect.
+  worker-collect:
+    build: ./apps/api
+    restart: unless-stopped
+    command: ["rq", "worker", "collect", "--url", "redis://redis:6379/0"]
+    mem_limit: 3g
+    memswap_limit: 3g
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET}
+      PASSWORD_PEPPER: ${PASSWORD_PEPPER}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      LOGO_AI_CONCURRENCY: ${LOGO_AI_CONCURRENCY:-4}
+      LOGO_AI_BATCH_PART_REQUESTS: ${LOGO_AI_BATCH_PART_REQUESTS:-300}
+      LOGO_AI_ALLOW_MEMBERS: ${LOGO_AI_ALLOW_MEMBERS:-false}
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
   # The `model` service is optional. It runs SAM and YOLO inference and
   # requires NVIDIA Container Toolkit + a GPU. Manual annotation tools in
   # the web editor work fully without it.

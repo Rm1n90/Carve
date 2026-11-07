@@ -44,12 +44,13 @@ def _tick() -> None:
     )
 
     s = get_settings()
-    # Without a key there can be no batch to poll.
-    if not (s.anthropic_api_key or s.openai_api_key or s.gemini_api_key):
-        return
     conn = Redis(host=s.redis_host, port=s.redis_port, socket_connect_timeout=2)
     # One API process does the scheduling per tick, however many run.
     if not conn.set(_LOCK_KEY, "1", nx=True, ex=_TICK_SECONDS - 1):
+        return
+    _supervise_web_collect(conn)
+    # Without a key there can be no batch to poll.
+    if not (s.anthropic_api_key or s.openai_api_key or s.gemini_api_key):
         return
     clear_dead_rq_jobs(conn)
     with get_session_factory()() as session:
@@ -59,6 +60,19 @@ def _tick() -> None:
             # Independent of the polls: one failing must not starve the other.
             session.rollback()
             enqueue_stalled_runs(session, connection=conn)
+
+
+def _supervise_web_collect(conn: Redis) -> None:
+    """Collect-from-web runs share this tick: same need (restart a run
+    whose worker died), no provider key involved."""
+    from carve_api.web_collect.jobs import supervise
+
+    with get_session_factory()() as session:
+        try:
+            supervise(session, conn)
+        except Exception:  # noqa: BLE001 — must not stop the Logo AI part
+            session.rollback()
+            log.warning("web_collect.supervise_failed", exc_info=True)
 
 
 def _loop(stop: threading.Event) -> None:

@@ -82,6 +82,9 @@ _JOB_TIMEOUTS: dict[str, int] = {
     "run_logo_ai_realtime": 4 * 3600,
     "run_logo_ai_batch_submit": 2 * 3600,
     "poll_logo_ai_batch": 3600,
+    # Collect from web: one run per execution, resumable from its rows
+    # (web_collect), so this is a watchdog, not a cap on the run.
+    "run_web_collect": 24 * 3600,
 }
 
 # Per-callable priority lane. Keys are bare callable names (same
@@ -100,6 +103,9 @@ _JOB_QUEUES: dict[str, str] = {
     # Background fan-out — one per uploaded asset, floods on bulk upload.
     "generate_image_thumbnail": _QUEUE_LOW,
     "probe_video_metadata": _QUEUE_LOW,
+    # Its own lane and worker (``worker-collect``): a run holds a worker
+    # for hours and must not keep exports, imports or Logo AI waiting.
+    "run_web_collect": "collect",
 }
 
 # Sensible defaults applied to every enqueue.

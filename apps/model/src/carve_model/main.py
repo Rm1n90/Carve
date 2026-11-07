@@ -434,6 +434,9 @@ def create_app() -> FastAPI:
     # v3.25 — central device manager (probe + per-model preference +
     # validated SAM reload).
     app.include_router(devices_router)
+    # Collect from web — AI-image and watermark filters.
+    from carve_model.quality.router import router as quality_router
+    app.include_router(quality_router)
     return app
 
 
