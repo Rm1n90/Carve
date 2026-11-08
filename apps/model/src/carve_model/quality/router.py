@@ -1,8 +1,10 @@
 # Armin Mehri — mehri.armin@gmail.com
-"""Image filters for Collect from web: is it AI-made, is it watermarked.
+"""Image filters for Collect from web: is it AI-made, is it watermarked,
+does it show what its keyword names.
 
-    POST /quality/score   {"images": [base64 …], "checks": ["ai", "watermark"]}
-                          → {"scores": [{"ai": p, "watermark": p}, …]}
+    POST /quality/score   {"images": [base64 …], "checks": ["ai", "watermark", "relevance"],
+                           "texts": [keyword …]}   (one keyword per image, for "relevance")
+                          → {"scores": [{"ai": p, "watermark": p, "relevance": cos}, …]}
     GET  /quality/status
 
 * **AI-made** — ``haywoodsloan/ai-image-detector-deploy`` (SwinV2,
@@ -17,9 +19,18 @@
   held-out images 57/60 previews and 0/36 real photos. The LAION
   watermark classifier was tried first and rejected: it flags text, so
   15 of 36 clean photos and most logos.
+* **Off topic** — SigLIP2 (``google/siglip2-so400m-patch14-384``) cosine
+  between the image and "this is a photo of <keyword>." in lower case
+  (mixed case scores far worse: AUC 0.75 against 0.95). Measured
+  2026-11-08 on 481 hand-labelled Bing, Commons and Openverse results
+  for 29 brand and F1 keywords: at 0.07, 99 % of on-topic images pass
+  and 71 % of off-topic ones are caught (all of Bing's). CLIP
+  ViT-L/14 caught 57 % at the same pass rate. What still passes is
+  mostly another organisation's logo that spells the keyword.
 
-Both are small; they load on first use and share the GPU slot with the
-other models through ``admit``.
+The first two are small; they load on first use and share the GPU slot
+with the other models through ``admit``. SigLIP2 holds ~2.2 GB, so it is
+dropped after ``RELEVANCE_IDLE_S`` without use (``evict_idle``).
 """
 
 from __future__ import annotations
@@ -29,6 +40,7 @@ import io
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +57,9 @@ AI_MODEL = "haywoodsloan/ai-image-detector-deploy"
 CLIP_NAME = "ViT-L/14@336px"
 _PROBE_PATH = Path(__file__).with_name("watermark_probe.json")
 MAX_IMAGES = 64
+RELEVANCE_MODEL = "google/siglip2-so400m-patch14-384"
+RELEVANCE_IDLE_S = 600.0
+_TEXT_CACHE_MAX = 512
 
 _state: dict[str, Any] = {}
 _lock = threading.Lock()
@@ -101,9 +116,83 @@ def _clip() -> tuple[Any, Any, Any, Any]:
     return _state["wm"]
 
 
+def _siglip() -> dict[str, Any]:
+    with _lock:
+        if "rel" not in _state:
+            import torch
+            from transformers import AutoImageProcessor, AutoModel, GemmaTokenizerFast
+
+            # AutoProcessor cannot build this checkpoint's tokenizer on
+            # transformers 5.0; the parts load fine one by one.
+            dev = _device()
+            _state["rel"] = {
+                "proc": AutoImageProcessor.from_pretrained(RELEVANCE_MODEL, use_fast=False),
+                "tok": GemmaTokenizerFast.from_pretrained(RELEVANCE_MODEL),
+                "model": AutoModel.from_pretrained(
+                    RELEVANCE_MODEL, dtype=torch.float16 if dev == "cuda" else torch.float32
+                ).to(dev).eval(),
+                "texts": {},
+            }
+        _state["rel"]["used"] = time.monotonic()
+        return _state["rel"]
+
+
+def _features(out: Any) -> Any:
+    """transformers 5 returns an output object, 4.x the tensor."""
+    import torch
+
+    f = out if torch.is_tensor(out) else out.pooler_output
+    f = f.float()
+    return f / f.norm(dim=-1, keepdim=True)
+
+
+def _prompt(keyword: str) -> str:
+    return "this is a photo of " + " ".join(keyword.split()).lower() + "."
+
+
+def _relevance(ims: list, texts: list[str]) -> list[float]:
+    import torch
+
+    rel = _siglip()
+    model = rel["model"]
+    dev = next(model.parameters()).device
+    cache: dict[str, Any] = rel["texts"]
+    new = [t for t in dict.fromkeys(texts) if t not in cache]
+    if new:
+        x = rel["tok"]([_prompt(t) for t in new], padding="max_length", max_length=64,
+                       truncation=True, return_tensors="pt").to(dev)
+        feats = _features(model.get_text_features(input_ids=x["input_ids"]))
+        for t, f in zip(new, feats, strict=True):
+            if len(cache) >= _TEXT_CACHE_MAX:
+                cache.pop(next(iter(cache)))
+            cache[t] = f
+    out: list[float] = []
+    # 16 at a time: SigLIP2 at 384 px has 729 tokens per image.
+    for i in range(0, len(ims), 16):
+        x = rel["proc"](images=ims[i : i + 16], return_tensors="pt")["pixel_values"]
+        f = _features(model.get_image_features(pixel_values=x.to(dev, dtype=model.dtype)))
+        t = torch.stack([cache[k] for k in texts[i : i + 16]])
+        out += (f * t).sum(-1).cpu().tolist()
+    return out
+
+
+def evict_idle() -> bool:
+    """Drop SigLIP2 after ``RELEVANCE_IDLE_S`` unused. Called by the
+    sweeper in ``main.py``."""
+    with _lock:
+        rel = _state.get("rel")
+        if rel is None or time.monotonic() - rel["used"] < RELEVANCE_IDLE_S:
+            return False
+        del _state["rel"]
+    log.info("quality.relevance_evicted")
+    return True
+
+
 class ScoreIn(BaseModel):
     images: list[str] = Field(..., min_length=1, max_length=MAX_IMAGES)
     checks: list[str] = Field(default_factory=lambda: ["ai", "watermark"])
+    # One keyword per image; needed for "relevance".
+    texts: list[str] | None = Field(default=None, max_length=MAX_IMAGES)
 
 
 def _decode(images: list[str]):  # noqa: ANN202
@@ -122,6 +211,11 @@ def _decode(images: list[str]):  # noqa: ANN202
 def score(payload: ScoreIn) -> dict:
     import torch
 
+    if "relevance" in payload.checks and (
+        payload.texts is None or len(payload.texts) != len(payload.images)
+    ):
+        raise HTTPException(400, {"error": "texts_required",
+                                  "detail": "relevance needs one keyword per image in texts"})
     ims = _decode(payload.images)
     scores: list[dict[str, float]] = [{} for _ in ims]
     with admit(CostClass.QUALITY), torch.no_grad():
@@ -139,10 +233,14 @@ def score(payload: ScoreIn) -> dict:
             p = torch.sigmoid(f @ w + b).cpu().tolist()
             for s, v in zip(scores, p, strict=True):
                 s["watermark"] = round(float(v), 4)
+        if "relevance" in payload.checks:
+            for s, v in zip(scores, _relevance(ims, payload.texts or []), strict=True):
+                s["relevance"] = round(float(v), 4)
     return {"scores": scores}
 
 
 @router.get("/status")
 def status() -> dict:
-    return {"ai_loaded": "ai" in _state, "watermark_loaded": "wm" in _state, "ai_model": AI_MODEL,
-            "watermark_clip": CLIP_NAME}
+    return {"ai_loaded": "ai" in _state, "watermark_loaded": "wm" in _state,
+            "relevance_loaded": "rel" in _state, "ai_model": AI_MODEL,
+            "watermark_clip": CLIP_NAME, "relevance_model": RELEVANCE_MODEL}

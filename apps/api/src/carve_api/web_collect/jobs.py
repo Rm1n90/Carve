@@ -145,6 +145,7 @@ class Options:
     min_side: int = 500
     filter_ai: bool = True
     filter_watermark: bool = True
+    filter_relevance: bool = False
     mode: str = MODE_PER_KEYWORD
 
     @classmethod
@@ -154,12 +155,22 @@ class Options:
             min_side=int(d.get("min_side") or 500),
             filter_ai=bool(d.get("filter_ai", True)),
             filter_watermark=bool(d.get("filter_watermark", True)),
+            # Off for runs started before the keyword check existed.
+            filter_relevance=bool(d.get("filter_relevance", False)),
             mode=d.get("mode") or MODE_PER_KEYWORD,
         )
 
     @property
     def checks(self) -> list[str]:
-        return [c for c, on in (("ai", self.filter_ai), ("watermark", self.filter_watermark)) if on]
+        return [
+            c
+            for c, on in (
+                ("ai", self.filter_ai),
+                ("watermark", self.filter_watermark),
+                ("relevance", self.filter_relevance),
+            )
+            if on
+        ]
 
 
 @dataclass
@@ -789,6 +800,9 @@ class _Run:
             # No AVIF: CDNs would send it, and Pillow here cannot read it.
             "Accept": "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
         }
+        referer = img.referer_for(item.cand.url, item.cand.page_url)
+        if referer:
+            headers["Referer"] = referer
         with self._host_lock(host):
             if wikimedia and not self.pacer.wait_turn("host:wikimedia", 1.0, self.stop_flag.is_set):
                 return _Failed("stopped")
@@ -867,7 +881,11 @@ class _Run:
         self.to_score_since = time.monotonic()
         while True:
             try:
-                scores = score([p.body for _, p in batch], self.opts.checks)
+                scores = score(
+                    [p.body for _, p in batch],
+                    self.opts.checks,
+                    [self.keywords[item.kw].keyword for item, _ in batch],
+                )
                 self._filters_down_since = None
                 break
             except FiltersUnavailable as exc:
@@ -895,6 +913,8 @@ class _Run:
                 self._reject(item, img.REJECT_AI, prep.dhash)
             elif "watermark" in sc and float(sc["watermark"]) >= st.web_collect_watermark_threshold:
                 self._reject(item, img.REJECT_WATERMARK, prep.dhash)
+            elif "relevance" in sc and float(sc["relevance"]) < st.web_collect_relevance_threshold:
+                self._reject(item, img.REJECT_OFF_TOPIC, prep.dhash)
             else:
                 self._add(item, prep)
 

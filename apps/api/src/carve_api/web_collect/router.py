@@ -184,6 +184,8 @@ class RunOptionsIn(BaseModel):
     min_side: int = Field(500, ge=64, le=4096)
     filter_ai: bool = True
     filter_watermark: bool = True
+    # Drop images that do not show what the keyword names.
+    filter_relevance: bool = True
     # "total": what a keyword cannot find goes to the others.
     mode: Literal["per_keyword", "total"] = MODE_PER_KEYWORD
     # Search every source again from its first page (new images appear
@@ -437,6 +439,7 @@ def start_job(
             "min_side": opts.min_side,
             "filter_ai": opts.filter_ai,
             "filter_watermark": opts.filter_watermark,
+            "filter_relevance": opts.filter_relevance,
             "mode": MODE_TOTAL if opts.mode == "total" else MODE_PER_KEYWORD,
         },
         target=sum(w for _, w in rows),

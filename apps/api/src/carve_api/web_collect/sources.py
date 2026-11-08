@@ -159,26 +159,44 @@ BING_VARIANTS: dict[str, str] = {
 }
 _BING_M = re.compile(r'\sm="(\{.*?\})"')
 BING_PAGE = 35
+# The variants that added the most new images in measurement (base size,
+# aspect and age), kept deliberately short so each keyword makes about
+# half the requests it used to: a lighter touch that Bing is less likely
+# to rate-limit. The colour and clipart/transparent filters added almost
+# nothing and are left out (their qft strings stay in BING_VARIANTS so an
+# older keyword's saved step still resolves).
+BING_CORE_VARIANTS = ("large", "1024", "tall", "square", "wide", "year", "month", "photo")
+# Below this many bytes with no results, Bing's async endpoint is serving
+# its empty "ready" shell (~1 KB) instead of a results page, which is
+# tens of KB.
+_BING_SHELL_MAX = 5000
 
 
 class BingSource(Source):
     name = SOURCE_BING
     label = "Bing"
-    interval = 1.0
+    interval = 2.0  # seconds between searches, over every run at once
+
+    def __init__(self) -> None:
+        # Set once Bing has returned any results this run, so a later
+        # empty shell is read as a real block, not just an empty keyword.
+        self._got_results = False
 
     def variants(self) -> tuple[str, ...]:
-        return tuple(BING_VARIANTS)
+        return BING_CORE_VARIANTS
 
     def search(self, client: httpx.Client, keyword: str, variant: str, cursor: int) -> SearchPage:
         try:
             resp = client.get(
                 "https://www.bing.com/images/async",
+                # No "mkt": with mkt=en-US Bing answered most searches from
+                # this server with its empty shell (0 results for "cat" and
+                # "Tenneco logo"); without it, 22 and 25 results (2026-11-08).
                 params={
                     "q": keyword,
                     "first": cursor,
                     "count": BING_PAGE,
                     "qft": BING_VARIANTS[variant],
-                    "mkt": "en-US",
                     "adlt": "moderate",
                 },
                 headers={"User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9"},
@@ -197,6 +215,18 @@ class BingSource(Source):
                 found.append(
                     Candidate(url=url, page_url=m.get("purl"), source=self.name, title=m.get("t"))
                 )
+        if found:
+            self._got_results = True
+        elif not self._got_results and len(resp.text) < _BING_SHELL_MAX:
+            # The empty shell before Bing has returned anything this run:
+            # Bing is not answering, which is not the same as running out of
+            # images. Drop it for the run (the others fill in) and for a few
+            # minutes for runs starting meanwhile.
+            raise SourceBusy(
+                "Bing answered with an empty page instead of results; "
+                "dropped for this run, the other sources continue",
+                retry_after=600,
+            )
         # Bing answers past its end with its last page again, so the run
         # also ends a variant after pages with nothing new (see jobs).
         return SearchPage(found, cursor + BING_PAGE if found else None)

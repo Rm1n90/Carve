@@ -47,6 +47,9 @@ def _sweep_loop() -> None:
             # once loaded; idle eviction returns the GPU to the
             # editor's SAM/YOLO traffic when YOLOE isn't in use.
             _YOLOE_REGISTRY.evict_idle()
+            # Collect from web's keyword check (SigLIP2, ~2.2 GB).
+            from carve_model.quality.router import evict_idle as _evict_relevance
+            _evict_relevance()
         except Exception:  # noqa: BLE001 — sweeper must never crash
             log.exception("sam idle sweeper iteration failed")
 

@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import random
 import uuid
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -137,6 +139,46 @@ def test_avif_is_read_and_stored_as_jpeg() -> None:
     assert out.ext == "jpg" and Image.open(io.BytesIO(out.body)).format == "JPEG"
 
 
+def test_referer_is_what_a_browser_would_send() -> None:
+    page = "https://www.example.com/news/story?id=4#top"
+    same_site = img.referer_for("https://www.example.com/i/a.jpg", page)
+    assert same_site == "https://www.example.com/news/story?id=4"
+    # Another site gets only the origin; nothing from https to http.
+    assert img.referer_for("https://cdn.example.net/a.jpg", page) == "https://www.example.com/"
+    assert img.referer_for("http://www.example.com/a.jpg", page) is None
+    assert img.referer_for("https://cdn.example.net/a.jpg", None) is None
+    assert img.referer_for("https://cdn.example.net/a.jpg", "javascript:void(0)") is None
+
+
+def test_runs_started_before_the_keyword_check_keep_it_off() -> None:
+    assert jobs_mod.Options.from_json({"sources": ["bing"]}).checks == ["ai", "watermark"]
+    on = jobs_mod.Options.from_json({"sources": ["bing"], "filter_relevance": True})
+    assert on.checks == ["ai", "watermark", "relevance"]
+
+
+def test_a_model_service_that_skips_a_check_counts_as_unavailable(monkeypatch) -> None:
+    from carve_api.web_collect import quality
+
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        # An older model service: knows ai and watermark only.
+        scores = [{"ai": 0.1, "watermark": 0.1} for _ in body["images"]]
+        return httpx.Response(200, json={"scores": scores})
+
+    real = httpx.Client
+    monkeypatch.setattr(
+        quality.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)
+    )
+    body = _photo(1)
+    assert quality.score([body], ["ai", "watermark"]) == [{"ai": 0.1, "watermark": 0.1}]
+    with pytest.raises(quality.FiltersUnavailable):
+        quality.score([body], ["ai", "relevance"], ["Tenneco logo"])
+    assert seen[-1]["texts"] == ["Tenneco logo"]
+
+
 def test_lookalike_hash_survives_resize_and_recompression() -> None:
     a = img.prepare(_photo(7), 100)
     smaller = Image.open(io.BytesIO(_photo(7))).resize((400, 300))
@@ -250,7 +292,10 @@ class World:
         self.bodies: dict[str, bytes] = {}
         self.ai: set[str] = set()       # xxh3 of images the AI check flags
         self.watermark: set[str] = set()
+        self.off_topic: set[str] = set()
         self.downloads: list[str] = []
+        self.headers: dict[str, dict[str, str]] = {}
+        self.scored_keywords: list[str] = []
         self.filters_down = 0
         self.sources: dict[str, FakeSource] = {}
         self.busy_once: set[str] = set()
@@ -263,7 +308,8 @@ class World:
     def flag(self, url: str, kind: str) -> None:
         import xxhash
 
-        (self.ai if kind == "ai" else self.watermark).add(xxhash.xxh3_128_hexdigest(self.body(url)))
+        flagged = {"ai": self.ai, "watermark": self.watermark, "off_topic": self.off_topic}[kind]
+        flagged.add(xxhash.xxh3_128_hexdigest(self.body(url)))
 
 
 @pytest.fixture
@@ -296,6 +342,7 @@ def world(db_session, monkeypatch) -> World:
 
     def download(client, url, headers):  # noqa: ANN001
         w.downloads.append(url)
+        w.headers[url] = dict(headers)
         if url.endswith("/broken.jpg"):
             raise img.DownloadFailed("HTTP 404", 404)
         if url in w.busy_once:
@@ -305,16 +352,23 @@ def world(db_session, monkeypatch) -> World:
 
     monkeypatch.setattr(img, "download", download)
 
-    def score(bodies, checks):  # noqa: ANN001
+    def score(bodies, checks, keywords=None):  # noqa: ANN001
         import xxhash
 
         if w.filters_down:
             w.filters_down -= 1
             raise FiltersUnavailable("model service unreachable")
+        if "relevance" in checks:
+            w.scored_keywords += keywords
         out = []
         for b in bodies:
             h = xxhash.xxh3_128_hexdigest(b)
-            out.append({"ai": 0.99 if h in w.ai else 0.01, "watermark": 0.99 if h in w.watermark else 0.01})
+            sc = {
+                "ai": 0.99 if h in w.ai else 0.01,
+                "watermark": 0.99 if h in w.watermark else 0.01,
+                "relevance": 0.01 if h in w.off_topic else 0.2,
+            }
+            out.append({c: sc[c] for c in checks})
         return out
 
     monkeypatch.setattr(jobs_mod, "score", score)
@@ -399,6 +453,8 @@ def test_rejected_images_are_replaced_until_the_target_is_met(db_session, world)
     wm_url = URL.format(k=slug, n="bing-a-1")
     world.flag(ai_url, "ai")
     world.flag(wm_url, "watermark")
+    off_url = URL.format(k=slug, n="bing-a-3")
+    world.flag(off_url, "off_topic")
     small = "https://img.example.com/small.jpg"
     world.bodies[small] = _photo(99, (640, 300))
     copy = "https://mirror.example.net/copy.jpg"
@@ -409,15 +465,24 @@ def test_rejected_images_are_replaced_until_the_target_is_met(db_session, world)
         Candidate(small, None, "bing"),
         Candidate(copy, None, "bing"),
         Candidate("https://img.example.com/broken.jpg", None, "bing"),
+        Candidate(
+            "https://img.example.com/shown.jpg", "https://img.example.com/gallery?id=3", "bing"
+        ),
     ]
-    job = _start(db_session, task, [(kw, 10)])
+    job = _start(db_session, task, [(kw, 10)], filter_relevance=True)
 
     jobs_mod.run_web_collect(str(job.id))
 
     job = _reload(db_session, job)
     assert job.status == STATUS_COMPLETED and job.added == 10
     by = job.rejected_by
-    assert by.get("ai_generated") == 1 and by.get("watermark") == 1
+    assert by.get("ai_generated") == 1 and by.get("watermark") == 1 and by.get("off_topic") == 1
+    # Each image is checked against its own keyword.
+    assert set(world.scored_keywords) == {"F1 car"}
+    # The page an image was found on goes along as Referer, as a browser does.
+    assert world.headers["https://img.example.com/shown.jpg"]["Referer"] == (
+        "https://img.example.com/gallery?id=3"
+    )
     assert by.get("blocked_stock") == 1 and by.get("too_small") == 2
     assert by.get("duplicate", 0) + by.get("near_duplicate", 0) == 1
     assert job.failed == 1
@@ -729,6 +794,76 @@ def test_yandex_reads_the_embedded_results_and_pauses_on_a_captcha() -> None:
     captcha = _mock(lambda req: httpx.Response(200, text="<form>captcha</form>"))
     with pytest.raises(SourceBusy):
         sources.YandexSource().search(captcha, "f1 car", "large", 0)
+
+
+def test_bing_uses_a_short_list_of_variants() -> None:
+    from carve_api.web_collect import sources
+
+    variants = sources.BingSource().variants()
+    # Trimmed to the handful that add the most, so each keyword makes
+    # fewer requests; every name still resolves to a real filter.
+    assert 0 < len(variants) <= 10
+    assert all(v in sources.BING_VARIANTS for v in variants)
+
+
+def _bing_page(*results: tuple[str, str]) -> str:
+    cells = "".join(
+        f'<a class="iusc" m="{{&quot;murl&quot;:&quot;{u}&quot;,'
+        f'&quot;purl&quot;:&quot;{p}&quot;,&quot;t&quot;:&quot;x&quot;}}">'
+        for u, p in results
+    )
+    return f"<html><body>{cells}</body></html>"
+
+
+# Bing's empty "ready" shell: small, no results.
+_BING_SHELL = '<script>_d.body.classList.add("b_rdy");</script>'
+
+
+def test_bing_reads_results_and_pages_on() -> None:
+    from carve_api.web_collect import sources
+
+    page = _bing_page(("https://img.example/a.jpg", "https://page.example/a"))
+    sent = {}
+
+    def handler(req):  # noqa: ANN001
+        sent.update(dict(req.url.params))
+        return httpx.Response(200, text=page)
+
+    got = sources.BingSource().search(_mock(handler), "f1 car", "large", 0)
+    # mkt=en-US made Bing answer this server with empty pages.
+    assert "mkt" not in sent and sent["q"] == "f1 car" and sent["qft"]
+    assert [(c.url, c.page_url) for c in got.candidates] == [
+        ("https://img.example/a.jpg", "https://page.example/a")
+    ]
+    assert got.next_cursor == sources.BING_PAGE
+
+
+def test_bing_an_empty_shell_before_any_result_is_read_as_a_block() -> None:
+    from carve_api.web_collect import sources
+
+    src = sources.BingSource()
+    with pytest.raises(SourceBusy) as exc:
+        src.search(_mock(lambda req: httpx.Response(200, text=_BING_SHELL)), "cat", "large", 0)
+    # Dropped for a while so runs starting soon skip it too.
+    assert exc.value.retry_after >= 600
+
+
+def test_bing_an_empty_page_after_real_results_is_just_the_end() -> None:
+    from carve_api.web_collect import sources
+
+    src = sources.BingSource()
+    page = _bing_page(("https://img.example/a.jpg", "https://page.example/a"))
+    replies = iter([httpx.Response(200, text=page), httpx.Response(200, text=_BING_SHELL)])
+
+    def handler(req):  # noqa: ANN001
+        return next(replies)
+
+    client = _mock(handler)
+    assert src.search(client, "shell logo", "large", 0).candidates  # gets results first
+    # Now an empty shell is read as this keyword/variant running out, not
+    # a block — Bing stays in the run.
+    done = src.search(client, "shell logo", "large", sources.BING_PAGE)
+    assert done.candidates == [] and done.next_cursor is None
 
 
 def test_unsplash_leaves_out_paid_photos_and_keyed_sources_need_their_key() -> None:

@@ -58,7 +58,7 @@ class CostClass(enum.Enum):
     YOLOE_TEXT = "yoloe_text"
     YOLOE_VISUAL = "yoloe_visual"
     YOLOE_PF = "yoloe_pf"
-    QUALITY = "quality"  # Collect from web: AI-image + watermark filters
+    QUALITY = "quality"  # Collect from web: AI-image, watermark, keyword filters
 
 
 # Conservative MIN_FREE floors, in MB. The intent is to leave enough
@@ -76,7 +76,7 @@ COST_FLOORS_MB: dict[CostClass, int] = {
     CostClass.YOLOE_TEXT: 2000,
     CostClass.YOLOE_VISUAL: 2500,
     CostClass.YOLOE_PF: 2500,
-    CostClass.QUALITY: 1500,
+    CostClass.QUALITY: 2500,  # SigLIP2 (keyword check) loads ~2.2 GB
 }
 
 

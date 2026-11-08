@@ -75,6 +75,7 @@ export interface WebCollectOptions {
   min_side: number;
   filter_ai: boolean;
   filter_watermark: boolean;
+  filter_relevance: boolean;
   mode: "per_keyword" | "total";
   restart_search?: boolean;
 }
@@ -169,6 +170,7 @@ export const REJECT_LABELS: Record<string, string> = {
   near_duplicate: "near duplicate",
   ai_generated: "AI-generated",
   watermark: "watermarked",
+  off_topic: "off topic",
   blocked_stock: "stock site",
   blocked_ai: "AI-image site",
   blocked_chinese: "Chinese site",

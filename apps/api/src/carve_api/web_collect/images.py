@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import warnings
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import numpy as np
@@ -32,6 +33,7 @@ REJECT_DUPLICATE = "duplicate"
 REJECT_LOOKALIKE = "near_duplicate"
 REJECT_AI = "ai_generated"
 REJECT_WATERMARK = "watermark"
+REJECT_OFF_TOPIC = "off_topic"  # does not show what the keyword names
 BLOCKED_PREFIX = "blocked_"  # + blocklist group
 
 MAX_BYTES = 30 * 1024 * 1024
@@ -69,6 +71,28 @@ class Prepared:
 class Rejected:
     reason: str
     dhash: int | None = None
+
+
+def referer_for(url: str, page_url: str | None) -> str | None:
+    """The Referer a browser sends when the page shows this image.
+
+    Some sites refuse an image asked for without one (hotlink
+    protection). Browser default policy (strict-origin-when-cross-origin):
+    the full page address on the same site, only the site's origin on
+    another, nothing from https to http."""
+    if not page_url:
+        return None
+    try:
+        page, image = urlsplit(page_url), urlsplit(url)
+    except ValueError:
+        return None
+    if page.scheme not in ("http", "https") or not page.netloc:
+        return None
+    if page.scheme == "https" and image.scheme != "https":
+        return None
+    if (page.scheme, page.netloc.lower()) == (image.scheme, image.netloc.lower()):
+        return urlunsplit((page.scheme, page.netloc, page.path or "/", page.query, ""))
+    return f"{page.scheme}://{page.netloc}/"
 
 
 def download(client: httpx.Client, url: str, headers: dict[str, str]) -> bytes:

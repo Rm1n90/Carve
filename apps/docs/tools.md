@@ -71,7 +71,9 @@ only, like Upload. On the task page, **Collect from web**; or tick
    every number from one total.
 2. Pick the sources, the smallest allowed side (500 px by default) and
    the filters, then **Collect**. Sources:
-   - web search: **Bing** (on), **Yandex** (off by default: it asks for
+   - web search: **Bing** (on), the widest source; if it ever answers
+     with empty pages the run marks it stopped (⛔) and the others fill
+     in; **Yandex** (off by default: it asks for
      a CAPTCHA after a page or two, and the run then pauses it);
    - open-licence archives: **Wikimedia Commons**, **Openverse** (on);
    - free photo sites: **Unsplash**, **Pexels**, **Pixabay**, each once
@@ -107,7 +109,16 @@ out (the keyword then shows "no more found"). Turned away:
   images already in the task;
 - AI-generated images and watermarked ones, scored by the model service.
   The AI check also catches some product renders and flat logo graphics;
-  untick it for logo-only keywords if too many are turned away.
+  untick it for logo-only keywords if too many are turned away;
+- images that do not show what their keyword names (a seashell for
+  "Shell logo"), scored by SigLIP2 against the keyword. On 481 checked
+  results it kept 99% of the right images and caught about 70% of the
+  wrong ones; what it misses is mostly another company's logo with the
+  same word in it. The score is set in Settings → Configuration →
+  Collect from web (*Keyword match score*, 0.07).
+
+Images are fetched with the page they were found on as Referer, as a
+browser does, since some sites refuse images asked for without one.
 
 Every image is stored as JPEG, named after the keyword:
 `tenneco_logo_000001.jpg`, numbering on across runs. A JPEG is kept as

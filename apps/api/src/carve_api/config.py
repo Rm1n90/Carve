@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     web_collect_watermark_threshold: float = Field(
         default=0.5, alias="WEB_COLLECT_WATERMARK_THRESHOLD"
     )
+    # Images scoring below this against their keyword are off topic
+    # (SigLIP2 similarity; 0.07 keeps ~99 % of on-topic images).
+    web_collect_relevance_threshold: float = Field(
+        default=0.07, alias="WEB_COLLECT_RELEVANCE_THRESHOLD"
+    )
     # Contact put in the User-Agent sent to Wikimedia and Openverse, as
     # Wikimedia's User-Agent policy asks (an email or a URL).
     web_collect_contact: str = Field(default="", alias="WEB_COLLECT_CONTACT")

@@ -1,5 +1,6 @@
 # Armin Mehri — mehri.armin@gmail.com
-"""The AI-image and watermark filters, run by the model service.
+"""The AI-image, watermark and keyword (off-topic) filters, run by the
+model service.
 
 Images are shrunk to 768 px before they are sent: both classifiers look
 at 256–336 px, so the full file would only cost transfer time. Not
@@ -34,12 +35,17 @@ def _small_jpeg(body: bytes) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def score(bodies: list[bytes], checks: list[str]) -> list[dict[str, float]]:
-    """One ``{"ai": p, "watermark": p}`` per image (only the asked checks)."""
+def score(
+    bodies: list[bytes], checks: list[str], keywords: list[str] | None = None
+) -> list[dict[str, float]]:
+    """One ``{"ai": p, "watermark": p, "relevance": cos}`` per image (only
+    the asked checks). ``keywords``: each image's keyword, for "relevance"."""
     if not bodies or not checks:
         return [{} for _ in bodies]
     s = get_settings()
-    payload = {"images": [_small_jpeg(b) for b in bodies], "checks": checks}
+    payload: dict = {"images": [_small_jpeg(b) for b in bodies], "checks": checks}
+    if "relevance" in checks:
+        payload["texts"] = list(keywords or [])
     try:
         with httpx.Client(base_url=s.model_base_url, timeout=120.0) as c:
             r = c.post("/quality/score", json=payload)
@@ -50,4 +56,8 @@ def score(bodies: list[bytes], checks: list[str]) -> list[dict[str, float]]:
     scores = r.json().get("scores")
     if not isinstance(scores, list) or len(scores) != len(bodies):
         raise FiltersUnavailable("model service sent an unexpected answer")
+    # An older model service ignores checks it does not know; never let
+    # that pass images unchecked.
+    if any(c not in sc for sc in scores for c in checks):
+        raise FiltersUnavailable("model service does not know every check (needs an update)")
     return scores

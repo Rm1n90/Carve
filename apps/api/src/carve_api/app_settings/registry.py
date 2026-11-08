@@ -227,6 +227,13 @@ SETTINGS: tuple[SettingDef, ...] = (
         FLOAT, minimum=0.05, maximum=1.0,
     ),
     SettingDef(
+        "WEB_COLLECT_RELEVANCE_THRESHOLD", "web_collect_relevance_threshold", _WEB_COLLECT,
+        "Keyword match score",
+        "Images that match their keyword less than this are thrown away as off topic. "
+        "0.07 keeps about 99 % of the right images; higher rejects more, lower keeps more.",
+        FLOAT, minimum=0.0, maximum=0.3,
+    ),
+    SettingDef(
         "WEB_COLLECT_CONTACT", "web_collect_contact", _WEB_COLLECT, "Contact for image sites",
         "An email or web address sent to Wikimedia Commons and Openverse with every "
         "request, as Wikimedia's rules ask, so they can reach you instead of blocking.",

@@ -76,6 +76,7 @@ function loadOptions(): WebCollectOptions {
     min_side: 500,
     filter_ai: true,
     filter_watermark: true,
+    filter_relevance: true,
     mode: "per_keyword",
   };
   try {
@@ -829,6 +830,12 @@ function SettingsTab({
             help="Skips images with a stock-photo watermark across them (Alamy, Getty, Shutterstock and similar)."
             checked={options.filter_watermark}
             onChange={(on) => setOptions((o) => ({ ...o, filter_watermark: on }))}
+          />
+          <Option
+            label="Skip images that don't match the keyword"
+            help="Looks at each image and skips it if it doesn't show what its keyword says. Example: for “Shell logo”, a photo of a seashell is skipped. It misses some wrong images, mostly other companies' logos with the same word."
+            checked={options.filter_relevance}
+            onChange={(on) => setOptions((o) => ({ ...o, filter_relevance: on }))}
           />
         </div>
         <p className="flex items-center gap-1 text-[11px] text-[color:var(--text-tertiary)]">
