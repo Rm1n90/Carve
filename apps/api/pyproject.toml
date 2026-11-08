@@ -18,6 +18,8 @@ dependencies = [
   "rq==2.0.0",
   "boto3==1.36.5",
   "httpx==0.28.1",
+  # Brotli decoding for httpx (Collect from web: DuckDuckGo sends Brotli).
+  "brotli==1.2.1",
   "email-validator==2.2.0",
   "ffmpeg-python==0.2.0",
   "Pillow==11.1.0",

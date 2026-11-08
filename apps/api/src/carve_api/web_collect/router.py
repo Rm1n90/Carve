@@ -35,11 +35,14 @@ from carve_api.web_collect.models import (
     ACTIVE_STATUSES,
     DEFAULT_SOURCES,
     OUTCOME_ADDED,
+    SOURCE_BAIDU,
     SOURCE_BING,
     SOURCE_COMMONS,
+    SOURCE_DUCKDUCKGO,
     SOURCE_OPENVERSE,
     SOURCE_PEXELS,
     SOURCE_PIXABAY,
+    SOURCE_SO360,
     SOURCE_UNSPLASH,
     SOURCE_YANDEX,
     SOURCES,
@@ -62,6 +65,9 @@ MAX_KEYWORDS = 500
 MAX_TARGET = 100_000
 SOURCE_LABELS = {
     SOURCE_BING: "Bing",
+    SOURCE_DUCKDUCKGO: "DuckDuckGo",
+    SOURCE_BAIDU: "Baidu",
+    SOURCE_SO360: "360 Search",
     SOURCE_YANDEX: "Yandex",
     SOURCE_COMMONS: "Wikimedia Commons",
     SOURCE_OPENVERSE: "Openverse",
@@ -71,6 +77,9 @@ SOURCE_LABELS = {
 }
 SOURCE_KINDS = {
     SOURCE_BING: "web",
+    SOURCE_DUCKDUCKGO: "web",
+    SOURCE_BAIDU: "web",
+    SOURCE_SO360: "web",
     SOURCE_YANDEX: "web",
     SOURCE_COMMONS: "open",
     SOURCE_OPENVERSE: "open",
@@ -179,13 +188,26 @@ class KeywordsIn(BaseModel):
 
 class RunOptionsIn(BaseModel):
     sources: list[
-        Literal["bing", "yandex", "commons", "openverse", "unsplash", "pexels", "pixabay"]
+        Literal[
+            "bing",
+            "duckduckgo",
+            "baidu",
+            "so360",
+            "yandex",
+            "commons",
+            "openverse",
+            "unsplash",
+            "pexels",
+            "pixabay",
+        ]
     ] = Field(default_factory=lambda: list(DEFAULT_SOURCES), min_length=1)
     min_side: int = Field(500, ge=64, le=4096)
     filter_ai: bool = True
     filter_watermark: bool = True
     # Drop images that do not show what the keyword names.
     filter_relevance: bool = True
+    # Leave out images on Chinese sites (most of what Baidu and 360 find).
+    skip_chinese_sites: bool = False
     # "total": what a keyword cannot find goes to the others.
     mode: Literal["per_keyword", "total"] = MODE_PER_KEYWORD
     # Search every source again from its first page (new images appear
@@ -440,6 +462,7 @@ def start_job(
             "filter_ai": opts.filter_ai,
             "filter_watermark": opts.filter_watermark,
             "filter_relevance": opts.filter_relevance,
+            "skip_chinese_sites": opts.skip_chinese_sites,
             "mode": MODE_TOTAL if opts.mode == "total" else MODE_PER_KEYWORD,
         },
         target=sum(w for _, w in rows),

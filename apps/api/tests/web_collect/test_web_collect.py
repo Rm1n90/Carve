@@ -220,6 +220,7 @@ class FakeSource(Source):
         self.always_busy = False
         self.always_fail = False
         self.fail_once: set[str] = set()
+        self.off_topic: set[str] = set()  # keywords it answers with unrelated images
 
     def variants(self):  # noqa: ANN201
         return self._variants
@@ -236,6 +237,8 @@ class FakeSource(Source):
         if variant in self.fail_once:
             self.fail_once.discard(variant)
             raise SourceError("HTTP 502")
+        if keyword in self.off_topic:
+            return SearchPage([], None, off_topic=True)
         page = cursor // self.per_page
         if page >= self.pages:
             return SearchPage([], None)
@@ -822,7 +825,7 @@ _BING_SHELL = '<script>_d.body.classList.add("b_rdy");</script>'
 def test_bing_reads_results_and_pages_on() -> None:
     from carve_api.web_collect import sources
 
-    page = _bing_page(("https://img.example/a.jpg", "https://page.example/a"))
+    page = _bing_page(("https://img.example/car.jpg", "https://page.example/car"))
     sent = {}
 
     def handler(req):  # noqa: ANN001
@@ -833,7 +836,7 @@ def test_bing_reads_results_and_pages_on() -> None:
     # mkt=en-US made Bing answer this server with empty pages.
     assert "mkt" not in sent and sent["q"] == "f1 car" and sent["qft"]
     assert [(c.url, c.page_url) for c in got.candidates] == [
-        ("https://img.example/a.jpg", "https://page.example/a")
+        ("https://img.example/car.jpg", "https://page.example/car")
     ]
     assert got.next_cursor == sources.BING_PAGE
 
@@ -852,7 +855,7 @@ def test_bing_an_empty_page_after_real_results_is_just_the_end() -> None:
     from carve_api.web_collect import sources
 
     src = sources.BingSource()
-    page = _bing_page(("https://img.example/a.jpg", "https://page.example/a"))
+    page = _bing_page(("https://img.example/shell.jpg", "https://page.example/shell"))
     replies = iter([httpx.Response(200, text=page), httpx.Response(200, text=_BING_SHELL)])
 
     def handler(req):  # noqa: ANN001
@@ -864,6 +867,171 @@ def test_bing_an_empty_page_after_real_results_is_just_the_end() -> None:
     # a block — Bing stays in the run.
     done = src.search(client, "shell logo", "large", sources.BING_PAGE)
     assert done.candidates == [] and done.next_cursor is None
+
+
+def test_bing_results_about_something_else_are_not_used() -> None:
+    from carve_api.web_collect import sources
+
+    # What Bing answered this server for "Tenneco logo": nothing about it,
+    # though "logo" alone matches a logo-design page.
+    junk = _bing_page(
+        ("https://img.example/verity-poster.jpg", "https://films.example/verity"),
+        ("https://img.example/logo-ideas.png", "https://design.example/logo-ideas"),
+    )
+    got = sources.BingSource().search(
+        _mock(lambda req: httpx.Response(200, text=junk)), "Tenneco logo", "large", 0
+    )
+    assert got.off_topic and got.candidates == [] and got.next_cursor is None
+
+    real = _bing_page(
+        ("https://img.example/tenneco-logo.png", "https://brands.example/tenneco"),
+        ("https://img.example/other.jpg", "https://page.example/other"),
+    )
+    got = sources.BingSource().search(
+        _mock(lambda req: httpx.Response(200, text=real)), "Tenneco logo", "large", 0
+    )
+    assert not got.off_topic and len(got.candidates) == 2
+    # A keyword without a telling word is never judged.
+    assert sources.keyword_words("F1 logo") == []
+
+
+def _ddg_world(search_page: str = '<script>vqd="4-12345678901"</script>'):  # noqa: ANN202
+    calls: list[str] = []
+    replies: dict[str, list[httpx.Response]] = {"i.js": []}
+
+    def handler(req):  # noqa: ANN001
+        if req.url.path == "/":
+            calls.append("token")
+            return httpx.Response(200, text=search_page, headers={"set-cookie": "s=1; Path=/"})
+        calls.append(f"results s={req.url.params['s']} vqd={req.url.params['vqd']}")
+        # The cookie set by the search page goes back, as a browser's would.
+        assert req.headers.get("cookie") == "s=1"
+        assert req.headers["x-requested-with"] == "XMLHttpRequest"
+        if replies["i.js"]:
+            return replies["i.js"].pop(0)
+        return httpx.Response(200, json={
+            "results": [
+                {"image": "https://img.example/heuer.jpg", "url": "https://watch.example/heuer",
+                 "title": "TAG Heuer logo", "width": 1600, "height": 900},
+                {"image": "data:image/png;base64,xx"},
+            ],
+            "next": "i.js?q=TAG+Heuer+logo&o=json&p=1&s=100&u=bing&f=,,,,&l=us-en",
+        })
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), calls, replies
+
+
+def test_duckduckgo_gets_a_token_once_then_reads_results_with_sizes() -> None:
+    from carve_api.web_collect import sources
+
+    client, calls, _ = _ddg_world()
+    src = sources.DuckDuckGoSource()
+    got = src.search(client, "TAG Heuer logo", "search", 0)
+    assert [(c.url, c.page_url, c.width, c.height) for c in got.candidates] == [
+        ("https://img.example/heuer.jpg", "https://watch.example/heuer", 1600, 900)
+    ]
+    assert got.next_cursor == 100
+    src.search(client, "TAG Heuer logo", "search", 100)
+    assert calls == [
+        "token",
+        "results s=0 vqd=4-12345678901",
+        "results s=100 vqd=4-12345678901",
+    ]
+
+
+def test_duckduckgo_renews_a_stale_token_and_stops_when_refused() -> None:
+    from carve_api.web_collect import sources
+
+    client, calls, replies = _ddg_world()
+    src = sources.DuckDuckGoSource()
+    src.search(client, "pirelli", "search", 0)
+    replies["i.js"] = [httpx.Response(403)]
+    assert src.search(client, "pirelli", "search", 100).candidates  # new token, then results
+    assert calls.count("token") == 2
+
+    replies["i.js"] = [httpx.Response(418)]
+    with pytest.raises(SourceBusy):
+        src.search(client, "pirelli", "search", 200)
+
+    no_token, _, _ = _ddg_world(search_page="<html>Please verify you are human</html>")
+    with pytest.raises(SourceBusy):
+        sources.DuckDuckGoSource().search(no_token, "pirelli", "search", 0)
+
+
+def _baidu_scramble(url: str) -> str:
+    """Baidu's objURL form of an address (what baidu_address undoes)."""
+    table = str.maketrans("7dgjmoru140852vsnkheb963wtqplifca", "0123456789abcdefghijklmnopqrstuvw")
+    out = url.translate(table)
+    for k, v in {":": "_z2C$q", ".": "_z&e3B", "/": "AzdH3F"}.items():
+        out = out.replace(k, v)
+    return out
+
+
+def test_baidu_reads_clear_and_scrambled_addresses_and_stops_when_flagged() -> None:
+    from carve_api.web_collect import sources
+
+    body = json.dumps({"listNum": 80, "data": [
+        {"replaceUrl": [{"ObjURL": "https://img.example/tenneco.jpg",
+                         "FromURL": "http://news.example/tenneco"}],
+         "objURL": "ignored", "width": 1280, "height": 853,
+         "fromPageTitleEnc": "TENNECO_PLACEHOLDER"},
+        {"objURL": _baidu_scramble("https://cdn.example/t2.png"),
+         "fromURL": _baidu_scramble("https://site.example/p"), "width": "640", "height": "480",
+         "fromPageTitle": "<strong>Tenneco</strong> &amp; logo"},
+        {},
+    ]}).replace("TENNECO_PLACEHOLDER", "Tenneco\\'s logo")  # a JS-style escape, not JSON
+    sent = {}
+
+    def handler(req):  # noqa: ANN001
+        sent.update(dict(req.url.params))
+        return httpx.Response(200, text=body)
+
+    got = sources.BaiduSource().search(_mock(handler), "Tenneco logo", "search", 30)
+    assert [(c.url, c.page_url, c.width, c.height, c.title) for c in got.candidates] == [
+        ("https://img.example/tenneco.jpg", "http://news.example/tenneco", 1280, 853,
+         "Tenneco's logo"),
+        ("https://cdn.example/t2.png", "https://site.example/p", 640, 480, "Tenneco & logo"),
+    ]
+    assert sent["word"] == "Tenneco logo" and sent["pn"] == "30"
+    assert got.next_cursor == 30 + sources.BAIDU_PAGE
+
+    anti = {"antiFlag": 1, "message": "Forbid spider access"}
+    flagged = _mock(lambda req: httpx.Response(200, json=anti))
+    with pytest.raises(SourceBusy):
+        sources.BaiduSource().search(flagged, "Tenneco logo", "search", 0)
+
+
+def test_360_reads_results_and_pages_where_it_says() -> None:
+    from carve_api.web_collect import sources
+
+    replies = [
+        {"end": False, "lastindex": 60, "list": [
+            {"img": "http://img.example/a.jpg", "link": "http://auto.example/a",
+             "title": "<em>Pirelli</em> logo", "width": "1080", "height": "720"},
+            {"img": "", "title": "no address"},
+        ]},
+        {"end": True, "lastindex": 120, "list": [{"img": "https://img.example/b.jpg"}]},
+    ]
+    client = _mock(lambda req: httpx.Response(200, json=replies.pop(0)))
+    first = sources.So360Source().search(client, "Pirelli logo", "search", 0)
+    assert [(c.url, c.page_url, c.width, c.title) for c in first.candidates] == [
+        ("http://img.example/a.jpg", "http://auto.example/a", 1080, "Pirelli logo")
+    ]
+    assert first.next_cursor == 60
+    last = sources.So360Source().search(client, "Pirelli logo", "search", 60)
+    assert len(last.candidates) == 1 and last.next_cursor is None
+
+
+def test_chinese_sites_are_skipped_only_when_a_run_asks() -> None:
+    allow = Blocklist(chinese=False)
+    assert allow.reason("https://p0.sohu.com/a.jpg", "https://news.example.cn/x") is None
+    assert allow.reason("https://www.alamy.com/x.jpg") == "stock"
+    skip = Blocklist()
+    assert skip.reason("https://p0.sohu.com/a.jpg") == "chinese"
+    assert skip.reason("https://img.example.com.cn/a.jpg") == "chinese"
+    # Runs started when Chinese sites were always left out keep that.
+    assert jobs_mod.Options.from_json({"sources": ["bing"]}).skip_chinese_sites
+    assert not router_mod.RunOptionsIn().skip_chinese_sites
 
 
 def test_unsplash_leaves_out_paid_photos_and_keyed_sources_need_their_key() -> None:
@@ -887,8 +1055,29 @@ def test_unsplash_leaves_out_paid_photos_and_keyed_sources_need_their_key() -> N
 
     missing = sources.unavailable("", "", "", "")
     assert set(missing) == {"commons", "pexels", "pixabay", "unsplash"}
-    built = sources.build_sources(["bing", "yandex", "pexels", "pixabay"], "me@x.org", pexels_key="k")
-    assert set(built) == {"bing", "yandex", "pexels"}
+    built = sources.build_sources(
+        ["bing", "duckduckgo", "baidu", "so360", "yandex", "pexels", "pixabay"], "me@x.org",
+        pexels_key="k",
+    )
+    assert set(built) == {"bing", "duckduckgo", "baidu", "so360", "yandex", "pexels"}
+
+
+def test_a_source_answering_off_topic_is_skipped_for_that_keyword(db_session, world) -> None:
+    _, task = _seed(db_session)
+    kw = _keyword(db_session, task, "tenneco", 3)
+    world.sources["bing"].off_topic = {"tenneco"}
+    job = _start(db_session, task, [(kw, 3)])
+
+    jobs_mod.run_web_collect(str(job.id))
+
+    db_session.expire_all()
+    job = db_session.get(WebCollectJob, job.id)
+    # One search told the run; Bing's other variant was never searched.
+    assert [c for c in world.sources["bing"].calls if c[0] == "tenneco"] == [("tenneco", "a", 0)]
+    assert job.source_stats["bing"]["off_topic"] == 1
+    assert job.source_stats["commons"]["added"] == 3
+    steps = db_session.get(WebCollectKeyword, kw.id).steps
+    assert steps["bing:a"]["done"] and steps["bing:b"]["done"]
 
 
 def test_a_search_that_fails_once_is_retried(db_session, world) -> None:

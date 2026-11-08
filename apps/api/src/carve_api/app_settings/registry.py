@@ -208,7 +208,8 @@ SETTINGS: tuple[SettingDef, ...] = (
         "WEB_COLLECT_BLOCKED_SITES", "web_collect_blocked_sites", _WEB_COLLECT,
         "More blocked sites",
         "Sites never collected from, besides the built-in lists (stock agencies such as "
-        "Alamy, Adobe Stock, Getty and Shutterstock; AI-image galleries; Chinese sites). "
+        "Alamy, Adobe Stock, Getty and Shutterstock; AI-image galleries; Chinese sites when "
+        "a run asks to skip them). "
         "Domains separated by commas, e.g. example.com, photos.example.org.",
         TEXT, allow_empty=True,
     ),

@@ -75,8 +75,9 @@ class Settings(BaseSettings):
 
     # Collect from web (web_collect). Downloads at once per run.
     web_collect_threads: int = Field(default=24, alias="WEB_COLLECT_THREADS")
-    # Sites never collected from, besides the built-in stock / AI / Chinese
-    # lists: domains separated by commas or new lines.
+    # Sites never collected from, besides the built-in stock / AI lists
+    # (and Chinese sites when a run asks): domains separated by commas or
+    # new lines.
     web_collect_blocked_sites: str = Field(default="", alias="WEB_COLLECT_BLOCKED_SITES")
     # Scores at or above these are rejected (0–1, from the model service).
     web_collect_ai_threshold: float = Field(default=0.9, alias="WEB_COLLECT_AI_THRESHOLD")

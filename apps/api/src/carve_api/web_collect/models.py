@@ -34,6 +34,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 from carve_api.db import Base
 
 SOURCE_BING = "bing"
+SOURCE_DUCKDUCKGO = "duckduckgo"
+SOURCE_BAIDU = "baidu"
+SOURCE_SO360 = "so360"
 SOURCE_YANDEX = "yandex"
 SOURCE_COMMONS = "commons"
 SOURCE_OPENVERSE = "openverse"
@@ -42,6 +45,9 @@ SOURCE_PEXELS = "pexels"
 SOURCE_PIXABAY = "pixabay"
 SOURCES = (
     SOURCE_BING,
+    SOURCE_DUCKDUCKGO,
+    SOURCE_BAIDU,
+    SOURCE_SO360,
     SOURCE_YANDEX,
     SOURCE_COMMONS,
     SOURCE_OPENVERSE,
@@ -49,11 +55,20 @@ SOURCES = (
     SOURCE_PEXELS,
     SOURCE_PIXABAY,
 )
-# Bing and the open-licence archives find what a keyword names. Yandex
+# The web search engines and the open-licence archives find what a
+# keyword names (DuckDuckGo, Baidu and 360 also the rarer brands Bing
+# gets wrong). Yandex
 # answers only a page or so before asking for a CAPTCHA, so it is
 # opt-in; the free photo sites return good photos of general subjects
 # but rarely a given brand, so they are opt-in too.
-DEFAULT_SOURCES = (SOURCE_BING, SOURCE_COMMONS, SOURCE_OPENVERSE)
+DEFAULT_SOURCES = (
+    SOURCE_BING,
+    SOURCE_DUCKDUCKGO,
+    SOURCE_BAIDU,
+    SOURCE_SO360,
+    SOURCE_COMMONS,
+    SOURCE_OPENVERSE,
+)
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"

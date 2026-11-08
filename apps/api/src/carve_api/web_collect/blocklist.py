@@ -10,8 +10,9 @@ Three groups, all on by default:
 
 * stock and watermark agencies — their previews carry a watermark;
 * AI-image galleries — generated images;
-* Chinese sites — the user asked for none (and many are watermarked
-  reposts).
+* Chinese sites — many are watermarked reposts; left out only when a
+  run asks (Baidu and 360 Search find mostly these, and the run's
+  filters judge each image).
 
 Admins add more in Settings → Configuration (``WEB_COLLECT_BLOCKED_SITES``).
 """
@@ -288,9 +289,12 @@ def parse_extra(text: str | None) -> tuple[str, ...]:
 class Blocklist:
     """Suffix match of a host against the blocked domains."""
 
-    def __init__(self, extra: tuple[str, ...] = ()) -> None:
+    def __init__(self, extra: tuple[str, ...] = (), chinese: bool = True) -> None:
+        self.chinese = chinese
         self._by_domain: dict[str, str] = {}
         for group, domains in DEFAULT_GROUPS.items():
+            if group == "chinese" and not chinese:
+                continue
             for d in domains:
                 self._by_domain.setdefault(d, group)
         for d in extra:
@@ -303,7 +307,7 @@ class Blocklist:
             host = host_of(url)
             if not host:
                 continue
-            if host.endswith(CHINESE_TLDS):
+            if self.chinese and host.endswith(CHINESE_TLDS):
                 return "chinese"
             parts = host.split(".")
             for i in range(len(parts) - 1):

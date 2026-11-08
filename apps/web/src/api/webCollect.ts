@@ -1,7 +1,8 @@
 // Armin Mehri — mehri.armin@gmail.com
 /**
  * Collect from web — a task's keywords and the runs that download images
- * for them (Bing, Wikimedia Commons, Openverse) straight into the task.
+ * for them (Bing, DuckDuckGo, Wikimedia Commons, Openverse and more)
+ * straight into the task.
  *
  * Runs are rows on the server, worked by their own worker: closing the
  * dialog or reloading the page does not stop one; Stop does.
@@ -10,6 +11,9 @@ import { api } from "./client";
 
 export type WebCollectSource =
   | "bing"
+  | "duckduckgo"
+  | "baidu"
+  | "so360"
   | "yandex"
   | "commons"
   | "openverse"
@@ -48,6 +52,9 @@ export interface WebCollectSourceStat {
   status: "ok" | "error" | "stopped";
   /** Why it was stopped. */
   note?: string | null;
+  /** Keywords it answered with images about something else (left to the
+   * other sources). */
+  off_topic?: number;
 }
 
 export interface WebCollectKeyword {
@@ -76,6 +83,8 @@ export interface WebCollectOptions {
   filter_ai: boolean;
   filter_watermark: boolean;
   filter_relevance: boolean;
+  /** Leave out images on Chinese sites (most of what Baidu and 360 find). */
+  skip_chinese_sites: boolean;
   mode: "per_keyword" | "total";
   restart_search?: boolean;
 }

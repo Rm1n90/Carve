@@ -71,16 +71,24 @@ only, like Upload. On the task page, **Collect from web**; or tick
    every number from one total.
 2. Pick the sources, the smallest allowed side (500 px by default) and
    the filters, then **Collect**. Sources:
-   - web search: **Bing** (on), the widest source; if it ever answers
-     with empty pages the run marks it stopped (⛔) and the others fill
-     in; **Yandex** (off by default: it asks for
-     a CAPTCHA after a page or two, and the run then pauses it);
+   - web search: **Bing** (on), the widest source for common keywords;
+     for rarer ones (a less-known brand) it often answers with unrelated
+     images, and the run then skips it for that keyword (its tooltip
+     counts them); if it answers with empty pages the run marks it
+     stopped (⛔) and the others fill in; **DuckDuckGo** (on), also good
+     for the brands Bing gets wrong, searching slowly on purpose (asked
+     too fast it stops answering for a while, and is then stopped for
+     the run); **Baidu** and **360 Search** (on), Chinese search engines
+     that find the real logos of many brands, mostly on Chinese sites;
+     **Yandex** (off by default: it asks for a CAPTCHA after a page or
+     two, and the run then pauses it);
    - open-licence archives: **Wikimedia Commons**, **Openverse** (on);
    - free photo sites: **Unsplash**, **Pexels**, **Pixabay**, each once
      its free API key is set in Settings → Configuration → Collect from
      web; good for general subjects, rarely for a brand.
-   Google, Yahoo and DuckDuckGo are not offered: they answer automated
-   requests from the server with a CAPTCHA or an anti-bot check.
+   Google and Yahoo are not offered: they answer automated requests
+   from the server with a CAPTCHA or an anti-bot check.
+   Sources added since you last saved your choice start ticked once.
 
 The run works in the background on its own worker: close the dialog or
 the page and it keeps going (a chip on the task page shows it); **Stop**
@@ -102,8 +110,10 @@ replaced from further results, so the count holds unless the sources run
 out (the keyword then shows "no more found"). Turned away:
 
 - sites on the blocklist: stock agencies (Alamy, Adobe Stock, Getty,
-  Shutterstock, Dreamstime…), AI-image galleries and Chinese sites, plus
-  any added in Settings → Configuration → Collect from web;
+  Shutterstock, Dreamstime…) and AI-image galleries, plus any added in
+  Settings → Configuration → Collect from web; Chinese sites too when
+  **Skip images on Chinese sites** is ticked (off by default: Baidu and
+  360 find mostly those, and the other checks judge each image);
 - images whose short side is under the minimum, animated images, SVGs;
 - exact and near duplicates (resized or recompressed copies), also of
   images already in the task;

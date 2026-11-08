@@ -114,11 +114,14 @@ MAX_PACING_WAIT = 75.0
 # How long the image filters may be unreachable before the run stops.
 FILTERS_GIVE_UP = 600.0
 # Turns the sources take at searching (see _Run._next_step).
-# Bing finds the most; the others take a turn each (a paused or
-# unchosen source just passes its turn).
+# The web search engines find the most; the others take a turn each (a
+# paused or unchosen source just passes its turn, and a source not due
+# yet for its pace gives it to the next one).
 ROTATION = (
-    "bing", "bing", "commons", "bing", "openverse", "bing", "yandex",
-    "bing", "unsplash", "bing", "pexels", "bing", "pixabay",
+    "bing", "baidu", "duckduckgo", "so360", "commons",
+    "bing", "baidu", "duckduckgo", "so360", "openverse",
+    "bing", "baidu", "duckduckgo", "so360", "yandex",
+    "bing", "baidu", "unsplash", "so360", "pexels", "pixabay",
 )  # fmt: skip
 FILTERS_RETRY = 20.0
 _GRACE = timedelta(seconds=45)
@@ -146,6 +149,8 @@ class Options:
     filter_ai: bool = True
     filter_watermark: bool = True
     filter_relevance: bool = False
+    # Leave out images on Chinese sites (Baidu and 360 find mostly those).
+    skip_chinese_sites: bool = True
     mode: str = MODE_PER_KEYWORD
 
     @classmethod
@@ -157,6 +162,8 @@ class Options:
             filter_watermark=bool(d.get("filter_watermark", True)),
             # Off for runs started before the keyword check existed.
             filter_relevance=bool(d.get("filter_relevance", False)),
+            # On for runs started when Chinese sites were always left out.
+            skip_chinese_sites=bool(d.get("skip_chinese_sites", True)),
             mode=d.get("mode") or MODE_PER_KEYWORD,
         )
 
@@ -241,7 +248,9 @@ class _Run:
         self.opts = Options.from_json(job.options or {})
         st = get_settings()
         self.settings = st
-        self.blocklist = Blocklist(parse_extra(st.web_collect_blocked_sites))
+        self.blocklist = Blocklist(
+            parse_extra(st.web_collect_blocked_sites), chinese=self.opts.skip_chinese_sites
+        )
         self.redis = Redis(host=st.redis_host, port=st.redis_port)
         self.pacer = Pacer(self.redis)
         self.sources: dict[str, Source] = build_sources(
@@ -602,6 +611,17 @@ class _Run:
                 self._note_source(source_name, "error", str(exc))
             return False
         self._errors[source_name] = 0
+        if page.off_topic:
+            # Its images are about something else: none of this source's
+            # searches for the keyword are made; the others fill in.
+            for name in self.order:
+                if name.split(":")[0] == source_name:
+                    steps[name] = {**steps[name], "done": True}
+            self.job.searches += 1
+            self._note_source(source_name, "ok", None, searches=1, off_topic=1)
+            log.info("web_collect.off_topic source=%s keyword=%r", source_name, kw.keyword)
+            self._save_step(kw, steps, step, steps[step])
+            return True
         new: list[_Item] = []
         records = []
         for cand in page.candidates:
@@ -653,6 +673,7 @@ class _Run:
         searches: int = 0,
         found: int = 0,
         added: int = 0,
+        off_topic: int = 0,
     ) -> None:
         """Per-source counters and state on the run, for the progress view:
         which sources work, and which were stopped and why."""
@@ -661,6 +682,9 @@ class _Run:
         cur["searches"] = int(cur.get("searches", 0)) + searches
         cur["found"] = int(cur.get("found", 0)) + found
         cur["added"] = int(cur.get("added", 0)) + added
+        if off_topic:
+            # Keywords it answered with images about something else.
+            cur["off_topic"] = int(cur.get("off_topic", 0)) + off_topic
         if status is not None and cur.get("status") != "stopped":
             cur["status"] = status
             cur["note"] = (note or "")[:200] or None

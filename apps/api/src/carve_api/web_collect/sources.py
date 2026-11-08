@@ -12,7 +12,23 @@ Measured from this server on 2026-11-07:
   open-source downloader use): 250–400 different images per phrase and
   filter, then it repeats itself. Its filters give partly different
   results, which is how a keyword reaches thousands: nine filters gave
-  about 1,600 unique addresses. Results carry no dimensions.
+  about 1,600 unique addresses. Results carry no dimensions. For rarer
+  keywords it answers this server with images about something else
+  (2026-11-08: "Tenneco logo", "TAG Heuer logo", "Pirelli logo": 0 of
+  35 mention the brand, with every filter and also with the exact
+  requests of KTS-o7/better_bing_image_downloader and
+  ultralytics/google-images-download; "golden retriever", "Nike logo":
+  35 of 35). Such a keyword is left to the other sources.
+* **DuckDuckGo** (``i.js``, the JSON its own image page loads, as
+  KTS-o7/better_bing_image_downloader uses it): 100 results a page with
+  dimensions; on topic where Bing was not (2026-11-08: "TAG Heuer logo"
+  92 of 92, "Pirelli logo" 99 of 99). It answers a burst of requests
+  with "slow down" and then refuses for a while, so it goes slowly.
+* **Baidu** and **360 Search** (the results JSON their own image pages
+  load, as imagedl uses it): the actual logos of brands Bing gets wrong
+  ("Tenneco logo": most of the first 15 of each), with sizes. Most are on
+  Chinese sites, some of them slow to answer from here. **Sogou** is not
+  here: it answers plain requests with nothing.
 * **Wikimedia Commons** (MediaWiki API): freely licensed, no watermarks,
   dimensions known before downloading. Its policy asks for a
   descriptive User-Agent and polite rates.
@@ -36,8 +52,7 @@ headers) and its proxy rotation.
 
 Not here, because they answer this server's requests with a CAPTCHA or
 an anti-bot check, and getting past those is not something Carve does
-(tested 2026-11-07): Google (also to an automated browser), Yahoo,
-DuckDuckGo.
+(tested 2026-11-07): Google (also to an automated browser), Yahoo.
 """
 
 from __future__ import annotations
@@ -46,15 +61,19 @@ import html
 import json
 import re
 from dataclasses import dataclass, field
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
 from carve_api.web_collect.models import (
+    SOURCE_BAIDU,
     SOURCE_BING,
     SOURCE_COMMONS,
+    SOURCE_DUCKDUCKGO,
     SOURCE_OPENVERSE,
     SOURCE_PEXELS,
     SOURCE_PIXABAY,
+    SOURCE_SO360,
     SOURCE_UNSPLASH,
     SOURCE_YANDEX,
 )
@@ -82,6 +101,9 @@ class SearchPage:
     candidates: list[Candidate] = field(default_factory=list)
     # Where the next page starts; None when this variant is used up.
     next_cursor: int | None = None
+    # The source answered with images about something else: none of its
+    # searches for this keyword are worth making (see about_keyword).
+    off_topic: bool = False
 
 
 class SourceBusy(Exception):
@@ -116,6 +138,38 @@ def _check(resp: httpx.Response, source: str) -> None:
         raise SourceBusy(f"{source} refused ({resp.status_code})", 900.0)
     if resp.status_code >= 400:
         raise SourceError(f"{source} HTTP {resp.status_code}")
+
+
+# Words that say what kind of picture, not what it shows: a result that
+# matches only these ("logo design ideas") is not about the keyword.
+_GENERIC_WORDS = frozenset(
+    {"logo", "logos", "photo", "photos", "image", "images", "picture", "pictures", "png", "svg"}
+    | {"vector", "icon", "icons", "wallpaper", "wallpapers", "the", "and", "for", "with"}
+)
+
+
+def keyword_words(keyword: str) -> list[str]:
+    """The words of a keyword that say what it shows: three letters or
+    more, not "logo", "photo" and the like."""
+    return [
+        w for w in re.findall(r"\w+", keyword.lower()) if len(w) >= 3 and w not in _GENERIC_WORDS
+    ]
+
+
+def about_keyword(found: list[Candidate], keyword: str) -> bool:
+    """Whether a page of results is about the keyword: at least one in
+    ten mentions one of its words in the title or either address. Bing's
+    unrelated answers mention none; its real ones nearly all. A keyword
+    without such a word ("F1") always passes."""
+    words = keyword_words(keyword)
+    if not words or not found:
+        return True
+    hits = sum(
+        1
+        for c in found
+        if any(w in f"{c.title or ''} {c.page_url or ''} {c.url}".lower() for w in words)
+    )
+    return hits * 10 >= len(found)
 
 
 class Source:
@@ -217,6 +271,11 @@ class BingSource(Source):
                 )
         if found:
             self._got_results = True
+            if cursor == 0 and not about_keyword(found, keyword):
+                # Images about something else (see the top of this file):
+                # none are downloaded, and the run leaves the keyword to
+                # the other sources.
+                return SearchPage([], None, off_topic=True)
         elif not self._got_results and len(resp.text) < _BING_SHELL_MAX:
             # The empty shell before Bing has returned anything this run:
             # Bing is not answering, which is not the same as running out of
@@ -230,6 +289,270 @@ class BingSource(Source):
         # Bing answers past its end with its last page again, so the run
         # also ends a variant after pages with nothing new (see jobs).
         return SearchPage(found, cursor + BING_PAGE if found else None)
+
+
+# ------------------------------------------------------------------ DuckDuckGo
+
+DDG_PAGE = 100  # i.js answers up to 100 results a page
+_DDG_VQD = re.compile(r"vqd=(['\"])(\d[\d\-]+)\1")
+_DDG_HEADERS = {"User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9"}
+
+
+def _ddg_page_url(keyword: str) -> str:
+    return str(
+        httpx.URL("https://duckduckgo.com/", params={"q": keyword, "iax": "images", "ia": "images"})
+    )
+
+
+class DuckDuckGoSource(Source):
+    """DuckDuckGo's image results, the way its own image page loads them
+    and KTS-o7/better_bing_image_downloader reads them: the search page
+    hands out a short-lived token (``vqd``) and a cookie, which the run's
+    client keeps, then ``i.js`` answers 100 results a page as JSON. Its
+    servers send Brotli, which httpx decodes with the ``brotli`` package."""
+
+    name = SOURCE_DUCKDUCKGO
+    label = "DuckDuckGo"
+    # Slow on purpose: about 25 requests in a few minutes got "slow down"
+    # (202), then a refusal (403) for a while (2026-11-08). A keyword's
+    # first search makes two requests (token, then results).
+    interval = 10.0
+
+    def __init__(self) -> None:
+        self._tokens: dict[str, str] = {}
+
+    def variants(self) -> tuple[str, ...]:
+        return ("search",)
+
+    def _token(self, client: httpx.Client, keyword: str) -> str:
+        if keyword in self._tokens:
+            return self._tokens[keyword]
+        try:
+            resp = client.get(_ddg_page_url(keyword), headers=_DDG_HEADERS)
+        except httpx.HTTPError as exc:
+            raise SourceError(f"duckduckgo: {type(exc).__name__}") from exc
+        _check(resp, "DuckDuckGo")
+        m = _DDG_VQD.search(resp.text)
+        if not m:
+            raise SourceBusy(
+                "DuckDuckGo's page came without its search token (a check or a new "
+                "layout); dropped for this run, the other sources continue",
+                900.0,
+            )
+        self._tokens[keyword] = m.group(2)
+        return m.group(2)
+
+    def _results(self, client: httpx.Client, keyword: str, cursor: int) -> httpx.Response:
+        vqd = self._token(client, keyword)
+        try:
+            return client.get(
+                "https://duckduckgo.com/i.js",
+                params={
+                    "q": keyword,
+                    "o": "json",
+                    "p": "1",  # safe search: moderate
+                    "s": cursor,
+                    "f": ",,,,",
+                    "l": "us-en",
+                    "vqd": vqd,
+                },
+                headers={
+                    **_DDG_HEADERS,
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": _ddg_page_url(keyword),
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise SourceError(f"duckduckgo: {type(exc).__name__}") from exc
+
+    def search(self, client: httpx.Client, keyword: str, variant: str, cursor: int) -> SearchPage:
+        had_token = keyword in self._tokens
+        resp = self._results(client, keyword, cursor)
+        if resp.status_code == 403 and had_token:
+            # The token ran out: one new one; a second 403 is a refusal.
+            self._tokens.pop(keyword, None)
+            resp = self._results(client, keyword, cursor)
+        if resp.status_code in (202, 418):
+            raise SourceBusy(f"DuckDuckGo asked us to slow down ({resp.status_code})", 900.0)
+        _check(resp, "DuckDuckGo")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise SourceError("duckduckgo: not JSON") from exc
+        found: list[Candidate] = []
+        for r in data.get("results") or []:
+            url = r.get("image") if isinstance(r, dict) else None
+            if not (isinstance(url, str) and url.startswith(("http://", "https://"))):
+                continue
+            found.append(
+                Candidate(
+                    url=url,
+                    page_url=r.get("url"),
+                    source=self.name,
+                    width=_int(r.get("width")),
+                    height=_int(r.get("height")),
+                    title=r.get("title"),
+                )
+            )
+        return SearchPage(found, _ddg_next(data.get("next"), cursor) if found else None)
+
+
+def _ddg_next(nxt: object, cursor: int) -> int | None:
+    """The offset in i.js's "next" link (``i.js?q=…&s=100…``); None at the end."""
+    if not isinstance(nxt, str):
+        return None
+    try:
+        return int(parse_qs(urlsplit(nxt).query)["s"][0])
+    except (KeyError, IndexError, ValueError):
+        return cursor + DDG_PAGE
+
+
+# ------------------------------------------------------------- Baidu, 360 Search
+
+# Both are Chinese engines: most of what they find is on Chinese sites,
+# which a run skips only when asked to (Options.skip_chinese_sites).
+_CN_HEADERS = {"User-Agent": BROWSER_UA, "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"}
+_TAGS = re.compile(r"<[^>]+>")
+
+
+def _plain(text: object) -> str | None:
+    """A title without its highlighting tags."""
+    if not isinstance(text, str):
+        return None
+    return html.unescape(_TAGS.sub("", text)).strip() or None
+
+
+BAIDU_PAGE = 30
+# Baidu's own scrambling of the addresses in objURL / fromURL (as imagedl
+# decodes them); replaceUrl usually carries them in the clear.
+_BAIDU_TABLE = str.maketrans(
+    "0123456789abcdefghijklmnopqrstuvw", "7dgjmoru140852vsnkheb963wtqplifca"
+)
+_BAIDU_WORDS = {"_z2C$q": ":", "_z&e3B": ".", "AzdH3F": "/"}
+
+
+def baidu_address(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    if value.startswith(("http://", "https://")):
+        return value
+    for k, v in _BAIDU_WORDS.items():
+        value = value.replace(k, v)
+    value = value.translate(_BAIDU_TABLE)
+    return value if value.startswith(("http://", "https://")) else None
+
+
+class BaiduSource(Source):
+    """Baidu Images' results JSON (``acjson``), the request its own page
+    makes and imagedl uses: 30 a page with the original address, the page
+    and the size. Found real logos of brands Bing missed (2026-11-08)."""
+
+    name = SOURCE_BAIDU
+    label = "Baidu"
+    interval = 3.0
+
+    def variants(self) -> tuple[str, ...]:
+        return ("search",)
+
+    def search(self, client: httpx.Client, keyword: str, variant: str, cursor: int) -> SearchPage:
+        try:
+            resp = client.get(
+                "https://image.baidu.com/search/acjson",
+                params={
+                    "tn": "resultjson_com",
+                    "ipn": "rj",
+                    "word": keyword,
+                    "queryWord": keyword,
+                    "pn": cursor,
+                    "rn": BAIDU_PAGE,
+                },
+                headers=_CN_HEADERS,
+            )
+        except httpx.HTTPError as exc:
+            raise SourceError(f"baidu: {type(exc).__name__}") from exc
+        _check(resp, "Baidu")
+        try:
+            data = json.loads(resp.text)
+        except ValueError:
+            try:  # it escapes quotes the way JavaScript allows and JSON does not
+                data = json.loads(resp.text.replace("\\'", "'"))
+            except ValueError as exc:
+                raise SourceError("baidu: not JSON") from exc
+        if data.get("antiFlag"):
+            raise SourceBusy(
+                f"Baidu stopped answering ({data.get('message') or 'anti-spider'})", 1800.0
+            )
+        found: list[Candidate] = []
+        for item in data.get("data") or []:
+            if not isinstance(item, dict) or not item:
+                continue
+            clear = (item.get("replaceUrl") or [{}])[0] if item.get("replaceUrl") else {}
+            url = baidu_address(clear.get("ObjURL") or clear.get("ObjUrl") or item.get("objURL"))
+            if not url:
+                continue
+            found.append(
+                Candidate(
+                    url=url,
+                    page_url=baidu_address(
+                        clear.get("FromURL") or clear.get("FromUrl") or item.get("fromURL")
+                    ),
+                    source=self.name,
+                    width=_int(item.get("width")),
+                    height=_int(item.get("height")),
+                    title=_plain(item.get("fromPageTitleEnc") or item.get("fromPageTitle")),
+                )
+            )
+        return SearchPage(found, cursor + BAIDU_PAGE if found else None)
+
+
+SO360_PAGE = 60
+
+
+class So360Source(Source):
+    """360 Search's image results JSON (``image.so.com/j``), as its page
+    and imagedl use it: about 60 a page with the original address, page
+    and size, and where the next page starts."""
+
+    name = SOURCE_SO360
+    label = "360 Search"
+    interval = 3.0
+
+    def variants(self) -> tuple[str, ...]:
+        return ("search",)
+
+    def search(self, client: httpx.Client, keyword: str, variant: str, cursor: int) -> SearchPage:
+        try:
+            resp = client.get(
+                "https://image.so.com/j",
+                params={"q": keyword, "pn": SO360_PAGE, "sn": cursor},
+                headers=_CN_HEADERS,
+            )
+        except httpx.HTTPError as exc:
+            raise SourceError(f"360: {type(exc).__name__}") from exc
+        _check(resp, "360 Search")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise SourceError("360: not JSON") from exc
+        found: list[Candidate] = []
+        for item in data.get("list") or []:
+            url = item.get("img") if isinstance(item, dict) else None
+            if not (isinstance(url, str) and url.startswith(("http://", "https://"))):
+                continue
+            found.append(
+                Candidate(
+                    url=url,
+                    page_url=item.get("link") or None,
+                    source=self.name,
+                    width=_int(item.get("width")),
+                    height=_int(item.get("height")),
+                    title=_plain(item.get("title")),
+                )
+            )
+        nxt = _int(data.get("lastindex"))
+        done = not found or data.get("end") or nxt is None or nxt <= cursor
+        return SearchPage(found, None if done else nxt)
 
 
 # --------------------------------------------------------------- Wikimedia Commons
@@ -673,6 +996,9 @@ def build_sources(
     ua = honest_user_agent(contact)
     available: dict[str, Source] = {
         SOURCE_BING: BingSource(),
+        SOURCE_DUCKDUCKGO: DuckDuckGoSource(),
+        SOURCE_BAIDU: BaiduSource(),
+        SOURCE_SO360: So360Source(),
         SOURCE_YANDEX: YandexSource(),
         SOURCE_COMMONS: CommonsSource(ua),
         SOURCE_OPENVERSE: OpenverseSource(ua, wikimedia_ok=bool((contact or "").strip())),

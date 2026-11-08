@@ -42,11 +42,19 @@ const DEFAULT_TARGET = 300;
 const MIN_SIDES = [400, 500, 640, 800, 1024];
 const OPTIONS_KEY = "carve.webCollect.options";
 const SAVE_DELAY_MS = 700;
+/** Sources added on 2026-11-08: ticked once for a saved choice that predates them. */
+const ADDED_SOURCES: WebCollectSource[] = ["duckduckgo", "baidu", "so360"];
 
 /** Plain-English help for each source, shown in its tooltip. */
 const SOURCE_HELP: Record<WebCollectSource, string> = {
   bing:
-    "Microsoft's image search. Finds the most images for almost any keyword. Keep it on.",
+    "Microsoft's image search. Finds the most images for common keywords. For rarer ones (a less-known brand) it often shows unrelated images; then it is skipped for that keyword.",
+  duckduckgo:
+    "DuckDuckGo's image search. Finds many images for almost any keyword, including brands Bing gets wrong. It searches slowly on purpose: when asked too fast it stops answering for a while, and is then skipped for the rest of the run.",
+  baidu:
+    "China's largest image search. Finds the real logos of many brands Bing gets wrong. Most images are on Chinese sites, so it finds little when “Skip images on Chinese sites” is ticked.",
+  so360:
+    "Chinese image search (360 Search). Like Baidu: good for brands and logos, mostly from Chinese sites, so it finds little when “Skip images on Chinese sites” is ticked.",
   yandex:
     "Russian image search. Has many images Bing does not have, but it often stops after a page or two and asks for a CAPTCHA. Then it is skipped for the rest of the run.",
   commons:
@@ -72,16 +80,21 @@ type Tab = "keywords" | "settings" | "history";
 
 function loadOptions(): WebCollectOptions {
   const base: WebCollectOptions = {
-    sources: ["bing", "commons", "openverse"],
+    sources: ["bing", "duckduckgo", "baidu", "so360", "commons", "openverse"],
     min_side: 500,
     filter_ai: true,
     filter_watermark: true,
     filter_relevance: true,
+    skip_chinese_sites: false,
     mode: "per_keyword",
   };
   try {
     const saved = JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "null");
-    return saved ? { ...base, ...saved, restart_search: false } : base;
+    if (!saved) return base;
+    // Sources added after the choice was saved start ticked once.
+    const { sources_added: seen, ...rest } = saved;
+    const sources = [...new Set([...(rest.sources ?? base.sources), ...(seen ? [] : ADDED_SOURCES)])];
+    return { ...base, ...rest, sources, restart_search: false };
   } catch {
     return base;
   }
@@ -90,7 +103,7 @@ function loadOptions(): WebCollectOptions {
 function saveOptions(o: WebCollectOptions): void {
   try {
     const { restart_search: _skip, ...rest } = o;
-    localStorage.setItem(OPTIONS_KEY, JSON.stringify(rest));
+    localStorage.setItem(OPTIONS_KEY, JSON.stringify({ ...rest, sources_added: true }));
   } catch {
     /* private window: settings just are not remembered */
   }
@@ -756,7 +769,7 @@ function SettingsTab({
       ...o,
       sources: on ? [...new Set([...o.sources, s])] : o.sources.filter((x) => x !== s),
     }));
-  const blocked = Object.values(state.blocked_counts).reduce((a, b) => a + b, 0);
+  const blocked = (state.blocked_counts.stock ?? 0) + (state.blocked_counts.ai ?? 0);
 
   return (
     <div className="flex flex-col gap-5">
@@ -837,10 +850,16 @@ function SettingsTab({
             checked={options.filter_relevance}
             onChange={(on) => setOptions((o) => ({ ...o, filter_relevance: on }))}
           />
+          <Option
+            label="Skip images on Chinese sites"
+            help="Leaves out images whose site is Chinese (.cn addresses, Baidu, Sohu, Weibo and similar). Many are reposts with a watermark, but the other checks above already skip those. Baidu and 360 Search find mostly Chinese sites, so with this ticked they add little."
+            checked={options.skip_chinese_sites}
+            onChange={(on) => setOptions((o) => ({ ...o, skip_chinese_sites: on }))}
+          />
         </div>
         <p className="flex items-center gap-1 text-[11px] text-[color:var(--text-tertiary)]">
           Always skipped: copies of images already in the task, animated images, and{" "}
-          {fmt(blocked)} stock, AI-art and Chinese sites.
+          {fmt(blocked)} stock and AI-art sites.
           <Help label="always skipped">
             Exact copies and resized copies are skipped, also of images you uploaded yourself.
             The list of blocked sites can be extended in Settings → Configuration → Collect from
@@ -1015,7 +1034,10 @@ function SourceStatus({ job, labels }: { job: WebCollectJob; labels: Record<stri
           content={
             st.status === "stopped"
               ? `Stopped for this run: ${st.note ?? "a limit or a block"}`
-              : `${fmt(st.searches)} searches, ${fmt(st.found)} images found`
+              : `${fmt(st.searches)} searches, ${fmt(st.found)} images found` +
+                (st.off_topic
+                  ? `. Skipped for ${fmt(st.off_topic)} keyword${st.off_topic === 1 ? "" : "s"}: its images were about something else.`
+                  : "")
           }
           className="max-w-[300px] whitespace-normal font-normal leading-snug text-[12px] px-2.5 py-1.5"
         >
