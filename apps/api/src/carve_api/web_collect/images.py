@@ -34,6 +34,7 @@ REJECT_LOOKALIKE = "near_duplicate"
 REJECT_AI = "ai_generated"
 REJECT_WATERMARK = "watermark"
 REJECT_OFF_TOPIC = "off_topic"  # does not show what the keyword names
+REJECT_NOT_PHOTO = "not_a_photo"  # a drawing, chart, sign or render
 BLOCKED_PREFIX = "blocked_"  # + blocklist group
 
 MAX_BYTES = 30 * 1024 * 1024

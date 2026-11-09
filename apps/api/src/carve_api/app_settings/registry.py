@@ -235,6 +235,14 @@ SETTINGS: tuple[SettingDef, ...] = (
         FLOAT, minimum=0.0, maximum=0.3,
     ),
     SettingDef(
+        "WEB_COLLECT_PHOTO_THRESHOLD", "web_collect_photo_threshold", _WEB_COLLECT,
+        "Real photo score",
+        "Images that look less like a photo than this (drawings, charts, signs, renders) are "
+        "thrown away when \"only real photos\" is on. At 0.2, 22 of 148 images a user deleted "
+        "and 10 of 453 they kept were thrown away; higher rejects more, lower keeps more.",
+        FLOAT, minimum=0.0, maximum=0.9,
+    ),
+    SettingDef(
         "WEB_COLLECT_CONTACT", "web_collect_contact", _WEB_COLLECT, "Contact for image sites",
         "An email or web address sent to Wikimedia Commons and Openverse with every "
         "request, as Wikimedia's rules ask, so they can reach you instead of blocking.",

@@ -56,12 +56,15 @@ from carve_api.web_collect.models import (
 )
 from carve_api.web_collect.naming import clean_keyword, slugify
 from carve_api.web_collect.sources import unavailable
+from carve_api.web_collect.translate import clean_zh, fill_chinese
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tasks", tags=["web-collect"])
 
 MAX_KEYWORDS = 500
+# Saving the list waits this long at most for new keywords' Chinese.
+SAVE_TRANSLATE_TIMEOUT = 12.0
 MAX_TARGET = 100_000
 SOURCE_LABELS = {
     SOURCE_BING: "Bing",
@@ -122,6 +125,10 @@ class KeywordOut(BaseModel):
     have: int
     # Every source and variant searched to the end.
     exhausted: bool
+    # What Baidu and 360 search for it, and who wrote that ("user", or the
+    # model that translated it).
+    zh: str | None = None
+    zh_by: str | None = None
 
 
 class JobKeywordOut(BaseModel):
@@ -180,6 +187,9 @@ class KeywordIn(BaseModel):
     id: uuid.UUID | None = None
     keyword: str = Field(..., min_length=1, max_length=200)
     target: int = Field(100, ge=0, le=MAX_TARGET)
+    # The keyword in Chinese, written by the user: None leaves it as it
+    # is, "" goes back to the automatic translation.
+    zh: str | None = Field(None, max_length=200)
 
 
 class KeywordsIn(BaseModel):
@@ -206,6 +216,9 @@ class RunOptionsIn(BaseModel):
     filter_watermark: bool = True
     # Drop images that do not show what the keyword names.
     filter_relevance: bool = True
+    # Drop drawings, charts, signs and renders (not for keywords that name
+    # a graphic, such as "… logo").
+    filter_photo: bool = True
     # Leave out images on Chinese sites (most of what Baidu and 360 find).
     skip_chinese_sites: bool = False
     # "total": what a keyword cannot find goes to the others.
@@ -236,6 +249,17 @@ def _have_counts(db: Session, task_id: uuid.UUID) -> dict[uuid.UUID, int]:
         .group_by(WebCollectUrl.keyword_id)
     ).all()
     return {k: n for k, n in rows}
+
+
+def _set_chinese(kw: WebCollectKeyword, zh: str) -> None:
+    """The user's Chinese for a keyword ("" goes back to the automatic
+    one). Different words are a different search: Baidu's and 360's
+    Chinese searches start again from their first page."""
+    zh = clean_zh(zh)
+    if zh == (kw.terms or {}).get("zh", ""):
+        return
+    kw.terms = {"zh": zh, "zh_by": "user"} if zh else {}
+    kw.steps = {k: v for k, v in (kw.steps or {}).items() if not k.endswith(":zh")}
 
 
 def _exhausted(kw: WebCollectKeyword) -> bool:
@@ -305,6 +329,8 @@ def _state(db: Session, task_id: uuid.UUID) -> StateOut:
                 target=k.target,
                 have=have.get(k.id, 0),
                 exhausted=_exhausted(k),
+                zh=(k.terms or {}).get("zh"),
+                zh_by=(k.terms or {}).get("zh_by"),
             )
             for k in kws
         ],
@@ -381,6 +407,7 @@ def put_keywords(
                 target=item.target,
                 position=pos,
                 steps={},
+                terms={},
             )
             db.add(kw)
             db.flush()
@@ -396,9 +423,12 @@ def put_keywords(
                 kw.slug = slugify(text)
                 kw.next_index = 1
                 kw.steps = {}
+                kw.terms = {}
             kw.keyword = text
             kw.target = item.target
             kw.position = pos
+        if item.zh is not None:
+            _set_chinese(kw, item.zh)
         keep.add(kw.id)
     for kid, kw in existing.items():
         if kid in keep:
@@ -410,6 +440,16 @@ def put_keywords(
                 status.HTTP_409_CONFLICT,
             )
         db.delete(kw)
+    db.commit()
+    # New keywords get their Chinese now, so it can be checked before a
+    # run (which translates any still missing). Best effort and quick.
+    if fill_chinese(
+        [k for k in _keywords(db, task_id) if k.id in keep],
+        get_settings(),
+        timeout=SAVE_TRANSLATE_TIMEOUT,
+        after_failure=False,
+    ):
+        log.info("web_collect.translate_on_save_failed task_id=%s", task_id)
     db.commit()
     return _state(db, task_id)
 

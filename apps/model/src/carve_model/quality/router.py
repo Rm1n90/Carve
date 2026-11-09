@@ -2,9 +2,11 @@
 """Image filters for Collect from web: is it AI-made, is it watermarked,
 does it show what its keyword names.
 
-    POST /quality/score   {"images": [base64 …], "checks": ["ai", "watermark", "relevance"],
+    POST /quality/score   {"images": [base64 …],
+                           "checks": ["ai", "watermark", "relevance", "photo"],
                            "texts": [keyword …]}   (one keyword per image, for "relevance")
-                          → {"scores": [{"ai": p, "watermark": p, "relevance": cos}, …]}
+                          → {"scores": [{"ai": p, "watermark": p, "relevance": cos,
+                                         "photo": p}, …]}
     GET  /quality/status
 
 * **AI-made** — ``haywoodsloan/ai-image-detector-deploy`` (SwinV2,
@@ -27,6 +29,17 @@ does it show what its keyword names.
   and 71 % of off-topic ones are caught (all of Bing's). CLIP
   ViT-L/14 caught 57 % at the same pass rate. What still passes is
   mostly another organisation's logo that spells the keyword.
+* **Real photo** — the same SigLIP2 features against fixed labels:
+  softmax(scale × cosine) over three "a photo …" labels and fifteen
+  "a drawing." / "a size chart." / "a sign with text." … labels, summed
+  over the photo ones. Measured 2026-11-09 on 655 collected images the
+  user kept or deleted: below 0.2 caught 22 of 148 deleted (size charts,
+  sketches, cartoons, signs, icons, spec sheets) and 10 of 453 kept in
+  float16 (7 in float32), some of them renders and infographics, some
+  shirts on a plain background; it also takes 15 of 34 flat logos, so
+  the collector skips it for logo keywords. Labels
+  such as "a product mockup." or "a poster with text." took people in
+  printed shirts (53 kept lost) and were left out.
 
 The first two are small; they load on first use and share the GPU slot
 with the other models through ``admit``. SigLIP2 holds ~2.2 GB, so it is
@@ -60,6 +73,24 @@ MAX_IMAGES = 64
 RELEVANCE_MODEL = "google/siglip2-so400m-patch14-384"
 RELEVANCE_IDLE_S = 600.0
 _TEXT_CACHE_MAX = 512
+PHOTO_LABELS = ("a photo.", "a photo of people.", "a photo of an object.")
+NOT_PHOTO_LABELS = (
+    "a drawing.",
+    "a cartoon.",
+    "a clipart illustration.",
+    "a vector illustration.",
+    "a sketch.",
+    "a diagram.",
+    "a size chart.",
+    "a chart with text.",
+    "a screenshot of a website.",
+    "a sign with text.",
+    "an infographic.",
+    "an icon.",
+    "a 3D render.",
+    "a digital illustration.",
+    "a cartoon illustration.",
+)
 
 _state: dict[str, Any] = {}
 _lock = threading.Lock()
@@ -150,30 +181,48 @@ def _prompt(keyword: str) -> str:
     return "this is a photo of " + " ".join(keyword.split()).lower() + "."
 
 
-def _relevance(ims: list, texts: list[str]) -> list[float]:
-    import torch
-
-    rel = _siglip()
+def _text_features(rel: dict[str, Any], prompts: list[str]) -> Any:
     model = rel["model"]
     dev = next(model.parameters()).device
-    cache: dict[str, Any] = rel["texts"]
-    new = [t for t in dict.fromkeys(texts) if t not in cache]
-    if new:
-        x = rel["tok"]([_prompt(t) for t in new], padding="max_length", max_length=64,
-                       truncation=True, return_tensors="pt").to(dev)
-        feats = _features(model.get_text_features(input_ids=x["input_ids"]))
-        for t, f in zip(new, feats, strict=True):
-            if len(cache) >= _TEXT_CACHE_MAX:
-                cache.pop(next(iter(cache)))
-            cache[t] = f
-    out: list[float] = []
+    x = rel["tok"](prompts, padding="max_length", max_length=64, truncation=True,
+                   return_tensors="pt").to(dev)
+    return _features(model.get_text_features(input_ids=x["input_ids"]))
+
+
+def _image_features(rel: dict[str, Any], ims: list) -> Any:
+    import torch
+
+    model = rel["model"]
+    dev = next(model.parameters()).device
+    out = []
     # 16 at a time: SigLIP2 at 384 px has 729 tokens per image.
     for i in range(0, len(ims), 16):
         x = rel["proc"](images=ims[i : i + 16], return_tensors="pt")["pixel_values"]
-        f = _features(model.get_image_features(pixel_values=x.to(dev, dtype=model.dtype)))
-        t = torch.stack([cache[k] for k in texts[i : i + 16]])
-        out += (f * t).sum(-1).cpu().tolist()
-    return out
+        out.append(_features(model.get_image_features(pixel_values=x.to(dev, dtype=model.dtype))))
+    return torch.cat(out)
+
+
+def _relevance(rel: dict[str, Any], feats: Any, texts: list[str]) -> list[float]:
+    import torch
+
+    cache: dict[str, Any] = rel["texts"]
+    new = [t for t in dict.fromkeys(texts) if t not in cache]
+    if new:
+        for t, f in zip(new, _text_features(rel, [_prompt(t) for t in new]), strict=True):
+            if len(cache) >= _TEXT_CACHE_MAX:
+                cache.pop(next(iter(cache)))
+            cache[t] = f
+    t = torch.stack([cache[k] for k in texts])
+    return (feats * t).sum(-1).cpu().tolist()
+
+
+def _photo(rel: dict[str, Any], feats: Any) -> list[float]:
+    """Chance that each image is a real photo (see the top of this file)."""
+    if "labels" not in rel:
+        rel["labels"] = _text_features(rel, [*PHOTO_LABELS, *NOT_PHOTO_LABELS])
+    scale = rel["model"].logit_scale.exp().float()
+    p = (scale * feats @ rel["labels"].T).softmax(-1)
+    return p[:, : len(PHOTO_LABELS)].sum(-1).cpu().tolist()
 
 
 def evict_idle() -> bool:
@@ -233,9 +282,15 @@ def score(payload: ScoreIn) -> dict:
             p = torch.sigmoid(f @ w + b).cpu().tolist()
             for s, v in zip(scores, p, strict=True):
                 s["watermark"] = round(float(v), 4)
-        if "relevance" in payload.checks:
-            for s, v in zip(scores, _relevance(ims, payload.texts or []), strict=True):
-                s["relevance"] = round(float(v), 4)
+        if "relevance" in payload.checks or "photo" in payload.checks:
+            rel = _siglip()
+            feats = _image_features(rel, ims)
+            if "relevance" in payload.checks:
+                for s, v in zip(scores, _relevance(rel, feats, payload.texts or []), strict=True):
+                    s["relevance"] = round(float(v), 4)
+            if "photo" in payload.checks:
+                for s, v in zip(scores, _photo(rel, feats), strict=True):
+                    s["photo"] = round(float(v), 4)
     return {"scores": scores}
 
 

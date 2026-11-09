@@ -68,27 +68,50 @@ only, like Upload. On the task page, **Collect from web**; or tick
 1. Add keywords: one per search ("Tenneco logo", "Cadillac F1 car on
    track"), each with how many images it should hold. *Paste list*
    takes one per line, optionally `keyword, 300`. *Split evenly* sets
-   every number from one total.
+   every number from one total. Search engines match words, not
+   meaning, so check the spelling and name the context: "baseball
+   dugout bench" rather than "bench dugout" (which also finds wooden
+   pipe boxes), "boxing ring ropes" rather than "ring repes cage"
+   (which found rings and cages for sale). The image check cannot
+   catch these: the pictures do show a dugout or a ring.
+   Under each keyword is its Chinese (中文), which Baidu and 360 search
+   for. It is translated when the keyword is saved (or when a run
+   starts) by OpenAI's GPT-6 Luna, or Gemini when only that key is set,
+   for well under a cent a list; click it to write your own, or empty it
+   to have it translated again. Without an OpenAI or Gemini key, Baidu
+   and 360 search the English only.
 2. Pick the sources, the smallest allowed side (500 px by default) and
    the filters, then **Collect**. Sources:
-   - web search: **Bing** (on), the widest source for common keywords;
-     for rarer ones (a less-known brand) it often answers with unrelated
-     images, and the run then skips it for that keyword (its tooltip
-     counts them); if it answers with empty pages the run marks it
-     stopped (⛔) and the others fill in; **DuckDuckGo** (on), also good
-     for the brands Bing gets wrong, searching slowly on purpose (asked
-     too fast it stops answering for a while, and is then stopped for
-     the run); **Baidu** and **360 Search** (on), Chinese search engines
-     that find the real logos of many brands, mostly on Chinese sites;
+   - web search: **DuckDuckGo** (on), usually the best source: many
+     images for almost any keyword, mostly on topic. It asks for
+     photographs only (its own filter), then for large, wide, tall and
+     square ones, each a list of its own. It searches slowly on purpose
+     (asked too fast it stops answering for a while, and is then
+     stopped for the run; run again later to continue);
+     **Bing** (off by default: from this server it now answers every
+     page with the same 35 images, often about something else; the run
+     skips it for a keyword once it repeats itself or is off topic, and
+     its tooltip counts the off-topic ones); **Baidu** and **360 Search** (on), Chinese search engines
+     that find the real logos of many brands, mostly on Chinese sites.
+     They search the keyword in Chinese first, then in English: in
+     English they found mostly what shops sell under that name (for
+     "baseball dugout bench", football benches from one maker), in
+     Chinese the thing itself (baseball dugouts);
      **Yandex** (off by default: it asks for a CAPTCHA after a page or
      two, and the run then pauses it);
-   - open-licence archives: **Wikimedia Commons**, **Openverse** (on);
+   - open-licence archives: **Wikimedia Commons**, **Openverse** (on).
+     Commons first takes the files tagged as showing the keyword's thing
+     (when the keyword is the name of one on Wikidata: "life jacket" has
+     583 such photos, mostly people wearing one), then searches names
+     and descriptions, and takes at most 2 photos of one series
+     ("Surfer at Malibu 01…08");
    - free photo sites: **Unsplash**, **Pexels**, **Pixabay**, each once
      its free API key is set in Settings → Configuration → Collect from
      web; good for general subjects, rarely for a brand.
    Google and Yahoo are not offered: they answer automated requests
    from the server with a CAPTCHA or an anti-bot check.
-   Sources added since you last saved your choice start ticked once.
+   Sources added since you last saved your choice start ticked once,
+   and Bing, made opt-in on 2026-11-09, starts unticked once.
 
 The run works in the background on its own worker: close the dialog or
 the page and it keeps going (a chip on the task page shows it); **Stop**
@@ -125,7 +148,14 @@ out (the keyword then shows "no more found"). Turned away:
   results it kept 99% of the right images and caught about 70% of the
   wrong ones; what it misses is mostly another company's logo with the
   same word in it. The score is set in Settings → Configuration →
-  Collect from web (*Keyword match score*, 0.07).
+  Collect from web (*Keyword match score*, 0.07);
+- with **Only real photos** (on): drawings, cartoons, clip art, size
+  charts, signs, screenshots and 3D renders, also scored by SigLIP2. On
+  the images of one collection it caught 22 of the 148 the user deleted
+  and 10 of the 453 they kept (2 %). Flat logos fail it too, so
+  keywords that ask for a graphic (with *logo*, *icon*, *sign*, *flag*,
+  *poster*, *chart* and similar words) are never checked. The score is
+  *Real photo score* in Settings (0.2).
 
 Images are fetched with the page they were found on as Referer, as a
 browser does, since some sites refuse images asked for without one.

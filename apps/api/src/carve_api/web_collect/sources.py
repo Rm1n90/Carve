@@ -18,7 +18,13 @@ Measured from this server on 2026-11-07:
   35 mention the brand, with every filter and also with the exact
   requests of KTS-o7/better_bing_image_downloader and
   ultralytics/google-images-download; "golden retriever", "Nike logo":
-  35 of 35). Such a keyword is left to the other sources.
+  35 of 35). Such a keyword is left to the other sources. By
+  2026-11-09 it ignored the page and the filter for this server: every
+  page of every filter was the same 35 images ("life jacket": the same
+  35 biodiversity pictures, also with ``mmasync``, a 1-based ``first``
+  or the cookies of its own search page). In a 900-image run it gave 15
+  images, so it is off by default; when it repeats a page, the keyword's
+  Bing searches end there.
 * **DuckDuckGo** (``i.js``, the JSON its own image page loads, as
   KTS-o7/better_bing_image_downloader uses it): 100 results a page with
   dimensions; on topic where Bing was not (2026-11-08: "TAG Heuer logo"
@@ -104,6 +110,9 @@ class SearchPage:
     # The source answered with images about something else: none of its
     # searches for this keyword are worth making (see about_keyword).
     off_topic: bool = False
+    # It answered with the same images as before, whatever the page or
+    # variant: none of its searches for this keyword would find more.
+    repeats: bool = False
 
 
 class SourceBusy(Exception):
@@ -182,6 +191,11 @@ class Source:
     def variants(self) -> tuple[str, ...]:
         raise NotImplementedError
 
+    def query(self, keyword: str, variant: str, terms: dict) -> str | None:
+        """What a variant searches for: the keyword, or other words for it
+        from ``terms`` (the keyword's ``terms``); None when it has none."""
+        return keyword
+
     def search(self, client: httpx.Client, keyword: str, variant: str, cursor: int) -> SearchPage:
         raise NotImplementedError
 
@@ -235,6 +249,8 @@ class BingSource(Source):
         # Set once Bing has returned any results this run, so a later
         # empty shell is read as a real block, not just an empty keyword.
         self._got_results = False
+        # Per keyword, the addresses on the first page it answered.
+        self._first_page: dict[str, set[str]] = {}
 
     def variants(self) -> tuple[str, ...]:
         return BING_CORE_VARIANTS
@@ -276,6 +292,13 @@ class BingSource(Source):
                 # none are downloaded, and the run leaves the keyword to
                 # the other sources.
                 return SearchPage([], None, off_topic=True)
+            urls = {c.url for c in found}
+            first = self._first_page.setdefault(keyword, urls)
+            if first is not urls and len(urls & first) * 2 >= len(urls):
+                # The same images as its first page, whatever the page or
+                # filter asked (see the top of this file): nothing more
+                # to find with Bing for this keyword.
+                return SearchPage([], None, repeats=True)
         elif not self._got_results and len(resp.text) < _BING_SHELL_MAX:
             # The empty shell before Bing has returned anything this run:
             # Bing is not answering, which is not the same as running out of
@@ -294,6 +317,21 @@ class BingSource(Source):
 # ------------------------------------------------------------------ DuckDuckGo
 
 DDG_PAGE = 100  # i.js answers up to 100 results a page
+# Its own filters ("f": time, size, color, type, layout, licence), as its
+# image page sends them. All but "search" ask for photographs only, which
+# leaves out drawings, clip art and charts before anything is downloaded;
+# each filter is its own result list, so a keyword reaches further.
+# "search" (no filter) is what keywords searched before 2026-11-09 have
+# a saved position for; it is no longer searched.
+DDG_FILTERS: dict[str, str] = {
+    "photo": ",,,type:photo,,",
+    "large": ",size:Large,,type:photo,,",
+    "wide": ",,,type:photo,layout:Wide,",
+    "tall": ",,,type:photo,layout:Tall,",
+    "square": ",,,type:photo,layout:Square,",
+    "search": ",,,,,",
+}
+DDG_VARIANTS = ("photo", "large", "wide", "tall", "square")
 _DDG_VQD = re.compile(r"vqd=(['\"])(\d[\d\-]+)\1")
 _DDG_HEADERS = {"User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9"}
 
@@ -322,7 +360,7 @@ class DuckDuckGoSource(Source):
         self._tokens: dict[str, str] = {}
 
     def variants(self) -> tuple[str, ...]:
-        return ("search",)
+        return DDG_VARIANTS
 
     def _token(self, client: httpx.Client, keyword: str) -> str:
         if keyword in self._tokens:
@@ -342,7 +380,9 @@ class DuckDuckGoSource(Source):
         self._tokens[keyword] = m.group(2)
         return m.group(2)
 
-    def _results(self, client: httpx.Client, keyword: str, cursor: int) -> httpx.Response:
+    def _results(
+        self, client: httpx.Client, keyword: str, variant: str, cursor: int
+    ) -> httpx.Response:
         vqd = self._token(client, keyword)
         try:
             return client.get(
@@ -352,7 +392,7 @@ class DuckDuckGoSource(Source):
                     "o": "json",
                     "p": "1",  # safe search: moderate
                     "s": cursor,
-                    "f": ",,,,",
+                    "f": DDG_FILTERS.get(variant, DDG_FILTERS["photo"]),
                     "l": "us-en",
                     "vqd": vqd,
                 },
@@ -368,11 +408,11 @@ class DuckDuckGoSource(Source):
 
     def search(self, client: httpx.Client, keyword: str, variant: str, cursor: int) -> SearchPage:
         had_token = keyword in self._tokens
-        resp = self._results(client, keyword, cursor)
+        resp = self._results(client, keyword, variant, cursor)
         if resp.status_code == 403 and had_token:
             # The token ran out: one new one; a second 403 is a refusal.
             self._tokens.pop(keyword, None)
-            resp = self._results(client, keyword, cursor)
+            resp = self._results(client, keyword, variant, cursor)
         if resp.status_code in (202, 418):
             raise SourceBusy(f"DuckDuckGo asked us to slow down ({resp.status_code})", 900.0)
         _check(resp, "DuckDuckGo")
@@ -416,6 +456,20 @@ _CN_HEADERS = {"User-Agent": BROWSER_UA, "Accept-Language": "zh-CN,zh;q=0.9,en-U
 _TAGS = re.compile(r"<[^>]+>")
 
 
+# The keyword in Chinese first ("zh", see translate.py), then as typed
+# ("search"): in Chinese they find the thing itself, in English mostly
+# what English-language shops sell under that name (2026-11-09: for
+# "baseball dugout bench", football benches from one maker; for
+# "棒球场 球员休息区", baseball dugouts).
+CN_VARIANTS = ("zh", "search")
+
+
+def chinese_query(keyword: str, variant: str, terms: dict) -> str | None:
+    if variant == "zh":
+        return (terms or {}).get("zh") or None
+    return keyword
+
+
 def _plain(text: object) -> str | None:
     """A title without its highlighting tags."""
     if not isinstance(text, str):
@@ -453,7 +507,10 @@ class BaiduSource(Source):
     interval = 3.0
 
     def variants(self) -> tuple[str, ...]:
-        return ("search",)
+        return CN_VARIANTS
+
+    def query(self, keyword: str, variant: str, terms: dict) -> str | None:
+        return chinese_query(keyword, variant, terms)
 
     def search(self, client: httpx.Client, keyword: str, variant: str, cursor: int) -> SearchPage:
         try:
@@ -519,7 +576,10 @@ class So360Source(Source):
     interval = 3.0
 
     def variants(self) -> tuple[str, ...]:
-        return ("search",)
+        return CN_VARIANTS
+
+    def query(self, keyword: str, variant: str, terms: dict) -> str | None:
+        return chinese_query(keyword, variant, terms)
 
     def search(self, client: httpx.Client, keyword: str, variant: str, cursor: int) -> SearchPage:
         try:
@@ -557,8 +617,71 @@ class So360Source(Source):
 
 # --------------------------------------------------------------- Wikimedia Commons
 
-COMMONS_MAX = 500  # results per keyword: relevance fades after that
+COMMONS_MAX = 500  # results per keyword and variant: relevance fades after that
 _COMMONS_MIMES = {"image/jpeg", "image/png", "image/webp"}
+# Files tagged as showing the keyword's Wikidata item first, then a
+# full-text search of names and descriptions. Full text found photo
+# series and pictures that only mention the word: 33 of 76 Commons
+# images for "Person with shirts" were deleted (2026-11-09).
+COMMONS_VARIANTS = ("depicts", "search")
+# Commons holds whole series of one scene ("Surfer at X 01.jpg" … "08"):
+# at most this many of one series per keyword in a run.
+COMMONS_SERIES_MAX = 2
+_SERIES_NOISE = re.compile(r"[\d_\-()\[\].,]+")
+# Wikidata items that are not a thing to photograph.
+_NOT_A_THING = (
+    "disambiguation",
+    "family name",
+    "given name",
+    "surname",
+    "wikimedia category",
+    "wikimedia list",
+    "film",
+    "album",
+    "song",
+    "single by",
+    "television series",
+    "video game",
+    "novel",
+    "book",
+    "painting",
+    "patent",
+    "article",
+    "magazine",
+)
+
+
+def series_key(title: str) -> str:
+    """'File:Surfer at Malibu 03 (2019).jpg' → 'surfer at malibu'. Empty
+    for a camera's name ('IMG_2041.JPG' → 'img'), which says nothing
+    about the series."""
+    name = title.split(":", 1)[-1].rsplit(".", 1)[0].lower()
+    words = _SERIES_NOISE.sub(" ", name).split()
+    return " ".join(words) if len(words) >= 2 else ""
+
+
+def wikidata_item(found: list[dict], keyword: str) -> str | None:
+    """The item a keyword names, from ``wbsearchentities`` results: the
+    first whose label or alias is the keyword itself (a final "s"
+    ignored), and that is a thing rather than a name, a work or a list.
+    None when no item is exactly that; the keyword is then only searched
+    as text."""
+    want = " ".join(keyword.lower().split())
+    forms = {want, want.removesuffix("s"), want + "s"}
+    for item in found:
+        if not isinstance(item, dict):
+            continue
+        match = item.get("match") or {}
+        text = " ".join(str(match.get("text") or item.get("label") or "").lower().split())
+        if text not in forms:
+            continue
+        desc = str(item.get("description") or "").lower()
+        if any(word in desc for word in _NOT_A_THING):
+            continue
+        qid = item.get("id")
+        if isinstance(qid, str) and qid.startswith("Q"):
+            return qid
+    return None
 
 
 class CommonsSource(Source):
@@ -568,11 +691,49 @@ class CommonsSource(Source):
 
     def __init__(self, user_agent: str) -> None:
         self.user_agent = user_agent
+        self._items: dict[str, str | None] = {}
+        # Per keyword, how many files of each series it has handed out.
+        self._series: dict[str, dict[str, int]] = {}
 
     def variants(self) -> tuple[str, ...]:
-        return ("search",)
+        return COMMONS_VARIANTS
+
+    def _item(self, client: httpx.Client, keyword: str) -> str | None:
+        if keyword in self._items:
+            return self._items[keyword]
+        try:
+            resp = client.get(
+                "https://www.wikidata.org/w/api.php",
+                params={
+                    "action": "wbsearchentities",
+                    "format": "json",
+                    "search": keyword,
+                    "language": "en",
+                    "uselang": "en",
+                    "type": "item",
+                    "limit": 7,
+                    "maxlag": 5,
+                },
+                headers={"User-Agent": self.user_agent},
+            )
+        except httpx.HTTPError as exc:
+            raise SourceError(f"wikidata: {type(exc).__name__}") from exc
+        _check(resp, "Wikidata")
+        try:
+            found = resp.json().get("search") or []
+        except ValueError as exc:
+            raise SourceError("wikidata: not JSON") from exc
+        self._items[keyword] = qid = wikidata_item(found, keyword)
+        return qid
 
     def search(self, client: httpx.Client, keyword: str, variant: str, cursor: int) -> SearchPage:
+        if variant == "depicts":
+            qid = self._item(client, keyword)
+            if qid is None:
+                return SearchPage([], None)
+            query = f"haswbstatement:P180={qid} filetype:bitmap"
+        else:
+            query = f"{keyword} filetype:bitmap"
         try:
             resp = client.get(
                 "https://commons.wikimedia.org/w/api.php",
@@ -582,7 +743,7 @@ class CommonsSource(Source):
                     "formatversion": 2,
                     "maxlag": 5,
                     "generator": "search",
-                    "gsrsearch": keyword,
+                    "gsrsearch": query,
                     "gsrnamespace": 6,
                     "gsrlimit": 50,
                     "gsroffset": cursor,
@@ -604,11 +765,16 @@ class CommonsSource(Source):
             if data["error"].get("code") == "maxlag":
                 raise SourceBusy("Wikimedia Commons is busy (maxlag)", 30.0)
             raise SourceError(f"commons: {data['error'].get('code')}")
+        series = self._series.setdefault(keyword, {})
         found: list[Candidate] = []
         pages = sorted(
             (data.get("query") or {}).get("pages") or [], key=lambda p: p.get("index", 0)
         )
         for page in pages:
+            title = str(page.get("title") or "")
+            key = series_key(title)
+            if key and series.get(key, 0) >= COMMONS_SERIES_MAX:
+                continue
             for info in page.get("imageinfo") or []:
                 if info.get("mime") not in _COMMONS_MIMES:
                     continue
@@ -616,6 +782,7 @@ class CommonsSource(Source):
                 w = info.get("thumbwidth") or info.get("width")
                 h = info.get("thumbheight") or info.get("height")
                 if url:
+                    series[key] = series.get(key, 0) + 1
                     found.append(
                         Candidate(
                             url=url,
@@ -623,7 +790,7 @@ class CommonsSource(Source):
                             source=self.name,
                             width=w,
                             height=h,
-                            title=page.get("title"),
+                            title=title,
                         )
                     )
         nxt = (data.get("continue") or {}).get("gsroffset")

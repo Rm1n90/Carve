@@ -57,12 +57,11 @@ SOURCES = (
 )
 # The web search engines and the open-licence archives find what a
 # keyword names (DuckDuckGo, Baidu and 360 also the rarer brands Bing
-# gets wrong). Yandex
-# answers only a page or so before asking for a CAPTCHA, so it is
-# opt-in; the free photo sites return good photos of general subjects
-# but rarely a given brand, so they are opt-in too.
+# gets wrong). Bing answers this server with the same 35 images on every
+# page (see sources.py), Yandex only a page or so before asking for a
+# CAPTCHA, so both are opt-in; the free photo sites return good photos of
+# general subjects but rarely a given brand, so they are opt-in too.
 DEFAULT_SOURCES = (
-    SOURCE_BING,
     SOURCE_DUCKDUCKGO,
     SOURCE_BAIDU,
     SOURCE_SO360,
@@ -122,6 +121,11 @@ class WebCollectKeyword(Base):
     # "collect more" goes deeper instead of re-reading the first pages:
     # {"bing:tall": {"cursor": 140, "done": false, "empty": 0}, …}.
     steps: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # The keyword in other words, for sources that search better with
+    # them: {"zh": "救生衣", "zh_by": "openai:gpt-6-luna" or "user"} —
+    # Baidu and 360 search the Chinese (see translate.py). Cleared when
+    # the keyword's words change.
+    terms: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

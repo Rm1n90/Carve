@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import re
 import threading
 import time
 import uuid
@@ -87,6 +88,7 @@ from carve_api.web_collect.sources import (
     honest_user_agent,
     step_order,
 )
+from carve_api.web_collect.translate import fill_chinese
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +151,9 @@ class Options:
     filter_ai: bool = True
     filter_watermark: bool = True
     filter_relevance: bool = False
+    # Only real photos: no drawings, charts, signs or renders (not for
+    # keywords that name a graphic, see wants_graphics).
+    filter_photo: bool = False
     # Leave out images on Chinese sites (Baidu and 360 find mostly those).
     skip_chinese_sites: bool = True
     mode: str = MODE_PER_KEYWORD
@@ -162,6 +167,8 @@ class Options:
             filter_watermark=bool(d.get("filter_watermark", True)),
             # Off for runs started before the keyword check existed.
             filter_relevance=bool(d.get("filter_relevance", False)),
+            # Off for runs started before the photo check existed.
+            filter_photo=bool(d.get("filter_photo", False)),
             # On for runs started when Chinese sites were always left out.
             skip_chinese_sites=bool(d.get("skip_chinese_sites", True)),
             mode=d.get("mode") or MODE_PER_KEYWORD,
@@ -175,9 +182,24 @@ class Options:
                 ("ai", self.filter_ai),
                 ("watermark", self.filter_watermark),
                 ("relevance", self.filter_relevance),
+                ("photo", self.filter_photo),
             )
             if on
         ]
+
+
+# A keyword with one of these words asks for a graphic, which the photo
+# check would turn away: it rejected 15 of 34 kept logos (2026-11-09).
+GRAPHIC_WORDS = frozenset(
+    "logo logos icon icons emblem emblems badge badges sign signs signage flag flags poster "
+    "posters banner banners chart charts diagram diagrams map maps drawing drawings "
+    "illustration illustrations cartoon cartoons sticker stickers label labels screenshot "
+    "screenshots clipart infographic infographics".split()
+)
+
+
+def wants_graphics(keyword: str) -> bool:
+    return any(w in GRAPHIC_WORDS for w in re.findall(r"[a-z]+", keyword.lower()))
 
 
 @dataclass
@@ -281,6 +303,9 @@ class _Run:
         self.to_score_since = 0.0
         self.outcomes: dict[str, tuple[str, int | None]] = {}
         self._turns: Counter = Counter()
+        # Per keyword, searches this run cannot make (a variant with no
+        # words to search yet, e.g. no Chinese for it).
+        self._skip: dict[uuid.UUID, set[str]] = defaultdict(set)
         # Image hosts that answered 429 / 503, until when (monotonic).
         # They only reorder the work: nothing ever waits on them.
         self._host_pauses: dict[str, float] = {}
@@ -384,6 +409,7 @@ class _Run:
             .all()
         )
         self.keywords = {k.id: k for k in kws}
+        self._translate()
         tid = job.task_id
         self.seen: set[str] = set(
             self.s.execute(
@@ -432,6 +458,21 @@ class _Run:
             len(self.look),
             len(pending),
         )
+
+    def _translate(self) -> None:
+        """Chinese words for the keywords that have none, when Baidu or 360
+        is in the run (see translate.py). Without them those two search in
+        English, and the run says why."""
+        cn = [n for n, src in self.sources.items() if "zh" in src.variants()]
+        if not cn:
+            return
+        err = fill_chinese(list(self.keywords.values()), self.settings)
+        self.s.commit()
+        if err:
+            for name in cn:
+                self._note_source(name, "ok", f"Searched in English only: {err}")
+            self.s.commit()
+            log.warning("web_collect.translate_failed job_id=%s: %s", self.job.id, err)
 
     def _hash_existing_assets(self) -> None:
         """Look-alike hashes for the task's images that do not have one
@@ -536,7 +577,8 @@ class _Run:
 
     def _steps_left(self, kid: uuid.UUID) -> list[str]:
         steps = self._steps(kid)
-        return [n for n in self.order if not steps[n].get("done")]
+        skip = self._skip[kid]
+        return [n for n in self.order if not steps[n].get("done") and n not in skip]
 
     def _usable_steps(self, kid: uuid.UUID) -> list[str]:
         """Searches left for a keyword on sources still in this run."""
@@ -591,8 +633,14 @@ class _Run:
         state = dict(steps[step])
         if not self.pacer.wait_turn(source_name, src.interval, self._stop_requested):
             raise _Stopped
+        query = src.query(kw.keyword, variant, kw.terms or {})
+        if query is None:
+            # Nothing to search with this variant yet (no Chinese words
+            # for the keyword): left for a later run, not marked done.
+            self._skip[kid].add(step)
+            return True
         try:
-            page = src.search(self.http, kw.keyword, variant, int(state.get("cursor") or 0))
+            page = src.search(self.http, query, variant, int(state.get("cursor") or 0))
         except SourceBusy as exc:
             # A limit, a CAPTCHA, a block: out of this run. The pause in
             # Redis tells runs on other tasks not to try it meanwhile.
@@ -611,15 +659,21 @@ class _Run:
                 self._note_source(source_name, "error", str(exc))
             return False
         self._errors[source_name] = 0
-        if page.off_topic:
-            # Its images are about something else: none of this source's
-            # searches for the keyword are made; the others fill in.
+        if page.off_topic or page.repeats:
+            # Its images are about something else, or the same ones again:
+            # none of this source's searches for the keyword are made; the
+            # others fill in.
             for name in self.order:
                 if name.split(":")[0] == source_name:
                     steps[name] = {**steps[name], "done": True}
             self.job.searches += 1
-            self._note_source(source_name, "ok", None, searches=1, off_topic=1)
-            log.info("web_collect.off_topic source=%s keyword=%r", source_name, kw.keyword)
+            self._note_source(source_name, "ok", None, searches=1, off_topic=int(page.off_topic))
+            log.info(
+                "web_collect.source_done source=%s keyword=%r off_topic=%s",
+                source_name,
+                kw.keyword,
+                page.off_topic,
+            )
             self._save_step(kw, steps, step, steps[step])
             return True
         new: list[_Item] = []
@@ -939,6 +993,12 @@ class _Run:
                 self._reject(item, img.REJECT_WATERMARK, prep.dhash)
             elif "relevance" in sc and float(sc["relevance"]) < st.web_collect_relevance_threshold:
                 self._reject(item, img.REJECT_OFF_TOPIC, prep.dhash)
+            elif (
+                "photo" in sc
+                and float(sc["photo"]) < st.web_collect_photo_threshold
+                and not wants_graphics(self.keywords[item.kw].keyword)
+            ):
+                self._reject(item, img.REJECT_NOT_PHOTO, prep.dhash)
             else:
                 self._add(item, prep)
 

@@ -148,4 +148,20 @@ describe("<WebCollectDialog />", () => {
     // A source that still needs something says so and cannot be ticked.
     expect(screen.getByText("Needs a contact address")).toBeTruthy();
   });
+
+  it("shows the Chinese that Baidu and 360 search for, and saves the user's own", async () => {
+    api.state.mockResolvedValue(
+      state([{ id: "k1", keyword: "life jacket", slug: "life_jacket", target: 100, have: 0,
+               exhausted: false, zh: "救生衣", zh_by: "openai:gpt-6-luna" }]),
+    );
+    renderDialog();
+    fireEvent.click(await screen.findByText("中文: 救生衣"));
+    const field = screen.getByLabelText("Chinese for life jacket");
+    fireEvent.change(field, { target: { value: " 救生衣  背心 " } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => expect(api.saveKeywords).toHaveBeenCalled());
+    expect(api.saveKeywords.mock.calls[0][1]).toEqual([
+      { id: "k1", keyword: "life jacket", target: 100, zh: "救生衣 背心" },
+    ]);
+  });
 });

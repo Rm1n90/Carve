@@ -66,6 +66,10 @@ export interface WebCollectKeyword {
   have: number;
   /** Every source searched to the end. */
   exhausted: boolean;
+  /** What Baidu and 360 search for it (the keyword in Chinese). */
+  zh?: string | null;
+  /** "user", or the model that translated it. */
+  zh_by?: string | null;
 }
 
 export interface WebCollectJobKeyword {
@@ -83,6 +87,8 @@ export interface WebCollectOptions {
   filter_ai: boolean;
   filter_watermark: boolean;
   filter_relevance: boolean;
+  /** Drop drawings, charts, signs and renders (not for "… logo" keywords). */
+  filter_photo: boolean;
   /** Leave out images on Chinese sites (most of what Baidu and 360 find). */
   skip_chinese_sites: boolean;
   mode: "per_keyword" | "total";
@@ -123,6 +129,8 @@ export interface WebCollectKeywordIn {
   id?: string;
   keyword: string;
   target: number;
+  /** The keyword in Chinese; "" goes back to the automatic translation. */
+  zh?: string;
 }
 
 export const ACTIVE_STATUSES: WebCollectJobStatus[] = ["queued", "running", "canceling"];
@@ -180,6 +188,7 @@ export const REJECT_LABELS: Record<string, string> = {
   ai_generated: "AI-generated",
   watermark: "watermarked",
   off_topic: "off topic",
+  not_a_photo: "not a photo",
   blocked_stock: "stock site",
   blocked_ai: "AI-image site",
   blocked_chinese: "Chinese site",

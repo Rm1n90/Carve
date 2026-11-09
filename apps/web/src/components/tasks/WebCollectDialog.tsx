@@ -44,21 +44,23 @@ const OPTIONS_KEY = "carve.webCollect.options";
 const SAVE_DELAY_MS = 700;
 /** Sources added on 2026-11-08: ticked once for a saved choice that predates them. */
 const ADDED_SOURCES: WebCollectSource[] = ["duckduckgo", "baidu", "so360"];
+/** Sources made opt-in on 2026-11-09: unticked once for a saved choice that predates it. */
+const DROPPED_SOURCES: WebCollectSource[] = ["bing"];
 
 /** Plain-English help for each source, shown in its tooltip. */
 const SOURCE_HELP: Record<WebCollectSource, string> = {
   bing:
-    "Microsoft's image search. Finds the most images for common keywords. For rarer ones (a less-known brand) it often shows unrelated images; then it is skipped for that keyword.",
+    "Microsoft's image search. Off by default: from this server it now shows the same 35 images on every page, often about something else, so it adds very few images. When it repeats itself it is skipped for that keyword.",
   duckduckgo:
-    "DuckDuckGo's image search. Finds many images for almost any keyword, including brands Bing gets wrong. It searches slowly on purpose: when asked too fast it stops answering for a while, and is then skipped for the rest of the run.",
+    "DuckDuckGo's image search. Usually the best source: many images for almost any keyword, mostly on topic. It asks for photographs only, so drawings and clip art are left out, and each of its size and shape filters finds more. It searches slowly on purpose: when asked too fast it stops answering for a while, and is then skipped for the rest of the run. Run again later to continue where it stopped.",
   baidu:
-    "China's largest image search. Finds the real logos of many brands Bing gets wrong. Most images are on Chinese sites, so it finds little when “Skip images on Chinese sites” is ticked.",
+    "China's largest image search. It searches the keyword in Chinese first (shown under each keyword; click to change it), then in English: in Chinese it finds the thing itself, in English mostly shop listings. Finds the real logos of many brands. Most images are on Chinese sites, so it finds little when “Skip images on Chinese sites” is ticked.",
   so360:
-    "Chinese image search (360 Search). Like Baidu: good for brands and logos, mostly from Chinese sites, so it finds little when “Skip images on Chinese sites” is ticked.",
+    "Chinese image search (360 Search). Like Baidu: searches the keyword in Chinese first, then in English; good for brands and logos, mostly from Chinese sites, so it finds little when “Skip images on Chinese sites” is ticked.",
   yandex:
     "Russian image search. Has many images Bing does not have, but it often stops after a page or two and asks for a CAPTCHA. Then it is skipped for the rest of the run.",
   commons:
-    "Wikipedia's library of free-to-use photos. No watermarks. Needs a contact address in Settings → Configuration.",
+    "Wikipedia's library of free-to-use photos. No watermarks. It first takes the files tagged as showing the keyword's thing (when the keyword is the name of one, like “surfboard”), then searches file names and descriptions; at most 2 photos of one series. Needs a contact address in Settings → Configuration.",
   openverse:
     "A search over millions of free-to-use images (Flickr, Wikimedia and more). No watermarks.",
   unsplash:
@@ -74,27 +76,37 @@ interface Row extends WebCollectKeywordIn {
   key: string;
   have: number;
   exhausted: boolean;
+  zhBy?: string | null;
 }
 
 type Tab = "keywords" | "settings" | "history";
 
 function loadOptions(): WebCollectOptions {
   const base: WebCollectOptions = {
-    sources: ["bing", "duckduckgo", "baidu", "so360", "commons", "openverse"],
+    sources: ["duckduckgo", "baidu", "so360", "commons", "openverse"],
     min_side: 500,
     filter_ai: true,
     filter_watermark: true,
     filter_relevance: true,
+    filter_photo: true,
     skip_chinese_sites: false,
     mode: "per_keyword",
   };
   try {
     const saved = JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "null");
     if (!saved) return base;
-    // Sources added after the choice was saved start ticked once.
-    const { sources_added: seen, ...rest } = saved;
-    const sources = [...new Set([...(rest.sources ?? base.sources), ...(seen ? [] : ADDED_SOURCES)])];
-    return { ...base, ...rest, sources, restart_search: false };
+    // Sources added after the choice was saved start ticked once; ones
+    // made opt-in since then start unticked once.
+    const { sources_added: seen, sources_dropped: dropped, ...rest } = saved;
+    const sources = [
+      ...new Set([...(rest.sources ?? base.sources), ...(seen ? [] : ADDED_SOURCES)]),
+    ].filter((src) => dropped || !DROPPED_SOURCES.includes(src));
+    return {
+      ...base,
+      ...rest,
+      sources: sources.length ? sources : base.sources,
+      restart_search: false,
+    };
   } catch {
     return base;
   }
@@ -103,7 +115,10 @@ function loadOptions(): WebCollectOptions {
 function saveOptions(o: WebCollectOptions): void {
   try {
     const { restart_search: _skip, ...rest } = o;
-    localStorage.setItem(OPTIONS_KEY, JSON.stringify({ ...rest, sources_added: true }));
+    localStorage.setItem(
+      OPTIONS_KEY,
+      JSON.stringify({ ...rest, sources_added: true, sources_dropped: true }),
+    );
   } catch {
     /* private window: settings just are not remembered */
   }
@@ -123,6 +138,8 @@ function rowsFrom(state: WebCollectState): Row[] {
     target: k.target,
     have: k.have,
     exhausted: k.exhausted,
+    zh: k.zh ?? undefined,
+    zhBy: k.zh_by,
   }));
 }
 
@@ -225,7 +242,13 @@ export function WebCollectDialog({ taskId, open }: { taskId: string; open: boole
   const payload = (list: Row[]): WebCollectKeywordIn[] =>
     list
       .filter((r) => r.keyword.trim())
-      .map((r) => ({ id: r.id, keyword: r.keyword.trim(), target: Math.max(0, r.target || 0) }));
+      .map((r) => ({
+        id: r.id,
+        keyword: r.keyword.trim(),
+        target: Math.max(0, r.target || 0),
+        // Only when there is one: an untranslated keyword sends nothing.
+        ...(r.zh !== undefined ? { zh: r.zh } : {}),
+      }));
 
   const save = useMutation({
     mutationFn: ({ list }: { list: Row[]; v: number }) =>
@@ -390,6 +413,54 @@ export function WebCollectDialog({ taskId, open }: { taskId: string; open: boole
 
 // ------------------------------------------------------------- keywords tab
 
+/** The keyword in Chinese, which Baidu and 360 search for: shown under
+ *  the keyword, and changed by clicking it. */
+function ChineseField({ row, onCommit }: { row: Row; onCommit: (zh: string) => void }) {
+  const [text, setText] = useState<string | null>(null);
+  if (!row.id) return null;
+  if (text !== null) {
+    const done = () => {
+      const next = text.replace(/\s+/g, " ").trim();
+      setText(null);
+      if (next !== (row.zh ?? "")) onCommit(next);
+    };
+    return (
+      <Input
+        autoFocus
+        value={text}
+        aria-label={`Chinese for ${row.keyword}`}
+        placeholder="Empty: translate it again"
+        className="h-6 text-[12px] mt-0.5"
+        onChange={(e) => setText(e.target.value)}
+        onBlur={done}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") done();
+          if (e.key === "Escape") setText(null);
+        }}
+      />
+    );
+  }
+  const by = row.zhBy === "user" ? "written by you" : row.zhBy ? "translated automatically" : "";
+  return (
+    <Tooltip
+      content={
+        row.zh
+          ? `What Baidu and 360 search for (${by}); they search the English too. Click to change it.`
+          : "Not translated yet: Baidu and 360 search in English. It is translated when the run starts if an OpenAI or Gemini key is set. Click to write it yourself."
+      }
+    >
+      <button
+        type="button"
+        className="truncate text-left text-[11px] px-1 text-[color:var(--text-tertiary)] hover:text-[color:var(--text-primary)]"
+        onClick={() => setText(row.zh ?? "")}
+        data-testid="web-collect-zh"
+      >
+        中文: {row.zh || "—"}
+      </button>
+    </Tooltip>
+  );
+}
+
 /** Digits only, while typing: "" while the field is being cleared. */
 const digits = (v: string) => v.replace(/[^0-9]/g, "").slice(0, 6);
 
@@ -541,9 +612,11 @@ function KeywordsTab({
           <span className="flex items-center gap-1 text-[11px] text-[color:var(--text-tertiary)]">
             {mode === "one" ? "Keyword (what to search for)" : "Keywords, one per line"}
             <Help label="keywords">
-              Each keyword is one search. Be specific: "Tenneco logo on a race car" finds better
-              images than "Tenneco". Images are named after the keyword, e.g.
-              tenneco_logo_000001.jpg.
+              Each keyword is one search, and search engines match words, not meaning. Check the
+              spelling and say what you mean: "baseball dugout bench", not "bench dugout" (also
+              a smoking pipe box); "boxing ring ropes", not "ring repes cage" (found rings and
+              cages for sale). Be specific: "Tenneco logo on a race car" finds better images than
+              "Tenneco". Images are named after the keyword, e.g. tenneco_logo_000001.jpg.
             </Help>
           </span>
           <span className="flex items-center gap-1 text-[11px] text-[color:var(--text-tertiary)]">
@@ -640,9 +713,17 @@ function KeywordsTab({
                   className="grid grid-cols-[1fr_96px_150px_28px] items-center gap-2"
                   data-testid="web-collect-row"
                 >
-                  <span className="truncate text-[13px] px-1" title={r.keyword}>
-                    {r.keyword}
-                  </span>
+                  <div className="flex flex-col min-w-0">
+                    <span className="truncate text-[13px] px-1" title={r.keyword}>
+                      {r.keyword}
+                    </span>
+                    <ChineseField
+                      row={r}
+                      onCommit={(zh) =>
+                        edit(rows.map((x) => (x.key === r.key ? { ...x, zh, zhBy: "user" } : x)))
+                      }
+                    />
+                  </div>
                   <NumberField
                     value={r.target}
                     label={`Images wanted for ${r.keyword}`}
@@ -849,6 +930,12 @@ function SettingsTab({
             help="Looks at each image and skips it if it doesn't show what its keyword says. Example: for “Shell logo”, a photo of a seashell is skipped. It misses some wrong images, mostly other companies' logos with the same word."
             checked={options.filter_relevance}
             onChange={(on) => setOptions((o) => ({ ...o, filter_relevance: on }))}
+          />
+          <Option
+            label="Only real photos"
+            help="Skips drawings, cartoons, clip art, size charts, signs, screenshots and 3D renders. Keywords that ask for a graphic (with words like logo, icon, sign, flag, poster or chart) are never checked. In a test it removed 22 of the 148 images a user deleted (size charts, sketches, signs), and 10 of the 453 they kept (2 %), some of them renders or infographics, some real photos of shirts on a plain background."
+            checked={options.filter_photo}
+            onChange={(on) => setOptions((o) => ({ ...o, filter_photo: on }))}
           />
           <Option
             label="Skip images on Chinese sites"

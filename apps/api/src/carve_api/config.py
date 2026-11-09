@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     web_collect_relevance_threshold: float = Field(
         default=0.07, alias="WEB_COLLECT_RELEVANCE_THRESHOLD"
     )
+    # Images below this chance of being a photo (SigLIP2 against drawing,
+    # chart, sign… labels) are rejected when "only real photos" is on.
+    web_collect_photo_threshold: float = Field(default=0.2, alias="WEB_COLLECT_PHOTO_THRESHOLD")
     # Contact put in the User-Agent sent to Wikimedia and Openverse, as
     # Wikimedia's User-Agent policy asks (an email or a URL).
     web_collect_contact: str = Field(default="", alias="WEB_COLLECT_CONTACT")

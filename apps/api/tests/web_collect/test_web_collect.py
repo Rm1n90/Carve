@@ -221,6 +221,7 @@ class FakeSource(Source):
         self.always_fail = False
         self.fail_once: set[str] = set()
         self.off_topic: set[str] = set()  # keywords it answers with unrelated images
+        self.repeats: set[str] = set()  # keywords it answers with its first page again
 
     def variants(self):  # noqa: ANN201
         return self._variants
@@ -239,6 +240,8 @@ class FakeSource(Source):
             raise SourceError("HTTP 502")
         if keyword in self.off_topic:
             return SearchPage([], None, off_topic=True)
+        if keyword in self.repeats and (cursor or variant != self._variants[0]):
+            return SearchPage([], None, repeats=True)
         page = cursor // self.per_page
         if page >= self.pages:
             return SearchPage([], None)
@@ -296,6 +299,7 @@ class World:
         self.ai: set[str] = set()       # xxh3 of images the AI check flags
         self.watermark: set[str] = set()
         self.off_topic: set[str] = set()
+        self.not_photo: set[str] = set()  # drawings, charts…
         self.downloads: list[str] = []
         self.headers: dict[str, dict[str, str]] = {}
         self.scored_keywords: list[str] = []
@@ -311,7 +315,10 @@ class World:
     def flag(self, url: str, kind: str) -> None:
         import xxhash
 
-        flagged = {"ai": self.ai, "watermark": self.watermark, "off_topic": self.off_topic}[kind]
+        flagged = {
+            "ai": self.ai, "watermark": self.watermark, "off_topic": self.off_topic,
+            "not_photo": self.not_photo,
+        }[kind]
         flagged.add(xxhash.xxh3_128_hexdigest(self.body(url)))
 
 
@@ -370,11 +377,15 @@ def world(db_session, monkeypatch) -> World:
                 "ai": 0.99 if h in w.ai else 0.01,
                 "watermark": 0.99 if h in w.watermark else 0.01,
                 "relevance": 0.01 if h in w.off_topic else 0.2,
+                "photo": 0.05 if h in w.not_photo else 0.9,
             }
             out.append({c: sc[c] for c in checks})
         return out
 
     monkeypatch.setattr(jobs_mod, "score", score)
+    # No language model in tests: keywords keep the Chinese they were given.
+    monkeypatch.setattr(jobs_mod, "fill_chinese", lambda kws, st, **kw: None)
+    monkeypatch.setattr(router_mod, "fill_chinese", lambda kws, st, **kw: None)
     return w
 
 
@@ -895,6 +906,32 @@ def test_bing_results_about_something_else_are_not_used() -> None:
     assert sources.keyword_words("F1 logo") == []
 
 
+def test_bing_showing_its_first_page_again_ends_its_searches_for_the_keyword() -> None:
+    from carve_api.web_collect import sources
+
+    # What Bing answered this server on 2026-11-09: the same images for
+    # every page and every filter.
+    same = _bing_page(
+        ("https://img.example/life-jacket-1.jpg", "https://shop.example/life-jacket"),
+        ("https://img.example/life-jacket-2.jpg", "https://shop.example/life-jacket"),
+    )
+    src = sources.BingSource()
+    client = _mock(lambda req: httpx.Response(200, text=same))
+    first = src.search(client, "life jacket", "large", 0)
+    assert len(first.candidates) == 2 and first.next_cursor == sources.BING_PAGE
+    again = src.search(client, "life jacket", "large", sources.BING_PAGE)
+    assert again.repeats and again.candidates == [] and again.next_cursor is None
+    assert src.search(client, "life jacket", "1024", 0).repeats
+    # Another keyword is judged on its own.
+    assert not src.search(client, "life jacket kids", "large", 0).repeats
+
+
+def test_bing_is_not_a_default_source() -> None:
+    from carve_api.web_collect.models import DEFAULT_SOURCES
+
+    assert "bing" not in DEFAULT_SOURCES and "duckduckgo" in DEFAULT_SOURCES
+
+
 def _ddg_world(search_page: str = '<script>vqd="4-12345678901"</script>'):  # noqa: ANN202
     calls: list[str] = []
     replies: dict[str, list[httpx.Response]] = {"i.js": []}
@@ -1080,6 +1117,25 @@ def test_a_source_answering_off_topic_is_skipped_for_that_keyword(db_session, wo
     assert steps["bing:a"]["done"] and steps["bing:b"]["done"]
 
 
+def test_a_source_repeating_itself_is_skipped_for_that_keyword(db_session, world) -> None:
+    _, task = _seed(db_session)
+    world.sources["commons"].pages = 3
+    kw = _keyword(db_session, task, "dugout", 12)
+    world.sources["bing"].repeats = {"dugout"}
+    job = _start(db_session, task, [(kw, 12)])
+
+    jobs_mod.run_web_collect(str(job.id))
+
+    job = _reload(db_session, job)
+    bing_calls = [c for c in world.sources["bing"].calls if c[0] == "dugout"]
+    # Its first page is used; the repeat ends every Bing search for it.
+    assert bing_calls == [("dugout", "a", 0), ("dugout", "a", 5)]
+    assert "off_topic" not in job.source_stats["bing"]
+    steps = db_session.get(WebCollectKeyword, kw.id).steps
+    assert steps["bing:a"]["done"] and steps["bing:b"]["done"]
+    assert job.added == 12
+
+
 def test_a_search_that_fails_once_is_retried(db_session, world) -> None:
     _, task = _seed(db_session)
     kw = _keyword(db_session, task, "kart", 8)
@@ -1147,3 +1203,263 @@ def test_a_run_stops_if_the_image_filters_stay_unavailable(db_session, world, mo
     job = _reload(db_session, job)
     assert job.status == "failed" and job.added == 0
     assert "image filters were unavailable" in job.error
+
+
+# ------------------------------------------------- Chinese, Commons, photos
+
+
+class FakeChinese(FakeSource):
+    """Searches the keyword's Chinese first, as Baidu and 360 do."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name, ("zh", "search"), pages=1)
+
+    def query(self, keyword, variant, terms):  # noqa: ANN001, ANN201
+        from carve_api.web_collect.sources import chinese_query
+
+        return chinese_query(keyword, variant, terms)
+
+
+def test_baidu_and_360_search_the_chinese_first_then_the_english() -> None:
+    from carve_api.web_collect import sources
+
+    for src in (sources.BaiduSource(), sources.So360Source()):
+        assert src.variants() == ("zh", "search")
+        assert src.query("baseball dugout bench", "zh", {"zh": "棒球场 球员休息区"}) == "棒球场 球员休息区"
+        assert src.query("baseball dugout bench", "zh", {}) is None
+        assert src.query("baseball dugout bench", "search", {"zh": "x"}) == "baseball dugout bench"
+    # Every other source searches the keyword as typed.
+    assert sources.DuckDuckGoSource().query("surfboard", "photo", {"zh": "冲浪板"}) == "surfboard"
+
+
+def test_a_run_searches_the_chinese_and_without_it_leaves_that_search_for_later(
+    db_session, world
+) -> None:
+    _, task = _seed(db_session)
+    world.sources["baidu"] = FakeChinese("baidu")
+    with_zh = _keyword(db_session, task, "life jacket", 5)
+    with_zh.terms = {"zh": "救生衣", "zh_by": "user"}
+    db_session.commit()
+    without = _keyword(db_session, task, "surfboard", 5)
+    job = _start(db_session, task, [(with_zh, 5), (without, 5)], sources=["baidu"])
+
+    jobs_mod.run_web_collect(str(job.id))
+
+    calls = world.sources["baidu"].calls
+    assert ("救生衣", "zh", 0) in calls
+    assert ("surfboard", "search", 0) in calls
+    assert not any(v == "zh" and q == "surfboard" for q, v, _ in calls)
+    # Not marked done: once the keyword has its Chinese, a later run searches it.
+    db_session.expire_all()
+    assert not db_session.get(WebCollectKeyword, without.id).steps["baidu:zh"]["done"]
+    assert _reload(db_session, job).added == 10
+
+
+def test_a_run_translates_the_keywords_that_have_no_chinese(db_session, world, monkeypatch) -> None:
+    from carve_api.web_collect import translate
+
+    # The real fill_chinese, with a fake model behind it.
+    monkeypatch.setattr(jobs_mod, "fill_chinese", translate.fill_chinese)
+    _, task = _seed(db_session)
+    world.sources["baidu"] = FakeChinese("baidu")
+    asked: list[list[str]] = []
+
+    def to_chinese(keywords, settings, timeout=30.0):  # noqa: ANN001, ANN202
+        asked.append(list(keywords))
+        return {"surfboard": "冲浪板"}
+
+    monkeypatch.setattr(translate, "provider", lambda st: "openai:gpt-6-luna")
+    monkeypatch.setattr(translate, "to_chinese", to_chinese)
+    kw = _keyword(db_session, task, "surfboard", 3)
+    mine = _keyword(db_session, task, "life jacket", 3)
+    mine.terms = {"zh": "救生衣", "zh_by": "user"}
+    db_session.commit()
+    job = _start(db_session, task, [(kw, 3), (mine, 3)], sources=["baidu"])
+
+    jobs_mod.run_web_collect(str(job.id))
+
+    assert asked == [["surfboard"]]  # the user's own Chinese is left alone
+    db_session.expire_all()
+    assert db_session.get(WebCollectKeyword, kw.id).terms == {
+        "zh": "冲浪板", "zh_by": "openai:gpt-6-luna"}
+    assert ("冲浪板", "zh", 0) in world.sources["baidu"].calls
+
+
+def test_a_failed_translation_is_not_asked_again_on_every_save(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from carve_api.web_collect import translate
+
+    calls = []
+
+    def down(keywords, settings, timeout=30.0):  # noqa: ANN001, ANN202
+        calls.append(keywords)
+        raise translate.TranslateError("OpenAI answered 503")
+
+    monkeypatch.setattr(translate, "provider", lambda st: "openai:gpt-6-luna")
+    monkeypatch.setattr(translate, "to_chinese", down)
+    kw = SimpleNamespace(keyword="surfboard", terms={})
+    assert translate.fill_chinese([kw], None) == "OpenAI answered 503"
+    assert kw.terms["zh_failed"]
+    assert translate.fill_chinese([kw], None, after_failure=False) is None  # a save: not again
+    assert translate.fill_chinese([kw], None) == "OpenAI answered 503"  # a run: again
+    assert len(calls) == 2
+    monkeypatch.setattr(translate, "provider", lambda st: None)
+    assert "no OpenAI or Gemini key" in translate.fill_chinese(
+        [SimpleNamespace(keyword="x", terms={})], None)
+
+
+def test_translation_asks_the_cheapest_model_and_reads_its_answer(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from carve_api.web_collect import translate
+
+    sent = {}
+
+    def post(url, json, headers, timeout):  # noqa: A002, ANN001, ANN202
+        sent.update(url=url, body=json, headers=headers)
+        answer = {"items": [{"keyword": "Life Jacket", "zh": " 救生衣\n"},
+                            {"keyword": "not asked", "zh": "x"}]}
+        if "openai" in url:
+            return httpx.Response(200, json={"output": [{"type": "message", "content": [
+                {"type": "output_text", "text": json_mod.dumps(answer)}]}]})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [
+            {"text": json_mod.dumps(answer)}]}}]})
+
+    import json as json_mod
+
+    monkeypatch.setattr(translate.httpx, "post", post)
+    st = SimpleNamespace(openai_api_key="k", gemini_api_key="g")
+    assert translate.to_chinese(["Life Jacket"], st) == {"Life Jacket": "救生衣"}
+    assert sent["body"]["model"] == "gpt-6-luna" and sent["body"]["store"] is False
+    st = SimpleNamespace(openai_api_key="", gemini_api_key="g")
+    assert translate.to_chinese(["Life Jacket"], st) == {"Life Jacket": "救生衣"}
+    assert "gemini-4-argon:generateContent" in sent["url"]
+    assert sent["headers"] == {"x-goog-api-key": "g"}
+
+
+def test_chinese_written_by_hand_restarts_only_the_chinese_searches(db_session, world) -> None:
+    user, task = _seed(db_session)
+    c = _client(db_session, user)
+    kws = c.put(f"/tasks/{task.id}/web-collect/keywords", json={"keywords": [
+        {"keyword": "life jacket", "target": 10}]}).json()["keywords"]
+    assert kws[0]["zh"] is None
+    kw = db_session.get(WebCollectKeyword, uuid.UUID(kws[0]["id"]))
+    kw.terms = {"zh": "救生衣", "zh_by": "openai:gpt-6-luna"}
+    kw.steps = {"baidu:zh": {"cursor": 90}, "baidu:search": {"cursor": 60}}
+    db_session.commit()
+    url = f"/tasks/{task.id}/web-collect/keywords"
+    # Sending back the same words changes nothing.
+    same = c.put(url, json={"keywords": [{"id": kws[0]["id"], "keyword": "life jacket",
+                                          "target": 10, "zh": "救生衣"}]}).json()["keywords"][0]
+    assert (same["zh"], same["zh_by"]) == ("救生衣", "openai:gpt-6-luna")
+    mine = c.put(url, json={"keywords": [{"id": kws[0]["id"], "keyword": "life jacket",
+                                          "target": 10, "zh": " 救生衣  背心 "}]}).json()
+    assert (mine["keywords"][0]["zh"], mine["keywords"][0]["zh_by"]) == ("救生衣 背心", "user")
+    db_session.expire_all()
+    assert db_session.get(WebCollectKeyword, kw.id).steps == {"baidu:search": {"cursor": 60}}
+    # Other words: a new keyword, translated afresh.
+    renamed = c.put(url, json={"keywords": [{"id": kws[0]["id"], "keyword": "lifebuoy",
+                                             "target": 10}]}).json()["keywords"][0]
+    assert renamed["zh"] is None
+
+
+def test_commons_takes_files_tagged_with_the_keywords_thing_then_searches_text() -> None:
+    from carve_api.web_collect import sources
+
+    asked: list[str] = []
+
+    def handler(req):  # noqa: ANN001
+        if req.url.host == "www.wikidata.org":
+            assert req.url.params["search"] == "surfboard"
+            return httpx.Response(200, json={"search": [
+                {"id": "Q1", "label": "Surfboard", "description": "Wikimedia disambiguation page",
+                 "match": {"type": "label", "text": "Surfboard"}},
+                {"id": "Q2", "label": "Surf board", "description": "a song",
+                 "match": {"type": "label", "text": "surfboard"}},
+                {"id": "Q3", "label": "surfboard", "description": "board used in surfing",
+                 "match": {"type": "label", "text": "surfboard"}},
+            ]})
+        asked.append(req.url.params["gsrsearch"])
+        pages = [
+            {"index": i, "title": t, "imageinfo": [{
+                "mime": "image/jpeg", "thumburl": f"https://upload.wikimedia.org/{i}.jpg",
+                "thumbwidth": 1920, "thumbheight": 1280,
+                "descriptionurl": f"https://commons.wikimedia.org/wiki/{t}"}]}
+            for i, t in enumerate([
+                "File:Surfer at Malibu 01.jpg", "File:Surfer at Malibu 02.jpg",
+                "File:Surfer at Malibu 03 (2019).jpg", "File:IMG_2041.JPG", "File:IMG_2042.JPG",
+            ])
+        ]
+        return httpx.Response(200, json={"query": {"pages": pages}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    src = sources.CommonsSource("CarveWebCollector/1.0 (test; me@example.org)")
+    assert src.variants() == ("depicts", "search")
+    got = src.search(client, "surfboard", "depicts", 0)
+    assert asked == ["haswbstatement:P180=Q3 filetype:bitmap"]
+    # Two of one series; camera file names are not a series.
+    assert [c.url.rsplit("/", 1)[1] for c in got.candidates] == ["0.jpg", "1.jpg", "3.jpg", "4.jpg"]
+    src.search(client, "surfboard", "search", 0)
+    assert asked[-1] == "surfboard filetype:bitmap"
+
+
+def test_a_keyword_that_names_no_single_thing_skips_the_tagged_search() -> None:
+    from carve_api.web_collect import sources
+
+    found = [{"id": "Q9", "label": "shirt", "match": {"type": "label", "text": "shirt"}}]
+    assert sources.wikidata_item(found, "Person with shirts") is None
+    assert sources.wikidata_item(found, "shirts") == "Q9"
+    alias = [{"id": "Q7", "label": "personal flotation device",
+              "match": {"type": "alias", "text": "life jacket"}}]
+    assert sources.wikidata_item(alias, "Life  Jacket") == "Q7"
+    assert sources.series_key("File:Surfer at Malibu 03 (2019).jpg") == "surfer at malibu"
+    assert sources.series_key("File:IMG_2041.JPG") == ""
+
+
+def test_duckduckgo_asks_for_photographs_with_each_of_its_filters() -> None:
+    from carve_api.web_collect import sources
+
+    sent: list[str] = []
+
+    def handler(req):  # noqa: ANN001
+        if req.url.path == "/":
+            return httpx.Response(200, text='vqd="4-1"')
+        sent.append(req.url.params["f"])
+        return httpx.Response(200, json={"results": [{"image": "https://a.example/1.jpg"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    src = sources.DuckDuckGoSource()
+    for v in src.variants():
+        src.search(client, "surfboard", v, 0)
+    assert sent[0] == ",,,type:photo,,"
+    assert all("type:photo" in f for f in sent) and len(set(sent)) == len(sent)
+
+
+def test_drawings_are_skipped_except_for_keywords_that_ask_for_a_graphic(db_session, world) -> None:
+    _, task = _seed(db_session)
+    jacket = _keyword(db_session, task, "life jacket", 4)
+    logo = _keyword(db_session, task, "Tenneco logo", 4)
+    for kw in ("life_jacket", "tenneco_logo"):
+        world.flag(URL.format(k=kw, n="bing-a-0"), "not_photo")
+    job = _start(db_session, task, [(jacket, 4), (logo, 4)], filter_photo=True)
+
+    jobs_mod.run_web_collect(str(job.id))
+
+    job = _reload(db_session, job)
+    assert job.rejected_by.get("not_a_photo") == 1
+    assert job.added == 8
+    outcome = {
+        u.url: u.outcome
+        for u in db_session.execute(select(WebCollectUrl).where(WebCollectUrl.task_id == task.id)).scalars()
+    }
+    assert outcome[URL.format(k="life_jacket", n="bing-a-0")] == "not_a_photo"
+    assert outcome[URL.format(k="tenneco_logo", n="bing-a-0")] == OUTCOME_ADDED
+
+
+def test_runs_started_before_the_photo_check_keep_it_off() -> None:
+    assert not jobs_mod.Options.from_json({"sources": ["bing"]}).filter_photo
+    assert "photo" in jobs_mod.Options.from_json({"filter_photo": True}).checks
+    assert router_mod.RunOptionsIn().filter_photo
+    assert jobs_mod.wants_graphics("Tenneco logo") and jobs_mod.wants_graphics("stop sign")
+    assert not jobs_mod.wants_graphics("life jacket")
