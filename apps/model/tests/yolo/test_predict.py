@@ -117,7 +117,7 @@ def test_predict_no_masks_returns_empty_polygons() -> None:
 def test_predict_no_boxes_returns_empty() -> None:
     results = _FakeResults(boxes=None, masks=None, names={})
     out = predict_image(_FakeModel(results), _png_bytes())
-    assert out == {"detections": [], "polygons": []}
+    assert out == {"detections": [], "polygons": [], "masks": []}
 
 
 def test_predict_handles_torch_tensor_like_attrs() -> None:
@@ -141,3 +141,82 @@ def test_predict_handles_torch_tensor_like_attrs() -> None:
     out = predict_image(_FakeModel(results), _png_bytes())
     assert out["detections"][0]["class_name"] == "thing"
     assert out["detections"][0]["confidence"] == 0.7
+
+
+class _FakeDataMasks:
+    """Masks as Ultralytics gives them: ``data`` at the letterboxed input size."""
+
+    def __init__(self, data):
+        self.data = np.array(data, dtype=np.float32)
+
+
+def _decode(counts: str, size: list[int]) -> np.ndarray:
+    h, w = size
+    runs = [int(r) for r in counts.split(",")]
+    flat = np.zeros(h * w, np.uint8)
+    pos = 0
+    for j, r in enumerate(runs):
+        if j % 2:
+            flat[pos:pos + r] = 1
+        pos += r
+    return flat.reshape(w, h).T
+
+
+def _seg(masks: list[np.ndarray], w: int = 64, h: int = 48) -> dict:
+    n = len(masks)
+    boxes = _FakeBoxes(xyxy=[[0, 0, w, h]] * n, conf=[0.9] * n, cls=[0] * n)
+    results = _FakeResults(boxes=boxes, masks=_FakeDataMasks(masks), names={0: "board"})
+    return predict_image(_FakeModel(results), _png_bytes(w, h))
+
+
+def test_one_piece_mask_is_a_polygon_tagged_with_its_detection() -> None:
+    m = np.zeros((48, 64))
+    m[10:20, 30:50] = 1
+    out = _seg([m])
+    assert out["masks"] == []
+    (poly,) = out["polygons"]
+    assert poly["det"] == 0 and poly["class_name"] == "board"
+    pts = np.array(poly["points"])
+    assert pts[:, 0].min() == 30 and pts[:, 0].max() == 49
+    assert pts[:, 1].min() == 10 and pts[:, 1].max() == 19
+
+
+def test_polygon_undoes_the_letterbox() -> None:
+    """A 64x48 image runs as a 64x64 input with 8 rows of padding on top."""
+    m = np.zeros((64, 64))
+    m[18:28, 30:50] = 1
+    (poly,) = _seg([m])["polygons"]
+    pts = np.array(poly["points"])
+    assert pts[:, 1].min() == 10 and pts[:, 1].max() == 19
+
+
+def test_two_pieces_become_one_pixel_mask_without_bridges() -> None:
+    m = np.zeros((48, 64))
+    m[5:15, 5:20] = 1
+    m[30:45, 40:60] = 1
+    out = _seg([m])
+    assert out["polygons"] == []
+    (mask,) = out["masks"]
+    assert mask["det"] == 0 and mask["size"] == [48, 64]
+    got = _decode(mask["counts"], mask["size"])
+    assert (got == m).all()
+
+
+def test_specks_dropped_and_tiny_holes_filled() -> None:
+    m = np.zeros((48, 64))
+    m[5:45, 5:45] = 1
+    m[20, 20] = 0          # a one-pixel hole: noise
+    m[2, 60] = 1           # a one-pixel speck far away
+    out = _seg([m])
+    assert out["masks"] == []
+    pts = np.array(out["polygons"][0]["points"])
+    assert pts[:, 0].max() == 44
+
+
+def test_a_real_hole_keeps_the_pixel_mask() -> None:
+    m = np.zeros((48, 64))
+    m[5:45, 5:60] = 1
+    m[15:35, 20:40] = 0    # a player standing on the pitch
+    (mask,) = _seg([m])["masks"]
+    assert (_decode(mask["counts"], mask["size"]) == m).all()
+

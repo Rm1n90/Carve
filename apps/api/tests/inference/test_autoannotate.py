@@ -37,6 +37,7 @@ class _FakeStorage:
         return io.BytesIO(_tiny_png())
     def remove_object(self, key): pass
     def presigned_get(self, key, **k): return f"https://fake/{key}"
+    def presigned_get_internal(self, key, **k): return f"https://fake-internal/{key}"
 
 
 def _install_fake_storage(monkeypatch) -> None:
@@ -196,6 +197,43 @@ def test_auto_annotate_creates_polygon_annotations(db_session, monkeypatch) -> N
         assert len(anns) == 1
         assert anns[0]["kind"] == "polygon"
         assert anns[0]["geometry"]["points"] == [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]
+    finally:
+        model_client_mod.set_test_transport(None)
+
+
+def test_auto_annotate_stores_shapes_instead_of_their_boxes(db_session, monkeypatch) -> None:
+    """A segmentation result: detection 0 has a polygon, detection 1 a pixel
+    mask, detection 2 no shape. Each object is stored once."""
+    client = _client(db_session)
+    token, pid, tid, aid, wid, car_id, truck_id = _setup_full_world(client, monkeypatch)
+
+    transport = _make_mock_transport({
+        "detections": [
+            {"class_name": "car", "confidence": 0.9, "bbox": {"x": 0, "y": 0, "w": 10, "h": 10}},
+            {"class_name": "truck", "confidence": 0.8, "bbox": {"x": 20, "y": 0, "w": 10, "h": 10}},
+            {"class_name": "car", "confidence": 0.7, "bbox": {"x": 40, "y": 0, "w": 5, "h": 5}},
+        ],
+        "polygons": [
+            {"class_name": "car", "confidence": 0.9, "det": 0,
+             "points": [[0, 0], [10, 0], [10, 10]]},
+        ],
+        "masks": [
+            {"class_name": "truck", "confidence": 0.8, "det": 1, "size": [4, 3], "counts": "2,3,7"},
+        ],
+    })
+    model_client_mod.set_test_transport(transport)
+    try:
+        r = client.post(
+            f"/assets/{aid}/auto-annotate?weight_id={wid}",
+            headers=_hdr(token),
+        )
+        assert r.status_code == 200
+        anns = r.json()["annotations"]
+        assert sorted(a["kind"] for a in anns) == ["bbox", "mask", "polygon"]
+        mask = next(a for a in anns if a["kind"] == "mask")
+        assert mask["geometry"] == {"kind": "mask_rle", "size": [4, 3], "counts": "2,3,7"}
+        box = next(a for a in anns if a["kind"] == "bbox")
+        assert box["geometry"]["x"] == 40
     finally:
         model_client_mod.set_test_transport(None)
 

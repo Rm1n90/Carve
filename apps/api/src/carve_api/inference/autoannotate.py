@@ -228,7 +228,19 @@ def auto_annotate_asset(
     def _bump_skipped(class_name: str) -> None:
         skipped_by_class[class_name] = skipped_by_class.get(class_name, 0) + 1
 
-    for det in result.get("detections", []):
+    # A segmentation model returns each object's shape (a polygon, or a
+    # pixel mask when it has several pieces or holes) tagged with ``det``,
+    # the index of its detection. That object is stored once, as its shape;
+    # only detections without a shape become boxes.
+    shaped = {
+        s["det"]
+        for s in [*result.get("polygons", []), *result.get("masks", [])]
+        if isinstance(s.get("det"), int)
+    }
+
+    for det_idx, det in enumerate(result.get("detections", [])):
+        if det_idx in shaped:
+            continue
         class_name = str(det.get("class_name", ""))
         cls_id = _resolve_class_id(class_name)
         if cls_id is None:
@@ -275,6 +287,34 @@ def auto_annotate_asset(
                 class_id=cls_id,
                 kind=AnnotationKind.polygon,
                 geometry={"kind": "polygon", "points": pts},
+                track_id=None,
+                created_by=actor.id,
+            )
+        )
+
+    for mask in result.get("masks", []):
+        class_name = str(mask.get("class_name", ""))
+        cls_id = _resolve_class_id(class_name)
+        if cls_id is None:
+            _bump_skipped(class_name or "<unknown>")
+            continue
+        score = float(mask.get("confidence", 1.0))
+        if score < min_confidence:
+            continue
+        size, counts = mask.get("size"), mask.get("counts")
+        if not counts or not isinstance(size, list) or len(size) != 2:
+            continue
+        new_anns.append(
+            Annotation(
+                task_id=task.id,
+                frame_id=frame_id,
+                class_id=cls_id,
+                kind=AnnotationKind.mask,
+                geometry={
+                    "kind": "mask_rle",
+                    "size": [int(size[0]), int(size[1])],
+                    "counts": str(counts),
+                },
                 track_id=None,
                 created_by=actor.id,
             )
